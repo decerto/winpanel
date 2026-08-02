@@ -54,7 +54,12 @@ Source: "staging\agent\*"; DestDir: "{app}\agent"; Flags: ignoreversion recurses
 Source: "staging\panel\*"; DestDir: "{app}\panel"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Dirs]
-Name: "{app}\data"; Permissions: everyone-none
+; Permissions are deliberately not set here. Inno Setup's [Dirs] permissions
+; can only add access, and the data folder needs the opposite: inheritance
+; removed, then access granted to SYSTEM and Administrators alone. The
+; bootstrap command does exactly that with icacls, so setting anything here
+; would either be ignored or quietly widen access.
+Name: "{app}\data"
 Name: "{app}\logs"
 Name: "{app}\caddy"
 Name: "C:\Sites"
