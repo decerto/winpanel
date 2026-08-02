@@ -22,15 +22,16 @@ jobs:
 
     steps:
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up pnpm
+        # Version deliberately not pinned here: it comes from the
+        # "packageManager" field in package.json, and specifying it in both
+        # places is an error.
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           # Matches the runtime the installer bundles.
           node-version: 22
