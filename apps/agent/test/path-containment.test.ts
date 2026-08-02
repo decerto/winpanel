@@ -64,8 +64,24 @@ describe('resolveWithinRoot — legitimate paths', () => {
 
   it('resolves deep non-existent paths whose ancestors are missing too', async () => {
     const result = await resolveWithinRoot(siteRoot, 'a/b/c/d.txt');
+
     expect(result.exists).toBe(false);
-    expect(result.absolute.startsWith(siteRoot)).toBe(true);
+    // Compared against the canonical root the resolver reports, not the raw
+    // string passed in. Windows may hand back an 8.3 short path such as
+    // C:\Users\RUNNER~1\... which realpath expands, so a raw prefix check
+    // would fail even though containment is working correctly.
+    expect(result.absolute.startsWith(result.root)).toBe(true);
+  });
+
+  it('canonicalises 8.3 short paths without treating them as an escape', async () => {
+    // Short names are a genuine escape vector: C:\PROGRA~1 and
+    // C:\Program Files are the same folder, so a containment check that only
+    // compared strings could be fooled by one form while allowing the other.
+    const result = await resolveWithinRoot(siteRoot, 'public/app.css');
+
+    expect(result.absolute).not.toContain('~');
+    expect(result.absolute.startsWith(result.root)).toBe(true);
+    expect(result.relative).toBe('public/app.css');
   });
 });
 
