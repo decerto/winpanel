@@ -1,0 +1,227 @@
+import type { SiteManifest } from '@winpanel/shared';
+
+/**
+ * Generates Caddy's JSON configuration from the panel's own site records.
+ *
+ * Two things make this workable:
+ *
+ *  - Every reverse-proxy handler carries an `@id`. That turns a blue/green
+ *    switch into a single PATCH against `/id/<slug>_proxy/upstreams`, instead
+ *    of rewriting and reloading the whole config. Zero downtime falls out of
+ *    that almost for free.
+ *
+ *  - Certificates use the DNS challenge via Cloudflare, never TLS-ALPN. A
+ *    domain behind Cloudflare's proxy cannot answer TLS-ALPN, so using it
+ *    would mean certificates silently stopped renewing the moment someone
+ *    turned the proxy on.
+ */
+
+export interface CaddySiteInput {
+  slug: string;
+  domains: readonly string[];
+  /** Loopback port the app is currently listening on. */
+  activePort: number | null;
+  manifest: SiteManifest;
+  /** Absolute path served directly, for static sites. */
+  staticRoot?: string;
+  enabled: boolean;
+}
+
+export interface CaddyConfigInput {
+  sites: readonly CaddySiteInput[];
+  /** Present once the user has connected Cloudflare. */
+  cloudflareTokenEnvVar?: string;
+  /** Contact address for the certificate authority. */
+  acmeEmail?: string;
+  /** Route mail.<domain> to the mail server's web interface. */
+  mailHost?: { hostname: string; port: number };
+}
+
+export function proxyIdFor(slug: string): string {
+  return `${slug}_proxy`;
+}
+
+export function routeIdFor(slug: string): string {
+  return `${slug}_route`;
+}
+
+/** Builds the handler chain for one site. */
+function buildHandlers(site: CaddySiteInput): unknown[] {
+  if (site.manifest.runtime === 'static') {
+    const handlers: unknown[] = [];
+
+    if (site.manifest.spaFallback) {
+      // The classic single-page-app problem: refreshing on /dashboard must
+      // serve index.html rather than 404. This is the Caddy equivalent of the
+      // URL Rewrite rule people put in web.config under IIS.
+      handlers.push({
+        handler: 'rewrite',
+        uri: '{http.matchers.file.relative}',
+      });
+    }
+
+    handlers.push({
+      handler: 'file_server',
+      root: site.staticRoot ?? '',
+      index_names: ['index.html'],
+    });
+
+    return handlers;
+  }
+
+  if (site.activePort === null) {
+    // No process yet. Answer honestly rather than leaving a dead route that
+    // produces a connection reset with no explanation.
+    return [
+      {
+        handler: 'static_response',
+        status_code: 503,
+        body: 'This website has not been deployed yet.',
+      },
+    ];
+  }
+
+  return [
+    {
+      '@id': proxyIdFor(site.slug),
+      handler: 'reverse_proxy',
+      upstreams: [{ dial: `127.0.0.1:${site.activePort}` }],
+      headers: {
+        request: {
+          set: {
+            'X-Forwarded-Proto': ['{http.request.scheme}'],
+            'X-Real-IP': ['{http.request.remote.host}'],
+          },
+        },
+      },
+    },
+  ];
+}
+
+function buildStaticFileRoute(site: CaddySiteInput): unknown | null {
+  if (site.manifest.runtime !== 'static' || !site.manifest.spaFallback) return null;
+
+  return {
+    match: [{ file: { try_files: ['{http.request.uri.path}', '/index.html'] } }],
+    handle: [{ handler: 'file_server', root: site.staticRoot ?? '' }],
+  };
+}
+
+export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknown> {
+  const routes: unknown[] = [];
+  const allDomains = new Set<string>();
+
+  for (const site of input.sites) {
+    if (!site.enabled || site.domains.length === 0) continue;
+
+    for (const domain of site.domains) allDomains.add(domain);
+
+    const fileRoute = buildStaticFileRoute(site);
+
+    routes.push({
+      '@id': routeIdFor(site.slug),
+      match: [{ host: [...site.domains] }],
+      handle: [
+        {
+          handler: 'subroute',
+          routes: fileRoute
+            ? [fileRoute, { handle: buildHandlers(site) }]
+            : [{ handle: buildHandlers(site) }],
+        },
+      ],
+      terminal: true,
+    });
+  }
+
+  if (input.mailHost) {
+    allDomains.add(input.mailHost.hostname);
+    routes.push({
+      '@id': 'mail_route',
+      match: [{ host: [input.mailHost.hostname] }],
+      handle: [
+        {
+          handler: 'reverse_proxy',
+          upstreams: [{ dial: `127.0.0.1:${input.mailHost.port}` }],
+        },
+      ],
+      terminal: true,
+    });
+  }
+
+  const config: Record<string, unknown> = {
+    admin: {
+      // Loopback only. This endpoint can reconfigure every site on the box,
+      // so it must never be reachable from outside.
+      listen: '127.0.0.1:2019',
+    },
+    logging: {
+      logs: {
+        default: { level: 'INFO' },
+      },
+    },
+    apps: {
+      http: {
+        servers: {
+          main: {
+            listen: [':80', ':443'],
+            routes,
+            // Enables HTTP/3 alongside HTTP/2.
+            protocols: ['h1', 'h2', 'h3'],
+          },
+        },
+      },
+    },
+  };
+
+  if (allDomains.size > 0) {
+    const policy: Record<string, unknown> = {
+      subjects: [...allDomains],
+    };
+
+    if (input.cloudflareTokenEnvVar) {
+      policy['issuers'] = [
+        {
+          module: 'acme',
+          ...(input.acmeEmail ? { email: input.acmeEmail } : {}),
+          challenges: {
+            dns: {
+              provider: {
+                name: 'cloudflare',
+                api_token: `{env.${input.cloudflareTokenEnvVar}}`,
+              },
+              // Ask Cloudflare's own resolver directly. The server's default
+              // resolver often caches the absence of the challenge record and
+              // the validation then times out for no visible reason.
+              resolvers: ['1.1.1.1', '1.0.0.1'],
+            },
+          },
+        },
+        {
+          module: 'acme',
+          ca: 'https://acme.zerossl.com/v2/DV90',
+          ...(input.acmeEmail ? { email: input.acmeEmail } : {}),
+          challenges: {
+            dns: {
+              provider: {
+                name: 'cloudflare',
+                api_token: `{env.${input.cloudflareTokenEnvVar}}`,
+              },
+              resolvers: ['1.1.1.1', '1.0.0.1'],
+            },
+          },
+        },
+      ];
+    }
+
+    config['apps'] = {
+      ...(config['apps'] as object),
+      tls: {
+        automation: {
+          policies: [policy],
+        },
+      },
+    };
+  }
+
+  return config;
+}

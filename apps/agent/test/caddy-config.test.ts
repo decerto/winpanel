@@ -1,0 +1,236 @@
+import { describe, expect, it } from 'vitest';
+import { SiteManifest } from '@winpanel/shared';
+import {
+  buildCaddyConfig,
+  proxyIdFor,
+  routeIdFor,
+  type CaddySiteInput,
+} from '../src/caddy/config-builder.js';
+
+function site(overrides: Partial<CaddySiteInput> = {}): CaddySiteInput {
+  return {
+    slug: 'example',
+    domains: ['example.com', 'www.example.com'],
+    activePort: 3001,
+    manifest: SiteManifest.parse({ runtime: 'node' }),
+    enabled: true,
+    ...overrides,
+  };
+}
+
+function findRoute(config: any, id: string): any {
+  return config.apps.http.servers.main.routes.find((r: any) => r['@id'] === id);
+}
+
+describe('buildCaddyConfig', () => {
+  it('binds the admin API to loopback only', () => {
+    // This endpoint can reconfigure every site on the machine. Exposing it
+    // would be equivalent to an unauthenticated root shell.
+    const config = buildCaddyConfig({ sites: [] }) as any;
+    expect(config.admin.listen).toBe('127.0.0.1:2019');
+    expect(config.admin.listen).not.toContain('0.0.0.0');
+  });
+
+  it('listens on both web ports and enables HTTP/3', () => {
+    const config = buildCaddyConfig({ sites: [site()] }) as any;
+    const server = config.apps.http.servers.main;
+    expect(server.listen).toEqual([':80', ':443']);
+    expect(server.protocols).toContain('h3');
+  });
+
+  it('routes a site to its loopback port', () => {
+    const config = buildCaddyConfig({ sites: [site()] }) as any;
+    const route = findRoute(config, routeIdFor('example'));
+
+    expect(route.match[0].host).toEqual(['example.com', 'www.example.com']);
+
+    const proxy = route.handle[0].routes[0].handle[0];
+    expect(proxy.handler).toBe('reverse_proxy');
+    expect(proxy.upstreams).toEqual([{ dial: '127.0.0.1:3001' }]);
+  });
+
+  it('tags the proxy with an id so upstreams can be switched atomically', () => {
+    // This is what makes zero-downtime deploys a single PATCH rather than a
+    // full config reload.
+    const config = buildCaddyConfig({ sites: [site()] }) as any;
+    const proxy = findRoute(config, routeIdFor('example')).handle[0].routes[0].handle[0];
+    expect(proxy['@id']).toBe(proxyIdFor('example'));
+  });
+
+  it('gives exactly one upstream per site, never a load-balanced pair', () => {
+    // Two upstreams would round-robin, which breaks WebSocket sticky sessions.
+    // Blue/green switches between ports instead.
+    const config = buildCaddyConfig({
+      sites: [site({ manifest: SiteManifest.parse({ websockets: true }) })],
+    }) as any;
+
+    const proxy = findRoute(config, routeIdFor('example')).handle[0].routes[0].handle[0];
+    expect(proxy.upstreams).toHaveLength(1);
+  });
+
+  it('serves a clear message when a site has no deployment yet', () => {
+    const config = buildCaddyConfig({ sites: [site({ activePort: null })] }) as any;
+    const handler = findRoute(config, routeIdFor('example')).handle[0].routes[0].handle[0];
+
+    expect(handler.handler).toBe('static_response');
+    expect(handler.status_code).toBe(503);
+    expect(handler.body).toMatch(/not been deployed/i);
+  });
+
+  it('omits disabled sites and sites with no domain', () => {
+    const config = buildCaddyConfig({
+      sites: [
+        site({ slug: 'off', enabled: false }),
+        site({ slug: 'nodomain', domains: [] }),
+        site({ slug: 'live' }),
+      ],
+    }) as any;
+
+    const ids = config.apps.http.servers.main.routes.map((r: any) => r['@id']);
+    expect(ids).toEqual([routeIdFor('live')]);
+  });
+
+  it('forwards the original scheme and client address', () => {
+    const config = buildCaddyConfig({ sites: [site()] }) as any;
+    const proxy = findRoute(config, routeIdFor('example')).handle[0].routes[0].handle[0];
+
+    expect(proxy.headers.request.set['X-Forwarded-Proto']).toEqual(['{http.request.scheme}']);
+    expect(proxy.headers.request.set['X-Real-IP']).toEqual(['{http.request.remote.host}']);
+  });
+});
+
+describe('certificate automation', () => {
+  it('uses the DNS challenge, never TLS-ALPN', () => {
+    // A domain behind Cloudflare's proxy cannot answer TLS-ALPN, so using it
+    // would mean renewals silently broke the moment the proxy was enabled.
+    const config = buildCaddyConfig({
+      sites: [site()],
+      cloudflareTokenEnvVar: 'CF_API_TOKEN',
+    }) as any;
+
+    const issuer = config.apps.tls.automation.policies[0].issuers[0];
+    expect(issuer.challenges.dns).toBeDefined();
+    expect(issuer.challenges.tls_alpn).toBeUndefined();
+    expect(issuer.challenges.http).toBeUndefined();
+  });
+
+  it('reads the Cloudflare token from the environment, never inlining it', () => {
+    const config = buildCaddyConfig({
+      sites: [site()],
+      cloudflareTokenEnvVar: 'CF_API_TOKEN',
+    }) as any;
+
+    const provider = config.apps.tls.automation.policies[0].issuers[0].challenges.dns.provider;
+    expect(provider.name).toBe('cloudflare');
+    expect(provider.api_token).toBe('{env.CF_API_TOKEN}');
+
+    // The literal token must never appear in a config that gets written to
+    // disk and included in support bundles.
+    expect(JSON.stringify(config)).not.toMatch(/[a-zA-Z0-9_-]{40,}/);
+  });
+
+  it('pins the DNS resolver used for validation', () => {
+    // The server's own resolver frequently caches the absence of the
+    // challenge record, and validation then times out for no visible reason.
+    const config = buildCaddyConfig({
+      sites: [site()],
+      cloudflareTokenEnvVar: 'CF_API_TOKEN',
+    }) as any;
+
+    expect(config.apps.tls.automation.policies[0].issuers[0].challenges.dns.resolvers).toContain(
+      '1.1.1.1',
+    );
+  });
+
+  it('configures a fallback certificate authority', () => {
+    const config = buildCaddyConfig({
+      sites: [site()],
+      cloudflareTokenEnvVar: 'CF_API_TOKEN',
+    }) as any;
+
+    const issuers = config.apps.tls.automation.policies[0].issuers;
+    expect(issuers).toHaveLength(2);
+    expect(issuers[1].ca).toContain('zerossl');
+  });
+
+  it('covers every domain across every site', () => {
+    const config = buildCaddyConfig({
+      sites: [
+        site({ slug: 'a', domains: ['a.com'] }),
+        site({ slug: 'b', domains: ['b.com', 'www.b.com'] }),
+      ],
+      cloudflareTokenEnvVar: 'CF_API_TOKEN',
+    }) as any;
+
+    expect(config.apps.tls.automation.policies[0].subjects).toEqual([
+      'a.com',
+      'b.com',
+      'www.b.com',
+    ]);
+  });
+
+  it('omits certificate automation entirely when there are no domains', () => {
+    const config = buildCaddyConfig({ sites: [] }) as any;
+    expect(config.apps.tls).toBeUndefined();
+  });
+});
+
+describe('single-page app fallback', () => {
+  it('adds an index.html fallback for a static site that needs it', () => {
+    // The Caddy equivalent of the URL Rewrite rule people add to web.config
+    // under IIS, so refreshing on /dashboard does not 404.
+    const config = buildCaddyConfig({
+      sites: [
+        site({
+          manifest: SiteManifest.parse({ runtime: 'static', spaFallback: true }),
+          staticRoot: 'C:\\Sites\\example\\current\\dist',
+        }),
+      ],
+    }) as any;
+
+    const subroutes = findRoute(config, routeIdFor('example')).handle[0].routes;
+    expect(JSON.stringify(subroutes)).toContain('index.html');
+    expect(subroutes[0].match[0].file.try_files).toEqual([
+      '{http.request.uri.path}',
+      '/index.html',
+    ]);
+  });
+
+  it('does NOT add a fallback when the app serves its own frontend', () => {
+    // The frontend-builds-into-backend layout: Express already has a catch-all
+    // route. A second fallback here would double-handle requests and hide
+    // genuine API 404s.
+    const manifest = SiteManifest.parse({
+      runtime: 'node',
+      app: { cwd: 'backend' },
+      spaFallback: false,
+    });
+
+    const config = buildCaddyConfig({ sites: [site({ manifest })] }) as any;
+    expect(JSON.stringify(config)).not.toContain('index.html');
+    expect(JSON.stringify(config)).not.toContain('try_files');
+  });
+});
+
+describe('mail routing', () => {
+  it('routes the mail hostname to the mail server web interface', () => {
+    const config = buildCaddyConfig({
+      sites: [],
+      mailHost: { hostname: 'mail.example.com', port: 8080 },
+    }) as any;
+
+    const route = findRoute(config, 'mail_route');
+    expect(route.match[0].host).toEqual(['mail.example.com']);
+    expect(route.handle[0].upstreams).toEqual([{ dial: '127.0.0.1:8080' }]);
+  });
+
+  it('includes the mail hostname in certificate coverage', () => {
+    const config = buildCaddyConfig({
+      sites: [],
+      mailHost: { hostname: 'mail.example.com', port: 8080 },
+      cloudflareTokenEnvVar: 'CF_API_TOKEN',
+    }) as any;
+
+    expect(config.apps.tls.automation.policies[0].subjects).toContain('mail.example.com');
+  });
+});

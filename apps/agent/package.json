@@ -1,0 +1,35 @@
+{
+  "name": "@winpanel/agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "node --watch --experimental-strip-types src/index.ts"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/static": "^10.1.2",
+    "@node-rs/argon2": "^2.0.2",
+    "@trpc/server": "^11.7.1",
+    "@winpanel/shared": "workspace:*",
+    "better-sqlite3": "^12.4.1",
+    "drizzle-orm": "^0.45.2",
+    "fastify": "^5.6.1",
+    "otpauth": "^9.4.1",
+    "pino": "^9.13.1",
+    "selfsigned": "^3.0.1",
+    "superjson": "^2.2.6",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.15.3",
+    "drizzle-kit": "^0.31.10",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

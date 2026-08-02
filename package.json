@@ -1,0 +1,29 @@
+{
+  "name": "winpanel",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Server and website control panel for Windows Server 2025",
+  "packageManager": "pnpm@10.30.2",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "check": "turbo run typecheck lint test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "turbo": "^2.5.8",
+    "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  }
+}

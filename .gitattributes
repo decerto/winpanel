@@ -1,0 +1,14 @@
+# Normalise line endings so the repo is consistent regardless of platform.
+* text=auto eol=lf
+
+# Windows-native files must keep CRLF or the tools that read them misbehave.
+*.ps1   text eol=crlf
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+*.iss   text eol=crlf
+
+# Binary
+*.png   binary
+*.ico   binary
+*.exe   binary
+*.zip   binary

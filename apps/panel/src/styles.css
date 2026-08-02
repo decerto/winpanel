@@ -1,0 +1,106 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens.
+ *
+ * Tailwind v4 is CSS-first: the theme lives here rather than in a
+ * tailwind.config.js. Colours are declared as semantic tokens so that a
+ * status colour is defined once and every component agrees on it.
+ *
+ * Fonts are self-hosted and bundled. The panel has to render correctly on a
+ * firewalled server with no outbound internet, and an admin panel that
+ * fetches assets from a CDN is leaking who and where you are.
+ */
+
+@theme {
+  --font-sans:
+    'Inter var', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, 'Courier New', monospace;
+
+  --color-surface: oklch(100% 0 0);
+  --color-surface-raised: oklch(98.5% 0.002 250);
+  --color-surface-sunken: oklch(96.5% 0.004 250);
+  --color-border: oklch(91% 0.005 250);
+  --color-text: oklch(22% 0.01 250);
+  --color-text-muted: oklch(50% 0.012 250);
+
+  --color-brand: oklch(55% 0.19 255);
+  --color-brand-hover: oklch(48% 0.19 255);
+  --color-brand-subtle: oklch(96% 0.03 255);
+
+  /*
+   * Status colours.
+   *
+   * Never used on their own: every status is rendered with an icon and a text
+   * label as well, so the meaning survives colour blindness, high-contrast
+   * modes and bad monitors.
+   */
+  --color-status-blocked: oklch(52% 0.21 25);
+  --color-status-blocked-bg: oklch(96% 0.03 25);
+  --color-status-warn: oklch(62% 0.15 75);
+  --color-status-warn-bg: oklch(97% 0.04 85);
+  --color-status-ok: oklch(55% 0.14 155);
+  --color-status-ok-bg: oklch(96% 0.03 155);
+  --color-status-absent: oklch(60% 0.01 250);
+  --color-status-absent-bg: oklch(96% 0.003 250);
+  --color-status-checking: oklch(58% 0.12 255);
+  --color-status-checking-bg: oklch(96% 0.03 255);
+
+  --radius-card: 0.75rem;
+}
+
+/* Dark theme. Servers get looked at in dark rooms at unsociable hours. */
+@layer base {
+  .dark {
+    --color-surface: oklch(19% 0.012 255);
+    --color-surface-raised: oklch(23% 0.014 255);
+    --color-surface-sunken: oklch(16% 0.012 255);
+    --color-border: oklch(31% 0.014 255);
+    --color-text: oklch(95% 0.005 250);
+    --color-text-muted: oklch(70% 0.012 250);
+
+    --color-brand: oklch(70% 0.16 255);
+    --color-brand-hover: oklch(78% 0.16 255);
+    --color-brand-subtle: oklch(28% 0.06 255);
+
+    --color-status-blocked: oklch(70% 0.18 25);
+    --color-status-blocked-bg: oklch(28% 0.07 25);
+    --color-status-warn: oklch(78% 0.14 80);
+    --color-status-warn-bg: oklch(29% 0.06 80);
+    --color-status-ok: oklch(72% 0.15 155);
+    --color-status-ok-bg: oklch(26% 0.06 155);
+    --color-status-absent: oklch(65% 0.01 250);
+    --color-status-absent-bg: oklch(26% 0.005 250);
+    --color-status-checking: oklch(72% 0.13 255);
+    --color-status-checking-bg: oklch(27% 0.06 255);
+  }
+
+  html {
+    color-scheme: light dark;
+  }
+
+  body {
+    background-color: var(--color-surface-sunken);
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* A visible focus ring, always. Keyboard navigation must be usable. */
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+
+  /* Respect the reduced-motion preference rather than overriding it. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

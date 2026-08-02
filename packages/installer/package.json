@@ -1,0 +1,17 @@
+{
+  "name": "@winpanel/installer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Builds the self-contained Windows installer.",
+  "scripts": {
+    "bundle": "node --experimental-strip-types scripts/build-bundle.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+.turbo/
+*.tsbuildinfo
+
+# Runtime data — never commit
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.dpapi
+*.pfx
+*.pem
+*.key
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Downloaded components (fetched at runtime, never committed)
+bin/caddy.exe
+bin/stalwart.exe
+bin/WinSW*.exe
+vendor/
+
+# Installer output
+installer/output/
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+Thumbs.db
+Desktop.ini
