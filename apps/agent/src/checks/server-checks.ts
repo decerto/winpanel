@@ -31,9 +31,20 @@ export async function isPortFree(port: number, host = '0.0.0.0'): Promise<boolea
  * fails with "permission denied" while `netstat` shows nothing listening,
  * which is one of the more baffling failures on Windows. Checking up front
  * turns an hour of confusion into a sentence.
+ *
+ * The result is cached for the process lifetime. These ranges are established
+ * at boot and do not change while the server is running, so shelling out to
+ * netsh on every port allocation is pure cost — noticeable on a slow machine,
+ * where each process start is measured in seconds rather than milliseconds.
  */
+let excludedRangeCache: Array<{ start: number; end: number }> | null = null;
+
 export async function excludedPortRanges(): Promise<Array<{ start: number; end: number }>> {
-  if (process.platform !== 'win32') return [];
+  if (excludedRangeCache) return excludedRangeCache;
+  if (process.platform !== 'win32') {
+    excludedRangeCache = [];
+    return excludedRangeCache;
+  }
 
   const result = await runCommand({
     exe: 'netsh.exe',
@@ -41,7 +52,10 @@ export async function excludedPortRanges(): Promise<Array<{ start: number; end: 
     timeoutMs: 15_000,
   });
 
-  if (result.exitCode !== 0) return [];
+  if (result.exitCode !== 0) {
+    // Not cached: a transient failure should not poison the whole run.
+    return [];
+  }
 
   const ranges: Array<{ start: number; end: number }> = [];
   for (const line of result.stdout.split(/\r?\n/)) {
@@ -49,7 +63,14 @@ export async function excludedPortRanges(): Promise<Array<{ start: number; end: 
     if (!match?.[1] || !match[2]) continue;
     ranges.push({ start: Number.parseInt(match[1], 10), end: Number.parseInt(match[2], 10) });
   }
+
+  excludedRangeCache = ranges;
   return ranges;
+}
+
+/** Clears the cache. Used after a reboot-related change, and by tests. */
+export function clearExcludedPortRangeCache(): void {
+  excludedRangeCache = null;
 }
 
 export function isPortExcluded(

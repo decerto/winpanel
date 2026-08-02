@@ -1,16 +1,16 @@
 name: Release
 
-# Builds the installer on a clean Windows runner and attaches it to a release.
+# Builds the installer and publishes it.
 #
-# Building on CI rather than a developer machine means the artefact people
-# download is reproducible and traceable to a commit, rather than depending on
-# whatever happened to be installed locally.
+# Deliberately does NOT run the test suite. CI already runs typecheck, build,
+# tests and the dependency audit on every push to main, so repeating them here
+# would double the wait and give the same failure two places to appear. Tag a
+# commit you have already seen go green.
 
 on:
   push:
     tags:
       - 'v*'
-  # Allows a dry run without creating a release, to check the build still works.
   workflow_dispatch:
 
 permissions:
@@ -19,6 +19,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    # Generous, but the Node download and Inno Setup install are network-bound,
+    # and a hung step should fail rather than run until the account limit.
+    timeout-minutes: 25
 
     steps:
       - name: Check out
@@ -39,16 +42,6 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Check types
-        run: pnpm -r run typecheck
-
-      - name: Run tests
-        run: pnpm -r run test
-
-      - name: Check for known vulnerabilities
-        # A release should not ship dependencies with known holes in them.
-        run: pnpm audit --prod
 
       - name: Build
         run: pnpm -r run build
