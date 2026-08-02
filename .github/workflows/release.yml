@@ -1,0 +1,127 @@
+name: Release
+
+# Builds the installer on a clean Windows runner and attaches it to a release.
+#
+# Building on CI rather than a developer machine means the artefact people
+# download is reproducible and traceable to a commit, rather than depending on
+# whatever happened to be installed locally.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Allows a dry run without creating a release, to check the build still works.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Matches the runtime the installer bundles.
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check types
+        run: pnpm -r run typecheck
+
+      - name: Run tests
+        run: pnpm -r run test
+
+      - name: Check for known vulnerabilities
+        # A release should not ship dependencies with known holes in them.
+        run: pnpm audit --prod
+
+      - name: Build
+        run: pnpm -r run build
+
+      - name: Stage the installer bundle
+        # Downloads the Node runtime and service wrapper, verifying the Node
+        # download against the checksums published by nodejs.org.
+        run: pnpm --filter @winpanel/installer bundle
+
+      - name: Work out the version
+        id: version
+        # Tags are written v1.2.3; the installer wants 1.2.3.
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $version = "${{ github.ref_name }}" -replace '^v', ''
+          } else {
+            $version = "0.0.0-dev"
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Building version $version"
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress --yes
+
+      - name: Compile the installer
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
+            "/DAppVersion=${{ steps.version.outputs.version }}" `
+            "packages\installer\winpanel.iss"
+
+      - name: Generate checksum
+        # Published alongside the installer so anyone can confirm the file they
+        # downloaded is the one this workflow produced.
+        run: |
+          $file = "dist\WinPanel-Setup-x64.exe"
+          $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+          "$hash  WinPanel-Setup-x64.exe" | Out-File -Encoding ascii "dist\SHA256SUMS.txt"
+          Write-Host "SHA-256: $hash"
+
+      - name: Upload build artefacts
+        # Available on every run, including manual ones that create no release.
+        uses: actions/upload-artifact@v4
+        with:
+          name: winpanel-installer
+          path: |
+            dist/WinPanel-Setup-x64.exe
+            dist/SHA256SUMS.txt
+          retention-days: 30
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/WinPanel-Setup-x64.exe
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
+          body: |
+            ## Installing
+
+            1. Download `WinPanel-Setup-x64.exe` below and copy it to your server.
+            2. Run it as administrator.
+            3. Open the address it shows you and enter the setup code.
+
+            Nothing needs to be installed first — the installer carries its own
+            Node runtime.
+
+            Full instructions, including the parts your hosting provider has to
+            do, are in [DEPLOYMENT.md](DEPLOYMENT.md).
+
+            ### Verifying the download
+
+            ```powershell
+            (Get-FileHash .\WinPanel-Setup-x64.exe -Algorithm SHA256).Hash.ToLower()
+            ```
+
+            Compare with `SHA256SUMS.txt`.

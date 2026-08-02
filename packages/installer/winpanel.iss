@@ -11,7 +11,12 @@
 ; bootstrap command rather than in this script, so it can be tested.
 
 #define AppName "WinPanel"
-#define AppVersion "0.1.0"
+; Version can be supplied by the build with /DAppVersion=1.2.3. The guard
+; matters: without it, this definition would silently win over the one passed
+; on the command line and every release would be stamped 0.1.0.
+#ifndef AppVersion
+  #define AppVersion "0.1.0"
+#endif
 #define AppPublisher "WinPanel"
 #define PanelPort "8443"
 

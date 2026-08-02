@@ -1,0 +1,49 @@
+name: CI
+
+# Runs on every push and pull request. Deliberately separate from the release
+# workflow: this one is fast and runs on every change, while the release
+# workflow additionally downloads a Node runtime and compiles an installer.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check types
+        run: pnpm -r run typecheck
+
+      - name: Build
+        # Before the tests: the bundle check reads the built panel output.
+        run: pnpm -r run build
+
+      - name: Run tests
+        # Windows specifically, because the path containment suite creates real
+        # directory junctions and the service configuration is Windows-shaped.
+        # Running these on Linux would pass while proving nothing.
+        run: pnpm -r run test
+
+      - name: Check for known vulnerabilities
+        run: pnpm audit --prod
