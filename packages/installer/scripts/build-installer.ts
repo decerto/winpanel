@@ -155,6 +155,25 @@ async function ensureCompiler(): Promise<string> {
   return compiler;
 }
 
+/**
+ * The version stamped into the installer.
+ *
+ * A release is built from a tag, and the tag is the authority on what version
+ * it is; the workspace manifest is only the fallback for local builds. Taking
+ * it from the manifest during a release would silently ship v1.2.3 stamped
+ * with whatever the repo happened to say.
+ */
+async function resolveVersion(): Promise<string> {
+  const fromEnv = process.env['WINPANEL_VERSION']?.trim();
+  if (fromEnv) return fromEnv.replace(/^v/, '');
+
+  const manifest = JSON.parse(
+    await fs.readFile(path.join(REPO_ROOT, 'package.json'), 'utf8'),
+  ) as { version: string };
+
+  return manifest.version;
+}
+
 async function main(): Promise<void> {
   process.stdout.write('\nCompiling the WinPanel installer\n\n');
 
@@ -168,15 +187,12 @@ async function main(): Promise<void> {
   }
 
   const compiler = await ensureCompiler();
+  const version = await resolveVersion();
 
-  const manifest = JSON.parse(
-    await fs.readFile(path.join(REPO_ROOT, 'package.json'), 'utf8'),
-  ) as { version: string };
-
-  await log(`Compiling version ${manifest.version}\u2026`);
+  await log(`Compiling version ${version}\u2026`);
   const { stdout } = await run(
     compiler,
-    [`/DAppVersion=${manifest.version}`, path.join(INSTALLER_DIR, 'winpanel.iss')],
+    [`/DAppVersion=${version}`, path.join(INSTALLER_DIR, 'winpanel.iss')],
     { maxBuffer: 32 * 1024 * 1024 },
   );
 

@@ -44,7 +44,10 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build
-        run: pnpm -r run build
+        # Through turbo so the task graph in turbo.json is honoured; packages
+        # are built in dependency order and @winpanel/shared exists before
+        # anything resolves it.
+        run: pnpm build
 
       - name: Stage the installer bundle
         # Downloads the Node runtime and service wrapper, verifying the Node
@@ -63,14 +66,19 @@ jobs:
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Building version $version"
 
-      - name: Install Inno Setup
-        run: choco install innosetup --no-progress --yes
-
       - name: Compile the installer
-        run: |
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" `
-            "/DAppVersion=${{ steps.version.outputs.version }}" `
-            "packages\installer\winpanel.iss"
+        # No separate compiler install step: the build script fetches a pinned
+        # Inno Setup, checks it against a recorded hash and its Authenticode
+        # signature, and installs it for the current user. Chocolatey's package
+        # tracks the latest release, which now includes a version 7 that
+        # installs elsewhere, so a release would break the day it was promoted.
+        #
+        # This is also the same script used to build an installer locally, so
+        # a release is not produced by a code path nobody exercises until
+        # release day.
+        env:
+          WINPANEL_VERSION: ${{ steps.version.outputs.version }}
+        run: pnpm --filter @winpanel/installer installer
 
       - name: Generate checksum
         # Published alongside the installer so anyone can confirm the file they

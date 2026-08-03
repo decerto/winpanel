@@ -33,17 +33,20 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Check types
-        run: pnpm -r run typecheck
+        # Through turbo rather than `pnpm -r`, so the task graph in turbo.json is
+        # honoured. Typechecking depends on ^build because @winpanel/shared
+        # resolves to its build output; `pnpm -r` orders packages but never
+        # runs that prerequisite, so it fails on a clean checkout.
+        run: pnpm typecheck
 
       - name: Build
-        # Before the tests: the bundle check reads the built panel output.
-        run: pnpm -r run build
+        run: pnpm build
 
       - name: Run tests
         # Windows specifically, because the path containment suite creates real
         # directory junctions and the service configuration is Windows-shaped.
         # Running these on Linux would pass while proving nothing.
-        run: pnpm -r run test
+        run: pnpm test
 
       - name: Check for known vulnerabilities
         run: pnpm audit --prod
