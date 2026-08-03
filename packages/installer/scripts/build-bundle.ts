@@ -3,9 +3,10 @@ import fs from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import net from 'node:net';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 
 /**
@@ -190,28 +191,29 @@ async function stageAgent(): Promise<void> {
   await fs.rm(target, { recursive: true, force: true });
   await fs.mkdir(target, { recursive: true });
 
-  // Compiled output is flattened to the root of the agent folder: the service
-  // is registered to run `{app}\agent\index.js`.
-  await fs.cp(agentDist, target, { recursive: true });
-  await fs.cp(path.join(scratch, 'node_modules'), path.join(target, 'node_modules'), {
-    recursive: true,
-  });
-
   /*
-   * Without this the compiled output is treated as CommonJS by Node and every
-   * `import` in it is a syntax error. The build files are ESM, so the folder
-   * has to say so.
+   * Only what runs is copied, and dist/ keeps its place in the tree.
+   *
+   * Flattening dist/ into the root of the agent folder was tried and broke the
+   * database migrations: the agent locates them relative to its own module
+   * directory, which is right in the repo and in dist/ but pointed one level
+   * too high once the files moved. One layout everywhere means a path that
+   * works in development also works once installed.
+   *
+   * Copying deploy's output wholesale is equally wrong: it carries src/,
+   * test/ and tsconfig.json, which bloats the installer with source nobody
+   * installs and leaves stray test files where other tools find them.
+   *
+   * package.json comes from deploy, and already declares "type": "module".
+   * Without it Node parses the ESM build as CommonJS.
    */
-  await fs.writeFile(
-    path.join(target, 'package.json'),
-    `${JSON.stringify(
-      { name: 'winpanel-agent', private: true, type: 'module', main: 'index.js' },
-      null,
-      2,
-    )}\n`,
-  );
+  for (const entry of ['dist', 'node_modules', 'package.json']) {
+    await fs.cp(path.join(scratch, entry), path.join(target, entry), { recursive: true });
+  }
 
-  // Migrations are read at runtime and live outside dist.
+  // Migrations are read at runtime and live outside dist. Copied explicitly
+  // rather than assumed, since what deploy carries depends on how the package
+  // is packed.
   await fs.cp(
     path.join(REPO_ROOT, 'apps', 'agent', 'drizzle'),
     path.join(target, 'drizzle'),
@@ -219,51 +221,137 @@ async function stageAgent(): Promise<void> {
   );
 
   await fs.rm(scratch, { recursive: true, force: true });
+  await ensureNativeAbi(target);
   await log('Staged the agent and its dependencies.');
 }
 
 /**
- * Checks the staged agent can actually resolve and load its dependencies
- * before an installer is built around it. A bundle missing its node_modules
- * fails identically to one that was never built: the service starts, exits
- * immediately, and the panel is simply unreachable with nothing to show for
- * it.
+ * Replaces native binaries built against the wrong Node.
  *
- * The dependencies are imported rather than merely resolved, so the native
- * ones prove their prebuilt binaries are present too.
+ * Dependencies are resolved by whichever Node runs this build, but the
+ * installer ships its own. Building on Node 24 while bundling Node 22 produces
+ * an agent that installs perfectly and then dies the moment it opens its
+ * database, with a NODE_MODULE_VERSION mismatch — on the user's server, not
+ * here.
+ *
+ * Only better-sqlite3 is affected. @node-rs/argon2 is a napi-rs build, and
+ * napi binaries are ABI-stable across Node versions by design.
+ */
+async function ensureNativeAbi(target: string): Promise<void> {
+  const node = path.join(STAGING, 'bin', 'node', 'node.exe');
+  const { stdout } = await run(node, ['-p', 'process.versions.modules']);
+  const abi = stdout.trim();
+
+  if (abi === process.versions.modules) return;
+
+  await log(
+    `Bundled runtime needs ABI ${abi}, this build produced ${process.versions.modules}.`,
+  );
+
+  const packageDir = path.join(target, 'node_modules', 'better-sqlite3');
+  const manifest = JSON.parse(
+    await fs.readFile(path.join(packageDir, 'package.json'), 'utf8'),
+  ) as { version: string };
+
+  const name = `better-sqlite3-v${manifest.version}-node-v${abi}-win32-x64.tar.gz`;
+  const archive = path.join(INSTALLER_DIR, '.cache', name);
+
+  await log(`Fetching ${name}\u2026`);
+  await download(
+    `https://github.com/WiseLibs/better-sqlite3/releases/download/v${manifest.version}/${name}`,
+    archive,
+  );
+
+  // The archive holds build/Release/better_sqlite3.node, so unpacking it over
+  // the package directory replaces precisely the binary that is wrong.
+  await run('tar', ['-xzf', archive, '-C', packageDir]);
+  await log('Replaced the native binary to match the bundled runtime.');
+}
+
+/**
+ * Starts the staged agent for real and waits for it to serve.
+ *
+ * Importing the dependencies was not enough. better-sqlite3 binds its native
+ * addon lazily, on the first database call, so an import check passed happily
+ * while the shipped binary was built for a different Node ABI. The migrations
+ * folder had the same shape of problem: nothing resolves it until the database
+ * is opened.
+ *
+ * The only check that catches this class of fault is running the thing. It is
+ * pointed at a throwaway root and an unused port, so it cannot touch a real
+ * installation on the build machine.
  */
 async function verifyAgent(): Promise<void> {
   const target = path.join(STAGING, 'agent');
   const node = path.join(STAGING, 'bin', 'node', 'node.exe');
+  const scratch = path.join(INSTALLER_DIR, '.cache', 'verify');
+  const port = 18_443;
 
-  await log('Verifying the staged agent\u2026');
+  await log('Starting the staged agent\u2026');
+  await fs.rm(scratch, { recursive: true, force: true });
 
-  const manifest = JSON.parse(
-    await fs.readFile(path.join(REPO_ROOT, 'apps', 'agent', 'package.json'), 'utf8'),
-  ) as { dependencies?: Record<string, string> };
+  const agent = spawn(node, [path.join(target, 'dist', 'index.js')], {
+    cwd: target,
+    env: {
+      ...process.env,
+      WINPANEL_ROOT: scratch,
+      WINPANEL_SITES_ROOT: path.join(scratch, 'sites'),
+      WINPANEL_PORT: String(port),
+      WINPANEL_HOST: '127.0.0.1',
+      WINPANEL_LOG_LEVEL: 'error',
+    },
+  });
 
-  const dependencies = Object.keys(manifest.dependencies ?? {});
-  const script = dependencies.map((name) => `await import(${JSON.stringify(name)});`).join('\n');
+  let output = '';
+  agent.stdout.on('data', (chunk: Buffer) => (output += chunk.toString()));
+  agent.stderr.on('data', (chunk: Buffer) => (output += chunk.toString()));
+
+  const exited = new Promise<number>((resolve) => {
+    agent.on('exit', (code) => resolve(code ?? 0));
+  });
 
   try {
-    // Run from inside the staged folder so resolution uses the node_modules
-    // that will ship, not the repo's.
-    await run(node, ['--input-type=module', '-e', script], { cwd: target, timeout: 120_000 });
-  } catch (error) {
-    const detail = (error as { stderr?: string }).stderr ?? (error as Error).message;
-    throw new Error(`The staged agent cannot load its dependencies.\n${detail}`);
+    const listening = await waitForPort(port, exited);
+    if (!listening) {
+      throw new Error(
+        `The staged agent did not start.\n${output.trim() || '(it produced no output)'}`,
+      );
+    }
+  } finally {
+    agent.kill();
+    await fs.rm(scratch, { recursive: true, force: true }).catch(() => undefined);
   }
 
-  // Catches the "compiled ESM treated as CommonJS" failure, which the imports
-  // above cannot see.
-  try {
-    await run(node, ['--check', path.join(target, 'index.js')], { timeout: 30_000 });
-  } catch (error) {
-    const detail = (error as { stderr?: string }).stderr ?? (error as Error).message;
-    throw new Error(`The staged agent's entry point is not loadable.\n${detail}`);
+  await log('Agent starts and serves.');
+}
+
+/** Resolves true once the port accepts a connection, false if the agent dies. */
+async function waitForPort(port: number, exited: Promise<number>): Promise<boolean> {
+  let dead = false;
+  void exited.then(() => (dead = true));
+
+  const deadline = Date.now() + 60_000;
+
+  while (Date.now() < deadline) {
+    if (dead) return false;
+
+    const connected = await new Promise<boolean>((resolve) => {
+      const socket = net.connect({ port, host: '127.0.0.1' });
+      socket.on('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.on('error', () => {
+        socket.destroy();
+        resolve(false);
+      });
+    });
+
+    if (connected) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
-  await log('Agent loads cleanly.');
+  return false;
 }
 
 async function main(): Promise<void> {

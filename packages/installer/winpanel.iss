@@ -68,7 +68,7 @@ Name: "C:\Sites"
 ; Creates folders and permissions, the restricted build account, firewall
 ; rules, the service, and the one-time setup code.
 Filename: "{app}\bin\node\node.exe"; \
-  Parameters: """{app}\agent\bootstrap-cli.js"" install"; \
+  Parameters: """{app}\agent\dist\bootstrap-cli.js"" install"; \
   WorkingDir: "{app}"; \
   StatusMsg: "Setting up WinPanel..."; \
   Flags: runhidden waituntilterminated
@@ -80,7 +80,7 @@ Filename: "{code:GetPanelUrl}"; \
 [UninstallRun]
 ; Sites are kept by default; the wizard asks before removing them.
 Filename: "{app}\bin\node\node.exe"; \
-  Parameters: """{app}\agent\bootstrap-cli.js"" uninstall{code:GetRemoveSitesFlag}"; \
+  Parameters: """{app}\agent\dist\bootstrap-cli.js"" uninstall{code:GetRemoveSitesFlag}"; \
   WorkingDir: "{app}"; \
   Flags: runhidden waituntilterminated; \
   RunOnceId: "WinPanelUninstall"

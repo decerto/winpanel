@@ -113,7 +113,7 @@ export async function install(options: { skipService?: boolean } = {}): Promise<
         displayName: 'WinPanel',
         description: 'Website and email control panel.',
         executable: path.join(config.binDir, 'node', 'node.exe'),
-        args: [path.join(config.root, 'agent', 'index.js')],
+        args: [path.join(config.root, 'agent', 'dist', 'index.js')],
         workingDirectory: config.root,
         logPath: config.logDir,
       });

@@ -179,7 +179,7 @@ async function main(): Promise<void> {
 
   // The staged agent is what actually gets installed, so an empty or stale
   // staging folder must not quietly produce an installer.
-  if (!(await exists(path.join(STAGING, 'agent', 'index.js')))) {
+  if (!(await exists(path.join(STAGING, 'agent', 'dist', 'index.js')))) {
     throw new Error('Nothing is staged. Run "pnpm bundle" first.');
   }
   if (!(await exists(path.join(STAGING, 'agent', 'node_modules')))) {
