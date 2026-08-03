@@ -39,6 +39,11 @@ vendor/
 # Installer output
 installer/output/
 
+# Installer build artefacts. Rebuilt by `pnpm bundle`, and large: a staged
+# Node runtime plus the agent's resolved dependencies.
+packages/installer/staging/
+packages/installer/.cache/
+
 # Editor / OS
 .vscode/*
 !.vscode/extensions.json

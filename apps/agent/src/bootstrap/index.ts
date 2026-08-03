@@ -125,6 +125,18 @@ export async function install(options: { skipService?: boolean } = {}): Promise<
 
   const address = localAddresses().find((ip) => !ip.includes(':')) ?? 'your-server-ip';
 
+  /*
+   * The installer runs this command hidden, so anything written to the console
+   * is lost. Warnings go to a file the wizard's final page reads instead —
+   * without it, a failed service start is invisible and the first sign of
+   * trouble is a browser that cannot connect.
+   */
+  await fs.writeFile(
+    path.join(config.dataDir, 'install-warnings.txt'),
+    warnings.join('\n'),
+    'utf8',
+  );
+
   return {
     panelUrl: panelUrlFor(address, config.httpsEnabled),
     setupToken,

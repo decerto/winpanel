@@ -121,6 +121,18 @@ begin
     Result := '(check {app}\data\setup-token.txt)';
 end;
 
+{ The bootstrap command runs hidden, so anything that went wrong is only
+  visible if it is read back and shown here. Silent warnings are how an
+  install that never started the service still looks successful. }
+function ReadInstallWarnings(): String;
+var
+  Contents: AnsiString;
+begin
+  Result := '';
+  if LoadStringFromFile(ExpandConstant('{app}\data\install-warnings.txt'), Contents) then
+    Result := Trim(String(Contents));
+end;
+
 procedure InitializeWizard();
 begin
   SetupCodePage := CreateOutputMsgMemoPage(
@@ -135,6 +147,7 @@ end;
 procedure CurPageChanged(CurPageID: Integer);
 var
   Message: String;
+  Warnings: String;
 begin
   if (SetupCodePage <> nil) and (CurPageID = SetupCodePage.ID) then
   begin
@@ -143,10 +156,18 @@ begin
       '    https://<this server''s IP address>:' + '{#PanelPort}' + #13#10 + #13#10 +
       'Setup code:' + #13#10 +
       '    ' + ReadSetupCode() + #13#10 + #13#10 +
+      'The address must start with https, not http. The panel does not answer' + #13#10 +
+      'plain http on this port.' + #13#10 + #13#10 +
       'Your browser will warn about the certificate the first time. That is' + #13#10 +
       'expected: the panel is reached by IP address rather than a domain name,' + #13#10 +
       'so its certificate is self-signed. The panel shows you its fingerprint' + #13#10 +
       'so you can confirm you are trusting the right one.';
+
+    Warnings := ReadInstallWarnings();
+    if Warnings <> '' then
+      Message := 'Setup finished, but not everything worked:' + #13#10 + #13#10 +
+        Warnings + #13#10 + #13#10 +
+        '----------------------------------------' + #13#10 + #13#10 + Message;
 
     SetupCodePage.RichEditViewer.Text := Message;
   end;

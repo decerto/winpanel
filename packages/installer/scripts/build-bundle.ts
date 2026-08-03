@@ -127,10 +127,89 @@ async function stageDirectory(from: string, to: string, label: string): Promise<
 }
 
 async function stageAgent(): Promise<void> {
-  const agentDist = path.join(REPO_ROOT, 'apps', 'agent', 'dist');
   const target = path.join(STAGING, 'agent');
 
-  await stageDirectory(agentDist, target, 'the agent');
+  /*
+   * `pnpm deploy` resolves the workspace's symlinked node_modules into a real,
+   * self-contained folder. That matters twice over: Inno Setup cannot follow
+   * symlinks, and the workspace links point at paths that do not exist on the
+   * target machine.
+   *
+   * It is staged to a scratch folder first because deploy insists on an empty
+   * destination and lays the package out as it exists in the repo — dist/ and
+   * all — whereas the service expects the compiled entry point at the root of
+   * the agent folder.
+   */
+  const scratch = path.join(INSTALLER_DIR, '.cache', 'agent-deploy');
+  await fs.rm(scratch, { recursive: true, force: true });
+
+  await log('Resolving production dependencies\u2026');
+  try {
+    /*
+     * The hoisted linker is not a preference, it is a requirement. pnpm's
+     * default layout is a farm of symlinks into a virtual store, and Inno
+     * Setup cannot follow those. Copying through the links instead produces
+     * package folders detached from the store they resolve their own
+     * dependencies through, which fails at the second level down. Hoisted
+     * gives a flat tree of real directories that can simply be copied.
+     *
+     * pnpm is a shell script on Windows, so this has to go through a shell,
+     * and a shell concatenates the arguments rather than passing them
+     * separately. The destination is therefore quoted here: an install path
+     * containing a space would otherwise be split into several arguments and
+     * the deploy would fail with a message that points nowhere near the cause.
+     */
+    await run(
+      'pnpm',
+      [
+        '--filter',
+        '@winpanel/agent',
+        'deploy',
+        '--prod',
+        '--legacy',
+        '--config.node-linker=hoisted',
+        `"${scratch}"`,
+      ],
+      { cwd: REPO_ROOT, shell: true },
+    );
+  } catch (error) {
+    // Previously this was swallowed, which produced an installer that looked
+    // fine and shipped an agent with no dependencies at all. The service then
+    // died on its first import, before it could log anything useful.
+    const detail = (error as { stderr?: string }).stderr ?? (error as Error).message;
+    throw new Error(`Could not resolve the agent's production dependencies.\n${detail}`);
+  }
+
+  const agentDist = path.join(scratch, 'dist');
+  try {
+    await fs.access(path.join(agentDist, 'index.js'));
+  } catch {
+    throw new Error('The agent has not been built yet. Run "pnpm build" first.');
+  }
+
+  await fs.rm(target, { recursive: true, force: true });
+  await fs.mkdir(target, { recursive: true });
+
+  // Compiled output is flattened to the root of the agent folder: the service
+  // is registered to run `{app}\agent\index.js`.
+  await fs.cp(agentDist, target, { recursive: true });
+  await fs.cp(path.join(scratch, 'node_modules'), path.join(target, 'node_modules'), {
+    recursive: true,
+  });
+
+  /*
+   * Without this the compiled output is treated as CommonJS by Node and every
+   * `import` in it is a syntax error. The build files are ESM, so the folder
+   * has to say so.
+   */
+  await fs.writeFile(
+    path.join(target, 'package.json'),
+    `${JSON.stringify(
+      { name: 'winpanel-agent', private: true, type: 'module', main: 'index.js' },
+      null,
+      2,
+    )}\n`,
+  );
 
   // Migrations are read at runtime and live outside dist.
   await fs.cp(
@@ -139,18 +218,52 @@ async function stageAgent(): Promise<void> {
     { recursive: true },
   );
 
-  // Production dependencies. The agent has native modules, so this cannot be
-  // bundled into a single file.
-  await log('Installing production dependencies\u2026');
-  await run(
-    'pnpm',
-    ['--filter', '@winpanel/agent', 'deploy', '--prod', '--legacy', target + '-deps'],
-    { cwd: REPO_ROOT, shell: true },
-  ).catch(async () => {
-    await log('  (pnpm deploy unavailable; copying node_modules instead)');
-  });
+  await fs.rm(scratch, { recursive: true, force: true });
+  await log('Staged the agent and its dependencies.');
+}
 
-  await log('Staged agent dependencies.');
+/**
+ * Checks the staged agent can actually resolve and load its dependencies
+ * before an installer is built around it. A bundle missing its node_modules
+ * fails identically to one that was never built: the service starts, exits
+ * immediately, and the panel is simply unreachable with nothing to show for
+ * it.
+ *
+ * The dependencies are imported rather than merely resolved, so the native
+ * ones prove their prebuilt binaries are present too.
+ */
+async function verifyAgent(): Promise<void> {
+  const target = path.join(STAGING, 'agent');
+  const node = path.join(STAGING, 'bin', 'node', 'node.exe');
+
+  await log('Verifying the staged agent\u2026');
+
+  const manifest = JSON.parse(
+    await fs.readFile(path.join(REPO_ROOT, 'apps', 'agent', 'package.json'), 'utf8'),
+  ) as { dependencies?: Record<string, string> };
+
+  const dependencies = Object.keys(manifest.dependencies ?? {});
+  const script = dependencies.map((name) => `await import(${JSON.stringify(name)});`).join('\n');
+
+  try {
+    // Run from inside the staged folder so resolution uses the node_modules
+    // that will ship, not the repo's.
+    await run(node, ['--input-type=module', '-e', script], { cwd: target, timeout: 120_000 });
+  } catch (error) {
+    const detail = (error as { stderr?: string }).stderr ?? (error as Error).message;
+    throw new Error(`The staged agent cannot load its dependencies.\n${detail}`);
+  }
+
+  // Catches the "compiled ESM treated as CommonJS" failure, which the imports
+  // above cannot see.
+  try {
+    await run(node, ['--check', path.join(target, 'index.js')], { timeout: 30_000 });
+  } catch (error) {
+    const detail = (error as { stderr?: string }).stderr ?? (error as Error).message;
+    throw new Error(`The staged agent's entry point is not loadable.\n${detail}`);
+  }
+
+  await log('Agent loads cleanly.');
 }
 
 async function main(): Promise<void> {
@@ -167,6 +280,8 @@ async function main(): Promise<void> {
     path.join(STAGING, 'panel'),
     'the panel interface',
   );
+
+  await verifyAgent();
 
   process.stdout.write(
     '\nStaging complete.\n' +

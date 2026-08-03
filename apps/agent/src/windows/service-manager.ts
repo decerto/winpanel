@@ -97,6 +97,17 @@ export function buildServiceXml(definition: ServiceDefinition): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n${lines.join('\n')}\n`;
 }
 
+/** Summarises a failed command for a message a person has to act on. */
+function describeFailure(result: { stderr: string; stdout: string }): string {
+  const output = (result.stderr.trim() || result.stdout.trim()).split(/\r?\n/).slice(-3).join(' ');
+  return output.length > 0 ? output : 'No output was produced.';
+}
+
+/** Gives a just-started service a moment to fall over before it is trusted. */
+function settle(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 3_000));
+}
+
 export class ServiceManager {
   constructor(
     private readonly winswPath: string,
@@ -117,11 +128,18 @@ export class ServiceManager {
     // ever contains one.
     await fs.writeFile(configPath, buildServiceXml(definition), { mode: 0o600 });
 
-    await runCommand({
+    const result = await runCommand({
       exe: this.winswPath,
       args: ['install', configPath],
       timeoutMs: 60_000,
     });
+
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `Could not register the "${definition.displayName}" service. ` +
+          describeFailure(result),
+      );
+    }
   }
 
   async uninstall(id: string): Promise<void> {
@@ -132,11 +150,32 @@ export class ServiceManager {
   }
 
   async start(id: string): Promise<void> {
-    await runCommand({
+    const result = await runCommand({
       exe: this.winswPath,
       args: ['start', this.configPathFor(id)],
       timeoutMs: 120_000,
     });
+
+    if (result.exitCode !== 0) {
+      throw new Error(`Could not start the "${id}" service. ${describeFailure(result)}`);
+    }
+
+    /*
+     * WinSW reports success once Windows has launched the process, which says
+     * nothing about whether it survived. A service whose executable exits
+     * immediately - a missing dependency, an unreadable config - looks
+     * identical to a healthy start at this point, and the install would go on
+     * to claim everything worked.
+     */
+    await settle();
+
+    const state = await this.getState(id);
+    if (state !== 'running' && state !== 'starting') {
+      throw new Error(
+        `The "${id}" service was registered but stopped immediately after starting. ` +
+          'Its log in the logs folder says why.',
+      );
+    }
   }
 
   async stop(id: string): Promise<void> {
