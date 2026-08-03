@@ -6,6 +6,8 @@
   "description": "Builds the self-contained Windows installer.",
   "scripts": {
     "bundle": "node --experimental-strip-types scripts/build-bundle.ts",
+    "installer": "node --experimental-strip-types scripts/build-installer.ts",
+    "release": "pnpm bundle && pnpm installer",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests"
   },
