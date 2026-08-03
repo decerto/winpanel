@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
-import { buildServiceXml } from '../src/windows/service-manager.js';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { ServiceManager, buildServiceXml } from '../src/windows/service-manager.js';
 
 describe('buildServiceXml', () => {
   const base = {
@@ -99,5 +102,52 @@ describe('buildServiceXml', () => {
 
   it('omits the account block entirely when none is given', () => {
     expect(buildServiceXml(base)).not.toContain('<serviceaccount>');
+  });
+});
+
+describe('ServiceManager layout', () => {
+  let root: string;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'winpanel-services-'));
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it('gives each service its own copy of the wrapper, named to match its config', async () => {
+    /*
+     * WinSW v2 cannot be told where its configuration is. It loads
+     * `<its own filename>.xml` from its own directory, and a config path on
+     * the command line is accepted and ignored. Registering the panel by
+     * passing the config path therefore produced a service that exited at
+     * once looking for `WinSW.xml`, and the installed panel never ran.
+     */
+    const template = path.join(root, 'WinSW.exe');
+    await fs.writeFile(template, 'stand-in for the wrapper binary');
+
+    const configDir = path.join(root, 'services');
+    const manager = new ServiceManager(template, configDir);
+
+    // The stand-in cannot actually execute, so registration fails - after the
+    // files have been laid out, which is what matters here.
+    await expect(
+      manager.install({
+        id: 'winpanel-agent',
+        displayName: 'WinPanel',
+        description: 'Website and email control panel.',
+        executable: 'C:\\WinPanel\\bin\\node\\node.exe',
+        logPath: path.join(root, 'logs'),
+      }),
+    ).rejects.toThrow();
+
+    expect(manager.wrapperPathFor('winpanel-agent')).toBe(
+      path.join(configDir, 'winpanel-agent.exe'),
+    );
+    await expect(fs.readFile(path.join(configDir, 'winpanel-agent.xml'), 'utf8')).resolves.toContain(
+      '<id>winpanel-agent</id>',
+    );
+    await expect(fs.access(path.join(configDir, 'winpanel-agent.exe'))).resolves.toBeUndefined();
   });
 });

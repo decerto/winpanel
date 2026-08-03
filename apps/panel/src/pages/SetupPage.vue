@@ -1,8 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { KeyRound, Lock, ShieldCheck } from 'lucide-vue-next';
+import { KeyRound, ShieldCheck } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
+import TotpEnrolment from '../components/TotpEnrolment.vue';
+import RecoveryCodes from '../components/RecoveryCodes.vue';
+import AlertMessage from '../components/AlertMessage.vue';
 
 /**
  * First run.
@@ -12,21 +15,23 @@ import { api, describeError } from '../lib/api';
  * already has console or remote-desktop access, and that is what authorises
  * creating the first account.
  *
- * Two-factor setup is part of this flow rather than an optional extra,
- * because the panel is reachable from the internet.
+ * Two-factor setup is offered here rather than forced. It is the right moment
+ * to ask, and the recommendation is stated plainly, but a panel nobody can get
+ * into because enrolment was abandoned halfway is worse than one protected by
+ * a strong password alone. It can be turned on later from Security.
  */
 
 const router = useRouter();
 
-const step = ref<'account' | 'twoFactor'>('account');
+const step = ref<'account' | 'offerTwoFactor' | 'enrolTwoFactor' | 'recoveryCodes'>('account');
 const setupToken = ref('');
 const username = ref('');
 const password = ref('');
 const confirmPassword = ref('');
-const code = ref('');
 
 const totpUri = ref('');
 const totpSecret = ref('');
+const recoveryCodes = ref<string[]>([]);
 
 const busy = ref(false);
 const error = ref<string | null>(null);
@@ -53,15 +58,12 @@ async function createAccount(): Promise<void> {
   error.value = null;
 
   try {
-    const result = await api.auth.completeSetup.mutate({
+    await api.auth.completeSetup.mutate({
       setupToken: setupToken.value.trim(),
       username: username.value.trim(),
       password: password.value,
     });
-
-    totpUri.value = result.totpUri;
-    totpSecret.value = result.totpSecret;
-    step.value = 'twoFactor';
+    step.value = 'offerTwoFactor';
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -69,176 +71,193 @@ async function createAccount(): Promise<void> {
   }
 }
 
-async function confirmTwoFactor(): Promise<void> {
+async function startTwoFactor(): Promise<void> {
   busy.value = true;
   error.value = null;
 
   try {
-    await api.auth.confirmTotp.mutate({ code: code.value.trim() });
-    await router.push('/health');
+    // The password is still in memory from the form above, so enrolment does
+    // not have to ask for it again the moment after it was chosen.
+    const result = await api.auth.beginTotp.mutate({ password: password.value });
+    totpUri.value = result.uri;
+    totpSecret.value = result.secret;
+    step.value = 'enrolTwoFactor';
   } catch (err) {
     error.value = describeError(err);
   } finally {
     busy.value = false;
   }
 }
+
+async function confirmTwoFactor(code: string): Promise<void> {
+  busy.value = true;
+  error.value = null;
+
+  try {
+    const result = await api.auth.confirmTotp.mutate({ code });
+    recoveryCodes.value = result.recoveryCodes;
+    step.value = 'recoveryCodes';
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    busy.value = false;
+  }
+}
+
+/** Leaves setup without two factors. */
+async function finish(): Promise<void> {
+  // An enrolment that was started and walked away from would otherwise sit in
+  // the database unconfirmed, and reappear as a half-finished state later.
+  await api.auth.cancelTotp.mutate().catch(() => undefined);
+  await router.push('/sites');
+}
 </script>
 
 <template>
-  <div class="flex min-h-screen items-center justify-center bg-[--color-surface-sunken] p-6">
-    <div
-      class="w-full max-w-md rounded-[--radius-card] border border-[--color-border]
-             bg-[--color-surface] p-8"
-    >
-      <template v-if="step === 'account'">
-        <div class="mb-6 text-center">
-          <KeyRound :size="28" class="mx-auto mb-3 text-[--color-brand]" aria-hidden="true" />
-          <h1 class="text-lg font-semibold text-[--color-text]">Set up your server</h1>
-          <p class="mt-1 text-sm text-[--color-text-muted]">
+  <div class="flex min-h-screen items-center justify-center p-6">
+    <div class="w-full max-w-md">
+      <div class="mb-7 flex flex-col items-center text-center">
+        <span
+          class="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-linear-to-b
+                 from-brand to-brand-strong shadow-brand"
+        >
+          <component
+            :is="step === 'account' ? KeyRound : ShieldCheck"
+            :size="24"
+            class="text-white"
+            aria-hidden="true"
+          />
+        </span>
+
+        <h1 class="text-xl font-semibold tracking-tight text-ink">
+          <template v-if="step === 'account'">Set up your server</template>
+          <template v-else-if="step === 'recoveryCodes'">Save your recovery codes</template>
+          <template v-else>Add a second step</template>
+        </h1>
+
+        <p class="mt-1 max-w-sm text-sm text-ink-muted">
+          <template v-if="step === 'account'">
             Enter the setup code shown by the installer, then choose how you will sign in.
-          </p>
-        </div>
-
-        <form class="space-y-4" @submit.prevent="createAccount">
-          <div>
-            <label for="setup-code" class="mb-1 block text-sm font-medium text-[--color-text]">
-              Setup code
-            </label>
-            <input
-              id="setup-code"
-              v-model="setupToken"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="XXXXX-XXXXX-XXXXX-XXXXX"
-              class="w-full rounded-md border border-[--color-border] bg-[--color-surface]
-                     px-3 py-2 font-mono text-sm text-[--color-text]"
-            />
-            <p class="mt-1 text-xs text-[--color-text-muted]">
-              Shown on the last page of the installer, and saved on the server.
-            </p>
-          </div>
-
-          <div>
-            <label for="username" class="mb-1 block text-sm font-medium text-[--color-text]">
-              Username
-            </label>
-            <input
-              id="username"
-              v-model="username"
-              autocomplete="username"
-              class="w-full rounded-md border border-[--color-border] bg-[--color-surface]
-                     px-3 py-2 text-sm text-[--color-text]"
-            />
-          </div>
-
-          <div>
-            <label for="password" class="mb-1 block text-sm font-medium text-[--color-text]">
-              Password
-            </label>
-            <input
-              id="password"
-              v-model="password"
-              type="password"
-              autocomplete="new-password"
-              class="w-full rounded-md border border-[--color-border] bg-[--color-surface]
-                     px-3 py-2 text-sm text-[--color-text]"
-            />
-            <input
-              v-model="confirmPassword"
-              type="password"
-              autocomplete="new-password"
-              placeholder="Confirm password"
-              aria-label="Confirm password"
-              class="mt-2 w-full rounded-md border border-[--color-border] bg-[--color-surface]
-                     px-3 py-2 text-sm text-[--color-text]"
-            />
-            <p v-if="passwordProblem" class="mt-1 text-xs text-[--color-status-warn]">
-              {{ passwordProblem }}
-            </p>
-            <p v-else class="mt-1 text-xs text-[--color-text-muted]">
-              At least 12 characters. Length matters more than symbols.
-            </p>
-          </div>
-
-          <p
-            v-if="error"
-            class="rounded-md bg-[--color-status-blocked-bg] px-3 py-2 text-sm
-                   text-[--color-status-blocked]"
-          >
-            {{ error }}
-          </p>
-
-          <button
-            type="submit"
-            :disabled="!canSubmitAccount || busy"
-            class="w-full rounded-md bg-[--color-brand] px-4 py-2.5 text-sm font-medium text-white
-                   hover:bg-[--color-brand-hover] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {{ busy ? 'Creating\u2026' : 'Continue' }}
-          </button>
-        </form>
-      </template>
-
-      <template v-else>
-        <div class="mb-6 text-center">
-          <ShieldCheck :size="28" class="mx-auto mb-3 text-[--color-brand]" aria-hidden="true" />
-          <h1 class="text-lg font-semibold text-[--color-text]">Add a second step</h1>
-          <p class="mt-1 text-sm text-[--color-text-muted]">
-            This panel can be reached from the internet, so a password on its own is not
-            enough. Scan this with your authenticator app.
-          </p>
-        </div>
-
-        <div class="mb-4 rounded-md bg-[--color-surface-sunken] p-4">
-          <p class="mb-2 text-xs text-[--color-text-muted]">
-            Cannot scan? Enter this key manually:
-          </p>
-          <code class="block break-all font-mono text-xs text-[--color-text]">
-            {{ totpSecret }}
-          </code>
-        </div>
-
-        <form class="space-y-4" @submit.prevent="confirmTwoFactor">
-          <div>
-            <label for="code" class="mb-1 block text-sm font-medium text-[--color-text]">
-              Six-digit code
-            </label>
-            <input
-              id="code"
-              v-model="code"
-              inputmode="numeric"
-              autocomplete="one-time-code"
-              maxlength="6"
-              placeholder="000000"
-              class="w-full rounded-md border border-[--color-border] bg-[--color-surface]
-                     px-3 py-2 text-center font-mono text-lg tracking-widest text-[--color-text]"
-            />
-          </div>
-
-          <p
-            v-if="error"
-            class="rounded-md bg-[--color-status-blocked-bg] px-3 py-2 text-sm
-                   text-[--color-status-blocked]"
-          >
-            {{ error }}
-          </p>
-
-          <button
-            type="submit"
-            :disabled="code.trim().length !== 6 || busy"
-            class="w-full rounded-md bg-[--color-brand] px-4 py-2.5 text-sm font-medium text-white
-                   hover:bg-[--color-brand-hover] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {{ busy ? 'Checking\u2026' : 'Finish setup' }}
-          </button>
-        </form>
-
-        <p class="mt-4 flex items-start gap-2 text-xs text-[--color-text-muted]">
-          <Lock :size="14" class="mt-0.5 shrink-0" aria-hidden="true" />
-          Keep a copy of the key above somewhere safe. Without it, losing your phone means
-          losing access to this panel.
+          </template>
+          <template v-else-if="step === 'offerTwoFactor'">
+            Your account is ready. Before you finish, consider protecting it with an
+            authenticator app.
+          </template>
+          <template v-else-if="step === 'enrolTwoFactor'">
+            Scan this with your authenticator app, then enter the code it shows.
+          </template>
+          <template v-else>
+            Two-factor is on. These get you back in if you lose your phone.
+          </template>
         </p>
-      </template>
+      </div>
+
+      <div class="card p-7">
+        <template v-if="step === 'account'">
+          <form class="space-y-4" @submit.prevent="createAccount">
+            <div>
+              <label for="setup-code" class="label">Setup code</label>
+              <input
+                id="setup-code"
+                v-model="setupToken"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="XXXXX-XXXXX-XXXXX-XXXXX"
+                class="field font-mono"
+              />
+              <p class="hint">Shown on the last page of the installer, and saved on the server.</p>
+            </div>
+
+            <div>
+              <label for="username" class="label">Username</label>
+              <input id="username" v-model="username" autocomplete="username" class="field" />
+            </div>
+
+            <div>
+              <label for="password" class="label">Password</label>
+              <input
+                id="password"
+                v-model="password"
+                type="password"
+                autocomplete="new-password"
+                class="field"
+              />
+              <input
+                v-model="confirmPassword"
+                type="password"
+                autocomplete="new-password"
+                placeholder="Confirm password"
+                aria-label="Confirm password"
+                class="field mt-2"
+              />
+              <p v-if="passwordProblem" class="mt-1.5 text-xs text-warn">{{ passwordProblem }}</p>
+              <p v-else class="hint">At least 12 characters. Length matters more than symbols.</p>
+            </div>
+
+            <AlertMessage v-if="error">{{ error }}</AlertMessage>
+
+            <button
+              type="submit"
+              :disabled="!canSubmitAccount || busy"
+              class="btn btn-primary btn-lg w-full"
+            >
+              {{ busy ? 'Creating\u2026' : 'Continue' }}
+            </button>
+          </form>
+        </template>
+
+        <template v-else-if="step === 'offerTwoFactor'">
+          <AlertMessage tone="warning" class="mb-4">
+            Recommended. This panel is reachable from the internet and controls every website and
+            mailbox on this server, so anyone who learns your password gets all of it. A second
+            step means a stolen password on its own is not enough.
+          </AlertMessage>
+
+          <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
+
+          <div class="space-y-2">
+            <button
+              type="button"
+              :disabled="busy"
+              class="btn btn-primary btn-lg w-full"
+              @click="startTwoFactor"
+            >
+              {{ busy ? 'Preparing\u2026' : 'Set up two-factor authentication' }}
+            </button>
+            <button
+              type="button"
+              :disabled="busy"
+              class="btn btn-ghost btn-lg w-full"
+              @click="finish"
+            >
+              Skip for now
+            </button>
+          </div>
+
+          <p class="mt-4 text-center text-xs text-ink-faint">
+            You can turn this on at any time from Security.
+          </p>
+        </template>
+
+        <TotpEnrolment
+          v-else-if="step === 'enrolTwoFactor'"
+          :uri="totpUri"
+          :secret="totpSecret"
+          :busy="busy"
+          :error="error"
+          confirm-label="Turn on two-factor"
+          cancel-label="Skip"
+          @confirm="confirmTwoFactor"
+          @cancel="finish"
+        />
+
+        <RecoveryCodes
+          v-else
+          :codes="recoveryCodes"
+          done-label="Finish setup"
+          @done="router.push('/sites')"
+        />
+      </div>
     </div>
   </div>
 </template>

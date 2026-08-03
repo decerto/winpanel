@@ -11,6 +11,15 @@ import { runCommand } from '../process/run-command.js';
  * Every supervised process on the box — the panel itself, Caddy, Stalwart, and
  * each hosted site — is registered the same way, so there is one mechanism to
  * understand and one place for start/stop/restart/logs to go wrong.
+ *
+ * WinSW v2 cannot be told where its configuration lives. It reads
+ * `<its own filename>.xml` from its own directory and nothing else — a config
+ * path on the command line is accepted and silently ignored, and the service
+ * it registers points at the wrapper with no arguments at all. So each
+ * service gets its own copy of the wrapper, named after the service, with its
+ * config beside it. Passing the config path instead produced a wrapper that
+ * exited immediately looking for `WinSW.xml`, which meant the panel installed
+ * successfully and then had no service to run it.
  */
 
 export type ServiceState = 'running' | 'stopped' | 'starting' | 'stopping' | 'not-installed';
@@ -118,19 +127,41 @@ export class ServiceManager {
     return path.join(this.configDir, `${id}.xml`);
   }
 
+  /** The per-service copy of the wrapper. Its name determines its config. */
+  wrapperPathFor(id: string): string {
+    return path.join(this.configDir, `${id}.exe`);
+  }
+
+  private async exists(target: string): Promise<boolean> {
+    return await fs.access(target).then(
+      () => true,
+      () => false,
+    );
+  }
+
   /** Writes the config and registers the service. */
   async install(definition: ServiceDefinition): Promise<void> {
     await fs.mkdir(this.configDir, { recursive: true });
     await fs.mkdir(definition.logPath, { recursive: true });
 
     const configPath = this.configPathFor(definition.id);
+    const wrapperPath = this.wrapperPathFor(definition.id);
+
+    try {
+      await fs.copyFile(this.winswPath, wrapperPath);
+    } catch (error) {
+      throw new Error(
+        `Could not place the service wrapper at ${wrapperPath}: ${(error as Error).message}`,
+      );
+    }
+
     // The file may hold a service account password, so restrict it before it
     // ever contains one.
     await fs.writeFile(configPath, buildServiceXml(definition), { mode: 0o600 });
 
     const result = await runCommand({
-      exe: this.winswPath,
-      args: ['install', configPath],
+      exe: wrapperPath,
+      args: ['install'],
       timeoutMs: 60_000,
     });
 
@@ -143,16 +174,64 @@ export class ServiceManager {
   }
 
   async uninstall(id: string): Promise<void> {
-    const configPath = this.configPathFor(id);
-    await runCommand({ exe: this.winswPath, args: ['stop', configPath], timeoutMs: 60_000 });
-    await runCommand({ exe: this.winswPath, args: ['uninstall', configPath], timeoutMs: 60_000 });
-    await fs.rm(configPath, { force: true });
+    const wrapperPath = this.wrapperPathFor(id);
+
+    if (await this.exists(wrapperPath)) {
+      await runCommand({ exe: wrapperPath, args: ['stop'], timeoutMs: 60_000 });
+      await runCommand({ exe: wrapperPath, args: ['uninstall'], timeoutMs: 60_000 });
+    }
+
+    /*
+     * The wrapper cannot remove a service it has lost its configuration for,
+     * and it reports that as an unhandled exception rather than a failure.
+     * Windows itself always can, so it gets the last word.
+     */
+    if ((await this.getState(id)) !== 'not-installed') {
+      await runCommand({ exe: 'sc.exe', args: ['stop', id], timeoutMs: 60_000 });
+      await runCommand({ exe: 'sc.exe', args: ['delete', id], timeoutMs: 60_000 });
+    }
+
+    /*
+     * The configuration is deleted last, and only once the service is really
+     * gone. Removing it while the service still exists strands it: the
+     * wrapper then refuses to run at all, and the only way to remove the
+     * service is by hand with sc.exe.
+     */
+    if ((await this.getState(id)) !== 'not-installed') {
+      throw new Error(
+        `The "${id}" service could not be removed. It may need administrator rights, or ` +
+          'something may still be using it.',
+      );
+    }
+
+    await fs.rm(this.configPathFor(id), { force: true });
+    await fs.rm(wrapperPath, { force: true }).catch(() => undefined);
+  }
+
+  /**
+   * Confirms the per-service wrapper is actually there.
+   *
+   * Without this, acting on a service that was never registered — because its
+   * install failed halfway — surfaces as `spawn ...winpanel-x.exe ENOENT`,
+   * which tells the user nothing about what to do next.
+   */
+  private async requireWrapper(id: string): Promise<string> {
+    const wrapperPath = this.wrapperPathFor(id);
+
+    if (!(await this.exists(wrapperPath))) {
+      throw new Error(
+        `The "${id}" service is not registered on this server, so it cannot be started or ` +
+          'stopped. Install the program again to register it.',
+      );
+    }
+
+    return wrapperPath;
   }
 
   async start(id: string): Promise<void> {
     const result = await runCommand({
-      exe: this.winswPath,
-      args: ['start', this.configPathFor(id)],
+      exe: await this.requireWrapper(id),
+      args: ['start'],
       timeoutMs: 120_000,
     });
 
@@ -180,16 +259,16 @@ export class ServiceManager {
 
   async stop(id: string): Promise<void> {
     await runCommand({
-      exe: this.winswPath,
-      args: ['stop', this.configPathFor(id)],
+      exe: await this.requireWrapper(id),
+      args: ['stop'],
       timeoutMs: 120_000,
     });
   }
 
   async restart(id: string): Promise<void> {
     await runCommand({
-      exe: this.winswPath,
-      args: ['restart', this.configPathFor(id)],
+      exe: await this.requireWrapper(id),
+      args: ['restart'],
       timeoutMs: 120_000,
     });
   }

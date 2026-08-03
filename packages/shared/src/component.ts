@@ -23,6 +23,12 @@ export type ComponentId = z.infer<typeof ComponentId>;
 export const ComponentKind = z.enum([
   /** Extract an archive; no installer to run. Preferred for determinism. */
   'zip',
+  /**
+   * The download is the program itself, not a container for it. Caddy's
+   * build service works this way, and it also serves the file compressed, so
+   * neither the name nor the length describes what arrives.
+   */
+  'binary',
   /** Run a signed installer executable with silent flags. */
   'exe',
   /** Run a PowerShell script (used only for the official dotnet-install). */

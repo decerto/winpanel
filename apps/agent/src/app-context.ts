@@ -1,4 +1,6 @@
+import os from 'node:os';
 import path from 'node:path';
+import { mailHostnameFor } from '@winpanel/shared';
 import { config, paths } from './config.js';
 import { createDatabase, migrateDatabase, schema, type DatabaseHandle } from './db/index.js';
 import { JobQueue } from './jobs/queue.js';
@@ -8,6 +10,10 @@ import { CaddyClient } from './caddy/client.js';
 import { ServiceManager } from './windows/service-manager.js';
 import { SiteService } from './sites/site-service.js';
 import { createDeployHandler } from './sites/deploy-handler.js';
+import {
+  createInstallComponentHandler,
+  createUninstallComponentHandler,
+} from './components/installer.js';
 import { resolveTool } from './sites/tool-paths.js';
 
 /**
@@ -78,6 +84,26 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
         loadGitToken: (siteId) => sites.getGitToken(siteId),
       }),
     );
+
+    const installerDeps = {
+      db,
+      vault,
+      services,
+      binDir: config.binDir,
+      dataDir: config.dataDir,
+      logDir: config.logDir,
+      caddyDir: config.caddyDir,
+      // The mail server has to call itself something before any domain is
+      // pointed at it, so it starts as the machine's own name.
+      mailHostname: () => {
+        const first = sites.list().find((site) => (site.domains as string[]).length > 0);
+        const domain = (first?.domains as string[] | undefined)?.[0];
+        return domain ? mailHostnameFor(domain) : os.hostname();
+      },
+    };
+
+    jobs.register('install-component', createInstallComponentHandler(installerDeps));
+    jobs.register('uninstall-component', createUninstallComponentHandler(installerDeps));
   }
 
   return {

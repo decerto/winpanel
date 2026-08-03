@@ -8,7 +8,8 @@ import { api } from './lib/api';
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', redirect: '/health' },
+    // Websites are what this server is for, so that is where you land.
+    { path: '/', redirect: '/sites' },
     {
       path: '/setup',
       name: 'setup',
@@ -39,23 +40,62 @@ export const router = createRouter({
       component: () => import('./pages/NewSitePage.vue'),
       meta: { title: 'Add a website' },
     },
+    /*
+     * One website, with its tools as tabs beneath it.
+     *
+     * Files and DNS only mean anything in the context of a site, so they are
+     * children of one rather than top-level destinations. The layout fetches
+     * the site once and hands it down, so switching tabs does not re-ask.
+     */
     {
       path: '/sites/:slug',
-      name: 'site-detail',
-      component: () => import('./pages/SiteDetailPage.vue'),
+      component: () => import('./pages/SiteLayout.vue'),
       meta: { title: 'Website' },
-    },
-    {
-      path: '/sites/:slug/files',
-      name: 'site-files',
-      component: () => import('./pages/FilesPage.vue'),
-      meta: { title: 'Files' },
+      children: [
+        {
+          path: '',
+          name: 'site-detail',
+          component: () => import('./pages/site/SiteOverviewPage.vue'),
+        },
+        {
+          path: 'files',
+          name: 'site-files',
+          component: () => import('./pages/site/SiteFilesPage.vue'),
+        },
+        {
+          path: 'dns',
+          name: 'site-dns',
+          component: () => import('./pages/site/SiteDnsPage.vue'),
+        },
+        {
+          path: 'email',
+          name: 'site-email',
+          component: () => import('./pages/site/SiteEmailPage.vue'),
+        },
+        {
+          path: 'settings',
+          name: 'site-settings',
+          component: () => import('./pages/site/SiteSettingsPage.vue'),
+        },
+      ],
     },
     {
       path: '/email',
       name: 'email',
       component: () => import('./pages/MailPage.vue'),
       meta: { title: 'Email' },
+    },
+    {
+      path: '/security',
+      name: 'security',
+      component: () => import('./pages/SecurityPage.vue'),
+      meta: { title: 'Security' },
+    },
+    {
+      path: '/settings',
+      name: 'settings',
+      component: () => import('./pages/SettingsPage.vue'),
+      meta: { title: 'Settings' },
     },
   ],
 });
@@ -88,7 +128,7 @@ router.beforeEach(async (to) => {
 
   // Already signed in: no reason to sit on the sign-in screen.
   if (to.name === 'login' || to.name === 'setup') {
-    return { name: 'health' };
+    return { name: 'sites' };
   }
 
   return true;

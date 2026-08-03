@@ -4,8 +4,9 @@ import { Secret, TOTP } from 'otpauth';
 /**
  * Time-based one-time passwords.
  *
- * TOTP is mandatory for every account. The panel sits on a public IP, so a
- * leaked or guessed password must not be sufficient on its own.
+ * Optional, but recommended everywhere it is offered: the panel sits on a
+ * public IP, so a leaked or guessed password is otherwise sufficient to reach
+ * every site and mailbox on the machine.
  *
  * Note the dependency on an accurate system clock: if the server's time
  * drifts, codes stop validating and the user is locked out with a confusing
@@ -66,15 +67,32 @@ export function verifyTotp(secretBase32: string, code: string): boolean {
 }
 
 /**
- * Single-use recovery codes, issued at enrolment.
+ * Single-use recovery codes, issued when enrolment completes.
  *
  * Without these, losing the authenticator device means losing access to the
  * server entirely — and the only recovery would be editing the database by
  * hand over RDP.
+ *
+ * 64 bits each. They are stored under a fast hash rather than argon2, the
+ * same as session tokens, so the entropy has to do the work: a stolen
+ * database must not yield a guessable code.
  */
+const RECOVERY_CODE_BYTES = 8;
+
 export function generateRecoveryCodes(count = 10): string[] {
   return Array.from({ length: count }, () => {
-    const raw = crypto.randomBytes(5).toString('hex').toUpperCase();
-    return `${raw.slice(0, 5)}-${raw.slice(5, 10)}`;
+    const raw = crypto.randomBytes(RECOVERY_CODE_BYTES).toString('hex').toUpperCase();
+    return (raw.match(/.{4}/g) ?? [raw]).join('-');
   });
+}
+
+/**
+ * Puts a typed-in code into the form it was issued in.
+ *
+ * Someone reading a code off paper will get the case or the dashes wrong, and
+ * failing them for it teaches nothing — the code is either right or it is not.
+ */
+export function normaliseRecoveryCode(input: string): string {
+  const raw = input.toUpperCase().replace(/[^0-9A-F]/g, '');
+  return (raw.match(/.{1,4}/g) ?? []).join('-');
 }

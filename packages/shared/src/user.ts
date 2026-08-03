@@ -20,6 +20,11 @@ export const LoginRequest = z.object({
   password: z.string().min(1).max(1024),
   /** Six-digit TOTP code. Required once enrolment is complete. */
   totp: z.string().regex(/^\d{6}$/).optional(),
+  /**
+   * Used instead of `totp` when the authenticator is gone. Accepted in any
+   * case and with or without the dashes, because it is read off paper.
+   */
+  recoveryCode: z.string().min(8).max(64).optional(),
 });
 export type LoginRequest = z.infer<typeof LoginRequest>;
 

@@ -19,7 +19,7 @@ import type { ComponentDefinition } from '@winpanel/shared';
  * and includes the Cloudflare module.
  */
 
-const CADDY_VERSION = '2.10.2';
+const CADDY_VERSION = 'latest';
 const STALWART_VERSION = '0.16.16';
 const GIT_VERSION = '2.51.0';
 const NODE_LTS_VERSION = '22.21.1';
@@ -28,6 +28,11 @@ const NODE_LTS_VERSION = '22.21.1';
  * Caddy's official download service builds a binary with the plugins you ask
  * for. Using it avoids installing a Go toolchain on the server purely to run
  * xcaddy, which would be a large dependency for a one-off build.
+ *
+ * It has no version parameter: it always builds the current release, and the
+ * result is a bare .exe served gzipped rather than an archive. So the version
+ * is reported as "latest" rather than pinned to a number that would be a lie,
+ * and the install log records whichever version actually arrived.
  */
 export const CADDY_DOWNLOAD_URL =
   'https://caddyserver.com/api/download' +
@@ -41,10 +46,15 @@ export const COMPONENT_CATALOGUE: readonly ComponentDefinition[] = [
       'Serves your websites, handles HTTPS certificates automatically, and passes ' +
       'traffic to your apps.',
     version: CADDY_VERSION,
-    kind: 'zip',
+    kind: 'binary',
     url: CADDY_DOWNLOAD_URL,
     sha256: null,
-    args: [],
+    /*
+     * `--resume` reloads the configuration Caddy last saved itself, so a
+     * reboot brings back the sites that were being served rather than an
+     * empty server waiting to be told what to do.
+     */
+    args: ['run', '--resume'],
     serviceName: 'winpanel-caddy',
     verifyArgs: ['version'],
     verifyExpect: 'v2.',
@@ -63,7 +73,9 @@ export const COMPONENT_CATALOGUE: readonly ComponentDefinition[] = [
     args: [],
     serviceName: 'winpanel-stalwart',
     verifyArgs: ['--version'],
-    verifyExpect: 'stalwart',
+    // It prints the bare version number and nothing else, so checking for the
+    // product name never matched.
+    verifyExpect: STALWART_VERSION,
     requires: [],
   },
   {

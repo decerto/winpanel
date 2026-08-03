@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { LogIn, TriangleAlert } from 'lucide-vue-next';
+import { ServerCog } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
+import AlertMessage from '../components/AlertMessage.vue';
 
 /**
  * Sign in.
@@ -18,17 +19,20 @@ const router = useRouter();
 const username = ref('');
 const password = ref('');
 const code = ref('');
+const recoveryCode = ref('');
+const usingRecoveryCode = ref(false);
 const needsCode = ref(false);
 const busy = ref(false);
 const error = ref<string | null>(null);
 const httpsWarning = ref(false);
 
-const canSubmit = computed(
-  () =>
-    username.value.trim().length > 0 &&
-    password.value.length > 0 &&
-    (!needsCode.value || code.value.trim().length === 6),
-);
+const canSubmit = computed(() => {
+  if (username.value.trim().length === 0 || password.value.length === 0) return false;
+  if (!needsCode.value) return true;
+  return usingRecoveryCode.value
+    ? recoveryCode.value.trim().length >= 8
+    : code.value.trim().length === 6;
+});
 
 // Surfaced permanently when the panel is served without encryption, because
 // the password and session cookie then cross the network in the clear.
@@ -45,13 +49,17 @@ async function signIn(): Promise<void> {
   busy.value = true;
   error.value = null;
 
+  const secondFactor = usingRecoveryCode.value
+    ? { recoveryCode: recoveryCode.value.trim() }
+    : { totp: code.value.trim() };
+
   try {
     await api.auth.login.mutate({
       username: username.value.trim(),
       password: password.value,
-      ...(needsCode.value ? { totp: code.value.trim() } : {}),
+      ...(needsCode.value ? secondFactor : {}),
     });
-    await router.push('/health');
+    await router.push('/sites');
   } catch (err) {
     const message = describeError(err);
 
@@ -62,6 +70,7 @@ async function signIn(): Promise<void> {
     } else {
       error.value = message;
       code.value = '';
+      recoveryCode.value = '';
     }
   } finally {
     busy.value = false;
@@ -70,63 +79,65 @@ async function signIn(): Promise<void> {
 </script>
 
 <template>
-  <div class="flex min-h-screen items-center justify-center bg-[--color-surface-sunken] p-6">
+  <div class="flex min-h-screen items-center justify-center p-6">
     <div class="w-full max-w-sm">
-      <div
-        v-if="httpsWarning"
-        class="mb-4 flex items-start gap-2 rounded-md bg-[--color-status-warn-bg] px-3 py-2
-               text-xs text-[--color-status-warn]"
-      >
-        <TriangleAlert :size="14" class="mt-0.5 shrink-0" aria-hidden="true" />
-        <span>
-          This connection is not encrypted. Anyone on the network between you and this
-          server can read your password.
+      <div class="mb-7 flex flex-col items-center text-center">
+        <span
+          class="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-linear-to-b
+                 from-brand to-brand-strong shadow-brand"
+        >
+          <ServerCog :size="24" class="text-white" aria-hidden="true" />
         </span>
+        <h1 class="text-xl font-semibold tracking-tight text-ink">Sign in to WinPanel</h1>
+        <p class="mt-1 text-sm text-ink-muted">Manage the websites on this server.</p>
       </div>
 
-      <div
-        class="rounded-[--radius-card] border border-[--color-border] bg-[--color-surface] p-8"
-      >
-        <div class="mb-6 text-center">
-          <LogIn :size="26" class="mx-auto mb-3 text-[--color-brand]" aria-hidden="true" />
-          <h1 class="text-lg font-semibold text-[--color-text]">Sign in</h1>
-        </div>
+      <AlertMessage v-if="httpsWarning" tone="warning" class="mb-4">
+        This connection is not encrypted. Anyone on the network between you and this server can
+        read your password.
+      </AlertMessage>
 
+      <div class="card p-7">
         <form class="space-y-4" @submit.prevent="signIn">
           <div>
-            <label for="username" class="mb-1 block text-sm font-medium text-[--color-text]">
-              Username
-            </label>
+            <label for="username" class="label">Username</label>
             <input
               id="username"
               v-model="username"
               autocomplete="username"
               :disabled="needsCode"
-              class="w-full rounded-md border border-[--color-border] bg-[--color-surface]
-                     px-3 py-2 text-sm text-[--color-text] disabled:opacity-60"
+              class="field"
             />
           </div>
 
           <div>
-            <label for="password" class="mb-1 block text-sm font-medium text-[--color-text]">
-              Password
-            </label>
+            <label for="password" class="label">Password</label>
             <input
               id="password"
               v-model="password"
               type="password"
               autocomplete="current-password"
               :disabled="needsCode"
-              class="w-full rounded-md border border-[--color-border] bg-[--color-surface]
-                     px-3 py-2 text-sm text-[--color-text] disabled:opacity-60"
+              class="field"
             />
           </div>
 
           <div v-if="needsCode">
-            <label for="code" class="mb-1 block text-sm font-medium text-[--color-text]">
-              Code from your authenticator app
+            <label :for="usingRecoveryCode ? 'recovery-code' : 'code'" class="label">
+              {{ usingRecoveryCode ? 'Recovery code' : 'Code from your authenticator app' }}
             </label>
             <input
+              v-if="usingRecoveryCode"
+              id="recovery-code"
+              v-model="recoveryCode"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="XXXX-XXXX-XXXX-XXXX"
+              autofocus
+              class="field text-center font-mono tracking-wider"
+            />
+            <input
+              v-else
               id="code"
               v-model="code"
               inputmode="numeric"
@@ -134,24 +145,27 @@ async function signIn(): Promise<void> {
               maxlength="6"
               placeholder="000000"
               autofocus
-              class="w-full rounded-md border border-[--color-border] bg-[--color-surface]
-                     px-3 py-2 text-center font-mono text-lg tracking-widest text-[--color-text]"
+              class="field text-center font-mono text-lg tracking-[0.4em]"
             />
+            <button
+              type="button"
+              class="mt-2 text-xs text-ink-faint underline underline-offset-2 hover:text-ink"
+              @click="usingRecoveryCode = !usingRecoveryCode; error = null"
+            >
+              {{
+                usingRecoveryCode
+                  ? 'Use my authenticator app instead'
+                  : 'I have lost my authenticator app'
+              }}
+            </button>
           </div>
 
-          <p
-            v-if="error"
-            class="rounded-md bg-[--color-status-blocked-bg] px-3 py-2 text-sm
-                   text-[--color-status-blocked]"
-          >
-            {{ error }}
-          </p>
+          <AlertMessage v-if="error">{{ error }}</AlertMessage>
 
           <button
             type="submit"
             :disabled="!canSubmit || busy"
-            class="w-full rounded-md bg-[--color-brand] px-4 py-2.5 text-sm font-medium text-white
-                   hover:bg-[--color-brand-hover] disabled:cursor-not-allowed disabled:opacity-50"
+            class="btn btn-primary btn-lg w-full"
           >
             {{ busy ? 'Signing in\u2026' : 'Sign in' }}
           </button>

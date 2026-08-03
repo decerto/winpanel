@@ -25,6 +25,12 @@ const props = withDefaults(
     state: CheckState;
     /** Hide the text label where the surrounding context already says it. */
     showLabel?: boolean;
+    /**
+     * Overrides the wording. The states are shared with the server checks,
+     * where "absent" means "not installed"; elsewhere it has to say what is
+     * actually absent.
+     */
+    label?: string;
     size?: 'sm' | 'md';
   }>(),
   { showLabel: true, size: 'md' },
@@ -40,16 +46,17 @@ const ICONS = {
 } as const;
 
 const presentation = computed(() => statusPresentation[props.state]);
+const text = computed(() => props.label ?? presentation.value.label);
 const icon = computed(() => ICONS[props.state]);
 
 const classes = computed(() => {
   const map: Record<CheckState, string> = {
-    blocked: 'text-[--color-status-blocked] bg-[--color-status-blocked-bg]',
-    warning: 'text-[--color-status-warn] bg-[--color-status-warn-bg]',
-    ok: 'text-[--color-status-ok] bg-[--color-status-ok-bg]',
-    absent: 'text-[--color-status-absent] bg-[--color-status-absent-bg]',
-    checking: 'text-[--color-status-checking] bg-[--color-status-checking-bg]',
-    unknown: 'text-[--color-status-absent] bg-[--color-status-absent-bg]',
+    blocked: 'text-danger bg-danger-soft/70 ring-danger/25',
+    warning: 'text-warn bg-warn-soft/70 ring-warn/25',
+    ok: 'text-ok bg-ok-soft/70 ring-ok/25',
+    absent: 'text-idle bg-idle-soft/70 ring-line',
+    checking: 'text-info bg-info-soft/70 ring-info/25',
+    unknown: 'text-idle bg-idle-soft/70 ring-line',
   };
   return map[props.state];
 });
@@ -59,7 +66,7 @@ const iconSize = computed(() => (props.size === 'sm' ? 14 : 16));
 
 <template>
   <span
-    class="inline-flex items-center gap-1.5 rounded-full font-medium"
+    class="inline-flex items-center gap-1.5 rounded-full font-medium ring-1 ring-inset"
     :class="[classes, size === 'sm' ? 'px-2 py-0.5 text-xs' : 'px-2.5 py-1 text-sm']"
   >
     <component
@@ -68,8 +75,8 @@ const iconSize = computed(() => (props.size === 'sm' ? 14 : 16));
       :class="state === 'checking' ? 'animate-spin' : ''"
       aria-hidden="true"
     />
-    <span v-if="showLabel">{{ presentation.label }}</span>
+    <span v-if="showLabel">{{ text }}</span>
     <!-- Announced to screen readers even when the label is hidden. -->
-    <span v-else class="sr-only">{{ presentation.label }}</span>
+    <span v-else class="sr-only">{{ text }}</span>
   </span>
 </template>

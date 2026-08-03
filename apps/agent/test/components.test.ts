@@ -184,8 +184,16 @@ describe('hashFile', () => {
 });
 
 describe('component catalogue', () => {
-  it('pins a version for every component', () => {
+  it('pins a version for everything that can be pinned', () => {
     for (const component of COMPONENT_CATALOGUE) {
+      // Caddy's download service has no version parameter: it always builds
+      // the current release, so a number here would be a lie. The same reason
+      // it cannot have a fixed hash.
+      if (component.id === 'caddy') {
+        expect(component.version).toBe('latest');
+        continue;
+      }
+
       expect(component.version, component.id).toMatch(/^\d+\.\d+/);
     }
   });

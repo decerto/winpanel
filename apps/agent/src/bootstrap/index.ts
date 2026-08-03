@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import net from 'node:net';
 import path from 'node:path';
 import { config, paths } from '../config.js';
 import { createAppContext } from '../app-context.js';
@@ -37,6 +38,49 @@ function generateAccountPassword(): string {
   // rejected password produces a confusing failure mid-install.
   const random = crypto.randomBytes(24).toString('base64url');
   return `Wp!${random}9aA`;
+}
+
+/*
+ * The installer runs the bootstrap hidden, so anything written to the console
+ * is lost. Warnings go to a file the wizard's final page reads instead —
+ * without it, a failed service start is invisible and the first sign of
+ * trouble is a browser that cannot connect.
+ */
+export async function writeInstallWarnings(warnings: readonly string[]): Promise<void> {
+  await fs
+    .mkdir(config.dataDir, { recursive: true })
+    .then(() =>
+      fs.writeFile(
+        path.join(config.dataDir, 'install-warnings.txt'),
+        warnings.join('\n'),
+        'utf8',
+      ),
+    )
+    .catch(() => undefined);
+}
+
+/** Resolves once the panel accepts a connection, or false after `timeoutMs`. */
+async function waitForPanel(port: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const connected = await new Promise<boolean>((resolve) => {
+      const socket = net.connect({ port, host: '127.0.0.1' });
+      socket.on('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.on('error', () => {
+        socket.destroy();
+        resolve(false);
+      });
+    });
+
+    if (connected) return true;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  return false;
 }
 
 export async function install(options: { skipService?: boolean } = {}): Promise<InstallResult> {
@@ -118,6 +162,20 @@ export async function install(options: { skipService?: boolean } = {}): Promise<
         logPath: config.logDir,
       });
       await services.start(AGENT_SERVICE_ID);
+
+      /*
+       * A running service only means the wrapper survived. The agent itself
+       * can still die on its first database call or fail to bind the port,
+       * and the installer would go on to hand the user an address that
+       * refuses connections. Nothing short of connecting to it proves the
+       * panel is actually there.
+       */
+      if (!(await waitForPanel(config.port, 30_000))) {
+        warnings.push(
+          `The panel service started but is not answering on port ${config.port}. ` +
+            `Look in ${path.join(config.logDir, `${AGENT_SERVICE_ID}.err.log`)} for the reason.`,
+        );
+      }
     } catch (error) {
       warnings.push(`Could not start the panel service: ${(error as Error).message}`);
     }
@@ -125,17 +183,7 @@ export async function install(options: { skipService?: boolean } = {}): Promise<
 
   const address = localAddresses().find((ip) => !ip.includes(':')) ?? 'your-server-ip';
 
-  /*
-   * The installer runs this command hidden, so anything written to the console
-   * is lost. Warnings go to a file the wizard's final page reads instead —
-   * without it, a failed service start is invisible and the first sign of
-   * trouble is a browser that cannot connect.
-   */
-  await fs.writeFile(
-    path.join(config.dataDir, 'install-warnings.txt'),
-    warnings.join('\n'),
-    'utf8',
-  );
+  await writeInstallWarnings(warnings);
 
   return {
     panelUrl: panelUrlFor(address, config.httpsEnabled),
@@ -184,7 +232,17 @@ export async function main(argv: readonly string[]): Promise<number> {
   const command = argv[0] ?? 'install';
 
   if (command === 'install') {
-    const result = await install();
+    let result: InstallResult;
+    try {
+      result = await install();
+    } catch (error) {
+      // The wizard reads this file. Without it a bootstrap that died before
+      // reaching the service step leaves the installer reporting success and
+      // the user staring at a browser that cannot connect.
+      const message = error instanceof Error ? error.message : String(error);
+      await writeInstallWarnings([`Setup could not finish: ${message}`]);
+      throw error;
+    }
 
     // The installer captures this and shows it on its final page.
     process.stdout.write(
@@ -199,7 +257,7 @@ export async function main(argv: readonly string[]): Promise<number> {
         '',
       ].join('\n'),
     );
-    return result.warnings.length > 0 ? 0 : 0;
+    return 0;
   }
 
   if (command === 'uninstall') {

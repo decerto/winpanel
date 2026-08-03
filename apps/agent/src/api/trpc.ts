@@ -114,27 +114,14 @@ const requireAuth = t.middleware(async ({ ctx, next }) => {
 });
 
 /**
- * Requires a session *and* completed two-factor enrolment.
+ * Requires a valid session.
  *
- * An account that has not finished enrolling can reach only the enrolment
- * endpoints, so an interrupted setup cannot leave a permanently
- * single-factor account controlling the server.
+ * There is deliberately no second tier gated on two-factor enrolment. Two
+ * factors are optional, so an account without them is a supported state
+ * rather than a half-finished one, and a middleware that refused those
+ * accounts would simply lock them out of the panel entirely.
  */
-const requireTotp = t.middleware(async ({ ctx, next }) => {
-  if (!ctx.user?.totpEnrolled) {
-    throw new TRPCError({
-      code: 'FORBIDDEN',
-      message: 'Finish setting up two-factor authentication first.',
-    });
-  }
-  return await next();
-});
-
-export const authedProcedure = t.procedure.use(requireAuth).use(auditMiddleware);
-export const protectedProcedure = t.procedure
-  .use(requireAuth)
-  .use(requireTotp)
-  .use(auditMiddleware);
+export const protectedProcedure = t.procedure.use(requireAuth).use(auditMiddleware);
 
 /**
  * Unauthenticated, but still audited.

@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { LoginRequest, Password, SetupRequest } from '@winpanel/shared';
 import { AuthError } from '../../services/auth-service.js';
 import {
-  authedProcedure,
   protectedProcedure,
   publicAuditedProcedure,
   publicProcedure,
@@ -39,7 +38,8 @@ export const authRouter = router({
     try {
       const result = await ctx.app.auth.completeSetup(input);
 
-      // Sign the new owner in immediately so they can finish enrolling TOTP.
+      // Sign the new owner in immediately so they can go straight on to
+      // enrolling two-factor, or skip it and land in the panel.
       const login = await ctx.app.auth.login({
         username: input.username,
         password: input.password,
@@ -48,28 +48,134 @@ export const authRouter = router({
       });
       ctx.setSessionCookie(login.token, login.expiresAt);
 
-      return {
-        user: result.user,
-        totpUri: result.totpUri,
-        totpSecret: result.totpSecret,
-      };
+      return { user: result.user };
     } catch (error) {
       toTrpcError(error);
     }
   }),
 
-  /** Confirms the authenticator app works, completing enrolment. */
-  confirmTotp: authedProcedure
-    .input(z.object({ code: z.string().regex(/^\d{6}$/) }))
+  /**
+   * Starts two-factor enrolment.
+   *
+   * The password is re-entered rather than trusting the session: enrolment
+   * decides what the second factor will be, so a stolen cookie must not be
+   * able to quietly point it at the attacker's own device. Replacing an
+   * existing authenticator additionally needs a code from the current one.
+   */
+  beginTotp: protectedProcedure
+    .input(
+      z.object({
+        password: z.string().min(1).max(1024),
+        currentCode: z.string().regex(/^\d{6}$/).optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
+      if (!(await ctx.app.auth.reauthenticate(ctx.user.id, input.password))) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Your password is not correct.',
+        });
+      }
+
+      if (ctx.user.totpEnrolled) {
+        if (!input.currentCode) {
+          throw new TRPCError({
+            code: 'UNAUTHORIZED',
+            message: 'Enter a code from your current authenticator app.',
+          });
+        }
+        if (!ctx.app.auth.verifyTotpFor(ctx.user.id, input.currentCode)) {
+          throw new TRPCError({
+            code: 'UNAUTHORIZED',
+            message: 'That code is not correct.',
+          });
+        }
+      }
+
+      return ctx.app.auth.beginTotpEnrolment(ctx.user.id);
+    }),
+
+  /**
+   * Confirms the authenticator app works, completing enrolment.
+   *
+   * Hands back the recovery codes, which are the only moment they are
+   * readable. The panel has to show them before the user goes anywhere else.
+   */
+  confirmTotp: protectedProcedure
+    .input(z.object({ code: z.string().regex(/^\d{6}$/) }))
+    .mutation(({ ctx, input }) => {
       try {
-        ctx.app.auth.confirmTotpEnrolment(ctx.user.id, input.code);
-        // The setup code is now spent and must not remain readable on disk.
-        await ctx.app.auth.destroySetupToken();
-        return { ok: true };
+        return { ok: true, recoveryCodes: ctx.app.auth.confirmTotpEnrolment(ctx.user.id, input.code) };
       } catch (error) {
         toTrpcError(error);
       }
+    }),
+
+  /** How many recovery codes are left, for the reminder in the panel. */
+  recoveryCodeStatus: protectedProcedure.query(({ ctx }) =>
+    ctx.app.auth.recoveryCodeStatus(ctx.user.id),
+  ),
+
+  /**
+   * Issues a fresh set of recovery codes, invalidating the old ones.
+   *
+   * Guarded like the other second-factor changes: the codes are a way past
+   * two-factor, so being able to mint new ones is as good as holding the
+   * authenticator.
+   */
+  regenerateRecoveryCodes: protectedProcedure
+    .input(
+      z.object({
+        password: z.string().min(1).max(1024),
+        code: z.string().regex(/^\d{6}$/),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (!(await ctx.app.auth.reauthenticate(ctx.user.id, input.password))) {
+        throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Your password is not correct.' });
+      }
+
+      if (!ctx.app.auth.verifyTotpFor(ctx.user.id, input.code)) {
+        throw new TRPCError({ code: 'UNAUTHORIZED', message: 'That code is not correct.' });
+      }
+
+      return { recoveryCodes: ctx.app.auth.issueRecoveryCodes(ctx.user.id) };
+    }),
+
+  /** Throws away an enrolment the user started and backed out of. */
+  cancelTotp: protectedProcedure.mutation(({ ctx }) => {
+    ctx.app.auth.cancelTotpEnrolment(ctx.user.id);
+    return { ok: true };
+  }),
+
+  /**
+   * Turns two-factor authentication off.
+   *
+   * Both factors are required to give one of them up, so neither a stolen
+   * session nor a stolen password is enough to strip the account back to a
+   * single factor.
+   */
+  disableTotp: protectedProcedure
+    .input(
+      z.object({
+        password: z.string().min(1).max(1024),
+        code: z.string().regex(/^\d{6}$/),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      if (!(await ctx.app.auth.reauthenticate(ctx.user.id, input.password))) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Your password is not correct.',
+        });
+      }
+
+      if (!ctx.app.auth.verifyTotpFor(ctx.user.id, input.code)) {
+        throw new TRPCError({ code: 'UNAUTHORIZED', message: 'That code is not correct.' });
+      }
+
+      ctx.app.auth.disableTotp(ctx.user.id);
+      return { ok: true };
     }),
 
   login: publicAuditedProcedure.input(LoginRequest).mutation(async ({ ctx, input }) => {
@@ -78,6 +184,7 @@ export const authRouter = router({
         username: input.username,
         password: input.password,
         totp: input.totp,
+        recoveryCode: input.recoveryCode,
         ip: ctx.ip,
         userAgent: ctx.userAgent,
       });
@@ -88,7 +195,7 @@ export const authRouter = router({
     }
   }),
 
-  logout: authedProcedure.mutation(({ ctx }) => {
+  logout: protectedProcedure.mutation(({ ctx }) => {
     ctx.app.auth.logout(ctx.sessionToken);
     ctx.clearSessionCookie();
     return { ok: true };
@@ -101,13 +208,7 @@ export const authRouter = router({
     .mutation(async ({ ctx, input }) => {
       // Re-authenticate rather than trusting the session alone, so a stolen
       // cookie cannot be escalated into permanent account takeover.
-      try {
-        await ctx.app.auth.login({
-          username: ctx.user.username,
-          password: input.currentPassword,
-          ip: ctx.ip,
-        });
-      } catch {
+      if (!(await ctx.app.auth.reauthenticate(ctx.user.id, input.currentPassword))) {
         throw new TRPCError({
           code: 'UNAUTHORIZED',
           message: 'Your current password is not correct.',
@@ -122,6 +223,10 @@ export const authRouter = router({
         .set({ passwordHash: await hashPassword(input.newPassword) })
         .where(eq(ctx.app.schema.users.id, ctx.user.id))
         .run();
+
+      // Changing the password is what someone does when they think the
+      // account is compromised, so anyone else holding a cookie is put out.
+      ctx.app.auth.revokeOtherSessions(ctx.user.id, ctx.sessionToken);
 
       return { ok: true };
     }),

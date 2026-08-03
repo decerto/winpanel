@@ -1,8 +1,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
-import { and, eq, gt } from 'drizzle-orm';
+import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 import type { DatabaseHandle } from '../db/index.js';
-import { ipAllowlist, sessions, settings, users } from '../db/schema.js';
+import { ipAllowlist, recoveryCodes, sessions, settings, users } from '../db/schema.js';
 import {
   generateSetupToken,
   generateToken,
@@ -11,7 +11,12 @@ import {
   safeEquals,
   verifyPassword,
 } from '../security/password.js';
-import { createTotpEnrolment, verifyTotp } from '../security/totp.js';
+import {
+  createTotpEnrolment,
+  generateRecoveryCodes,
+  normaliseRecoveryCode,
+  verifyTotp,
+} from '../security/totp.js';
 import { LoginThrottle, ipMatchesAllowlist } from '../security/throttle.js';
 import type { SecretVault } from '../security/vault.js';
 
@@ -22,8 +27,11 @@ import type { SecretVault } from '../security/vault.js';
  *   1. There is never a default password. The installer writes a one-time
  *      setup token to disk; whoever can read it has RDP or console access,
  *      which is the trust anchor for creating the first account.
- *   2. TOTP is mandatory. A password alone is not sufficient to reach a panel
- *      that controls every site and mailbox on the machine.
+ *   2. TOTP is strongly recommended and offered during setup, but not forced.
+ *      Making it mandatory meant an abandoned enrolment left an account that
+ *      could neither finish nor start again, and a lost phone locked the owner
+ *      out of their own server with no way back in. It can be turned on, off
+ *      and replaced from the panel at any time.
  */
 
 export class AuthError extends Error {
@@ -96,7 +104,7 @@ export class AuthService {
     setupToken: string;
     username: string;
     password: string;
-  }): Promise<{ user: SessionUser; totpUri: string; totpSecret: string }> {
+  }): Promise<{ user: SessionUser }> {
     if (!this.needsSetup()) {
       throw new AuthError('This panel has already been set up.', 'already-setup');
     }
@@ -117,7 +125,6 @@ export class AuthService {
 
     const id = crypto.randomUUID();
     const passwordHash = await hashPassword(input.password);
-    const enrolment = createTotpEnrolment(input.username);
 
     this.handle.db
       .insert(users)
@@ -126,27 +133,64 @@ export class AuthService {
         username: input.username,
         passwordHash,
         role: 'owner',
-        // Stored encrypted. Enrolment is not complete until a code is confirmed.
-        totpSecret: this.vault.encrypt(enrolment.secret, `totp:${id}`),
         totpEnrolled: false,
       })
       .run();
 
+    /*
+     * Spent the moment the account exists, rather than after two-factor
+     * enrolment. Enrolment is optional, so tying the two together left a live
+     * setup code readable on disk for anyone who chose to skip it.
+     */
+    await this.destroySetupToken();
+
     return {
       user: { id, username: input.username, role: 'owner', totpEnrolled: false },
-      totpUri: enrolment.uri,
-      totpSecret: enrolment.secret,
     };
   }
 
-  /** Confirms the authenticator app is working before enrolment is finalised. */
-  confirmTotpEnrolment(userId: string, code: string): void {
+  /**
+   * Confirms a password without issuing a session.
+   *
+   * Used to re-authenticate before a change that could lock someone out or
+   * hand over the account, so a stolen cookie is not enough on its own.
+   */
+  async reauthenticate(userId: string, password: string): Promise<boolean> {
     const user = this.handle.db.select().from(users).where(eq(users.id, userId)).get();
-    if (!user?.totpSecret) {
+    if (!user || user.disabled) return false;
+    return await verifyPassword(user.passwordHash, password);
+  }
+
+  /**
+   * Starts two-factor enrolment and returns the secret to be scanned.
+   *
+   * The new secret is held separately from the active one. Someone replacing
+   * a lost-then-found phone, or who abandons this halfway, keeps signing in
+   * with the authenticator they already have.
+   */
+  beginTotpEnrolment(userId: string): { uri: string; secret: string } {
+    const user = this.handle.db.select().from(users).where(eq(users.id, userId)).get();
+    if (!user) throw new AuthError('No such account.', 'invalid-credentials');
+
+    const enrolment = createTotpEnrolment(user.username);
+
+    this.handle.db
+      .update(users)
+      .set({ totpPendingSecret: this.vault.encrypt(enrolment.secret, `totp:${userId}`) })
+      .where(eq(users.id, userId))
+      .run();
+
+    return { uri: enrolment.uri, secret: enrolment.secret };
+  }
+
+  /** Confirms the authenticator app is working before enrolment is finalised. */
+  confirmTotpEnrolment(userId: string, code: string): string[] {
+    const user = this.handle.db.select().from(users).where(eq(users.id, userId)).get();
+    if (!user?.totpPendingSecret) {
       throw new AuthError('Two-factor setup has not been started.', 'setup-required');
     }
 
-    const secret = this.vault.decrypt(user.totpSecret, `totp:${user.id}`);
+    const secret = this.vault.decrypt(user.totpPendingSecret, `totp:${user.id}`);
     if (!verifyTotp(secret, code)) {
       throw new AuthError(
         'That code is not correct. Check your authenticator app and try again.',
@@ -154,10 +198,135 @@ export class AuthService {
       );
     }
 
+    // Only now does the new secret become the one sign-in checks.
     this.handle.db
       .update(users)
-      .set({ totpEnrolled: true })
+      .set({
+        totpSecret: user.totpPendingSecret,
+        totpPendingSecret: null,
+        totpEnrolled: true,
+      })
       .where(eq(users.id, userId))
+      .run();
+
+    // Any codes from a previous authenticator belong to a secret that is now
+    // gone, so they are replaced rather than left to accumulate.
+    return this.issueRecoveryCodes(userId);
+  }
+
+  /**
+   * Replaces the account's recovery codes and returns them in the clear.
+   *
+   * The only time they are ever readable: they are stored hashed, so a set
+   * that is not written down now cannot be recovered later, only reissued.
+   */
+  issueRecoveryCodes(userId: string, count = 10): string[] {
+    const codes = generateRecoveryCodes(count);
+
+    this.handle.db.delete(recoveryCodes).where(eq(recoveryCodes.userId, userId)).run();
+    this.handle.db
+      .insert(recoveryCodes)
+      .values(
+        codes.map((code) => ({
+          id: crypto.randomUUID(),
+          userId,
+          codeHash: hashToken(code),
+        })),
+      )
+      .run();
+
+    return codes;
+  }
+
+  /** How many codes are left, for the reminder shown in the panel. */
+  recoveryCodeStatus(userId: string): { remaining: number; total: number } {
+    const rows = this.handle.db
+      .select({ usedAt: recoveryCodes.usedAt })
+      .from(recoveryCodes)
+      .where(eq(recoveryCodes.userId, userId))
+      .all();
+
+    return {
+      remaining: rows.filter((row) => row.usedAt === null).length,
+      total: rows.length,
+    };
+  }
+
+  /** Spends a recovery code. Returns false if it is unknown or already used. */
+  consumeRecoveryCode(userId: string, code: string): boolean {
+    const normalised = normaliseRecoveryCode(code);
+    if (normalised.length === 0) return false;
+
+    const match = this.handle.db
+      .select({ id: recoveryCodes.id })
+      .from(recoveryCodes)
+      .where(
+        and(
+          eq(recoveryCodes.userId, userId),
+          eq(recoveryCodes.codeHash, hashToken(normalised)),
+          isNull(recoveryCodes.usedAt),
+        ),
+      )
+      .get();
+
+    if (!match) return false;
+
+    // Guarded on usedAt again so two requests racing the same code cannot both
+    // succeed: whichever loses updates nothing.
+    const result = this.handle.db
+      .update(recoveryCodes)
+      .set({ usedAt: new Date() })
+      .where(and(eq(recoveryCodes.id, match.id), isNull(recoveryCodes.usedAt)))
+      .run();
+
+    return result.changes === 1;
+  }
+
+  /** Abandons an enrolment that was started but never confirmed. */
+  cancelTotpEnrolment(userId: string): void {
+    this.handle.db
+      .update(users)
+      .set({ totpPendingSecret: null })
+      .where(eq(users.id, userId))
+      .run();
+  }
+
+  /** Verifies a code against the account's active secret. */
+  verifyTotpFor(userId: string, code: string): boolean {
+    const user = this.handle.db.select().from(users).where(eq(users.id, userId)).get();
+    if (!user?.totpEnrolled || !user.totpSecret) return false;
+    return verifyTotp(this.vault.decrypt(user.totpSecret, `totp:${user.id}`), code);
+  }
+
+  /** Turns two-factor authentication off, discarding the secret entirely. */
+  disableTotp(userId: string): void {
+    this.handle.db
+      .update(users)
+      .set({ totpSecret: null, totpPendingSecret: null, totpEnrolled: false })
+      .where(eq(users.id, userId))
+      .run();
+
+    // The codes exist only as a way past the second factor. Leaving them
+    // behind would keep a set of live credentials for a door that is now open.
+    this.handle.db.delete(recoveryCodes).where(eq(recoveryCodes.userId, userId)).run();
+  }
+
+  /**
+   * Ends every session but the one making the request.
+   *
+   * Called after a password change, which is what someone does first when
+   * they suspect the account is compromised — and it would achieve nothing if
+   * the intruder's existing cookie kept working.
+   */
+  revokeOtherSessions(userId: string, keepToken: string | undefined): void {
+    this.handle.db
+      .delete(sessions)
+      .where(
+        and(
+          eq(sessions.userId, userId),
+          keepToken ? sql`${sessions.tokenHash} <> ${hashToken(keepToken)}` : undefined,
+        ),
+      )
       .run();
   }
 
@@ -183,6 +352,8 @@ export class AuthService {
     username: string;
     password: string;
     totp?: string;
+    /** Used instead of `totp` when the authenticator is unavailable. */
+    recoveryCode?: string;
     ip: string;
     userAgent?: string;
   }): Promise<{ token: string; user: SessionUser; expiresAt: Date }> {
@@ -222,20 +393,29 @@ export class AuthService {
     }
 
     if (user.totpEnrolled) {
-      if (!input.totp) {
+      if (input.recoveryCode) {
+        if (!this.consumeRecoveryCode(user.id, input.recoveryCode)) {
+          this.throttle.recordFailure(input.ip, input.username);
+          throw new AuthError(
+            'That recovery code is not correct, or has already been used.',
+            'totp-invalid',
+          );
+        }
+      } else if (!input.totp) {
         throw new AuthError(
           'Enter the code from your authenticator app.',
           'totp-required',
         );
-      }
-      if (!user.totpSecret) {
-        throw new AuthError('Two-factor authentication is misconfigured.', 'totp-invalid');
-      }
+      } else {
+        if (!user.totpSecret) {
+          throw new AuthError('Two-factor authentication is misconfigured.', 'totp-invalid');
+        }
 
-      const secret = this.vault.decrypt(user.totpSecret, `totp:${user.id}`);
-      if (!verifyTotp(secret, input.totp)) {
-        this.throttle.recordFailure(input.ip, input.username);
-        throw new AuthError('That code is not correct.', 'totp-invalid');
+        const secret = this.vault.decrypt(user.totpSecret, `totp:${user.id}`);
+        if (!verifyTotp(secret, input.totp)) {
+          this.throttle.recordFailure(input.ip, input.username);
+          throw new AuthError('That code is not correct.', 'totp-invalid');
+        }
       }
     }
 

@@ -1,12 +1,15 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
+import { eq } from 'drizzle-orm';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import { Hostname, SiteManifest } from '@winpanel/shared';
 import { protectedProcedure, router } from '../trpc.js';
 import { SiteError, SiteService } from '../../sites/site-service.js';
+import { sites } from '../../db/schema.js';
 import { detectApp } from '../../detect/detector.js';
+import { discoverNodeVersions, matchVersion } from '../../sites/node-versions.js';
 import { GitClient, validateGitRef, validateRepositoryUrl } from '../../sites/git-client.js';
 
 /**
@@ -30,16 +33,24 @@ const UploadSourceInput = z.object({ kind: z.literal('upload') });
 export const sitesRouter = router({
   list: protectedProcedure.query(({ ctx }) => {
     const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
-    return service.list().map((site) => ({
-      id: site.id,
-      slug: site.slug,
-      displayName: site.displayName,
-      runtime: site.runtime,
-      domains: site.domains as string[],
-      enabled: site.enabled,
-      activePort: site.activeColour === 'blue' ? site.portBlue : site.portGreen,
-      updatedAt: site.updatedAt,
-    }));
+    return service.list().map((site) => {
+      // Ports are allocated when a site is created, so a port on its own says
+      // nothing about whether anything is being served. The list is the front
+      // door of the panel and must not claim a site is live before it is.
+      const last = service.deploymentsFor(site.id, 1)[0];
+
+      return {
+        id: site.id,
+        slug: site.slug,
+        displayName: site.displayName,
+        runtime: site.runtime,
+        domains: site.domains as string[],
+        enabled: site.enabled,
+        activePort: site.activeColour === 'blue' ? site.portBlue : site.portGreen,
+        lastDeploymentStatus: last?.status ?? null,
+        updatedAt: site.updatedAt,
+      };
+    });
   }),
 
   get: protectedProcedure
@@ -204,7 +215,56 @@ export const sitesRouter = router({
       return { jobId };
     }),
 
+  /**
+   * Pins which Node this website builds and runs on.
+   *
+   * Only versions already on the server are accepted: the panel does not
+   * install runtimes, so offering one it cannot provide would turn a settings
+   * change into a failed deployment much later.
+   */
+  setNodeVersion: protectedProcedure
+    .input(
+      z.object({
+        slug: z.string().min(1),
+        /** Empty means "whatever the server's default is". */
+        nodeVersion: z.string().max(32),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
+      const site = service.get(input.slug);
+      if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
+
+      const wanted = input.nodeVersion.trim();
+
+      if (wanted.length > 0) {
+        const installed = await discoverNodeVersions(ctx.app.config.binDir);
+        if (!matchVersion(installed, wanted)) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: `Node ${wanted} is not installed on this server.`,
+          });
+        }
+      }
+
+      const manifest = { ...(site.manifest as Record<string, unknown>) };
+      if (wanted.length > 0) manifest['nodeVersion'] = wanted;
+      else delete manifest['nodeVersion'];
+
+      ctx.app.db.db
+        .update(sites)
+        .set({ manifest, updatedAt: new Date() })
+        .where(eq(sites.id, site.id))
+        .run();
+
+      return {
+        ok: true,
+        note: 'This takes effect the next time the website is deployed.',
+      };
+    }),
+
   setEnv: protectedProcedure
+
     .input(z.object({ slug: z.string().min(1), envVars: z.record(z.string(), z.string()) }))
     .mutation(async ({ ctx, input }) => {
       const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);

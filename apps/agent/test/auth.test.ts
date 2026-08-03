@@ -11,7 +11,12 @@ import {
   safeEquals,
   verifyPassword,
 } from '../src/security/password.js';
-import { createTotpEnrolment, generateRecoveryCodes, verifyTotp } from '../src/security/totp.js';
+import {
+  createTotpEnrolment,
+  generateRecoveryCodes,
+  normaliseRecoveryCode,
+  verifyTotp,
+} from '../src/security/totp.js';
 import { LoginThrottle, ipMatchesAllowlist } from '../src/security/throttle.js';
 
 const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
@@ -116,7 +121,23 @@ describe('TOTP', () => {
     const codes = generateRecoveryCodes();
     expect(codes).toHaveLength(10);
     expect(new Set(codes).size).toBe(10);
-    for (const code of codes) expect(code).toMatch(/^[0-9A-F]{5}-[0-9A-F]{5}$/);
+    for (const code of codes) expect(code).toMatch(/^([0-9A-F]{4}-){3}[0-9A-F]{4}$/);
+  });
+
+  it('gives recovery codes enough entropy to survive a stolen database', () => {
+    // They are stored under SHA-256 rather than argon2, the same as session
+    // tokens, so the randomness has to carry it: 16 hex characters is 64 bits.
+    for (const code of generateRecoveryCodes(3)) {
+      expect(code.replace(/-/g, '')).toHaveLength(16);
+    }
+  });
+
+  it('accepts a recovery code however it was retyped', () => {
+    // Read off paper, so case and dashes are not worth failing someone over.
+    const [code] = generateRecoveryCodes(1);
+    expect(normaliseRecoveryCode(code!.toLowerCase())).toBe(code);
+    expect(normaliseRecoveryCode(code!.replace(/-/g, ''))).toBe(code);
+    expect(normaliseRecoveryCode(` ${code!.toLowerCase()} `)).toBe(code);
   });
 });
 

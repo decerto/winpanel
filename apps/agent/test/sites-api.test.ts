@@ -3,7 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { Secret, TOTP } from 'otpauth';
 import superjson from 'superjson';
 import { createAppContext, type AppContext } from '../src/app-context.js';
 import { createServer } from '../src/server.js';
@@ -65,7 +64,8 @@ beforeEach(async () => {
   server = await createServer(app);
   await server.ready();
 
-  // Get through setup and two-factor so the protected routes are reachable.
+  // Get through setup so the protected routes are reachable. Two-factor is
+  // optional, so there is nothing further to enrol in first.
   const setup = await server.inject({
     method: 'POST',
     url: '/api/trpc/auth.completeSetup',
@@ -77,20 +77,7 @@ beforeEach(async () => {
     }) as object,
   });
 
-  const setupBody = superjson.deserialize(
-    JSON.parse(setup.body).result.data,
-  ) as { totpSecret: string };
   cookie = `winpanel_session=${setup.cookies.find((c: any) => c.name === 'winpanel_session')!.value}`;
-
-  const code = new TOTP({
-    issuer: 'WinPanel',
-    algorithm: 'SHA1',
-    digits: 6,
-    period: 30,
-    secret: Secret.fromBase32(setupBody.totpSecret),
-  }).generate();
-
-  await call('POST', 'auth.confirmTotp', { code });
 });
 
 afterEach(async () => {

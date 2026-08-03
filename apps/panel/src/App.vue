@@ -1,71 +1,215 @@
 <script setup lang="ts">
-import { RouterLink, RouterView, useRoute } from 'vue-router';
-import { Activity, Globe, HardDrive, Mail, Settings, ShieldCheck } from 'lucide-vue-next';
-import { computed } from 'vue';
+import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
+import {
+  Activity,
+  ChevronRight,
+  Globe,
+  LogOut,
+  Mail,
+  Menu,
+  ServerCog,
+  Settings,
+  ShieldCheck,
+  X,
+} from 'lucide-vue-next';
+import { computed, ref, watch } from 'vue';
+import { api } from './lib/api';
 
 /**
  * Application shell: persistent sidebar, top bar, content area.
+ *
+ * Navigation is deliberately server-shaped rather than feature-shaped. Files
+ * and DNS belong to a website, not to the server, so they are not here — you
+ * reach them by opening a website, the same way a filing cabinet has no
+ * drawer labelled "paper".
  *
  * Wording throughout uses what things do rather than what they are called
  * internally — "Websites", not "Sites"; "Email", not "Stalwart".
  */
 
 const route = useRoute();
+const router = useRouter();
 
 const NAV = [
-  { to: '/health', label: 'Server health', icon: Activity },
-  { to: '/sites', label: 'Websites', icon: Globe },
-  { to: '/files', label: 'Files', icon: HardDrive },
-  { to: '/email', label: 'Email', icon: Mail },
-  { to: '/security', label: 'Security', icon: ShieldCheck },
-  { to: '/settings', label: 'Settings', icon: Settings },
+  { to: '/sites', label: 'Websites', icon: Globe, hint: 'Everything you host' },
+  { to: '/health', label: 'Server health', icon: Activity, hint: 'Checks and fixes' },
+  { to: '/email', label: 'Email', icon: Mail, hint: 'Mailboxes and delivery' },
+  { to: '/security', label: 'Security', icon: ShieldCheck, hint: 'Sign-in protection' },
+  { to: '/settings', label: 'Settings', icon: Settings, hint: 'Connected accounts' },
 ] as const;
 
 const title = computed(() => (route.meta['title'] as string | undefined) ?? 'WinPanel');
 
+/**
+ * The trail in the top bar.
+ *
+ * Pages state their own heading, so repeating it here would say the same thing
+ * twice. What the bar is good for is saying where you are while the page is
+ * scrolled away from its heading — which matters most inside a website, where
+ * four tabs all look alike.
+ */
+const crumbs = computed<Array<{ label: string; to?: string }>>(() => {
+  if (!route.path.startsWith('/sites')) return [{ label: title.value }];
+
+  const trail: Array<{ label: string; to?: string }> = [{ label: 'Websites', to: '/sites' }];
+  const slug = route.params['slug'];
+
+  if (route.name === 'new-site') trail.push({ label: 'Add a website' });
+  else if (typeof slug === 'string') trail.push({ label: slug });
+
+  return trail;
+});
+
 // Sign-in and first-run setup are full-screen: there is nothing useful to
 // navigate to until you are through them.
 const bare = computed(() => route.meta['bare'] === true);
+
+const username = ref('');
+void api.auth.me
+  .query()
+  .then((user) => {
+    username.value = user?.username ?? '';
+  })
+  .catch(() => undefined);
+
+const drawerOpen = ref(false);
+watch(() => route.fullPath, () => (drawerOpen.value = false));
+
+async function signOut(): Promise<void> {
+  await api.auth.logout.mutate().catch(() => undefined);
+  await router.push('/login');
+  // The panel caches nothing sensitive in memory beyond this point, but a
+  // full reload is the only way to be sure of it.
+  window.location.reload();
+}
+
+function isCurrent(to: string): boolean {
+  return route.path === to || route.path.startsWith(`${to}/`);
+}
 </script>
 
 <template>
   <RouterView v-if="bare" />
 
-  <div v-else class="flex min-h-screen bg-[--color-surface-sunken]">
+  <div v-else class="flex min-h-screen">
+    <!-- Backdrop for the narrow-screen drawer. -->
+    <div
+      v-if="drawerOpen"
+      class="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm md:hidden"
+      @click="drawerOpen = false"
+    />
+
     <aside
-      class="hidden w-60 shrink-0 border-r border-[--color-border] bg-[--color-surface] md:block"
+      class="fixed inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r border-line
+             bg-canvas/85 backdrop-blur-xl transition-transform md:static md:translate-x-0"
+      :class="drawerOpen ? 'translate-x-0' : '-translate-x-full'"
     >
-      <div class="flex h-14 items-center gap-2 border-b border-[--color-border] px-4">
-        <span class="text-sm font-semibold text-[--color-text]">WinPanel</span>
+      <div class="flex h-16 items-center gap-2.5 px-5">
+        <span
+          class="flex h-8 w-8 items-center justify-center rounded-lg bg-linear-to-b
+                 from-brand to-brand-strong shadow-brand"
+        >
+          <ServerCog :size="17" class="text-white" aria-hidden="true" />
+        </span>
+        <span class="text-[0.95rem] font-semibold tracking-tight">WinPanel</span>
+
+        <button
+          type="button"
+          class="ml-auto text-ink-muted hover:text-ink md:hidden"
+          aria-label="Close menu"
+          @click="drawerOpen = false"
+        >
+          <X :size="18" />
+        </button>
       </div>
 
-      <nav class="p-2" aria-label="Main">
+      <nav class="flex-1 overflow-y-auto px-3 py-2" aria-label="Main">
         <RouterLink
           v-for="item in NAV"
           :key="item.to"
           :to="item.to"
-          class="mb-0.5 flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors"
+          class="group relative mb-1 flex items-start gap-3 rounded-lg px-3 py-2.5 transition-colors"
           :class="
-            route.path.startsWith(item.to)
-              ? 'bg-[--color-brand-subtle] font-medium text-[--color-brand]'
-              : 'text-[--color-text-muted] hover:bg-[--color-surface-sunken]'
+            isCurrent(item.to)
+              ? 'bg-brand-soft/70 text-brand-bright'
+              : 'text-ink-muted hover:bg-white/5 hover:text-ink'
           "
         >
-          <component :is="item.icon" :size="16" aria-hidden="true" />
-          {{ item.label }}
+          <!-- The active marker is a shape as well as a colour. -->
+          <span
+            v-if="isCurrent(item.to)"
+            class="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-brand-bright"
+            aria-hidden="true"
+          />
+          <component :is="item.icon" :size="17" class="mt-0.5 shrink-0" aria-hidden="true" />
+          <span class="min-w-0">
+            <span class="block text-sm font-medium">{{ item.label }}</span>
+            <span class="block truncate text-xs text-ink-faint">{{ item.hint }}</span>
+          </span>
         </RouterLink>
       </nav>
+
+      <div class="border-t border-line p-3">
+        <div class="flex items-center gap-2.5 rounded-lg px-2 py-1.5">
+          <span
+            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-soft
+                   text-xs font-semibold text-brand-bright"
+            aria-hidden="true"
+          >
+            {{ (username || '?').slice(0, 1).toUpperCase() }}
+          </span>
+          <span class="min-w-0 flex-1 truncate text-sm text-ink-muted">
+            {{ username || 'Signed in' }}
+          </span>
+          <button
+            type="button"
+            class="shrink-0 rounded-md p-1.5 text-ink-faint hover:bg-white/5 hover:text-danger"
+            aria-label="Sign out"
+            @click="signOut"
+          >
+            <LogOut :size="15" />
+          </button>
+        </div>
+      </div>
     </aside>
 
     <div class="flex min-w-0 flex-1 flex-col">
       <header
-        class="flex h-14 items-center justify-between border-b border-[--color-border]
-               bg-[--color-surface] px-6"
+        class="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-line
+               bg-canvas/70 px-4 backdrop-blur-xl md:px-8"
       >
-        <h1 class="text-base font-semibold text-[--color-text]">{{ title }}</h1>
+        <button
+          type="button"
+          class="rounded-md p-2 text-ink-muted hover:bg-white/5 hover:text-ink md:hidden"
+          aria-label="Open menu"
+          @click="drawerOpen = true"
+        >
+          <Menu :size="18" />
+        </button>
+
+        <nav class="flex min-w-0 items-center gap-1.5 text-sm" aria-label="Breadcrumb">
+          <template v-for="(crumb, index) in crumbs" :key="crumb.label">
+            <ChevronRight
+              v-if="index > 0"
+              :size="14"
+              class="shrink-0 text-ink-faint"
+              aria-hidden="true"
+            />
+            <RouterLink
+              v-if="crumb.to && index < crumbs.length - 1"
+              :to="crumb.to"
+              class="shrink-0 text-ink-muted hover:text-ink"
+            >
+              {{ crumb.label }}
+            </RouterLink>
+            <span v-else class="truncate font-medium text-ink" aria-current="page">
+              {{ crumb.label }}
+            </span>
+          </template>
+        </nav>
       </header>
 
-      <main class="flex-1 overflow-y-auto p-6">
+      <main class="mx-auto w-full max-w-6xl px-4 py-6 md:px-8 md:py-8">
         <RouterView />
       </main>
     </div>

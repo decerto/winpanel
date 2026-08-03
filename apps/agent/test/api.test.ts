@@ -124,6 +124,43 @@ describe('security headers', () => {
   });
 });
 
+const PASSWORD = 'a-sufficiently-long-password';
+
+/** Runs first-run setup and returns the session cookie it hands back. */
+async function completeSetup(): Promise<string> {
+  const setup = await call('POST', 'auth.completeSetup', {
+    setupToken,
+    username: 'owner',
+    password: PASSWORD,
+  });
+  const session = setup.cookies.find((c: any) => c.name === 'winpanel_session');
+  return `winpanel_session=${session.value}`;
+}
+
+/** Takes an account all the way through two-factor enrolment. */
+async function enrolTotp(cookie: string, currentCode?: string): Promise<string> {
+  const begin = await call(
+    'POST',
+    'auth.beginTotp',
+    { password: PASSWORD, ...(currentCode ? { currentCode } : {}) },
+    cookie,
+  );
+  const secret = begin.body.result.data.secret as string;
+  await call('POST', 'auth.confirmTotp', { code: codeFor(secret) }, cookie);
+  return secret;
+}
+
+/** Enrols and returns the recovery codes handed back at the end. */
+async function enrolAndCollectCodes(cookie: string): Promise<{
+  secret: string;
+  codes: string[];
+}> {
+  const begin = await call('POST', 'auth.beginTotp', { password: PASSWORD }, cookie);
+  const secret = begin.body.result.data.secret as string;
+  const confirm = await call('POST', 'auth.confirmTotp', { code: codeFor(secret) }, cookie);
+  return { secret, codes: confirm.body.result.data.recoveryCodes as string[] };
+}
+
 describe('first-run setup', () => {
   it('reports that setup is needed', async () => {
     const { body } = await call('GET', 'auth.state');
@@ -154,17 +191,24 @@ describe('first-run setup', () => {
     const { body, cookies } = await call('POST', 'auth.completeSetup', {
       setupToken,
       username: 'owner',
-      password: 'a-sufficiently-long-password',
+      password: PASSWORD,
     });
 
     expect(body.error).toBeUndefined();
     expect(body.result.data.user.username).toBe('owner');
-    expect(body.result.data.totpUri).toContain('otpauth://totp/');
+    expect(body.result.data.user.totpEnrolled).toBe(false);
 
     const session = cookies.find((c) => c.name === 'winpanel_session');
     expect(session).toBeDefined();
     expect(session.httpOnly).toBe(true);
     expect(session.sameSite).toBe('Strict');
+  });
+
+  it('spends the setup code as soon as the account exists', async () => {
+    // Enrolment is optional, so waiting until it finished would leave a live
+    // setup code readable on disk for anyone who chose to skip it.
+    await completeSetup();
+    await expect(fs.readFile(path.join(tmpDir, 'setup-token.txt'))).rejects.toThrow();
   });
 
   it('refuses a second setup attempt', async () => {
@@ -184,51 +228,363 @@ describe('first-run setup', () => {
   });
 });
 
-describe('two-factor enrolment gate', () => {
+describe('two-factor enrolment', () => {
   let cookie: string;
-  let totpSecret: string;
 
   beforeEach(async () => {
-    const setup = await call('POST', 'auth.completeSetup', {
-      setupToken,
-      username: 'owner',
-      password: 'a-sufficiently-long-password',
-    });
-    totpSecret = setup.body.result.data.totpSecret;
-    const session = setup.cookies.find((c: any) => c.name === 'winpanel_session');
-    cookie = `winpanel_session=${session.value}`;
+    cookie = await completeSetup();
   });
 
-  it('blocks protected endpoints until enrolment completes', async () => {
-    // The account exists and is signed in, but two-factor is not finished.
-    // An interrupted setup must not leave a single-factor account in charge.
+  it('lets the panel be used without it', async () => {
+    // Two factors are recommended, not required. Refusing to work without
+    // them locked people out of their own server for skipping an optional
+    // step, which is worse than the risk it was guarding against.
     const { body } = await call('GET', 'auth.me', undefined, cookie);
+    expect(body.error).toBeUndefined();
+    expect(body.result.data.totpEnrolled).toBe(false);
+  });
+
+  it('will not start enrolment on a session alone', async () => {
+    // Enrolment decides what the second factor is, so a stolen cookie must
+    // not be able to point it at the attacker's own device.
+    const { body } = await call('POST', 'auth.beginTotp', { password: 'wrong' }, cookie);
     expect(body.error).toBeDefined();
-    expect(body.error.message).toMatch(/two-factor/i);
+    expect(body.error.message).toMatch(/password/i);
+  });
+
+  it('returns a scannable secret when the password checks out', async () => {
+    const { body } = await call('POST', 'auth.beginTotp', { password: PASSWORD }, cookie);
+    expect(body.error).toBeUndefined();
+    expect(body.result.data.uri).toContain('otpauth://totp/');
+    expect(body.result.data.secret).toMatch(/^[A-Z2-7]+$/);
   });
 
   it('rejects an incorrect enrolment code', async () => {
+    await call('POST', 'auth.beginTotp', { password: PASSWORD }, cookie);
     const { body } = await call('POST', 'auth.confirmTotp', { code: '000000' }, cookie);
     expect(body.error).toBeDefined();
   });
 
-  it('unlocks the panel once a valid code is supplied', async () => {
+  it('turns two-factor on once a valid code is supplied', async () => {
+    await enrolTotp(cookie);
+
+    const me = await call('GET', 'auth.me', undefined, cookie);
+    expect(me.body.result.data.totpEnrolled).toBe(true);
+  });
+
+  it('does not enrol from an unstarted enrolment', async () => {
+    const { body } = await call('POST', 'auth.confirmTotp', { code: '000000' }, cookie);
+    expect(body.error).toBeDefined();
+    expect(body.error.message).toMatch(/not been started/i);
+  });
+});
+
+describe('replacing an authenticator', () => {
+  let cookie: string;
+  let original: string;
+
+  beforeEach(async () => {
+    cookie = await completeSetup();
+    original = await enrolTotp(cookie);
+  });
+
+  it('needs a code from the current authenticator', async () => {
+    const { body } = await call('POST', 'auth.beginTotp', { password: PASSWORD }, cookie);
+    expect(body.error).toBeDefined();
+    expect(body.error.message).toMatch(/current authenticator/i);
+  });
+
+  it('keeps the old authenticator working until the new one is confirmed', async () => {
+    // The dangerous version of this feature overwrites the live secret at the
+    // moment the QR is shown. Anyone who closed the tab there would be locked
+    // out, holding an authenticator the server no longer accepts.
+    await call(
+      'POST',
+      'auth.beginTotp',
+      { password: PASSWORD, currentCode: codeFor(original) },
+      cookie,
+    );
+
+    const { body } = await call('POST', 'auth.login', {
+      username: 'owner',
+      password: PASSWORD,
+      totp: codeFor(original),
+    });
+    expect(body.error).toBeUndefined();
+  });
+
+  it('switches to the new authenticator only on confirmation', async () => {
+    const replacement = await enrolTotp(cookie, codeFor(original));
+    expect(replacement).not.toBe(original);
+
+    const withNew = await call('POST', 'auth.login', {
+      username: 'owner',
+      password: PASSWORD,
+      totp: codeFor(replacement),
+    });
+    expect(withNew.body.error).toBeUndefined();
+
+    const withOld = await call('POST', 'auth.login', {
+      username: 'owner',
+      password: PASSWORD,
+      totp: codeFor(original),
+    });
+    expect(withOld.body.error).toBeDefined();
+  });
+
+  it('discards an enrolment that was cancelled', async () => {
+    await call(
+      'POST',
+      'auth.beginTotp',
+      { password: PASSWORD, currentCode: codeFor(original) },
+      cookie,
+    );
+    await call('POST', 'auth.cancelTotp', undefined, cookie);
+
+    const { body } = await call('POST', 'auth.confirmTotp', { code: '000000' }, cookie);
+    expect(body.error.message).toMatch(/not been started/i);
+  });
+});
+
+describe('turning two-factor off', () => {
+  let cookie: string;
+  let secret: string;
+
+  beforeEach(async () => {
+    cookie = await completeSetup();
+    secret = await enrolTotp(cookie);
+  });
+
+  it('refuses without the password', async () => {
+    const { body } = await call(
+      'POST',
+      'auth.disableTotp',
+      { password: 'wrong', code: codeFor(secret) },
+      cookie,
+    );
+    expect(body.error).toBeDefined();
+
+    const me = await call('GET', 'auth.me', undefined, cookie);
+    expect(me.body.result.data.totpEnrolled).toBe(true);
+  });
+
+  it('refuses without a current code', async () => {
+    // Both factors are required to give one of them up, so a stolen password
+    // on its own cannot strip the account back to a single factor.
+    const { body } = await call(
+      'POST',
+      'auth.disableTotp',
+      { password: PASSWORD, code: '000000' },
+      cookie,
+    );
+    expect(body.error).toBeDefined();
+
+    const me = await call('GET', 'auth.me', undefined, cookie);
+    expect(me.body.result.data.totpEnrolled).toBe(true);
+  });
+
+  it('turns it off and stops asking for a code at sign-in', async () => {
+    const off = await call(
+      'POST',
+      'auth.disableTotp',
+      { password: PASSWORD, code: codeFor(secret) },
+      cookie,
+    );
+    expect(off.body.error).toBeUndefined();
+
+    const { body } = await call('POST', 'auth.login', {
+      username: 'owner',
+      password: PASSWORD,
+    });
+    expect(body.error).toBeUndefined();
+  });
+
+  it('forgets the old secret rather than leaving it dormant', async () => {
+    await call(
+      'POST',
+      'auth.disableTotp',
+      { password: PASSWORD, code: codeFor(secret) },
+      cookie,
+    );
+
+    // Re-enrolling must mint a new secret; the discarded one must not come back.
+    const replacement = await enrolTotp(cookie);
+    expect(replacement).not.toBe(secret);
+  });
+});
+
+describe('recovery codes', () => {
+  let cookie: string;
+  let secret: string;
+  let codes: string[];
+
+  beforeEach(async () => {
+    cookie = await completeSetup();
+    ({ secret, codes } = await enrolAndCollectCodes(cookie));
+  });
+
+  it('are issued the moment two-factor is turned on', async () => {
+    expect(codes).toHaveLength(10);
+    expect(new Set(codes).size).toBe(10);
+
+    const status = await call('GET', 'auth.recoveryCodeStatus', undefined, cookie);
+    expect(status.body.result.data).toEqual({ remaining: 10, total: 10 });
+  });
+
+  it('sign in when the authenticator is gone', async () => {
+    const { body } = await call('POST', 'auth.login', {
+      username: 'owner',
+      password: PASSWORD,
+      recoveryCode: codes[0],
+    });
+    expect(body.error).toBeUndefined();
+  });
+
+  it('work exactly once', async () => {
+    await call('POST', 'auth.login', {
+      username: 'owner',
+      password: PASSWORD,
+      recoveryCode: codes[0],
+    });
+
+    const second = await call('POST', 'auth.login', {
+      username: 'owner',
+      password: PASSWORD,
+      recoveryCode: codes[0],
+    });
+    expect(second.body.error).toBeDefined();
+    expect(second.body.error.message).toMatch(/already been used/i);
+
+    const status = await call('GET', 'auth.recoveryCodeStatus', undefined, cookie);
+    expect(status.body.result.data.remaining).toBe(9);
+  });
+
+  it('are accepted however they were retyped', async () => {
+    const { body } = await call('POST', 'auth.login', {
+      username: 'owner',
+      password: PASSWORD,
+      recoveryCode: codes[1]!.toLowerCase().replace(/-/g, ''),
+    });
+    expect(body.error).toBeUndefined();
+  });
+
+  it('still require the password', async () => {
+    const { body } = await call('POST', 'auth.login', {
+      username: 'owner',
+      password: 'definitely-the-wrong-password',
+      recoveryCode: codes[0],
+    });
+    expect(body.error.message).toMatch(/username or password/i);
+
+    // The code must not have been spent by a failed attempt.
+    const status = await call('GET', 'auth.recoveryCodeStatus', undefined, cookie);
+    expect(status.body.result.data.remaining).toBe(10);
+  });
+
+  it('are replaced, not added to, when regenerated', async () => {
+    const { body } = await call(
+      'POST',
+      'auth.regenerateRecoveryCodes',
+      { password: PASSWORD, code: codeFor(secret) },
+      cookie,
+    );
+    const fresh = body.result.data.recoveryCodes as string[];
+    expect(fresh).toHaveLength(10);
+    expect(fresh).not.toContain(codes[0]);
+
+    const status = await call('GET', 'auth.recoveryCodeStatus', undefined, cookie);
+    expect(status.body.result.data).toEqual({ remaining: 10, total: 10 });
+
+    // The old set must be dead, not merely hidden.
+    const old = await call('POST', 'auth.login', {
+      username: 'owner',
+      password: PASSWORD,
+      recoveryCode: codes[0],
+    });
+    expect(old.body.error).toBeDefined();
+  });
+
+  it('cannot be regenerated on a session alone', async () => {
+    const { body } = await call(
+      'POST',
+      'auth.regenerateRecoveryCodes',
+      { password: 'wrong', code: codeFor(secret) },
+      cookie,
+    );
+    expect(body.error).toBeDefined();
+  });
+
+  it('are thrown away when two-factor is turned off', async () => {
+    await call(
+      'POST',
+      'auth.disableTotp',
+      { password: PASSWORD, code: codeFor(secret) },
+      cookie,
+    );
+
+    // They exist only as a way past the second factor; leaving them behind
+    // would keep live credentials for a door that is now open.
+    const status = await call('GET', 'auth.recoveryCodeStatus', undefined, cookie);
+    expect(status.body.result.data).toEqual({ remaining: 0, total: 0 });
+  });
+
+  it('are reissued when the authenticator is replaced', async () => {
+    const replacement = await call(
+      'POST',
+      'auth.beginTotp',
+      { password: PASSWORD, currentCode: codeFor(secret) },
+      cookie,
+    );
+    const newSecret = replacement.body.result.data.secret as string;
     const confirm = await call(
       'POST',
       'auth.confirmTotp',
-      { code: codeFor(totpSecret) },
+      { code: codeFor(newSecret) },
       cookie,
     );
-    expect(confirm.body.error).toBeUndefined();
 
-    const me = await call('GET', 'auth.me', undefined, cookie);
-    expect(me.body.error).toBeUndefined();
-    expect(me.body.result.data.username).toBe('owner');
+    // The old codes belonged to a secret that no longer exists.
+    expect(confirm.body.result.data.recoveryCodes).not.toContain(codes[0]);
+  });
+});
+
+describe('changing the password', () => {
+  let cookie: string;
+
+  beforeEach(async () => {
+    cookie = await completeSetup();
   });
 
-  it('consumes the setup code once enrolment finishes', async () => {
-    await call('POST', 'auth.confirmTotp', { code: codeFor(totpSecret) }, cookie);
-    await expect(fs.readFile(path.join(tmpDir, 'setup-token.txt'))).rejects.toThrow();
+  it('refuses without the current password', async () => {
+    const { body } = await call(
+      'POST',
+      'auth.changePassword',
+      { currentPassword: 'wrong', newPassword: 'a-brand-new-long-password' },
+      cookie,
+    );
+    expect(body.error).toBeDefined();
+  });
+
+  it('signs every other browser out', async () => {
+    // Changing the password is what someone does when they suspect the
+    // account is compromised, and it achieves nothing if the intruder's
+    // cookie keeps working.
+    const other = await call('POST', 'auth.login', { username: 'owner', password: PASSWORD });
+    const otherCookie = `winpanel_session=${other.cookies.find((c) => c.name === 'winpanel_session')!.value}`;
+
+    await call(
+      'POST',
+      'auth.changePassword',
+      { currentPassword: PASSWORD, newPassword: 'a-brand-new-long-password' },
+      cookie,
+    );
+
+    const stale = await call('GET', 'auth.me', undefined, otherCookie);
+    expect(stale.body.error).toBeDefined();
+
+    // The session that made the change stays signed in.
+    const mine = await call('GET', 'auth.me', undefined, cookie);
+    expect(mine.body.error).toBeUndefined();
   });
 });
 
@@ -236,25 +592,14 @@ describe('sign-in', () => {
   let totpSecret: string;
 
   beforeEach(async () => {
-    const setup = await call('POST', 'auth.completeSetup', {
-      setupToken,
-      username: 'owner',
-      password: 'a-sufficiently-long-password',
-    });
-    totpSecret = setup.body.result.data.totpSecret;
-    const session = setup.cookies.find((c: any) => c.name === 'winpanel_session');
-    await call(
-      'POST',
-      'auth.confirmTotp',
-      { code: codeFor(totpSecret) },
-      `winpanel_session=${session.value}`,
-    );
+    const cookie = await completeSetup();
+    totpSecret = await enrolTotp(cookie);
   });
 
   it('requires a two-factor code once enrolled', async () => {
     const { body } = await call('POST', 'auth.login', {
       username: 'owner',
-      password: 'a-sufficiently-long-password',
+      password: PASSWORD,
     });
     expect(body.error).toBeDefined();
     expect(body.error.message).toMatch(/authenticator app/i);
@@ -274,7 +619,7 @@ describe('sign-in', () => {
   it('rejects an unknown user with the same message', async () => {
     const { body } = await call('POST', 'auth.login', {
       username: 'nosuchuser',
-      password: 'a-sufficiently-long-password',
+      password: PASSWORD,
       totp: '123456',
     });
     expect(body.error.message).toMatch(/username or password/i);
@@ -283,7 +628,7 @@ describe('sign-in', () => {
   it('signs in with password and a valid code', async () => {
     const { body, cookies } = await call('POST', 'auth.login', {
       username: 'owner',
-      password: 'a-sufficiently-long-password',
+      password: PASSWORD,
       totp: codeFor(totpSecret),
     });
 
@@ -306,6 +651,57 @@ describe('sign-in', () => {
       'winpanel_session=totally-made-up-token',
     );
     expect(body.error).toBeDefined();
+  });
+});
+
+describe('email', () => {
+  let cookie: string;
+
+  beforeEach(async () => {
+    cookie = await completeSetup();
+  });
+
+  it('separates "never connected" from "the mail server is down"', async () => {
+    // The two need different answers, so the panel is told which it is
+    // rather than being left to guess from a failure.
+    const { body } = await call('GET', 'mail.serverStatus', undefined, cookie);
+
+    expect(body.result.data.configured).toBe(false);
+    expect(body.result.data.connected).toBe(false);
+    // The wording depends on whether a mail server happens to be running on
+    // this machine, so only the subject is asserted.
+    expect(body.result.data.message).toMatch(/mail server/i);
+  });
+
+  it('says what to do instead of failing obscurely when nothing is connected', async () => {
+    const { body } = await call(
+      'GET',
+      `mail.mailboxes?input=${encodeURIComponent(
+        JSON.stringify(superjson.serialize({ domain: 'example.com' })),
+      )}`,
+      undefined,
+      cookie,
+    );
+
+    expect(body.error.message).toMatch(/not connected to the mail server/i);
+  });
+
+  it('refuses to delete a mailbox unless the address is typed back', async () => {
+    // Checked before the mail server is contacted at all: deleting a mailbox
+    // destroys the mail in it, and there is no undo.
+    const { body } = await call(
+      'POST',
+      'mail.deleteMailbox',
+      { address: 'sam@example.com', confirmAddress: 'sam@example.org' },
+      cookie,
+    );
+
+    expect(body.error.message).toMatch(/does not match/i);
+  });
+
+  it('needs a session like everything else', async () => {
+    const { body } = await call('GET', 'mail.serverStatus');
+    expect(body.error.message).toMatch(/sign in/i);
   });
 });
 

@@ -19,6 +19,7 @@
 #endif
 #define AppPublisher "WinPanel"
 #define PanelPort "8443"
+#define ServiceId "winpanel-agent"
 
 [Setup]
 AppId={{8F3C1A94-2E7B-4D5A-9C61-7B2E4F8A1D33}
@@ -99,6 +100,27 @@ begin
   { The bootstrap command detects the machine's address; this is the local
     fallback used for the "open now" shortcut. }
   Result := 'https://localhost:' + '{#PanelPort}';
+end;
+
+{ Upgrading over a running install cannot work while the service is up: it
+  holds node.exe and the agent's native modules open, and Inno Setup would
+  stall on "the file is in use" for files the user has no idea about. `net
+  stop` is used rather than `sc stop` because it waits for the service to
+  actually stop instead of merely asking. A first install has nothing to stop,
+  so the result code is deliberately ignored. }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Result := '';
+  Exec(
+    ExpandConstant('{sys}\net.exe'),
+    'stop {#ServiceId} /y',
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  );
 end;
 
 function GetRemoveSitesFlag(Param: String): String;

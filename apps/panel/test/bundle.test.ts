@@ -36,6 +36,7 @@ const ALLOWED_ORIGINS = [
   // User-initiated help links (create an access token)
   'https://gitlab.com',
   'https://bitbucket.org',
+  'https://dash.cloudflare.com',
   // User-initiated link to the hosting control panel, where outbound mail is
   // unblocked and reverse DNS is set — neither of which this panel can do.
   'https://www.ovh.com',

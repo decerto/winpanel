@@ -46,7 +46,7 @@ async function routerSources(): Promise<Array<{ file: string; source: string }>>
 /** Finds `name: someProcedure` declarations. */
 function findProcedures(source: string): Array<{ name: string; procedure: string }> {
   const matches = source.matchAll(
-    /^\s{2}(\w+):\s*(publicProcedure|publicAuditedProcedure|authedProcedure|protectedProcedure)/gm,
+    /^\s{2}(\w+):\s*(publicProcedure|publicAuditedProcedure|protectedProcedure)/gm,
   );
 
   return [...matches].map((match) => ({
@@ -92,20 +92,29 @@ describe('API authorisation', () => {
     }
   });
 
-  it('requires two-factor for everything except enrolment itself', async () => {
-    // authedProcedure means "signed in but two-factor not finished". Only the
-    // endpoints needed to finish enrolling should use it, or an interrupted
-    // setup would leave a permanently single-factor account in charge.
-    const allowedAuthedOnly = new Set(['confirmTotp', 'logout', 'ping']);
-    const offenders: string[] = [];
+  it('re-authenticates before anything that changes how the account is protected', async () => {
+    /*
+     * A session cookie is not enough to alter the account's own defences.
+     * Without this, a stolen cookie could silently repoint two-factor at the
+     * attacker's device, or strip it off entirely, and the real owner would
+     * find out at their next sign-in.
+     */
+    const source = await fs.readFile(path.join(ROUTERS_DIR, 'auth.ts'), 'utf8');
 
-    for (const { file, source } of await routerSources()) {
-      for (const { name, procedure } of findProcedures(source)) {
-        if (procedure === 'authedProcedure' && !allowedAuthedOnly.has(name)) {
-          offenders.push(`${file}: ${name}`);
-        }
-      }
-    }
+    // Each procedure runs to the start of the next one.
+    const starts = [...source.matchAll(/^ {2}(\w+):/gm)];
+    const bodyOf = (name: string): string => {
+      const at = starts.findIndex((match) => match[1] === name);
+      if (at === -1) return '';
+      return source.slice(starts[at]!.index, starts[at + 1]?.index ?? source.length);
+    };
+
+    const offenders = [
+      'beginTotp',
+      'disableTotp',
+      'regenerateRecoveryCodes',
+      'changePassword',
+    ].filter((name) => !bodyOf(name).includes('reauthenticate'));
 
     expect(offenders).toEqual([]);
   });

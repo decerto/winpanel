@@ -1,11 +1,13 @@
 import { z } from 'zod';
-import { authedProcedure, protectedProcedure, router } from '../trpc.js';
+import { protectedProcedure, router } from '../trpc.js';
 import { authRouter } from './auth.js';
 import { checksRouter } from './checks.js';
 import { sitesRouter } from './sites.js';
 import { filesRouter } from './files.js';
 import { dnsRouter } from './dns.js';
 import { mailRouter } from './mail.js';
+import { systemRouter } from './system.js';
+import { componentsRouter } from './components.js';
 
 const jobsRouter = router({
   list: protectedProcedure
@@ -58,11 +60,13 @@ export const appRouter = router({
   files: filesRouter,
   dns: dnsRouter,
   mail: mailRouter,
+  system: systemRouter,
+  components: componentsRouter,
   jobs: jobsRouter,
   audit: auditRouter,
 
   /** Cheap liveness probe used by the installer and the service wrapper. */
-  ping: authedProcedure.query(() => ({ ok: true, at: new Date().toISOString() })),
+  ping: protectedProcedure.query(() => ({ ok: true, at: new Date().toISOString() })),
 });
 
 export type AppRouter = typeof appRouter;

@@ -28,6 +28,14 @@ export const users = sqliteTable(
       .default('admin'),
     /** Encrypted with the vault. Null until enrolment completes. */
     totpSecret: text('totp_secret'),
+    /*
+     * An enrolment that has been started but not proven yet.
+     *
+     * Kept apart from the live secret so that replacing an authenticator
+     * cannot lock anyone out: until a code from the new device is accepted,
+     * sign-in still expects codes from the old one.
+     */
+    totpPendingSecret: text('totp_pending_secret'),
     totpEnrolled: integer('totp_enrolled', { mode: 'boolean' }).notNull().default(false),
     disabled: integer('disabled', { mode: 'boolean' }).notNull().default(false),
     lastLoginAt: integer('last_login_at', { mode: 'timestamp_ms' }),
@@ -52,6 +60,31 @@ export const sessions = sqliteTable(
       .default(sql`(unixepoch() * 1000)`),
   },
   (table) => [index('sessions_user_idx').on(table.userId)],
+);
+
+/**
+ * Single-use codes for signing in when the authenticator is gone.
+ *
+ * Without these the second factor is also a single point of failure: a lost
+ * phone locks the owner out of the machine their websites run on, and the
+ * only way back is editing this database by hand over RDP.
+ */
+export const recoveryCodes = sqliteTable(
+  'recovery_codes',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** SHA-256 of the code. The code itself is shown once and never stored. */
+    codeHash: text('code_hash').notNull(),
+    /** Set the moment it is spent, so a code works exactly once. */
+    usedAt: integer('used_at', { mode: 'timestamp_ms' }),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (table) => [index('recovery_codes_user_idx').on(table.userId)],
 );
 
 /** Failed login tracking, for progressive rate limiting and IP banning. */

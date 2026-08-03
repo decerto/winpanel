@@ -98,13 +98,17 @@ Then:
 
 1. Enter the **setup code** from the installer
 2. Choose a username and password (12 characters minimum)
-3. **Scan the two-factor QR code** with your authenticator app and enter a code
+3. **Set up two-factor authentication** — scan the QR code with your authenticator app and
+   enter a code, or choose **Skip for now**
+4. If you turned it on, **save the ten recovery codes** shown on the next screen
 
-Two-factor is not optional. The panel sits on a public IP and controls every site and
-mailbox on the machine.
+Two-factor is optional but strongly recommended. The panel sits on a public IP and controls
+every site and mailbox on the machine, so without it a leaked password is enough to lose all
+of it. You can turn it on, replace it or turn it off at any time from **Security**.
 
-> **Save the two-factor key** shown on that screen somewhere safe. Without it, losing your
-> phone means losing access to the panel.
+> **Save the recovery codes.** They are stored hashed, so that screen is the only time they
+> can be read. Each one signs you in once if you lose your phone. Run out of both the
+> authenticator and the codes and the only way back is console access to the server.
 
 ### Fix anything the Health page flags
 

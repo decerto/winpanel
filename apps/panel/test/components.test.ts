@@ -3,6 +3,11 @@ import { mount } from '@vue/test-utils';
 import type { CheckResult } from '@winpanel/shared';
 import StatusBadge from '../src/components/StatusBadge.vue';
 import CheckCard from '../src/components/CheckCard.vue';
+import QrCode from '../src/components/QrCode.vue';
+import TotpEnrolment from '../src/components/TotpEnrolment.vue';
+import RecoveryCodes from '../src/components/RecoveryCodes.vue';
+import PaginationBar from '../src/components/PaginationBar.vue';
+import { siteStatus } from '../src/lib/site-status';
 
 /**
  * The design rule these tests defend: a status must never be conveyed by
@@ -170,5 +175,201 @@ describe('CheckCard', () => {
     });
     expect(wrapper.find('button').exists()).toBe(false);
     expect(wrapper.text()).toContain('Allowed');
+  });
+});
+
+describe('QrCode', () => {
+  // What two-factor setup actually passes in.
+  const uri =
+    'otpauth://totp/WinPanel:admin?secret=BU4675JDDOTPMLT6TS6VOPUAAGDH7BWE&issuer=WinPanel&algorithm=SHA1&digits=6&period=30';
+
+  it('draws the code as inline SVG, so nothing is fetched to render it', () => {
+    const wrapper = mount(QrCode, { props: { value: uri } });
+
+    const svg = wrapper.find('svg');
+    expect(svg.exists()).toBe(true);
+    expect(wrapper.find('path').attributes('d')?.length ?? 0).toBeGreaterThan(0);
+    expect(wrapper.html()).not.toContain('<img');
+  });
+
+  it('puts the code on a white background whatever the page behind it', () => {
+    // The panel is dark. Drawn straight onto it, the code cannot be scanned.
+    const wrapper = mount(QrCode, { props: { value: uri } });
+    expect(wrapper.find('rect').attributes('fill')).toBe('#ffffff');
+  });
+
+  it('leaves a quiet zone around the modules', () => {
+    // Scanners need a light margin to find the corner patterns.
+    const wrapper = mount(QrCode, { props: { value: uri } });
+    const [, , size] = wrapper.find('svg').attributes('viewBox')!.split(' ').map(Number);
+
+    const modules = (wrapper.find('path').attributes('d')!.match(/M(\d+) (\d+)h/g) ?? []).map(
+      (move) => move.match(/M(\d+) (\d+)h/)!.slice(1).map(Number) as [number, number],
+    );
+
+    expect(Math.min(...modules.map(([column]) => column))).toBeGreaterThanOrEqual(2);
+    expect(Math.min(...modules.map(([, row]) => row))).toBeGreaterThanOrEqual(2);
+    expect(Math.max(...modules.map(([column]) => column))).toBeLessThanOrEqual(size! - 3);
+  });
+
+  it('is announced to screen readers rather than left as an unlabelled graphic', () => {
+    const wrapper = mount(QrCode, { props: { value: uri, label: 'Two-factor setup QR code' } });
+    expect(wrapper.find('svg').attributes('role')).toBe('img');
+    expect(wrapper.find('svg').attributes('aria-label')).toBe('Two-factor setup QR code');
+  });
+
+  it('renders nothing rather than an empty box before the value arrives', () => {
+    expect(mount(QrCode, { props: { value: '' } }).find('svg').exists()).toBe(false);
+  });
+});
+
+describe('TotpEnrolment', () => {
+  const props = {
+    uri: 'otpauth://totp/WinPanel:owner?secret=BU4675JDDOTPMLT6TS6VOPUAAGDH7BWE&issuer=WinPanel',
+    secret: 'BU4675JDDOTPMLT6TS6VOPUAAGDH7BWE',
+  };
+
+  it('offers both ways in: the code to scan and the key to type', () => {
+    // Plenty of servers are administered from a machine with no camera, and
+    // some authenticator apps cannot scan at all.
+    const wrapper = mount(TotpEnrolment, { props });
+    expect(wrapper.findComponent(QrCode).exists()).toBe(true);
+    expect(wrapper.text()).toContain(props.secret);
+  });
+
+  it('will not submit until a full six-digit code is entered', async () => {
+    const wrapper = mount(TotpEnrolment, { props });
+    const button = wrapper.find('button[type="submit"]');
+
+    expect(button.attributes('disabled')).toBeDefined();
+    await wrapper.find('input').setValue('12345');
+    expect(button.attributes('disabled')).toBeDefined();
+    await wrapper.find('input').setValue('123456');
+    expect(button.attributes('disabled')).toBeUndefined();
+  });
+
+  it('emits the typed code so enrolment is only ever finished by proving it works', async () => {
+    const wrapper = mount(TotpEnrolment, { props });
+    await wrapper.find('input').setValue('123456');
+    await wrapper.find('form').trigger('submit');
+    expect(wrapper.emitted('confirm')?.[0]).toEqual(['123456']);
+  });
+
+  it('warns that losing the key means losing access', () => {
+    expect(mount(TotpEnrolment, { props }).text()).toMatch(/losing your phone/i);
+  });
+
+  it('offers a way out only when the caller provides one', async () => {
+    expect(mount(TotpEnrolment, { props }).find('button[type="button"]').exists()).toBe(false);
+
+    const wrapper = mount(TotpEnrolment, { props: { ...props, cancelLabel: 'Skip' } });
+    await wrapper.find('button[type="button"]').trigger('click');
+    expect(wrapper.emitted('cancel')).toBeTruthy();
+  });
+});
+
+describe('RecoveryCodes', () => {
+  const codes = Array.from({ length: 10 }, (_, index) => `AAAA-BBBB-CCCC-${1000 + index}`);
+
+  it('shows every code', () => {
+    const wrapper = mount(RecoveryCodes, { props: { codes } });
+    for (const code of codes) expect(wrapper.text()).toContain(code);
+  });
+
+  it('says plainly that this is the only time they can be read', () => {
+    // They are stored hashed. Someone who clicks past without saving them
+    // cannot get this set back, only replace it.
+    expect(mount(RecoveryCodes, { props: { codes } }).text()).toMatch(/not shown again/i);
+  });
+
+  it('will not let the user move on until they confirm they have saved them', async () => {
+    const wrapper = mount(RecoveryCodes, { props: { codes } });
+    const done = wrapper.findAll('button').at(-1)!;
+
+    expect(done.attributes('disabled')).toBeDefined();
+    await wrapper.find('input[type="checkbox"]').setValue(true);
+    expect(done.attributes('disabled')).toBeUndefined();
+
+    await done.trigger('click');
+    expect(wrapper.emitted('done')).toBeTruthy();
+  });
+});
+
+describe('PaginationBar', () => {
+  const props = { page: 1, total: 40, pageSize: 10, noun: 'websites' };
+
+  it('stays out of the way when everything already fits', () => {
+    // A list of three does not need paging, and a control that does nothing
+    // is just another thing to read past.
+    const wrapper = mount(PaginationBar, { props: { ...props, total: 8 } });
+    expect(wrapper.find('nav').exists()).toBe(false);
+  });
+
+  it('says which of how many is on screen', () => {
+    const wrapper = mount(PaginationBar, { props: { ...props, page: 2 } });
+    expect(wrapper.text()).toContain('11');
+    expect(wrapper.text()).toContain('20');
+    expect(wrapper.text()).toContain('40 websites');
+  });
+
+  it('counts the last page even when it is not full', () => {
+    const wrapper = mount(PaginationBar, { props: { ...props, total: 41, page: 5 } });
+    expect(wrapper.text()).toContain('41 of 41');
+  });
+
+  it('cannot be walked off either end', async () => {
+    const first = mount(PaginationBar, { props });
+    expect(first.find('button[aria-label="Previous page"]').attributes('disabled')).toBeDefined();
+
+    const last = mount(PaginationBar, { props: { ...props, page: 4 } });
+    expect(last.find('button[aria-label="Next page"]').attributes('disabled')).toBeDefined();
+  });
+
+  it('asks for the page that was clicked', async () => {
+    const wrapper = mount(PaginationBar, { props });
+    await wrapper.find('button[aria-label="Page 3"]').trigger('click');
+    expect(wrapper.emitted('update:page')?.[0]).toEqual([3]);
+  });
+
+  it('collapses a long run of pages rather than printing all of them', () => {
+    const wrapper = mount(PaginationBar, { props: { ...props, total: 500, page: 25 } });
+    const numbered = wrapper.findAll('button[aria-label^="Page"]');
+
+    expect(numbered.length).toBeLessThan(8);
+    // The two ends stay reachable in one click however long the list is.
+    expect(wrapper.find('button[aria-label="Page 1"]').exists()).toBe(true);
+    expect(wrapper.find('button[aria-label="Page 50"]').exists()).toBe(true);
+  });
+
+  it('marks the current page for screen readers, not just visually', () => {
+    const wrapper = mount(PaginationBar, { props: { ...props, page: 2 } });
+    expect(wrapper.find('button[aria-label="Page 2"]').attributes('aria-current')).toBe('page');
+  });
+});
+
+describe('what a website is said to be doing', () => {
+  it('only calls it live once a deployment has actually succeeded', () => {
+    // A port is allocated when a site is created, so the port alone proves
+    // nothing. Claiming "live" for something never deployed sends people
+    // looking for a fault in DNS.
+    expect(siteStatus({ lastDeploymentStatus: null, activePort: 3001 }).label).toBe(
+      'Not deployed',
+    );
+    expect(siteStatus({ lastDeploymentStatus: 'succeeded', activePort: 3001 }).label).toBe(
+      'Live on 3001',
+    );
+  });
+
+  it('distinguishes a failed deploy from one still running', () => {
+    expect(siteStatus({ lastDeploymentStatus: 'failed', activePort: 1 }).label).toMatch(/failed/i);
+    expect(siteStatus({ lastDeploymentStatus: 'running', activePort: 1 }).label).toBe('Deploying');
+  });
+
+  it('pairs every colour with words', () => {
+    for (const status of ['succeeded', 'failed', 'running', null]) {
+      const result = siteStatus({ lastDeploymentStatus: status, activePort: 3000 });
+      expect(result.label.length, String(status)).toBeGreaterThan(0);
+      expect(result.dot, String(status)).toMatch(/^bg-/);
+    }
   });
 });

@@ -8,6 +8,20 @@
       "when": 1785693387956,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1785782973115,
+      "tag": "0001_add_totp_pending_secret",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1785784158855,
+      "tag": "0002_add_recovery_codes",
+      "breakpoints": true
     }
   ]
 }

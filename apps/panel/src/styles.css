@@ -4,8 +4,18 @@
  * Design tokens.
  *
  * Tailwind v4 is CSS-first: the theme lives here rather than in a
- * tailwind.config.js. Colours are declared as semantic tokens so that a
- * status colour is defined once and every component agrees on it.
+ * tailwind.config.js. Every colour is declared once as a semantic token, so
+ * "danger" means the same red in a badge, a button and a log line.
+ *
+ * Tokens are named for the role they play rather than the value they hold
+ * (`ink`, `line`, `canvas`), because names like `gray-800` stop being true the
+ * moment the palette is touched.
+ *
+ * Names matter for a second reason: a token declared as `--color-surface` makes
+ * Tailwind generate `bg-surface` / `text-surface` / `border-surface`. Reaching
+ * for the variable directly (`bg-[--color-surface]`) is Tailwind v3 syntax and
+ * silently compiles to invalid CSS under v4 — the whole palette disappears and
+ * the panel renders as undecorated black and white.
  *
  * Fonts are self-hosted and bundled. The panel has to render correctly on a
  * firewalled server with no outbound internet, and an admin panel that
@@ -17,16 +27,25 @@
     'Inter var', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'Cascadia Code', Consolas, 'Courier New', monospace;
 
-  --color-surface: oklch(100% 0 0);
-  --color-surface-raised: oklch(98.5% 0.002 250);
-  --color-surface-sunken: oklch(96.5% 0.004 250);
-  --color-border: oklch(91% 0.005 250);
-  --color-text: oklch(22% 0.01 250);
-  --color-text-muted: oklch(50% 0.012 250);
+  /*
+   * Surfaces, dark to light. All carry a slight violet cast so the purple
+   * accents read as part of the same palette rather than stickers on grey.
+   */
+  --color-canvas: oklch(15.5% 0.018 296);
+  --color-surface: oklch(20% 0.021 296);
+  --color-elevated: oklch(24.5% 0.024 296);
+  --color-sunken: oklch(17% 0.019 296);
+  --color-line: oklch(30% 0.021 296);
+  --color-line-strong: oklch(41% 0.03 296);
 
-  --color-brand: oklch(55% 0.19 255);
-  --color-brand-hover: oklch(48% 0.19 255);
-  --color-brand-subtle: oklch(96% 0.03 255);
+  --color-ink: oklch(96% 0.006 296);
+  --color-ink-muted: oklch(74% 0.018 296);
+  --color-ink-faint: oklch(59% 0.02 296);
+
+  --color-brand: oklch(63% 0.2 300);
+  --color-brand-strong: oklch(55% 0.21 300);
+  --color-brand-bright: oklch(79% 0.15 300);
+  --color-brand-soft: oklch(30% 0.085 300);
 
   /*
    * Status colours.
@@ -35,61 +54,68 @@
    * label as well, so the meaning survives colour blindness, high-contrast
    * modes and bad monitors.
    */
-  --color-status-blocked: oklch(52% 0.21 25);
-  --color-status-blocked-bg: oklch(96% 0.03 25);
-  --color-status-warn: oklch(62% 0.15 75);
-  --color-status-warn-bg: oklch(97% 0.04 85);
-  --color-status-ok: oklch(55% 0.14 155);
-  --color-status-ok-bg: oklch(96% 0.03 155);
-  --color-status-absent: oklch(60% 0.01 250);
-  --color-status-absent-bg: oklch(96% 0.003 250);
-  --color-status-checking: oklch(58% 0.12 255);
-  --color-status-checking-bg: oklch(96% 0.03 255);
+  --color-ok: oklch(79% 0.16 155);
+  --color-ok-soft: oklch(27% 0.06 155);
+  --color-warn: oklch(84% 0.15 85);
+  --color-warn-soft: oklch(29% 0.06 75);
+  --color-danger: oklch(71% 0.19 20);
+  --color-danger-soft: oklch(28% 0.08 20);
+  --color-info: oklch(77% 0.13 250);
+  --color-info-soft: oklch(28% 0.06 260);
+  --color-idle: oklch(67% 0.015 296);
+  --color-idle-soft: oklch(26% 0.012 296);
 
-  --radius-card: 0.75rem;
+  --radius-card: 0.875rem;
+
+  --shadow-card: 0 1px 2px oklch(0% 0 0 / 0.4), 0 10px 30px -18px oklch(0% 0 0 / 0.8);
+  --shadow-pop: 0 1px 2px oklch(0% 0 0 / 0.4), 0 24px 48px -24px oklch(0% 0 0 / 0.9);
+  --shadow-brand: 0 6px 20px -8px oklch(55% 0.21 300 / 0.65);
 }
 
-/* Dark theme. Servers get looked at in dark rooms at unsociable hours. */
 @layer base {
-  .dark {
-    --color-surface: oklch(19% 0.012 255);
-    --color-surface-raised: oklch(23% 0.014 255);
-    --color-surface-sunken: oklch(16% 0.012 255);
-    --color-border: oklch(31% 0.014 255);
-    --color-text: oklch(95% 0.005 250);
-    --color-text-muted: oklch(70% 0.012 250);
-
-    --color-brand: oklch(70% 0.16 255);
-    --color-brand-hover: oklch(78% 0.16 255);
-    --color-brand-subtle: oklch(28% 0.06 255);
-
-    --color-status-blocked: oklch(70% 0.18 25);
-    --color-status-blocked-bg: oklch(28% 0.07 25);
-    --color-status-warn: oklch(78% 0.14 80);
-    --color-status-warn-bg: oklch(29% 0.06 80);
-    --color-status-ok: oklch(72% 0.15 155);
-    --color-status-ok-bg: oklch(26% 0.06 155);
-    --color-status-absent: oklch(65% 0.01 250);
-    --color-status-absent-bg: oklch(26% 0.005 250);
-    --color-status-checking: oklch(72% 0.13 255);
-    --color-status-checking-bg: oklch(27% 0.06 255);
-  }
-
   html {
-    color-scheme: light dark;
+    /* Dark only. This is a server console, not a reading app. */
+    color-scheme: dark;
   }
 
   body {
-    background-color: var(--color-surface-sunken);
-    color: var(--color-text);
+    background-color: var(--color-canvas);
+    /*
+     * Two very wide, very faint pools of colour rather than a flat fill, fixed
+     * so they stay put while content scrolls.
+     */
+    background-image:
+      radial-gradient(1100px 620px at 6% -12%, oklch(48% 0.17 300 / 0.22), transparent 68%),
+      radial-gradient(820px 500px at 100% -6%, oklch(50% 0.13 255 / 0.15), transparent 70%);
+    background-attachment: fixed;
+    color: var(--color-ink);
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background-color: oklch(55% 0.2 300 / 0.45);
+    color: var(--color-ink);
   }
 
   /* A visible focus ring, always. Keyboard navigation must be usable. */
   :focus-visible {
-    outline: 2px solid var(--color-brand);
+    outline: 2px solid var(--color-brand-bright);
     outline-offset: 2px;
+    border-radius: 0.375rem;
+  }
+
+  /* Native controls default to blue; they should agree with the theme. */
+  input[type='checkbox'],
+  input[type='radio'],
+  progress {
+    accent-color: var(--color-brand);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
   }
 
   /* Respect the reduced-motion preference rather than overriding it. */
@@ -102,5 +128,164 @@
       transition-duration: 0.01ms !important;
       scroll-behavior: auto !important;
     }
+  }
+}
+
+/*
+ * Component classes.
+ *
+ * A button appears on nearly every screen, and eleven utility classes repeated
+ * forty times is where visual consistency goes to die. Written as plain CSS
+ * rather than @apply so the declarations stay readable.
+ */
+@layer components {
+  .card {
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-card);
+    background-color: var(--color-surface);
+    /* A barely-there top highlight, so the card reads as lit from above. */
+    background-image: linear-gradient(180deg, oklch(100% 0 0 / 0.035), oklch(100% 0 0 / 0) 120px);
+    box-shadow: var(--shadow-card);
+  }
+
+  .card-interactive {
+    transition:
+      border-color 150ms ease,
+      box-shadow 150ms ease;
+  }
+
+  .card-interactive:hover {
+    border-color: oklch(63% 0.2 300 / 0.55);
+    box-shadow: var(--shadow-pop);
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    border-radius: 0.5rem;
+    border: 1px solid transparent;
+    padding: 0.5rem 0.9rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1.25rem;
+    white-space: nowrap;
+    transition:
+      background-color 130ms ease,
+      background-image 130ms ease,
+      border-color 130ms ease,
+      color 130ms ease;
+  }
+
+  .btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+    box-shadow: none;
+  }
+
+  .btn-sm {
+    padding: 0.35rem 0.7rem;
+    font-size: 0.8125rem;
+  }
+
+  .btn-lg {
+    padding: 0.65rem 1.1rem;
+  }
+
+  .btn-primary {
+    background-image: linear-gradient(180deg, oklch(67% 0.2 300), oklch(56% 0.21 300));
+    color: oklch(99% 0.01 300);
+    box-shadow: var(--shadow-brand);
+  }
+
+  .btn-primary:hover:not(:disabled) {
+    background-image: linear-gradient(180deg, oklch(72% 0.2 300), oklch(61% 0.21 300));
+  }
+
+  .btn-ghost {
+    border-color: var(--color-line);
+    background-color: oklch(100% 0 0 / 0.03);
+    color: var(--color-ink);
+  }
+
+  .btn-ghost:hover:not(:disabled) {
+    border-color: var(--color-line-strong);
+    background-color: oklch(100% 0 0 / 0.07);
+  }
+
+  .btn-danger {
+    border-color: oklch(71% 0.19 20 / 0.4);
+    background-color: oklch(28% 0.08 20 / 0.6);
+    color: var(--color-danger);
+  }
+
+  .btn-danger:hover:not(:disabled) {
+    background-color: oklch(33% 0.1 20 / 0.75);
+  }
+
+  .field {
+    width: 100%;
+    border-radius: 0.5rem;
+    border: 1px solid var(--color-line);
+    background-color: oklch(0% 0 0 / 0.22);
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+    color: var(--color-ink);
+    transition:
+      border-color 130ms ease,
+      box-shadow 130ms ease;
+  }
+
+  .field::placeholder {
+    color: var(--color-ink-faint);
+  }
+
+  .field:focus {
+    border-color: var(--color-brand);
+    box-shadow: 0 0 0 3px oklch(63% 0.2 300 / 0.18);
+    outline: none;
+  }
+
+  .field:disabled {
+    opacity: 0.55;
+  }
+
+  .label {
+    display: block;
+    margin-bottom: 0.35rem;
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--color-ink);
+  }
+
+  .hint {
+    margin-top: 0.35rem;
+    font-size: 0.75rem;
+    color: var(--color-ink-muted);
+  }
+
+  /* Tabs across one website's tools, in the manner of a desktop control panel. */
+  .tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    border-bottom: 2px solid transparent;
+    padding: 0.7rem 0.15rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--color-ink-muted);
+    transition:
+      color 130ms ease,
+      border-color 130ms ease;
+  }
+
+  .tab:hover {
+    color: var(--color-ink);
+  }
+
+  .tab-active {
+    border-bottom-color: var(--color-brand);
+    color: var(--color-brand-bright);
   }
 }
