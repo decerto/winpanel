@@ -172,7 +172,7 @@ const groups = computed(() =>
   ].filter((group) => group.tiles.length > 0),
 );
 
-const contentPath = computed(() => (isGit.value ? 'current' : 'public'));
+const contentPath = computed(() => (isGit.value ? 'release' : 'public'));
 </script>
 
 <template>

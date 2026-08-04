@@ -309,7 +309,9 @@ Get-Content C:\WinPanel\logs\winpanel-agent.out.log -Tail 50   # the panel
 Get-Content C:\Sites\<site>\logs\*.out.log -Tail 50            # a website
 ```
 
-**Rolling back** — the site page lists recent releases; roll back to any of them.
+**A failed deploy** — the previous version is put back automatically. The build
+that failed is left in the site's hidden `.staging` folder so it can be
+inspected, and the next deploy clears it.
 
 ---
 

@@ -7,10 +7,14 @@ import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/
 import { PortAllocationError, PortAllocator } from '../src/sites/port-allocator.js';
 import {
   DeploymentError,
+  discardPrevious,
   explainToolFailure,
   newReleaseId,
-  pruneFailedReleases,
-  pruneOldReleases,
+  prepareStaging,
+  promoteStaging,
+  releaseFoldersFor,
+  removeLegacyLayout,
+  restorePrevious,
   runBuildSteps,
   waitForHealthy,
   withInstallDefaults,
@@ -331,85 +335,94 @@ describe('waitForHealthy', () => {
   });
 });
 
-describe('pruneOldReleases', () => {
-  it('keeps the newest releases and the current one', async () => {
-    const releases = path.join(tmpDir, 'releases');
-    for (const id of ['20260101-000000', '20260102-000000', '20260103-000000', '20260104-000000']) {
-      await fs.mkdir(path.join(releases, id), { recursive: true });
-    }
-
-    const removed = await pruneOldReleases(releases, 3, '20260104-000000');
-    const left = (await fs.readdir(releases)).sort();
-
-    expect(left).toContain('20260104-000000');
-    expect(left).toContain('20260103-000000');
-    expect(removed).toContain('20260101-000000');
-  });
-
-  it('never removes the release that is currently live', async () => {
-    const releases = path.join(tmpDir, 'releases');
-    for (const id of ['20260101-000000', '20260102-000000']) {
-      await fs.mkdir(path.join(releases, id), { recursive: true });
-    }
-
-    await pruneOldReleases(releases, 1, '20260101-000000');
-    expect(await fs.readdir(releases)).toContain('20260101-000000');
-  });
-
-  it('copes with a site that has never been deployed', async () => {
-    await expect(pruneOldReleases(path.join(tmpDir, 'nope'), 3, 'x')).resolves.toEqual([]);
-  });
-});
-
-describe('pruneFailedReleases', () => {
-  const failures = ['20260101-000000', '20260102-000000', '20260103-000000'];
-
-  async function makeReleases(): Promise<string> {
-    const releases = path.join(tmpDir, 'releases');
-    for (const id of [...failures, '20260104-000000']) {
-      await fs.mkdir(path.join(releases, id), { recursive: true });
-    }
-    return releases;
+describe('the release swap', () => {
+  async function siteWithRelease(contents: string): Promise<string> {
+    const siteDir = path.join(tmpDir, 'site');
+    const folders = releaseFoldersFor(siteDir);
+    await fs.mkdir(folders.release, { recursive: true });
+    await fs.writeFile(path.join(folders.release, 'index.js'), contents);
+    return siteDir;
   }
 
-  it('keeps the most recent failure and discards the rest', async () => {
-    // The newest failure is the one whose folder anybody would look inside.
-    const releases = await makeReleases();
+  async function stage(siteDir: string, contents: string): Promise<void> {
+    const folders = releaseFoldersFor(siteDir);
+    await fs.mkdir(folders.staging, { recursive: true });
+    await fs.writeFile(path.join(folders.staging, 'index.js'), contents);
+  }
 
-    const removed = await pruneFailedReleases(releases, failures);
-    const left = await fs.readdir(releases);
+  it('clears whatever the last attempt left staged', async () => {
+    // Building on top of it would resurrect files the repository has deleted.
+    const siteDir = path.join(tmpDir, 'site');
+    const folders = releaseFoldersFor(siteDir);
+    await fs.mkdir(folders.staging, { recursive: true });
+    await fs.writeFile(path.join(folders.staging, 'stale.txt'), 'old');
 
-    expect(removed.sort()).toEqual(['20260101-000000', '20260102-000000']);
-    expect(left).toContain('20260103-000000');
+    await prepareStaging(folders);
+    await expect(fs.readdir(folders.staging)).rejects.toThrow();
   });
 
-  it('never touches a release it was not told had failed', async () => {
-    const releases = await makeReleases();
+  it('swaps the staged version in and keeps the old one to hand', async () => {
+    const siteDir = await siteWithRelease('old');
+    const folders = releaseFoldersFor(siteDir);
+    await stage(siteDir, 'new');
 
-    await pruneFailedReleases(releases, failures);
-    expect(await fs.readdir(releases)).toContain('20260104-000000');
+    await promoteStaging(folders);
+
+    expect(await fs.readFile(path.join(folders.release, 'index.js'), 'utf8')).toBe('new');
+    expect(await fs.readFile(path.join(folders.previous, 'index.js'), 'utf8')).toBe('old');
   });
 
-  it('refuses to remove the release that is live, whatever it was told', async () => {
-    const releases = await makeReleases();
+  it('works on a site that has never been deployed', async () => {
+    const siteDir = path.join(tmpDir, 'site');
+    const folders = releaseFoldersFor(siteDir);
+    await stage(siteDir, 'first');
 
-    await pruneFailedReleases(releases, failures, { keep: 0, protect: ['20260101-000000'] });
-    expect(await fs.readdir(releases)).toEqual(['20260101-000000', '20260104-000000']);
+    await promoteStaging(folders);
+    expect(await fs.readFile(path.join(folders.release, 'index.js'), 'utf8')).toBe('first');
   });
 
-  it('copes with a site that has never been deployed', async () => {
-    await expect(pruneFailedReleases(path.join(tmpDir, 'nope'), ['x'])).resolves.toEqual([]);
+  it('puts the old version back when the new one does not run', async () => {
+    const siteDir = await siteWithRelease('old');
+    const folders = releaseFoldersFor(siteDir);
+    await stage(siteDir, 'broken');
+    await promoteStaging(folders);
+
+    expect(await restorePrevious(folders)).toBe(true);
+
+    expect(await fs.readFile(path.join(folders.release, 'index.js'), 'utf8')).toBe('old');
+    // The failed build survives as the only evidence of what went wrong.
+    expect(await fs.readFile(path.join(folders.staging, 'index.js'), 'utf8')).toBe('broken');
+    await expect(fs.readdir(folders.previous)).rejects.toThrow();
   });
 
-  it('does not count a folder an earlier deploy already removed', async () => {
-    // Failures stay in the database forever, so the same ids come back on
-    // every deploy. Counting them reported a cleanup that never happened, and
-    // the number grew by one each time.
-    const releases = await makeReleases();
-    await fs.rm(path.join(releases, '20260101-000000'), { recursive: true });
+  it('says so when there is no previous version to go back to', async () => {
+    const siteDir = path.join(tmpDir, 'site');
+    await stage(siteDir, 'first');
+    const folders = releaseFoldersFor(siteDir);
+    await promoteStaging(folders);
 
-    const removed = await pruneFailedReleases(releases, failures);
-    expect(removed).toEqual(['20260102-000000']);
+    expect(await restorePrevious(folders)).toBe(false);
+  });
+
+  it('leaves exactly one copy of the site once the deploy has finished', async () => {
+    const siteDir = await siteWithRelease('old');
+    const folders = releaseFoldersFor(siteDir);
+    await stage(siteDir, 'new');
+
+    await promoteStaging(folders);
+    await discardPrevious(folders);
+
+    expect((await fs.readdir(siteDir)).sort()).toEqual(['release']);
+  });
+
+  it('clears the timestamped folders left by the old layout', async () => {
+    const siteDir = await siteWithRelease('code');
+    await fs.mkdir(path.join(siteDir, 'releases', '20260101-000000'), { recursive: true });
+
+    expect(await removeLegacyLayout(siteDir)).toBe(true);
+    expect(await fs.readdir(siteDir)).toEqual(['release']);
+    // And says nothing on a site that never had them.
+    expect(await removeLegacyLayout(siteDir)).toBe(false);
   });
 });
 

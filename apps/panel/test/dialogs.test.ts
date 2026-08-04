@@ -42,7 +42,7 @@ const pickers = [
   {
     name: 'PathPicker',
     component: PathPicker,
-    props: { modelValue: '', siteSlug: 'example', base: 'current' },
+    props: { modelValue: '', siteSlug: 'example', base: 'release' },
   },
   {
     name: 'ServerPathPicker',

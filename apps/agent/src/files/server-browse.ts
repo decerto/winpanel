@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { STAT_CONCURRENCY, mapWithConcurrency } from './concurrency.js';
 
 /**
  * Read-only browsing of the server's own filesystem.
@@ -167,36 +168,41 @@ export async function browseDirectory(
   });
 
   const wanted = options.extensions?.map((extension) => extension.toLowerCase());
-  const entries: BrowseEntry[] = [];
-  let truncated = false;
 
-  for (const entry of found) {
-    const isDirectory = entry.isDirectory();
+  const listed = found.filter(
+    (entry) =>
+      entry.isDirectory() ||
+      !wanted ||
+      wanted.includes(path.extname(entry.name).toLowerCase()),
+  );
 
-    if (!isDirectory && wanted && !wanted.includes(path.extname(entry.name).toLowerCase())) {
-      continue;
-    }
+  const truncated = listed.length > MAX_ENTRIES;
 
-    if (entries.length >= MAX_ENTRIES) {
-      truncated = true;
-      break;
-    }
+  const described = await mapWithConcurrency(
+    listed.slice(0, MAX_ENTRIES),
+    STAT_CONCURRENCY,
+    async (entry) => {
+      const isDirectory = entry.isDirectory();
+      const full = path.join(directory, entry.name);
 
-    const full = path.join(directory, entry.name);
+      // A file being renamed or removed underneath us is not a reason to fail
+      // the whole listing, and neither is one Windows will not describe.
+      const info = await fs.stat(full).catch(() => null);
+      if (!info) return null;
 
-    // A file being renamed or removed underneath us is not a reason to fail
-    // the whole listing, and neither is one Windows will not describe.
-    const info = await fs.stat(full).catch(() => null);
-    if (!info) continue;
+      return {
+        name: entry.name,
+        path: full,
+        kind: isDirectory ? ('directory' as const) : ('file' as const),
+        sizeBytes: isDirectory ? 0 : info.size,
+        modifiedAt: info.mtime,
+      };
+    },
+  );
 
-    entries.push({
-      name: entry.name,
-      path: full,
-      kind: isDirectory ? 'directory' : 'file',
-      sizeBytes: isDirectory ? 0 : info.size,
-      modifiedAt: info.mtime,
-    });
-  }
+  const entries: BrowseEntry[] = described.filter(
+    (entry): entry is BrowseEntry => entry !== null,
+  );
 
   entries.sort((a, b) => {
     if (a.kind !== b.kind) return a.kind === 'directory' ? -1 : 1;

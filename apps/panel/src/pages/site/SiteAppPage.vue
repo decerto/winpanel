@@ -3,6 +3,7 @@ import { computed, inject, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   Boxes,
+  ChevronDown,
   ExternalLink,
   FolderOpen,
   FolderSearch,
@@ -72,12 +73,25 @@ const installWith = ref<PackageManager>('npm');
 const picking = ref<'applicationRoot' | 'startupFile' | 'documentRoot' | null>(null);
 
 /** The folder the site's paths are measured from: a release, or the public folder. */
-const pathBase = computed(() => info.value?.applicationRoot.split('/')[0] ?? 'current');
+const pathBase = computed(() => info.value?.applicationRoot.split('/')[0] ?? 'release');
 
 const job = useJobLog({ onFinished: () => refresh() });
 
 /** Two views on one page, as the panel this follows does. */
 const tab = computed(() => (route.query['tab'] === 'commands' ? 'commands' : 'dashboard'));
+
+/**
+ * The output folded into the application card, so the buttons that produce it
+ * and the answer to "did that work?" stay on the same screen. Collapsible
+ * because the settings below it are what the dashboard is otherwise for.
+ */
+const outputOpen = ref(true);
+watch(
+  () => job.running.value,
+  (isRunning) => {
+    if (isRunning) outputOpen.value = true;
+  },
+);
 
 const running = computed(() => info.value?.serviceState === 'running');
 const deployedYet = computed(
@@ -333,6 +347,40 @@ watch(slug, load, { immediate: true });
         <p v-if="!deployedYet" class="mt-3 text-xs text-ink-faint">
           There is no process to control until this website has been deployed once.
         </p>
+
+        <!-- On the commands tab the output has its own panel below the form,
+             and two copies of the same log would only confuse. -->
+        <div
+          v-if="tab === 'dashboard' && job.lines.value.length > 0"
+          class="mt-4 overflow-hidden rounded-lg border border-line"
+        >
+          <button
+            type="button"
+            class="flex w-full items-center justify-between px-4 py-2.5 text-left"
+            :aria-expanded="outputOpen"
+            @click="outputOpen = !outputOpen"
+          >
+            <span class="flex items-center gap-2 text-sm font-medium text-ink">
+              <ChevronDown
+                :size="15"
+                class="text-ink-faint transition-transform"
+                :class="outputOpen ? '' : '-rotate-90'"
+                aria-hidden="true"
+              />
+              Output
+            </span>
+            <span class="text-xs capitalize text-ink-muted">{{ job.status.value ?? '' }}</span>
+          </button>
+          <pre
+            v-if="outputOpen"
+            class="max-h-80 overflow-y-auto border-t border-line bg-black/25 p-4 font-mono text-xs leading-relaxed"
+          ><span
+            v-for="line in job.lines.value"
+            :key="line.seq"
+            class="block"
+            :class="LOG_LEVEL_CLASS[line.level] ?? 'text-ink'"
+          >{{ line.message }}</span></pre>
+        </div>
       </section>
 
       <nav class="flex gap-6 border-b border-line" aria-label="Application views">
@@ -551,9 +599,9 @@ watch(slug, load, { immediate: true });
         </form>
       </section>
 
-      <!-- One output panel for every action on this page, so the answer to
-           "did that work?" is always in the same place. -->
-      <section v-if="job.lines.value.length > 0" class="card overflow-hidden">
+      <!-- The commands tab is short enough that the output belongs right under
+           the form that produced it. -->
+      <section v-if="tab === 'commands' && job.lines.value.length > 0" class="card overflow-hidden">
         <div class="flex items-center justify-between border-b border-line px-4 py-2.5">
           <h3 class="text-sm font-medium text-ink">Output</h3>
           <span class="text-xs capitalize text-ink-muted">{{ job.status.value ?? '' }}</span>

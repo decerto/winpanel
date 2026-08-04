@@ -81,7 +81,16 @@ async function load(target: string): Promise<void> {
 
   try {
     const result = await api.files.list.query(
-      { siteSlug: props.siteSlug, path: joined(props.base, target) },
+      {
+        siteSlug: props.siteSlug,
+        path: joined(props.base, target),
+        // In folder mode the files are filtered out anyway, and asking for
+        // them makes the server stat every entry of a `node_modules`.
+        foldersOnly: props.mode === 'folder',
+        // Build output very often lands in a dot-folder (`.output`, `.next`,
+        // `.nuxt`, `.svelte-kit`), so hiding them hides the answer.
+        showHidden: true,
+      },
       { signal: controller.signal },
     );
     entries.value = result.entries;
@@ -231,6 +240,13 @@ onBeforeUnmount(() => window.removeEventListener('keydown', closeOnEscape));
             <Folder v-if="entry.kind === 'directory'" :size="15" class="text-ink-faint" aria-hidden="true" />
             <File v-else :size="15" class="text-ink-faint" aria-hidden="true" />
             <span class="truncate font-mono">{{ entry.name }}</span>
+            <span
+              v-if="entry.hidden"
+              class="ml-auto shrink-0 rounded-full bg-sunken px-1.5 py-0.5 text-[10px] font-semibold
+                     uppercase tracking-wide text-ink-faint"
+            >
+              Hidden
+            </span>
           </button>
         </li>
       </ul>

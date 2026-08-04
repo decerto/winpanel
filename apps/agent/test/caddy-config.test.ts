@@ -310,7 +310,7 @@ describe('single-page app fallback', () => {
       sites: [
         site({
           manifest: SiteManifest.parse({ runtime: 'static', spaFallback: true }),
-          staticRoot: 'C:\\Sites\\example\\current\\dist',
+          staticRoot: 'C:\\Sites\\example\\release\\dist',
         }),
       ],
     }) as any;

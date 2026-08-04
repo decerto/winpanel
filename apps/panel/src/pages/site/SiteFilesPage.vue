@@ -34,7 +34,7 @@ import FileEditorDialog from '../../components/FileEditorDialog.vue';
  * keeps a file manager comprehensible — there is never a second, invisible
  * "target" folder to reason about.
  *
- * The panel warns before you edit anything under `releases/`, because the next
+ * The panel warns before you edit anything under `release/`, because the next
  * deployment replaces that folder wholesale and the change would silently
  * disappear.
  */
@@ -45,7 +45,7 @@ const slug = computed(() => (route.params['slug'] as string) ?? '');
 /*
  * Open where the files are, not at the site root.
  *
- * The root holds `releases`, `shared` and `logs` — all panel bookkeeping. For
+ * The root holds `release`, `shared` and `logs` — all panel bookkeeping. For
  * a website that is just HTML, landing there means the first thing you see is
  * four folders none of which are yours.
  */

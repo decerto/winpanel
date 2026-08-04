@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { and, eq } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { PUBLIC_DIR, SiteManifest, type SiteSource } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
@@ -10,27 +10,32 @@ import { detectApp } from '../detect/detector.js';
 import { GitClient } from './git-client.js';
 import {
   DeploymentError,
+  discardPrevious,
   newReleaseId,
-  pointCurrentAt,
+  prepareStaging,
+  promoteStaging,
   pruneBuildArtifacts,
-  pruneFailedReleases,
-  pruneOldReleases,
+  releaseFoldersFor,
+  removeLegacyLayout,
+  restorePrevious,
   runBuildSteps,
   waitForHealthy,
+  type ReleaseFolders,
   type ToolPaths,
 } from './deploy-pipeline.js';
 import type { CaddyClient } from '../caddy/client.js';
 import type { CaddyReconciler } from '../caddy/reconciler.js';
-import { proxyIdFor } from '../caddy/config-builder.js';
+import { previewProxyIdFor, proxyIdFor } from '../caddy/config-builder.js';
 import type { ServiceManager } from '../windows/service-manager.js';
 
 /**
  * The deployment, start to finish.
  *
- * The ordering is what makes this safe: the new version is built into a fresh
- * folder, started on the *idle* port, and proved healthy there before any
- * traffic moves. Until the upstream switch, the live site has not been touched
- * — so a failed deploy is a failed deploy, not an outage.
+ * A site has one code folder, `release/`, and it never moves. The new version
+ * is cloned and built in a staging folder first, so a build that fails cannot
+ * touch what is currently serving; only once it has built is the running app
+ * stopped, the folders swapped, and the app started again. If it then fails to
+ * answer, the outgoing version — moved aside, not deleted — goes straight back.
  */
 
 export interface DeployPayload {
@@ -58,21 +63,10 @@ export interface DeployDependencies {
   loadGitSshKey: (siteId: string) => Promise<string | undefined>;
   /** Where SSH host keys are pinned after the first connection. */
   sshKnownHostsPath?: string;
-  /** How many previous releases to keep for rollback. */
-  keepReleases?: number;
 }
 
 export function serviceIdFor(slug: string, colour: 'blue' | 'green'): string {
   return `winpanel-site-${slug}-${colour}`;
-}
-
-/** The release `current` points at, if it points anywhere. */
-async function currentReleaseId(siteDir: string): Promise<string | null> {
-  try {
-    return path.basename(await fs.realpath(path.join(siteDir, 'current')));
-  } catch {
-    return null;
-  }
 }
 
 /** The executable that runs a site of a given runtime. */
@@ -106,31 +100,24 @@ export function createDeployHandler(deps: DeployDependencies) {
     const source = site.source as SiteSource;
 
     /*
-     * Sites the user manages themselves have no build and no releases: their
-     * files sit in `public` and are already the live copy. "Deploying" one
-     * means making the web server aware of it, and restarting its process if
-     * it has one.
+     * Sites the user manages themselves have no build: their files sit in
+     * `public` and are already the live copy. "Deploying" one means making the
+     * web server aware of it, and restarting its process if it has one.
      */
     if (source.kind !== 'git' && !payload.uploadedReleaseDir) {
       await publishManagedSite(deps, site, ctx);
       return;
     }
 
-    if (site.portBlue === null || site.portGreen === null) {
-      throw new DeploymentError(
-        'This website has no ports assigned yet. Remove and re-create it to fix this.',
-      );
-    }
-
-    // Deploy onto whichever colour is not currently serving traffic.
-    const targetColour = site.activeColour === 'blue' ? 'green' : 'blue';
-    const targetPort = targetColour === 'blue' ? site.portBlue : site.portGreen;
+    const colour = site.activeColour;
+    const targetPort = colour === 'blue' ? site.portBlue : site.portGreen;
 
     const siteDir = path.join(deps.sitesRoot, site.slug);
-    const releasesDir = path.join(siteDir, 'releases');
-    const releaseId = newReleaseId();
-    const releaseDir = path.join(releasesDir, releaseId);
+    const folders = releaseFoldersFor(siteDir);
     const sharedDir = path.join(siteDir, 'shared');
+    const serviceId = serviceIdFor(site.slug, colour);
+    // Not a folder name any more, just a label for the deployment history.
+    const releaseId = newReleaseId();
 
     const deploymentId = crypto.randomUUID();
     deps.db.db
@@ -140,7 +127,7 @@ export function createDeployHandler(deps: DeployDependencies) {
         siteId: site.id,
         releaseId,
         status: 'preparing',
-        targetColour,
+        targetColour: colour,
         jobId: ctx.jobId,
       })
       .run();
@@ -160,36 +147,21 @@ export function createDeployHandler(deps: DeployDependencies) {
     };
 
     try {
-      await fs.mkdir(releasesDir, { recursive: true });
       await fs.mkdir(sharedDir, { recursive: true });
 
       /*
-       * Attempts that failed before this one kept their folders so their logs
-       * could be read against them. One is worth keeping; a row of abandoned
-       * `node_modules` trees is not, and the site most likely to accumulate
-       * them is the one already having a bad day.
+       * Whatever is in staging belongs to the last attempt. Building on top of
+       * it would resurrect files the repository has since deleted, and the
+       * only reason it survived at all was so its output could be inspected.
        */
-      const failedBefore = deps.db.db
-        .select({ releaseId: deployments.releaseId })
-        .from(deployments)
-        .where(and(eq(deployments.siteId, site.id), eq(deployments.status, 'failed')))
-        .all()
-        .map((row) => row.releaseId);
-
-      const discarded = await pruneFailedReleases(releasesDir, failedBefore, {
-        protect: [await currentReleaseId(siteDir)].filter((id): id is string => id !== null),
-      });
-
-      if (discarded.length > 0) {
-        ctx.log(`Cleared ${discarded.length} folder(s) left by earlier failed attempts.`, 'debug');
-      }
+      await prepareStaging(folders);
 
       // 1. Get the code.
       let commit: string | null = null;
 
       if (payload.uploadedReleaseDir) {
         ctx.log('Using the files you uploaded.');
-        await fs.rename(payload.uploadedReleaseDir, releaseDir);
+        await fs.rename(payload.uploadedReleaseDir, folders.staging);
       } else {
         if (source.kind !== 'git') {
           throw new DeploymentError('This website has no repository configured.');
@@ -210,10 +182,10 @@ export function createDeployHandler(deps: DeployDependencies) {
           },
         });
 
-        commit = await git.cloneRelease(source.url, ref, releaseDir);
+        commit = await git.cloneRelease(source.url, ref, folders.staging);
 
         if (source.subdirectory) {
-          const inner = path.join(releaseDir, source.subdirectory);
+          const inner = path.join(folders.staging, source.subdirectory);
           try {
             await fs.access(inner);
           } catch {
@@ -230,7 +202,7 @@ export function createDeployHandler(deps: DeployDependencies) {
       // 2. Work out how to build it, unless we already know.
       let manifest = SiteManifest.parse(site.manifest);
 
-      const detection = await detectApp(releaseDir);
+      const detection = await detectApp(folders.staging);
       if (detection.fromManifestFile) {
         ctx.log('Using the settings committed in your project.');
         manifest = detection.manifest;
@@ -241,34 +213,35 @@ export function createDeployHandler(deps: DeployDependencies) {
       await writeEnvFile(sharedDir, env);
 
       setStatus('building');
-      await runBuildSteps({ manifest, releaseDir, tools: deps.tools, ctx, env });
+      await runBuildSteps({ manifest, releaseDir: folders.staging, tools: deps.tools, ctx, env });
 
-      await pruneBuildArtifacts(releaseDir, manifest, ctx);
+      await pruneBuildArtifacts(folders.staging, manifest, ctx);
       ctx.throwIfCancelled();
 
       /*
-       * A static site has no process to start and nothing to health-check.
-       * Publishing it is one atomic operation: repoint `current`, then tell
-       * the web server where to look. Running it through the blue/green
-       * machinery would mean starting a Node service that serves nothing.
+       * A static site has no process to start and nothing to health-check, so
+       * nothing is holding `release/` open: the swap is the whole deploy.
        */
       if (manifest.runtime === 'static') {
         setStatus('switching');
-        await pointCurrentAt(siteDir, releaseDir);
-
         ctx.log('Publishing your files\u2026', 'info', 'switch');
+
+        // A site that used to run a process still has one holding `release/`
+        // open, and Windows will not rename a folder out from under it.
+        if (await deps.services.isInstalled(serviceId)) {
+          await deps.services.uninstall(serviceId).catch(() => undefined);
+        }
+
+        await promoteStaging(folders);
         await deps.routing.apply();
+        await discardPrevious(folders);
+        await cleanUpLegacyLayout(siteDir, ctx);
 
         deps.db.db
           .update(sites)
           .set({ updatedAt: new Date() })
           .where(eq(sites.id, site.id))
           .run();
-
-        const removed = await pruneOldReleases(releasesDir, deps.keepReleases ?? 5, releaseId);
-        if (removed.length > 0) {
-          ctx.log(`Cleaned up ${removed.length} old release(s).`, 'debug');
-        }
 
         deps.db.db
           .update(deployments)
@@ -281,26 +254,46 @@ export function createDeployHandler(deps: DeployDependencies) {
         return;
       }
 
-      // 4. Start the new version on the idle port.
-      const appDir = path.join(releaseDir, manifest.app.cwd);
-      const serviceId = serviceIdFor(site.slug, targetColour);
+      if (targetPort === null) {
+        throw new DeploymentError(
+          'This website has no port assigned yet. Remove and re-create it to fix this.',
+        );
+      }
 
+      /*
+       * 4. Swap the new version into place.
+       *
+       * The running app has files in `release/` open, and Windows will not
+       * rename a folder out from under it, so it has to stop first. This is
+       * the only moment of the deploy where the site is down, and it lasts as
+       * long as two renames plus a service start.
+       */
+      setStatus('switching');
+
+      const wasInstalled = await deps.services.isInstalled(serviceId);
+      if (wasInstalled) {
+        ctx.log('Stopping the running version\u2026', 'info', 'switch');
+        await deps.services.stop(serviceId).catch(() => undefined);
+      }
+
+      await promoteStaging(folders);
+
+      // 5. Start it.
+      // For the frontend-builds-into-backend layout this is the backend
+      // folder, not the repository root.
+      const appDir = path.join(folders.release, manifest.app.cwd);
       ctx.log(`Starting the new version on port ${targetPort}\u2026`, 'info', 'start');
 
       const runtimeExe = await resolveRuntimeExecutable(deps, manifest);
 
-      if (await deps.services.isInstalled(serviceId)) {
-        await deps.services.uninstall(serviceId);
-      }
+      if (wasInstalled) await deps.services.uninstall(serviceId);
 
       await deps.services.install({
         id: serviceId,
-        displayName: `${site.displayName} (${targetColour})`,
+        displayName: site.displayName,
         description: `Website: ${site.displayName}`,
         executable: runtimeExe.exe,
         args: runtimeExe.args,
-        // For the frontend-builds-into-backend layout this is the backend
-        // folder, not the repository root.
         workingDirectory: appDir,
         env: {
           ...env,
@@ -316,35 +309,34 @@ export function createDeployHandler(deps: DeployDependencies) {
       setStatus('healthchecking');
       ctx.progress(80);
 
-      // 5. Prove it works before sending it any traffic.
-      await waitForHealthy({
-        port: targetPort,
-        path: manifest.app.healthCheckPath,
-        timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
-        ctx,
-      });
-
-      // 6. Switch traffic across. One call, no reload, no dropped requests.
-      setStatus('switching');
-      ctx.log('Switching visitors to the new version\u2026', 'info', 'switch');
+      // 6. Prove it works. If it does not, put the old version back.
+      try {
+        await waitForHealthy({
+          port: targetPort,
+          path: manifest.app.healthCheckPath,
+          timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
+          ctx,
+        });
+      } catch (error) {
+        await rollBack(deps, { folders, serviceId, ctx });
+        throw error;
+      }
 
       /*
-       * The fast path patches a single upstream by `@id`. It fails if that id
-       * is not in the running config — which is the normal state on a site's
-       * very first deploy, and after Caddy has been restarted or reinstalled.
+       * 7. Make sure the web server knows where to send traffic.
        *
-       * Falling back to a full config load handles all of those. Only if that
-       * fails too is the deploy genuinely unable to take traffic, and then the
-       * new process is stopped so it is not left holding a port for nothing.
+       * The port has not changed, so on any deploy but the first this is
+       * already correct. The fast path patches the single upstream by `@id`
+       * and fails if that id is not in the running config — which is exactly
+       * the first-deploy case, and the case after Caddy has been reinstalled.
        */
-      deps.db.db
-        .update(sites)
-        .set({ activeColour: targetColour, updatedAt: new Date() })
-        .where(eq(sites.id, site.id))
-        .run();
+      setStatus('switching');
 
       try {
         await deps.caddy.switchUpstream(proxyIdFor(site.slug), targetPort);
+        await deps.caddy
+          .switchUpstream(previewProxyIdFor(site.slug), targetPort)
+          .catch(() => undefined);
       } catch (error) {
         ctx.log(
           `Could not switch the upstream directly: ${error instanceof Error ? error.message : String(error)}`,
@@ -356,37 +348,23 @@ export function createDeployHandler(deps: DeployDependencies) {
         try {
           await deps.routing.apply();
         } catch (error) {
-          // Put the record back: traffic never moved.
-          deps.db.db
-            .update(sites)
-            .set({ activeColour: site.activeColour })
-            .where(eq(sites.id, site.id))
-            .run();
-
-          // The old version is still serving, so stop the new one rather than
-          // leaving an orphan process holding a port.
-          await deps.services.stop(serviceId).catch(() => undefined);
+          await rollBack(deps, { folders, serviceId, ctx });
           throw new DeploymentError(
-            'The new version started, but traffic could not be switched to it. ' +
-              'Your site is still running the previous version. ' +
+            'The new version started, but the web server could not be pointed at it. ' +
+              'The previous version has been put back. ' +
               (error instanceof Error ? error.message : ''),
           );
         }
       }
 
-      await pointCurrentAt(siteDir, releaseDir);
+      deps.db.db
+        .update(sites)
+        .set({ updatedAt: new Date() })
+        .where(eq(sites.id, site.id))
+        .run();
 
-      // 7. Stop the old version, now that nothing is using it.
-      const oldServiceId = serviceIdFor(site.slug, site.activeColour);
-      if (await deps.services.isInstalled(oldServiceId)) {
-        ctx.log('Stopping the previous version.', 'debug');
-        await deps.services.stop(oldServiceId).catch(() => undefined);
-      }
-
-      const removed = await pruneOldReleases(releasesDir, deps.keepReleases ?? 5, releaseId);
-      if (removed.length > 0) {
-        ctx.log(`Cleaned up ${removed.length} old release(s).`, 'debug');
-      }
+      await discardPrevious(folders);
+      await cleanUpLegacyLayout(siteDir, ctx);
 
       deps.db.db
         .update(deployments)
@@ -400,12 +378,49 @@ export function createDeployHandler(deps: DeployDependencies) {
       const message = error instanceof Error ? error.message : 'The deployment failed.';
       setStatus('failed', message);
 
-      // Leave the release folder in place: it is the only evidence of what
-      // went wrong, and disk is cheaper than a lost diagnosis.
-      ctx.log('The previous version is still running and was not affected.', 'info');
+      // The staged build is left where it is: it is the only evidence of what
+      // went wrong, it is hidden from the file manager, and the next deploy
+      // clears it before it starts.
+      ctx.log('Your site was left running the version it had before.', 'info');
       throw error;
     }
   };
+}
+
+/**
+ * Puts the previous version back after the new one failed to run.
+ *
+ * The new process has to stop before its folder can be moved, and the service
+ * definition is unchanged — same id, same port, same working directory — so
+ * starting it again is all it takes to have the old version serving.
+ */
+async function rollBack(
+  deps: DeployDependencies,
+  options: { folders: ReleaseFolders; serviceId: string; ctx: JobContext },
+): Promise<void> {
+  const { folders, serviceId, ctx } = options;
+
+  await deps.services.stop(serviceId).catch(() => undefined);
+
+  try {
+    if (!(await restorePrevious(folders))) return;
+  } catch (error) {
+    ctx.log(
+      `The previous version could not be put back: ${error instanceof Error ? error.message : String(error)}`,
+      'error',
+    );
+    return;
+  }
+
+  ctx.log('Put the previous version back.', 'info');
+  await deps.services.start(serviceId).catch(() => undefined);
+}
+
+/** Clears the timestamped folders sites created before this layout existed. */
+async function cleanUpLegacyLayout(siteDir: string, ctx: JobContext): Promise<void> {
+  if (await removeLegacyLayout(siteDir)) {
+    ctx.log('Removed the old timestamped release folders.', 'debug');
+  }
 }
 
 /** Writes the site's environment file into the shared folder. */
@@ -425,10 +440,8 @@ type SiteRow = typeof sites.$inferSelect;
  * process — that the process is running the current files.
  *
  * A static site is therefore published instantly and with no downtime at all.
- * A Node or .NET one is restarted in place rather than deployed blue/green:
- * both colours would be running out of the same folder, so there is no second
- * copy to switch to, and pretending otherwise would only add a second process
- * competing for the same files.
+ * A Node or .NET one is restarted in place, because `public` is the only copy
+ * of the files and there is nothing to swap.
  */
 async function publishManagedSite(
   deps: DeployDependencies,

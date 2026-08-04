@@ -104,10 +104,10 @@ describe('buildServiceXml', () => {
     // run in backend/, not at the repository root.
     const xml = buildServiceXml({
       ...base,
-      workingDirectory: 'C:\\Sites\\kitora\\current\\backend',
+      workingDirectory: 'C:\\Sites\\kitora\\release\\backend',
     });
     expect(xml).toContain(
-      '<workingdirectory>C:\\Sites\\kitora\\current\\backend</workingdirectory>',
+      '<workingdirectory>C:\\Sites\\kitora\\release\\backend</workingdirectory>',
     );
   });
 

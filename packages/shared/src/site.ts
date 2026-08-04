@@ -27,14 +27,14 @@ export type Hostname = z.infer<typeof Hostname>;
 /**
  * Where a site's files come from.
  *
- * `git`    — cloned and built on every deploy, into a fresh release folder.
+ * `git`    — cloned and built on every deploy, into `release/`.
  * `upload` — the user manages the files themselves, through the file manager
  *            or a zip upload. Nothing is ever overwritten by the panel.
  * `blank`  — same as `upload`, but the panel writes a starter page so the site
  *            answers immediately instead of returning a bare 404.
  *
  * The distinction that actually matters is `git` versus the rest: git sites
- * have a build pipeline and blue/green releases, the others have a folder.
+ * have a build pipeline, the others have a folder.
  */
 export const SourceKind = z.enum(['git', 'upload', 'blank']);
 export type SourceKind = z.infer<typeof SourceKind>;
@@ -71,16 +71,31 @@ export function isManagedBySource(source: Pick<SiteSource, 'kind'>): boolean {
 /**
  * The folder a non-git site's files live in, relative to the site root.
  *
- * Deliberately outside `releases/`, which the deploy pipeline prunes: files
+ * Deliberately outside `release/`, which the deploy pipeline replaces: files
  * the user put there by hand must never be deleted by a background task.
  * This is the equivalent of Plesk's `httpdocs`.
  */
 export const PUBLIC_DIR = 'public';
 
 /**
- * Blue/green port pair. Only ever one active at a time — we swap the Caddy
- * upstream between them rather than load balancing, because socket.io needs
- * sticky sessions and round-robin would break it.
+ * The folder a git site's built code lives in, relative to the site root.
+ *
+ * One folder, always the same path. A deploy builds elsewhere and swaps this
+ * folder into place, so nothing that points here — a service, a Caddy root,
+ * a path the user typed — ever has to be updated when the code changes.
+ */
+export const RELEASE_DIR = 'release';
+
+/** Where a deploy assembles the next version before it goes live. */
+export const STAGING_DIR = '.staging';
+
+/** Holds the outgoing version just long enough to put it back if the new one fails. */
+export const PREVIOUS_DIR = '.previous';
+
+/**
+ * The pair of ports reserved for a site. Only the active one is ever bound —
+ * the spare exists so a port can be changed without colliding with the one
+ * currently in use.
  */
 export const PortPair = z.object({
   blue: z.number().int().min(1024).max(65535),

@@ -71,7 +71,7 @@ describe('SiteService.create', () => {
     expect(site?.portBlue).toBeGreaterThanOrEqual(3001);
     expect(site?.portGreen).not.toBe(site?.portBlue);
 
-    for (const folder of ['releases', 'shared', 'logs']) {
+    for (const folder of ['release', 'shared', 'logs']) {
       await expect(
         fs.access(path.join(tmpDir, 'sites', slug, folder)),
       ).resolves.toBeUndefined();

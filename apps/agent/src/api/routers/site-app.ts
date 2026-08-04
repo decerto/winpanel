@@ -5,6 +5,8 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import {
   PackageManager,
+  PUBLIC_DIR,
+  RELEASE_DIR,
   RelativePath,
   SiteManifest,
   StepCommand,
@@ -128,11 +130,11 @@ export const siteAppRouter = router({
         runtime: site.runtime,
         /** Relative to the site folder, which is how the Files tab shows it. */
         applicationRoot: path.posix.join(
-          source.kind === 'git' ? 'current' : 'public',
+          source.kind === 'git' ? RELEASE_DIR : PUBLIC_DIR,
           (manifest.app.cwd || '').replace(/\\/g, '/'),
         ),
         documentRoot: path.posix.join(
-          source.kind === 'git' ? 'current' : 'public',
+          source.kind === 'git' ? RELEASE_DIR : PUBLIC_DIR,
           (manifest.staticRoot || '').replace(/\\/g, '/'),
         ),
         startupFile: manifest.app.entry ?? '',

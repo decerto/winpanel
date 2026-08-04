@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import type { SiteSource } from '@winpanel/shared';
+import { RELEASE_DIR, type SiteSource } from '@winpanel/shared';
 import { protectedProcedure, router } from '../trpc.js';
 import { SiteService } from '../../sites/site-service.js';
 import { sites } from '../../db/schema.js';
@@ -75,7 +75,7 @@ export const siteGitRouter = router({
         /** The public half of the deploy key, which is safe to show. */
         deployKey: publicKey ?? null,
         /** Where a successful deploy publishes to, in the site's own terms. */
-        deployPath: 'current',
+        deployPath: RELEASE_DIR,
         lastDeployment: last
           ? {
               releaseId: last.releaseId,

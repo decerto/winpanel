@@ -4,6 +4,7 @@ import path from 'node:path';
 import { desc, eq } from 'drizzle-orm';
 import {
   PUBLIC_DIR,
+  RELEASE_DIR,
   Slug,
   isReservedDeviceName,
   type SiteManifest,
@@ -76,9 +77,9 @@ export interface CreatedSite {
 /**
  * Where a site's served files live.
  *
- * Git sites are served out of the release the last successful deploy pointed
- * `current` at. Everything else is served straight from `public`, which the
- * user owns and the panel never overwrites.
+ * Git sites are served out of `release/`, which the last successful deploy
+ * swapped into place. Everything else is served straight from `public`, which
+ * the user owns and the panel never overwrites.
  */
 export function contentRootFor(
   sitesRoot: string,
@@ -92,7 +93,7 @@ export function contentRootFor(
     return path.join(siteDir, PUBLIC_DIR, manifest.staticRoot ?? '');
   }
 
-  return path.join(siteDir, 'current', manifest.staticRoot ?? '');
+  return path.join(siteDir, RELEASE_DIR, manifest.staticRoot ?? '');
 }
 
 /**
@@ -110,7 +111,8 @@ export function appRootFor(
   const siteDir = path.join(sitesRoot, site.slug);
   const source = site.source as SiteSource;
   const manifest = site.manifest as SiteManifest;
-  const base = source.kind === 'git' ? path.join(siteDir, 'current') : path.join(siteDir, PUBLIC_DIR);
+  const base =
+    source.kind === 'git' ? path.join(siteDir, RELEASE_DIR) : path.join(siteDir, PUBLIC_DIR);
 
   return path.join(base, manifest.app.cwd ?? '');
 }
@@ -205,7 +207,7 @@ export class SiteService {
         .run();
 
       const siteDir = path.join(this.sitesRoot, slug);
-      await fs.mkdir(path.join(siteDir, 'releases'), { recursive: true });
+      await fs.mkdir(path.join(siteDir, RELEASE_DIR), { recursive: true });
       await fs.mkdir(path.join(siteDir, 'shared'), { recursive: true });
       await fs.mkdir(path.join(siteDir, 'logs'), { recursive: true });
       // Created for every site, not only the ones that use it: the Files tab

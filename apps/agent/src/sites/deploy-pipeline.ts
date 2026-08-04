@@ -1,17 +1,17 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type { BuildStep, SiteManifest } from '@winpanel/shared';
+import { PREVIOUS_DIR, RELEASE_DIR, STAGING_DIR, type BuildStep, type SiteManifest } from '@winpanel/shared';
 import { runCommand } from '../process/run-command.js';
 import type { JobContext } from '../jobs/queue.js';
 
 /**
  * Running a site's build steps and proving the result is healthy.
  *
- * The pipeline is deliberately blue/green: a release is built into a fresh
- * folder, started on the *idle* port, and only receives traffic once it has
- * answered a health check. If anything fails, the currently live version has
- * not been touched at all — which is the difference between a failed deploy
- * and an outage.
+ * A site has exactly one code folder, `release/`, and every path that points
+ * at a site — the service's working directory, Caddy's static root, anything
+ * the user typed — points at it. The next version is therefore assembled in a
+ * staging folder and only swapped in once it has built, so a failure leaves
+ * the live folder untouched.
  */
 
 export class DeploymentError extends Error {
@@ -316,93 +316,124 @@ export async function waitForHealthy(options: HealthCheckOptions): Promise<void>
   );
 }
 
+/** The three folders a deploy moves between, for one site. */
+export interface ReleaseFolders {
+  /** The live code. Everything that points at the site points here. */
+  release: string;
+  /** Where the next version is assembled. */
+  staging: string;
+  /** The outgoing version, kept only until the new one is proven. */
+  previous: string;
+}
+
+export function releaseFoldersFor(siteDir: string): ReleaseFolders {
+  return {
+    release: path.join(siteDir, RELEASE_DIR),
+    staging: path.join(siteDir, STAGING_DIR),
+    previous: path.join(siteDir, PREVIOUS_DIR),
+  };
+}
+
 /**
- * Keeps a bounded number of previous releases.
+ * Clears the staging folder so a deploy starts from nothing.
  *
- * Enough to roll back through a couple of bad deploys, few enough that
- * `node_modules` copies do not quietly consume the disk.
+ * Whatever is in there belongs to the previous attempt. Building on top of it
+ * would silently resurrect files the repository has since deleted.
  */
-export async function pruneOldReleases(
-  releasesDir: string,
-  keep: number,
-  currentReleaseId: string,
-): Promise<string[]> {
-  let entries: string[];
-  try {
-    entries = await fs.readdir(releasesDir);
-  } catch {
-    return [];
+export async function prepareStaging(folders: ReleaseFolders): Promise<void> {
+  await removeDirectory(folders.staging);
+}
+
+/**
+ * Swaps the staged version into place.
+ *
+ * Two renames on the same volume, so the window in which the site has no code
+ * folder is as short as the filesystem can make it. The outgoing version is
+ * moved aside rather than deleted, because until the new one has answered a
+ * health check it is still the only version known to work.
+ */
+export async function promoteStaging(folders: ReleaseFolders): Promise<void> {
+  await removeDirectory(folders.previous);
+
+  if (await exists(folders.release)) {
+    await renameWithRetry(folders.release, folders.previous);
   }
 
-  const sorted = entries.filter((entry) => entry !== currentReleaseId).sort().reverse();
-  const removed: string[] = [];
+  try {
+    await renameWithRetry(folders.staging, folders.release);
+  } catch (error) {
+    // Put the old version straight back: a site with no code folder at all is
+    // the one outcome worse than a failed deploy.
+    await renameWithRetry(folders.previous, folders.release).catch(() => undefined);
+    throw new DeploymentError(
+      'The new version could not be moved into place. ' +
+        'Something on the server is holding the site folder open. ' +
+        (error instanceof Error ? error.message : ''),
+    );
+  }
+}
 
-  for (const entry of sorted.slice(Math.max(keep - 1, 0))) {
-    try {
-      await fs.rm(path.join(releasesDir, entry), {
-        recursive: true,
-        force: true,
-        maxRetries: 3,
-        retryDelay: 200,
-      });
-      removed.push(entry);
-    } catch {
-      // This runs after the site is already live. Reclaiming disk space is
-      // not worth failing a deploy that worked, and the next one retries.
-    }
+/** Puts the outgoing version back, after the new one failed to run. */
+export async function restorePrevious(folders: ReleaseFolders): Promise<boolean> {
+  if (!(await exists(folders.previous))) return false;
+
+  await removeDirectory(folders.staging);
+  // Keep the failed build: it is the only evidence of what went wrong, and
+  // the next deploy clears it anyway.
+  await renameWithRetry(folders.release, folders.staging).catch(() => undefined);
+  await renameWithRetry(folders.previous, folders.release);
+  return true;
+}
+
+/** Drops the outgoing version, once the new one is serving traffic. */
+export async function discardPrevious(folders: ReleaseFolders): Promise<void> {
+  await removeDirectory(folders.previous).catch(() => undefined);
+}
+
+/**
+ * Clears the timestamped `releases/` tree and `current` junction used before
+ * a site had a single release folder.
+ *
+ * Best effort and safe to run on every deploy: by the time it is called the
+ * live code is already in `release/`, so anything left of the old layout is
+ * a stale copy taking up disk.
+ */
+export async function removeLegacyLayout(siteDir: string): Promise<boolean> {
+  const current = path.join(siteDir, 'current');
+  const releases = path.join(siteDir, 'releases');
+  let removed = false;
+
+  for (const target of [current, releases]) {
+    if (!(await exists(target))) continue;
+    // `current` is a junction: rm removes the link, not what it points at.
+    await removeDirectory(target).then(
+      () => {
+        removed = true;
+      },
+      () => undefined,
+    );
   }
 
   return removed;
 }
 
-/**
- * Removes what earlier failed attempts left behind.
- *
- * A failed deploy keeps its folder on purpose — it is the only evidence of
- * what went wrong — but only the most recent one is evidence of anything. The
- * rest are `node_modules` trees for versions that never ran, and a site that
- * fails to deploy repeatedly is exactly the site that can least afford to fill
- * the disk while doing it.
- *
- * `protect` is a belt-and-braces list of release ids that must survive
- * whatever the database says about them.
- */
-export async function pruneFailedReleases(
-  releasesDir: string,
-  failedReleaseIds: readonly string[],
-  options: { keep?: number; protect?: readonly string[] } = {},
-): Promise<string[]> {
-  const keep = options.keep ?? 1;
-  const protectedIds = new Set(options.protect ?? []);
+async function removeDirectory(target: string): Promise<void> {
+  // Windows keeps files open for a moment after the process that had them
+  // exits, and a `node_modules` tree gives it plenty to hold.
+  await fs.rm(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 250 });
+}
 
-  // Newest first, so the ones kept are the most recent failures.
-  const candidates = [...new Set(failedReleaseIds)]
-    .filter((id) => !protectedIds.has(id))
-    .sort()
-    .reverse()
-    .slice(keep);
-
-  const removed: string[] = [];
-
-  for (const id of candidates) {
-    const target = path.join(releasesDir, id);
-
-    // Most of these were cleared by an earlier deploy: the database still
-    // remembers the failure long after the folder is gone. Counting those
-    // reported a growing pile of cleanups that were not happening.
-    if (!(await exists(target))) continue;
-
+/** `fs.rename` has no retry option of its own, and needs one on Windows. */
+async function renameWithRetry(from: string, to: string, attempts = 5): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
     try {
-      // Windows holds freshly written files open for a moment after a build,
-      // and a `node_modules` tree gives it plenty to hold.
-      await fs.rm(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
-      removed.push(id);
-    } catch {
-      // A folder held open by something is not a reason to stop deploying.
+      await fs.rename(from, to);
+      return;
+    } catch (error) {
+      if (attempt >= attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
     }
   }
-
-  return removed;
 }
 
 async function exists(target: string): Promise<boolean> {
@@ -410,37 +441,6 @@ async function exists(target: string): Promise<boolean> {
     () => true,
     () => false,
   );
-}
-
-/**
- * Points `current` at a release.
- *
- * A junction is used rather than a copy so the switch is effectively
- * instantaneous, and rolling back is just re-pointing it.
- */
-export async function pointCurrentAt(
-  siteDir: string,
-  releaseDir: string,
-): Promise<void> {
-  const currentPath = path.join(siteDir, 'current');
-
-  await fs.rm(currentPath, { recursive: true, force: true }).catch(() => undefined);
-
-  if (process.platform === 'win32') {
-    const result = await runCommand({
-      exe: 'cmd.exe',
-      args: ['/c', 'mklink', '/J', currentPath, releaseDir],
-      timeoutMs: 30_000,
-    });
-    if (result.exitCode !== 0) {
-      throw new DeploymentError(
-        'Could not switch to the new version on disk. ' +
-          (result.stderr || result.stdout).trim(),
-      );
-    }
-  } else {
-    await fs.symlink(releaseDir, currentPath, 'dir');
-  }
 }
 
 /** Removes build-only dependency folders once the output has been produced. */

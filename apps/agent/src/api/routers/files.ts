@@ -6,6 +6,7 @@ import {
   ListDirectoryRequest,
   MoveRequest,
   ReadFileRequest,
+  RELEASE_DIR,
   RenameRequest,
   WriteFileRequest,
 } from '@winpanel/shared';
@@ -57,9 +58,17 @@ export const filesRouter = router({
     const manager = managerFor(ctx.app, input.siteSlug);
 
     try {
+      /*
+       * A folder picker never shows the quota, so it must not pay for the
+       * full-tree measurement; the file manager gets a cached figure that is
+       * re-measured in the background of a normal listing.
+       */
       const [entries, used] = await Promise.all([
-        manager.listDirectory(input.path, { showHidden: input.showHidden }),
-        manager.usedBytes(),
+        manager.listDirectory(input.path, {
+          showHidden: input.showHidden,
+          foldersOnly: input.foldersOnly,
+        }),
+        manager.cachedUsedBytes({ walk: !input.foldersOnly }),
       ]);
 
       const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
@@ -79,7 +88,7 @@ export const filesRouter = router({
       return {
         path: input.path,
         entries: sorted,
-        ephemeral: input.path === 'releases' || input.path.startsWith('releases/'),
+        ephemeral: input.path === RELEASE_DIR || input.path.startsWith(`${RELEASE_DIR}/`),
         quotaUsedBytes: used,
         quotaTotalBytes: site.diskQuotaBytes,
       };

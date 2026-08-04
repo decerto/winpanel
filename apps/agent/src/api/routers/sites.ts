@@ -5,7 +5,15 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { Hostname, PackageManager, Runtime, SiteManifest, type SiteSource } from '@winpanel/shared';
+import {
+  Hostname,
+  PackageManager,
+  PUBLIC_DIR,
+  RELEASE_DIR,
+  Runtime,
+  SiteManifest,
+  type SiteSource,
+} from '@winpanel/shared';
 import { protectedProcedure, router } from '../trpc.js';
 import { SiteError, SiteService } from '../../sites/site-service.js';
 import { sites } from '../../db/schema.js';
@@ -157,7 +165,7 @@ export const sitesRouter = router({
         sourceKind: (site.source as SiteSource).kind,
         previewUrl: previewUrlFor(site.previewPort),
         /** Folder the user should put files in, relative to the site root. */
-        contentFolder: (site.source as SiteSource).kind === 'git' ? 'current' : 'public',
+        contentFolder: (site.source as SiteSource).kind === 'git' ? RELEASE_DIR : PUBLIC_DIR,
         deployments: service.deploymentsFor(site.id, 10),
       };
     }),

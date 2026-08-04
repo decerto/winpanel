@@ -5,10 +5,9 @@ import type { SiteManifest } from '@winpanel/shared';
  *
  * Two things make this workable:
  *
- *  - Every reverse-proxy handler carries an `@id`. That turns a blue/green
- *    switch into a single PATCH against `/id/<slug>_proxy/upstreams`, instead
- *    of rewriting and reloading the whole config. Zero downtime falls out of
- *    that almost for free.
+ *  - Every reverse-proxy handler carries an `@id`. That turns pointing a site
+ *    at a port into a single PATCH against `/id/<slug>_proxy/upstreams`,
+ *    instead of rewriting and reloading the whole config.
  *
  *  - Certificates use the DNS challenge via Cloudflare, never TLS-ALPN. A
  *    domain behind Cloudflare's proxy cannot answer TLS-ALPN, so using it

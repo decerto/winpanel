@@ -8,11 +8,12 @@ import {
   FileName,
   MAX_EDITABLE_FILE_BYTES,
   RECYCLE_DIRNAME,
+  RELEASE_DIR,
   type FileEntry,
 } from '@winpanel/shared';
+import { STAT_CONCURRENCY, mapWithConcurrency } from './concurrency.js';
 import {
   PathContainmentError,
-  isReparsePoint,
   resolveForWrite,
   resolveWithinRoot,
   toExtendedLengthPath,
@@ -26,6 +27,11 @@ import {
  * because a junction created between two requests would otherwise become an
  * escape route.
  */
+
+const USAGE_CACHE_TTL_MS = 30_000;
+
+/** Measured size per site root, keyed by absolute path. */
+const usageCache = new Map<string, { value: number; at: number }>();
 
 export class FileOperationError extends Error {
   constructor(message: string) {
@@ -48,7 +54,7 @@ export class FileManager {
 
   async listDirectory(
     relativePath: string,
-    opts: { showHidden?: boolean } = {},
+    opts: { showHidden?: boolean; foldersOnly?: boolean } = {},
   ): Promise<FileEntry[]> {
     const resolved = await resolveWithinRoot(this.root, relativePath);
     if (!resolved.exists) throw new FileOperationError('That folder does not exist.');
@@ -57,43 +63,61 @@ export class FileManager {
       withFileTypes: true,
     });
 
-    const entries: FileEntry[] = [];
+    const wanted = dirents.filter((dirent) => {
+      if (dirent.name === RECYCLE_DIRNAME) return false;
+      if (dirent.name.startsWith('.') && !opts.showHidden) return false;
+      return opts.foldersOnly ? dirent.isDirectory() : true;
+    });
 
-    for (const dirent of dirents) {
-      if (dirent.name === RECYCLE_DIRNAME) continue;
-
-      const hidden = dirent.name.startsWith('.');
-      if (hidden && !opts.showHidden) continue;
-
-      const childAbsolute = path.join(resolved.absolute, dirent.name);
+    const describe = (dirent: (typeof wanted)[number]) => {
       const childRelative = resolved.relative
         ? `${resolved.relative}/${dirent.name}`
         : dirent.name;
 
-      let sizeBytes = 0;
-      let modifiedAt = new Date(0);
-      try {
-        const stats = await fs.lstat(toExtendedLengthPath(childAbsolute));
-        sizeBytes = stats.isFile() ? stats.size : 0;
-        modifiedAt = stats.mtime;
-      } catch {
-        // A file can disappear between readdir and lstat; skipping it is
-        // better than failing the whole listing.
-        continue;
-      }
-
-      entries.push({
+      return {
         name: dirent.name,
         path: childRelative,
-        kind: dirent.isDirectory() ? 'directory' : 'file',
-        sizeBytes,
-        modifiedAt,
-        hidden,
-        isLink: await isReparsePoint(childAbsolute),
-        // Anything under releases/ is replaced by the next deployment, so the
+        kind: dirent.isDirectory() ? ('directory' as const) : ('file' as const),
+        hidden: dirent.name.startsWith('.'),
+        // Anything under release/ is replaced by the next deployment, so the
         // UI can warn before someone edits a file that will vanish.
-        ephemeral: childRelative === 'releases' || childRelative.startsWith('releases/'),
+        ephemeral: childRelative === RELEASE_DIR || childRelative.startsWith(`${RELEASE_DIR}/`),
+      };
+    };
+
+    // A picker shows nothing but names, so readdir alone answers it and no
+    // stat is issued at all.
+    let entries: FileEntry[];
+
+    if (opts.foldersOnly) {
+      entries = wanted.map((dirent) => ({
+        ...describe(dirent),
+        sizeBytes: 0,
+        modifiedAt: new Date(0),
+        isLink: false,
+      }));
+    } else {
+      const stated = await mapWithConcurrency(wanted, STAT_CONCURRENCY, async (dirent) => {
+        let stats;
+        try {
+          stats = await fs.lstat(toExtendedLengthPath(path.join(resolved.absolute, dirent.name)));
+        } catch {
+          // A file can disappear between readdir and lstat; skipping it is
+          // better than failing the whole listing.
+          return null;
+        }
+
+        return {
+          ...describe(dirent),
+          sizeBytes: stats.isFile() ? stats.size : 0,
+          modifiedAt: stats.mtime,
+          // The same lstat already answers this; a second one per entry
+          // doubled the cost of every listing.
+          isLink: stats.isSymbolicLink(),
+        };
       });
+
+      entries = stated.filter((entry): entry is FileEntry => entry !== null);
     }
 
     entries.sort((a, b) => {
@@ -104,7 +128,12 @@ export class FileManager {
     return entries;
   }
 
-  /** Total bytes used by the site, for quota reporting. */
+  /**
+   * Total bytes used by the site, for quota reporting.
+   *
+   * This walks the whole tree, so it is deliberately not called on every
+   * listing — see {@link cachedUsedBytes}.
+   */
   async usedBytes(): Promise<number> {
     let total = 0;
 
@@ -116,23 +145,59 @@ export class FileManager {
         return;
       }
 
-      for (const dirent of dirents) {
+      const subdirectories: string[] = [];
+
+      await mapWithConcurrency(dirents, STAT_CONCURRENCY, async (dirent) => {
         const child = path.join(dir, dirent.name);
+
+        // Never follow links while measuring, or a junction would be counted
+        // repeatedly and could recurse forever. readdir already flags reparse
+        // points on Windows, so only files need a stat for their size.
+        if (dirent.isSymbolicLink()) return;
+        if (dirent.isDirectory()) {
+          subdirectories.push(child);
+          return;
+        }
+
         try {
           const stats = await fs.lstat(toExtendedLengthPath(child));
-          // Never follow links while measuring, or a junction would be
-          // counted repeatedly and could recurse forever.
-          if (stats.isSymbolicLink()) continue;
-          if (stats.isDirectory()) await walk(child);
-          else total += stats.size;
+          if (stats.isSymbolicLink()) return;
+          total += stats.size;
         } catch {
-          continue;
+          return;
         }
-      }
+      });
+
+      // Depth stays sequential: parallelising it as well would multiply out to
+      // thousands of open handles on a deep node_modules tree.
+      for (const subdirectory of subdirectories) await walk(subdirectory);
     };
 
     await walk(this.root);
+    usageCache.set(this.root, { value: total, at: Date.now() });
     return total;
+  }
+
+  /**
+   * Bytes used, from a short-lived cache.
+   *
+   * Browsing a site issues a listing per folder click, and re-walking the
+   * whole tree each time is what made the file manager feel slow. `walk:
+   * false` accepts the last known figure (zero if there is none) for callers
+   * that never show the quota.
+   */
+  async cachedUsedBytes(opts: { walk?: boolean; maxAgeMs?: number } = {}): Promise<number> {
+    const cached = usageCache.get(this.root);
+    if (cached && Date.now() - cached.at < (opts.maxAgeMs ?? USAGE_CACHE_TTL_MS)) {
+      return cached.value;
+    }
+    if (opts.walk === false) return cached?.value ?? 0;
+    return this.usedBytes();
+  }
+
+  /** Called after anything that changes the tree, so the next read re-measures. */
+  private invalidateUsage(): void {
+    usageCache.delete(this.root);
   }
 
   /** Bytes the site may still add before it hits its quota. */
@@ -213,6 +278,7 @@ export class FileManager {
     const temp = `${resolved.absolute}.tmp-${crypto.randomBytes(4).toString('hex')}`;
     await fs.writeFile(toExtendedLengthPath(temp), content, 'utf8');
     await fs.rename(toExtendedLengthPath(temp), toExtendedLengthPath(resolved.absolute));
+    this.invalidateUsage();
 
     const stats = await fs.stat(toExtendedLengthPath(resolved.absolute));
     return { modifiedAt: stats.mtime };
@@ -293,6 +359,8 @@ export class FileManager {
         await fs.rename(toExtendedLengthPath(source.absolute), toExtendedLengthPath(target));
       }
     }
+
+    this.invalidateUsage();
   }
 
   /**
@@ -322,6 +390,7 @@ export class FileManager {
       recycled.push(path.relative(this.root, target).split(path.sep).join('/'));
     }
 
+    this.invalidateUsage();
     return { recycled };
   }
 
@@ -382,6 +451,7 @@ export class FileManager {
       void stats;
 
       await fs.rename(toExtendedLengthPath(temp), toExtendedLengthPath(resolved.absolute));
+      this.invalidateUsage();
       return resolved.relative;
     } catch (error) {
       await fs.rm(toExtendedLengthPath(temp), { force: true }).catch(() => undefined);

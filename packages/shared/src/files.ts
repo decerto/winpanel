@@ -18,7 +18,7 @@ export const FileEntry = z.object({
    * way out of a contained directory.
    */
   isLink: z.boolean().default(false),
-  /** True when the entry sits inside `releases/`, which a deploy will replace. */
+  /** True when the entry sits inside `release/`, which a deploy will replace. */
   ephemeral: z.boolean().default(false),
 });
 export type FileEntry = z.infer<typeof FileEntry>;
@@ -29,6 +29,13 @@ export const ListDirectoryRequest = z.object({
   showHidden: z.boolean().default(false),
   sortBy: z.enum(['name', 'size', 'modified']).default('name'),
   sortDir: z.enum(['asc', 'desc']).default('asc'),
+  /**
+   * Folder pickers only need names. Listing folders alone lets the agent skip
+   * the per-file stat and the quota walk, which is the difference between an
+   * instant dialog and a timeout on a folder holding `node_modules`.
+   * `sizeBytes` and `modifiedAt` come back as zero when this is set.
+   */
+  foldersOnly: z.boolean().default(false),
 });
 export type ListDirectoryRequest = z.infer<typeof ListDirectoryRequest>;
 

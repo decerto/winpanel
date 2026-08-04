@@ -166,6 +166,19 @@ provide(siteContextKey, { site, reload: load, deploy, deploying });
               <span v-if="site.domains.length === 0" class="text-sm text-ink-faint">
                 No web address yet
               </span>
+
+              <!-- The address that works without DNS, so it belongs next to the one that needs it. -->
+              <a
+                v-if="site.previewUrl"
+                :href="site.previewUrl"
+                target="_blank"
+                rel="noreferrer noopener"
+                class="inline-flex items-center gap-1 rounded-full bg-sunken px-2.5 py-0.5 font-mono text-xs text-ink-muted hover:text-ink"
+                title="Reaches this website by IP address, whether or not its domain is set up"
+              >
+                {{ site.previewUrl.replace('http://', '') }}
+                <ExternalLink :size="11" aria-hidden="true" />
+              </a>
             </div>
           </div>
 

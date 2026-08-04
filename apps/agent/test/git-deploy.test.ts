@@ -261,9 +261,7 @@ describe('redactSecrets', () => {
 });
 
 describe('serviceIdFor', () => {
-  it('gives each colour its own service so both can exist at once', () => {
-    // Blue/green needs both versions installed simultaneously: the new one
-    // has to be running and healthy before traffic moves.
+  it('gives each colour its own service name', () => {
     expect(serviceIdFor('kitora', 'blue')).toBe('winpanel-site-kitora-blue');
     expect(serviceIdFor('kitora', 'green')).toBe('winpanel-site-kitora-green');
     expect(serviceIdFor('kitora', 'blue')).not.toBe(serviceIdFor('kitora', 'green'));

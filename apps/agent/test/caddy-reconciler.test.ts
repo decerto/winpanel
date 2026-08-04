@@ -101,7 +101,7 @@ describe('turning the database into a Caddy config', () => {
     });
 
     const [site] = siteInputsFrom(db, sitesRoot());
-    expect(site!.staticRoot).toBe(path.join(sitesRoot(), 'example', 'current'));
+    expect(site!.staticRoot).toBe(path.join(sitesRoot(), 'example', 'release'));
   });
 
   it('gives a domainless site a preview listener and nothing on port 80', () => {

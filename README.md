@@ -27,7 +27,7 @@ artifact. The equivalent configuration here is generated for you — see
 | Area | Capability |
 | --- | --- |
 | **Websites** | Static files, Node and .NET apps, from Git or managed by hand |
-| **Releases** | Zero-downtime deploys and one-click rollback, for sites built from Git |
+| **Releases** | Builds off to one side and swaps it in, so a failed build never touches the live site |
 | **HTTPS** | Free certificates, renewed automatically, using the DNS challenge |
 | **DNS** | Manage records through Cloudflare, including the proxy toggle |
 | **Email** | Self-hosted mailboxes you can use from Outlook |
@@ -45,12 +45,12 @@ everything after it.
 | --- | --- |
 | **A simple website** | Creates the folder and a starter page. Edit or replace the files from the Files tab; changes are live immediately. |
 | **I already have the files** | The same, starting empty. |
-| **From a Git repository** | Clones your repository, works out how to build it, and deploys it blue/green. |
+| **From a Git repository** | Clones your repository, works out how to build it, and publishes it to the site's `release` folder. |
 | **A Node app from scratch** | Writes a small working Node server you can edit here. |
 
 The first two, and the last, keep their files in the site's `public` folder.
 Nothing the panel does ever overwrites that folder — it is yours. Only sites
-built from Git use `releases/`, which *is* replaced on every deploy.
+built from Git use `release`, which *is* replaced on every deploy.
 
 ### Reaching a site before it has a domain
 

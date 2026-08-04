@@ -78,14 +78,23 @@ function when(value: Date | number | null | undefined): string {
           </a>
           <span v-else class="text-ink-muted">&#8212;</span>
         </dd>
+        <p class="mt-1.5 text-xs text-ink-faint">
+          Reaches this website by IP, with or without a working domain.
+        </p>
       </div>
       <div v-if="runsAProcess" class="card p-4">
-        <dt class="text-xs font-medium uppercase tracking-wide text-ink-faint">Active port</dt>
-        <dd class="mt-1 font-mono text-lg text-ink">{{ livePort ?? '\u2014' }}</dd>
-      </div>
-      <div v-if="runsAProcess" class="card p-4">
-        <dt class="text-xs font-medium uppercase tracking-wide text-ink-faint">Standby port</dt>
-        <dd class="mt-1 font-mono text-lg text-ink-muted">{{ standbyPort ?? '\u2014' }}</dd>
+        <dt class="text-xs font-medium uppercase tracking-wide text-ink-faint">App ports</dt>
+        <dd class="mt-1 flex items-baseline gap-2 font-mono text-lg text-ink">
+          {{ livePort ?? '\u2014' }}
+          <span class="text-xs uppercase tracking-wide text-ok">live</span>
+          <span class="text-ink-faint">/</span>
+          <span class="text-ink-muted">{{ standbyPort ?? '\u2014' }}</span>
+          <span class="text-xs uppercase tracking-wide text-ink-faint">standby</span>
+        </dd>
+        <p class="mt-1.5 text-xs text-ink-faint">
+          Where your app itself listens. Reachable only from this server &#8212; visitors always
+          arrive through the web server.
+        </p>
       </div>
       <div class="card p-4">
         <dt class="text-xs font-medium uppercase tracking-wide text-ink-faint">Type</dt>

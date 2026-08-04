@@ -22,7 +22,7 @@ beforeEach(async () => {
   outsideDir = path.join(tmpDir, 'outside');
 
   await fs.mkdir(path.join(siteRoot, 'shared'), { recursive: true });
-  await fs.mkdir(path.join(siteRoot, 'releases', '20260101-000000'), { recursive: true });
+  await fs.mkdir(path.join(siteRoot, 'release', 'dist'), { recursive: true });
   await fs.mkdir(outsideDir, { recursive: true });
 
   await fs.writeFile(path.join(siteRoot, 'shared', '.env'), 'PORT=3001\nAPI_KEY=abc\n');
@@ -51,10 +51,10 @@ describe('listing', () => {
   });
 
   it('flags files that a deployment will replace', async () => {
-    // Editing under releases/ is almost always a mistake — the next deploy
-    // wipes it. The UI needs to be able to say so.
+    // Editing under release/ is almost always a mistake — the next deploy
+    // replaces it wholesale. The UI needs to be able to say so.
     const entries = await manager.listDirectory('');
-    expect(entries.find((e) => e.name === 'releases')?.ephemeral).toBe(true);
+    expect(entries.find((e) => e.name === 'release')?.ephemeral).toBe(true);
     expect(entries.find((e) => e.name === 'shared')?.ephemeral).toBe(false);
   });
 
