@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { computed, onUnmounted, provide, ref, watch } from 'vue';
+import { computed, provide, ref, watch } from 'vue';
 import { RouterLink, RouterView, useRoute } from 'vue-router';
 import {
   ArrowLeft,
   AtSign,
+  Boxes,
   ExternalLink,
   FolderOpen,
   Gauge,
+  GitBranch,
   Globe2,
   RefreshCw,
   Rocket,
@@ -15,6 +17,7 @@ import {
 import type { CheckState } from '@winpanel/shared';
 import { api, describeError } from '../lib/api';
 import { siteContextKey, type SiteDetail } from '../lib/site-context';
+import { LOG_LEVEL_CLASS, useJobLog } from '../lib/job-log';
 import StatusBadge from '../components/StatusBadge.vue';
 import AlertMessage from '../components/AlertMessage.vue';
 
@@ -37,19 +40,14 @@ const site = ref<SiteDetail | null>(null);
 const loading = ref(true);
 const error = ref<string | null>(null);
 
-const activeJobId = ref<string | null>(null);
-const logLines = ref<Array<{ seq: number; level: string; message: string }>>([]);
-const jobStatus = ref<string | null>(null);
-let poller: ReturnType<typeof setInterval> | null = null;
-/** A slow tick must not overlap the next one, or lines arrive twice. */
-let polling = false;
+const job = useJobLog({ onFinished: () => load() });
 
-const deploying = computed(() => jobStatus.value === 'running' || jobStatus.value === 'pending');
+const deploying = computed(() => job.running.value);
 
 const deployState = computed<CheckState>(() => {
   if (deploying.value) return 'checking';
-  if (jobStatus.value === 'failed') return 'blocked';
-  if (jobStatus.value === 'succeeded') return 'ok';
+  if (job.status.value === 'failed') return 'blocked';
+  if (job.status.value === 'succeeded') return 'ok';
 
   const last = site.value?.deployments?.[0];
   if (!last) return 'absent';
@@ -73,13 +71,31 @@ const deployLabel = computed(() => {
   }
 });
 
-const TABS = [
-  { name: 'site-detail', label: 'Overview', icon: Gauge, path: '' },
-  { name: 'site-files', label: 'Files', icon: FolderOpen, path: 'files' },
-  { name: 'site-dns', label: 'DNS', icon: Globe2, path: 'dns' },
-  { name: 'site-email', label: 'Email', icon: AtSign, path: 'email' },
-  { name: 'site-settings', label: 'Settings', icon: SlidersHorizontal, path: 'settings' },
-] as const;
+/*
+ * Tabs are filtered by what the website actually is.
+ *
+ * A static site has no application to restart and an uploaded one has no
+ * repository to pull, so offering those tabs would only lead to a page
+ * explaining that they do not apply here.
+ */
+const TABS = computed(() => {
+  const runsAProcess = site.value?.runtime === 'node' || site.value?.runtime === 'dotnet';
+
+  return [
+    { name: 'site-detail', label: 'Overview', icon: Gauge, show: true },
+    { name: 'site-files', label: 'Files', icon: FolderOpen, show: true },
+    { name: 'site-git', label: 'Git', icon: GitBranch, show: site.value?.sourceKind === 'git' },
+    {
+      name: 'site-app',
+      label: site.value?.runtime === 'dotnet' ? '.NET' : 'Node.js',
+      icon: Boxes,
+      show: runsAProcess,
+    },
+    { name: 'site-dns', label: 'DNS', icon: Globe2, show: true },
+    { name: 'site-email', label: 'Email', icon: AtSign, show: true },
+    { name: 'site-settings', label: 'Settings', icon: SlidersHorizontal, show: true },
+  ].filter((tab) => tab.show);
+});
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -94,74 +110,25 @@ async function load(): Promise<void> {
   }
 }
 
-function stopPolling(): void {
-  if (poller) {
-    clearInterval(poller);
-    poller = null;
-  }
-}
-
-async function pollJob(): Promise<void> {
-  if (!activeJobId.value || polling) return;
-  polling = true;
-
-  try {
-    const job = await api.jobs.get.query({ jobId: activeJobId.value });
-    jobStatus.value = job?.status ?? null;
-
-    // Only ask for lines newer than the last one seen, so a long build does
-    // not resend its whole log every second.
-    const lastSeq = logLines.value.at(-1)?.seq ?? -1;
-    const newLines = await api.jobs.logs.query({
-      jobId: activeJobId.value,
-      afterSeq: lastSeq,
-    });
-
-    logLines.value.push(...newLines);
-
-    if (job && ['succeeded', 'failed', 'cancelled'].includes(job.status)) {
-      stopPolling();
-      await load();
-    }
-  } catch {
-    // A transient failure while polling should not tear down the view.
-  } finally {
-    polling = false;
-  }
-}
-
 async function deploy(): Promise<void> {
   error.value = null;
-  logLines.value = [];
-  jobStatus.value = 'pending';
 
   try {
     const result = await api.sites.deploy.mutate({ slug: slug.value });
-    activeJobId.value = result.jobId;
-
-    stopPolling();
-    poller = setInterval(() => void pollJob(), 1000);
+    job.watchJob(result.jobId);
   } catch (err) {
     error.value = describeError(err);
-    jobStatus.value = null;
+    job.reset();
   }
 }
 
 watch(slug, load, { immediate: true });
-onUnmounted(stopPolling);
 
 provide(siteContextKey, { site, reload: load, deploy, deploying });
-
-const levelClass: Record<string, string> = {
-  error: 'text-danger',
-  warn: 'text-warn',
-  debug: 'text-ink-faint',
-  info: 'text-ink-muted',
-};
 </script>
 
 <template>
-  <div class="max-w-5xl">
+  <div class="max-w-6xl">
     <RouterLink
       to="/sites"
       class="mb-4 inline-flex items-center gap-1.5 text-sm text-ink-muted hover:text-ink"
@@ -230,7 +197,7 @@ const levelClass: Record<string, string> = {
       <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
 
       <!-- Live deploy output, visible from whichever tab you are on. -->
-      <section v-if="logLines.length > 0" class="card mb-6 overflow-hidden">
+      <section v-if="job.lines.value.length > 0" class="card mb-6 overflow-hidden">
         <div class="flex items-center justify-between border-b border-line px-4 py-2.5">
           <h3 class="text-sm font-medium text-ink">Deployment output</h3>
           <StatusBadge :state="deployState" :label="deployLabel" size="sm" />
@@ -238,10 +205,10 @@ const levelClass: Record<string, string> = {
         <pre
           class="max-h-96 overflow-y-auto bg-black/25 p-4 font-mono text-xs leading-relaxed"
         ><span
-          v-for="line in logLines"
+          v-for="line in job.lines.value"
           :key="line.seq"
           class="block"
-          :class="levelClass[line.level] ?? 'text-ink'"
+          :class="LOG_LEVEL_CLASS[line.level] ?? 'text-ink'"
         >{{ line.message }}</span></pre>
       </section>
 

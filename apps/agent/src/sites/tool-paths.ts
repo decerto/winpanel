@@ -111,3 +111,57 @@ export async function resolveTool(command: string, nodeVersion?: string): Promis
 
   throw new ToolNotFoundError(command);
 }
+
+/** How to actually launch a tool: an executable plus the arguments it needs first. */
+export interface ToolInvocation {
+  exe: string;
+  args: string[];
+}
+
+/**
+ * The JavaScript behind each package manager's Windows shim.
+ *
+ * Relative to the folder holding the shim, which is how Node lays them out.
+ */
+const CLI_SCRIPTS: Record<string, string[]> = {
+  npm: ['node_modules/npm/bin/npm-cli.js'],
+  npx: ['node_modules/npm/bin/npx-cli.js'],
+  yarn: ['node_modules/yarn/bin/yarn.js'],
+  pnpm: ['node_modules/pnpm/bin/pnpm.cjs'],
+};
+
+async function cliScriptBeside(directory: string, command: string): Promise<string | null> {
+  for (const relative of CLI_SCRIPTS[command] ?? []) {
+    const candidate = path.join(directory, ...relative.split('/'));
+    if (await exists(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Turns a tool name into something Windows will actually start.
+ *
+ * `npm` and friends are `.cmd` shims, and since Node 20.12 spawning a `.cmd`
+ * without a shell fails outright with `EINVAL`. Turning the shell back on is
+ * not an option — every build argument would then be re-parsed by cmd.exe,
+ * which is precisely the injection surface `runCommand` exists to remove. So
+ * the shim is skipped and the JavaScript behind it is run with `node` instead,
+ * which is what the shim would have done anyway.
+ */
+export async function resolveToolInvocation(
+  command: string,
+  nodeVersion?: string,
+): Promise<ToolInvocation> {
+  const direct = await resolveTool(command, nodeVersion);
+  if (!/\.(cmd|bat)$/i.test(direct)) return { exe: direct, args: [] };
+
+  const node = await resolveTool('node', nodeVersion);
+
+  const script =
+    (await cliScriptBeside(path.dirname(direct), command)) ??
+    // The development fallback returns a bare `npm.cmd`, so look beside the
+    // Node that is running this agent instead.
+    (await cliScriptBeside(path.dirname(process.execPath), command));
+
+  return script ? { exe: node, args: [script] } : { exe: direct, args: [] };
+}

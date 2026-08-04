@@ -61,7 +61,7 @@ const TOOLS = [
 
 // Cards are much taller than rows, so each view gets a page size that fills a
 // screen rather than one number that suits neither.
-const pageSize = computed(() => (view.value === 'cards' ? 8 : 15));
+const pageSize = computed(() => (view.value === 'cards' ? 5 : 15));
 
 const matching = computed(() => {
   const needle = query.value.trim().toLowerCase();
@@ -99,7 +99,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="max-w-6xl">
+  <div class="max-w-7xl">
     <PageHeader
       title="Websites"
       description="Everything this server hosts. Open one, or jump straight to its files, DNS or
@@ -135,8 +135,8 @@ onMounted(load);
 
     <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
 
-    <div v-if="loading" class="grid gap-4 lg:grid-cols-2">
-      <div v-for="n in 4" :key="n" class="h-56 animate-pulse rounded-card bg-surface" />
+    <div v-if="loading" class="space-y-4">
+      <div v-for="n in 3" :key="n" class="h-64 animate-pulse rounded-card bg-surface" />
     </div>
 
     <EmptyState
@@ -154,7 +154,7 @@ onMounted(load);
     </p>
 
     <template v-else>
-      <div v-if="view === 'cards'" class="grid gap-4 lg:grid-cols-2">
+      <div v-if="view === 'cards'" class="space-y-4">
         <SiteCard v-for="site in visible" :key="site.id" :site="site" />
       </div>
 

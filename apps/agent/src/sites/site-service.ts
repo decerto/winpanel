@@ -88,6 +88,26 @@ export function contentRootFor(
   return path.join(siteDir, 'current', manifest.staticRoot ?? '');
 }
 
+/**
+ * The folder a site's process is started in.
+ *
+ * Not the same as the content root: the common "frontend builds into backend"
+ * layout serves files from one folder and runs `package.json` from another,
+ * and every command the user runs by hand — install, a script, a one-off node
+ * invocation — has to land where the app itself runs or it does nothing useful.
+ */
+export function appRootFor(
+  sitesRoot: string,
+  site: { slug: string; source: unknown; manifest: unknown },
+): string {
+  const siteDir = path.join(sitesRoot, site.slug);
+  const source = site.source as SiteSource;
+  const manifest = site.manifest as SiteManifest;
+  const base = source.kind === 'git' ? path.join(siteDir, 'current') : path.join(siteDir, PUBLIC_DIR);
+
+  return path.join(base, manifest.app.cwd ?? '');
+}
+
 export class SiteService {
   private readonly ports: PortAllocator;
 

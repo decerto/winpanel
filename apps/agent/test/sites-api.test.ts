@@ -25,10 +25,18 @@ async function call(
   body?: unknown,
   withCookie = true,
 ): Promise<{ status: number; body: any }> {
+  // A query takes its input in the URL; only a mutation has a body.
+  const query =
+    method === 'GET' && body !== undefined
+      ? `?input=${encodeURIComponent(JSON.stringify(superjson.serialize(body)))}`
+      : '';
+
   const response = await server.inject({
     method,
-    url: `/api/trpc/${procedure}`,
-    ...(body !== undefined ? { payload: superjson.serialize(body) as object } : {}),
+    url: `/api/trpc/${procedure}${query}`,
+    ...(method === 'POST' && body !== undefined
+      ? { payload: superjson.serialize(body) as object }
+      : {}),
     headers: {
       'content-type': 'application/json',
       ...(withCookie && cookie ? { cookie } : {}),
@@ -315,4 +323,85 @@ describe('repository validation at the API boundary', () => {
 
     expect(result.body.result.data.ok).toBe(false);
   });
+});
+
+describe('the application behind a website', () => {
+  const nodeSite = {
+    displayName: 'Kitora',
+    domains: ['kitora.io'],
+    source: { kind: 'upload' as const },
+    manifest: { runtime: 'node' as const },
+    deployNow: false,
+  };
+
+  it('describes how the app runs', async () => {
+    await call('POST', 'sites.create', nodeSite);
+    const info = await call('GET', 'sites.app.info', { slug: 'kitora-io' });
+
+    expect(info.body.error).toBeUndefined();
+    expect(info.body.result.data.runtime).toBe('node');
+    // Nothing has been deployed, so there is no package.json to read yet.
+    expect(info.body.result.data.scripts).toEqual([]);
+    expect(info.body.result.data.applicationUrl).toBe('https://kitora.io');
+  }, 30_000);
+
+  it('refuses to run a script the deployed project does not declare', async () => {
+    // The script name reaches a spawn, so it has to be a value we have seen
+    // rather than whatever was typed.
+    await call('POST', 'sites.create', nodeSite);
+    const result = await call('POST', 'sites.app.runScript', {
+      slug: 'kitora-io',
+      script: 'definitely-not-a-script',
+    });
+
+    expect(result.body.error).toBeDefined();
+  }, 30_000);
+
+  it('only accepts commands from the allowlist', async () => {
+    await call('POST', 'sites.create', nodeSite);
+    const result = await call('POST', 'sites.app.runCommand', {
+      slug: 'kitora-io',
+      command: 'powershell',
+      args: [],
+    });
+
+    expect(result.body.error).toBeDefined();
+  }, 30_000);
+
+  it('refuses to control the process of a website that has none', async () => {
+    await call('POST', 'sites.create', {
+      displayName: 'Just HTML',
+      domains: [],
+      source: { kind: 'blank' },
+      runtime: 'static',
+      deployNow: false,
+    });
+
+    const result = await call('POST', 'sites.app.restart', { slug: 'just-html' });
+    expect(result.body.error.message).toMatch(/served as files/i);
+  }, 30_000);
+
+  it('reports disk usage against the website quota', async () => {
+    await call('POST', 'sites.create', nodeSite);
+    const usage = await call('GET', 'sites.usage', { slug: 'kitora-io' });
+
+    expect(usage.body.error).toBeUndefined();
+    expect(usage.body.result.data.usedBytes).toBeGreaterThanOrEqual(0);
+    expect(usage.body.result.data.quotaBytes).toBeGreaterThan(0);
+  }, 30_000);
+});
+
+describe('the repository behind a website', () => {
+  it('says a website has no repository rather than failing obscurely', async () => {
+    await call('POST', 'sites.create', {
+      displayName: 'Uploaded',
+      domains: [],
+      source: { kind: 'upload' },
+      manifest: { runtime: 'node' },
+      deployNow: false,
+    });
+
+    const result = await call('GET', 'sites.git.info', { slug: 'uploaded' });
+    expect(result.body.error.message).toMatch(/not connected to a repository/i);
+  }, 30_000);
 });

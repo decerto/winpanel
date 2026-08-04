@@ -74,13 +74,12 @@ async function resolveRuntimeExecutable(
         'This .NET website does not say which .dll to run. Set the entry file in its settings.',
       );
     }
-    return { exe: await deps.tools.resolve('dotnet'), args: [entry] };
+    const dotnet = await deps.tools.resolve('dotnet');
+    return { exe: dotnet.exe, args: [...dotnet.args, entry] };
   }
 
-  return {
-    exe: await deps.tools.resolve('node', manifest.nodeVersion ?? undefined),
-    args: [entry ?? 'index.js'],
-  };
+  const node = await deps.tools.resolve('node', manifest.nodeVersion ?? undefined);
+  return { exe: node.exe, args: [...node.args, entry ?? 'index.js'] };
 }
 
 export function createDeployHandler(deps: DeployDependencies) {

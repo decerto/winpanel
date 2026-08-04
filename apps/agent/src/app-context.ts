@@ -11,11 +11,12 @@ import { CaddyReconciler } from './caddy/reconciler.js';
 import { ServiceManager } from './windows/service-manager.js';
 import { SiteService } from './sites/site-service.js';
 import { createDeployHandler } from './sites/deploy-handler.js';
+import { createRunCommandHandler } from './sites/command-runner.js';
 import {
   createInstallComponentHandler,
   createUninstallComponentHandler,
 } from './components/installer.js';
-import { resolveTool } from './sites/tool-paths.js';
+import { resolveToolInvocation } from './sites/tool-paths.js';
 
 /**
  * Composition root.
@@ -82,11 +83,21 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
         caddy,
         routing,
         services,
-        tools: { resolve: resolveTool },
+        tools: { resolve: resolveToolInvocation },
         gitPath: path.join(config.binDir, 'git', 'cmd', 'git.exe'),
         sitesRoot: config.sitesRoot,
         loadEnv: (siteId) => sites.getEnv(siteId),
         loadGitToken: (siteId) => sites.getGitToken(siteId),
+      }),
+    );
+
+    jobs.register(
+      'run-command',
+      createRunCommandHandler({
+        db,
+        tools: { resolve: resolveToolInvocation },
+        sitesRoot: config.sitesRoot,
+        loadEnv: (siteId) => sites.getEnv(siteId),
       }),
     );
 

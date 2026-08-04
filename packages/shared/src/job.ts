@@ -26,6 +26,8 @@ export const JobKind = z.enum([
   'mail-readiness-check',
   'backup',
   'health-check',
+  /** A package-manager or Node command the user asked to run against a site. */
+  'run-command',
 ]);
 export type JobKind = z.infer<typeof JobKind>;
 

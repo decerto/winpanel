@@ -25,8 +25,8 @@ export class DeploymentError extends Error {
 }
 
 export interface ToolPaths {
-  /** Absolute path to each executable the build steps may use. */
-  resolve: (command: string, nodeVersion?: string) => Promise<string>;
+  /** How to launch each executable the build steps may use. */
+  resolve: (command: string, nodeVersion?: string) => Promise<{ exe: string; args: string[] }>;
 }
 
 /** Timestamped, sortable release identifier. */
@@ -87,14 +87,14 @@ export async function runBuildSteps(options: RunBuildOptions): Promise<void> {
       );
     }
 
-    const exe = await tools.resolve(step.command, manifest.nodeVersion ?? undefined);
+    const tool = await tools.resolve(step.command, manifest.nodeVersion ?? undefined);
 
     ctx.log(`${step.name}\u2026`, 'info', step.name);
     ctx.progress(Math.round((index / steps.length) * 70));
 
     const result = await runCommand({
-      exe,
-      args: step.args,
+      exe: tool.exe,
+      args: [...tool.args, ...step.args],
       cwd,
       env: { ...options.env, ...step.env, CI: '1', NODE_ENV: 'production' },
       timeoutMs: 20 * 60 * 1000,

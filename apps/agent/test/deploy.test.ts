@@ -152,7 +152,10 @@ describe('newReleaseId', () => {
 
 describe('runBuildSteps', () => {
   const tools = {
-    resolve: async () => (process.platform === 'win32' ? 'cmd.exe' : '/bin/sh'),
+    resolve: async () => ({
+      exe: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh',
+      args: [],
+    }),
   };
 
   it('skips the build for a project uploaded already built', async () => {
@@ -200,7 +203,7 @@ describe('runBuildSteps', () => {
       }),
       releaseDir: tmpDir,
       tools: {
-        resolve: async () => process.execPath,
+        resolve: async () => ({ exe: process.execPath, args: [] }),
       },
       ctx,
     });
@@ -223,7 +226,7 @@ describe('runBuildSteps', () => {
           ],
         }),
         releaseDir: tmpDir,
-        tools: { resolve: async () => process.execPath },
+        tools: { resolve: async () => ({ exe: process.execPath, args: [] }) },
         ctx,
       }),
     ).rejects.toBeInstanceOf(DeploymentError);
@@ -246,7 +249,7 @@ describe('runBuildSteps', () => {
         ],
       }),
       releaseDir: tmpDir,
-      tools: { resolve: async () => process.execPath },
+      tools: { resolve: async () => ({ exe: process.execPath, args: [] }) },
       ctx,
     });
 

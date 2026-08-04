@@ -34,6 +34,25 @@ export interface GitOptions {
   onOutput?: (line: string) => void;
 }
 
+/** One line of history, as shown next to the deploy button. */
+export interface CommitSummary {
+  sha: string;
+  shortSha: string;
+  author: string;
+  /** ISO 8601, author date. */
+  at: string;
+  subject: string;
+}
+
+async function exists(candidate: string): Promise<boolean> {
+  try {
+    await fs.access(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Rejects URLs git would treat as something other than a remote fetch. */
 export function validateRepositoryUrl(url: string): { ok: true } | { ok: false; reason: string } {
   const trimmed = url.trim();
@@ -173,14 +192,28 @@ export class GitClient {
       GCM_INTERACTIVE: 'never',
     };
 
-    const result = await runCommand({
-      exe: this.options.gitPath,
-      args,
-      cwd,
-      env,
-      timeoutMs: 10 * 60 * 1000,
-      onOutput: (line) => this.options.onOutput?.(line),
-    });
+    let result;
+    try {
+      result = await runCommand({
+        exe: this.options.gitPath,
+        args,
+        cwd,
+        env,
+        timeoutMs: 10 * 60 * 1000,
+        onOutput: (line) => this.options.onOutput?.(line),
+      });
+    } catch (error) {
+      // A missing git.exe surfaces as a raw spawn error naming a path inside
+      // the panel's own installation, which tells the user nothing they can
+      // act on and leaks where the panel lives.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new GitError(
+          'Git is not installed on this server. Install it from the Components page on the ' +
+            'Server health screen, then try again.',
+        );
+      }
+      throw new GitError('Git could not be started on this server.');
+    }
 
     if (result.exitCode !== 0) {
       throw new GitError(explainGitFailure(result.stderr || result.stdout));
@@ -234,6 +267,93 @@ export class GitClient {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * The most recent commits on a branch, without checking anything out.
+   *
+   * A deploy clone is shallow and has its `.git` removed, so it cannot answer
+   * "what has changed since?" — which is the question you actually have in
+   * front of a deploy button. A small bare mirror is kept beside the site and
+   * refreshed on demand instead: fetching a handful of commits costs a second,
+   * and nothing about it is ever executed or served.
+   */
+  async recentCommits(options: {
+    url: string;
+    ref: string;
+    /** Bare repository kept for this site. Created on first use. */
+    cacheDir: string;
+    limit?: number;
+  }): Promise<CommitSummary[]> {
+    const urlCheck = validateRepositoryUrl(options.url);
+    if (!urlCheck.ok) throw new GitError(urlCheck.reason);
+
+    const refCheck = validateGitRef(options.ref);
+    if (!refCheck.ok) throw new GitError(refCheck.reason);
+
+    const limit = Math.min(Math.max(options.limit ?? 10, 1), 50);
+    const depth = Math.max(limit, 20);
+    const credentials = await this.withCredentials(options.url);
+    const mirrored = await exists(path.join(options.cacheDir, 'HEAD'));
+
+    try {
+      if (mirrored) {
+        await this.run([
+          ...credentials.args,
+          '--git-dir', options.cacheDir,
+          'fetch',
+          '--depth', String(depth),
+          '--force',
+          '--',
+          options.url,
+          `${options.ref}:refs/heads/${options.ref}`,
+        ]);
+      } else {
+        // A half-written mirror from an interrupted clone would never repair
+        // itself, so start from nothing.
+        await fs.rm(options.cacheDir, { recursive: true, force: true });
+        await fs.mkdir(path.dirname(options.cacheDir), { recursive: true });
+
+        await this.run([
+          ...credentials.args,
+          'clone',
+          '--bare',
+          '--depth', String(depth),
+          '--single-branch',
+          '--branch', options.ref,
+          '--',
+          options.url,
+          options.cacheDir,
+        ]);
+      }
+    } finally {
+      await credentials.cleanup();
+    }
+
+    // Unit separator between fields and record separator between commits, so
+    // a commit message containing anything at all still parses.
+    const output = await this.run([
+      '--git-dir', options.cacheDir,
+      'log',
+      '--max-count', String(limit),
+      '--format=%H%x1f%an%x1f%aI%x1f%s%x1e',
+      `refs/heads/${options.ref}`,
+    ]);
+
+    return output
+      .split('\u001e')
+      .map((record) => record.trim())
+      .filter((record) => record.length > 0)
+      .map((record) => {
+        const [sha = '', author = '', at = '', subject = ''] = record.split('\u001f');
+        return {
+          sha,
+          shortSha: sha.slice(0, 7),
+          author,
+          at,
+          subject: subject.slice(0, 200),
+        };
+      });
   }
 
   /** Confirms the repository and branch are reachable before a deploy starts. */

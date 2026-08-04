@@ -13,6 +13,9 @@ import { discoverNodeVersions, matchVersion } from '../../sites/node-versions.js
 import { GitClient, validateGitRef, validateRepositoryUrl } from '../../sites/git-client.js';
 import { serviceIdFor } from '../../sites/deploy-handler.js';
 import { localAddresses } from '../../tls/panel-certificate.js';
+import { siteGitRouter } from './site-git.js';
+import { siteAppRouter } from './site-app.js';
+import { FileManager } from '../../files/file-manager.js';
 
 /**
  * Websites: creating, inspecting, deploying.
@@ -57,7 +60,13 @@ function previewUrlFor(previewPort: number | null): string | null {
   return `http://${address}:${previewPort}`;
 }
 
+const USAGE_CACHE_MS = 60_000;
+const usageCache = new Map<string, { usedBytes: number; at: number }>();
+
 export const sitesRouter = router({
+  git: siteGitRouter,
+  app: siteAppRouter,
+
   list: protectedProcedure.query(({ ctx }) => {
     const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
     return service.list().map((site) => {
@@ -99,6 +108,37 @@ export const sitesRouter = router({
         contentFolder: (site.source as SiteSource).kind === 'git' ? 'current' : 'public',
         deployments: service.deploymentsFor(site.id, 10),
       };
+    }),
+
+  /**
+   * How much disk a website is using.
+   *
+   * Its own call rather than part of `list`, because measuring means walking
+   * every file the site owns: acceptable for the handful of cards on screen,
+   * ruinous for a server with fifty sites listed in a table. Cached briefly so
+   * paging back and forth does not re-walk the disk each time.
+   */
+  usage: protectedProcedure
+    .input(z.object({ slug: z.string().min(1) }))
+    .query(async ({ ctx, input }) => {
+      const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
+      const site = service.get(input.slug);
+      if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
+
+      const cached = usageCache.get(site.slug);
+      if (cached && Date.now() - cached.at < USAGE_CACHE_MS) {
+        return { usedBytes: cached.usedBytes, quotaBytes: site.diskQuotaBytes, measuredAt: new Date(cached.at) };
+      }
+
+      const manager = new FileManager({
+        siteRoot: path.join(ctx.app.config.sitesRoot, site.slug),
+        quotaBytes: site.diskQuotaBytes,
+      });
+
+      const usedBytes = await manager.usedBytes();
+      usageCache.set(site.slug, { usedBytes, at: Date.now() });
+
+      return { usedBytes, quotaBytes: site.diskQuotaBytes, measuredAt: new Date() };
     }),
 
   /**

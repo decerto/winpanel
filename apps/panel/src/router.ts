@@ -63,6 +63,16 @@ export const router = createRouter({
           component: () => import('./pages/site/SiteFilesPage.vue'),
         },
         {
+          path: 'git',
+          name: 'site-git',
+          component: () => import('./pages/site/SiteGitPage.vue'),
+        },
+        {
+          path: 'app',
+          name: 'site-app',
+          component: () => import('./pages/site/SiteAppPage.vue'),
+        },
+        {
           path: 'dns',
           name: 'site-dns',
           component: () => import('./pages/site/SiteDnsPage.vue'),
