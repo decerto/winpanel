@@ -44,9 +44,8 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build
-        # Through turbo so the task graph in turbo.json is honoured; packages
-        # are built in dependency order and @winpanel/shared exists before
-        # anything resolves it.
+        # `pnpm -r` builds in workspace dependency order, so @winpanel/shared
+        # exists before anything resolves it.
         run: pnpm build
 
       - name: Stage the installer bundle

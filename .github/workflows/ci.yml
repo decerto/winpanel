@@ -32,15 +32,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Check types
-        # Through turbo rather than `pnpm -r`, so the task graph in turbo.json is
-        # honoured. Typechecking depends on ^build because @winpanel/shared
-        # resolves to its build output; `pnpm -r` orders packages but never
-        # runs that prerequisite, so it fails on a clean checkout.
-        run: pnpm typecheck
-
       - name: Build
+        # Before typechecking and tests, not after: @winpanel/shared resolves to
+        # its build output, so on a clean checkout nothing downstream compiles
+        # until it exists. `pnpm -r` orders packages by their workspace
+        # dependencies but will not run a prerequisite task for you.
         run: pnpm build
+
+      - name: Check types
+        run: pnpm typecheck
 
       - name: Run tests
         # Windows specifically, because the path containment suite creates real

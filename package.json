@@ -8,16 +8,14 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "build": "turbo run build",
-    "dev": "turbo run dev",
-    "test": "turbo run test",
-    "typecheck": "turbo run typecheck",
-    "lint": "turbo run lint",
-    "check": "turbo run typecheck lint test"
+    "build": "pnpm -r build",
+    "dev": "pnpm -r --parallel dev",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "check": "pnpm build && pnpm typecheck && pnpm test"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
-    "turbo": "^2.5.8",
     "typescript": "^5.9.3"
   },
   "pnpm": {
