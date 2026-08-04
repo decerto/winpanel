@@ -36,7 +36,12 @@ export type SourceKind = z.infer<typeof SourceKind>;
 
 export const GitSource = z.object({
   kind: z.literal('git'),
-  url: z.string().url(),
+  /**
+   * Either an https:// address or the SSH form a deploy key needs, which is
+   * not a URL as far as the URL parser is concerned.
+   * `apps/agent/src/sites/git-client.ts` is where this is really validated.
+   */
+  url: z.string().min(1).max(512),
   branch: z.string().min(1).max(120).default('main'),
   /** Subfolder within the repo, for repos containing several projects. */
   subdirectory: z.string().max(256).default(''),

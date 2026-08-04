@@ -299,7 +299,7 @@ async function controlService(
 </script>
 
 <template>
-  <div class="max-w-3xl">
+  <div class="mx-auto w-full max-w-3xl">
     <PageHeader
       title="Settings"
       description="Services this panel drives on your behalf, and the facts about this machine

@@ -207,7 +207,7 @@ async function changePassword(): Promise<void> {
 </script>
 
 <template>
-  <div class="max-w-2xl">
+  <div class="mx-auto w-full max-w-2xl">
     <PageHeader
       title="Security"
       description="How this panel decides it is really you. Every change here re-asks for your

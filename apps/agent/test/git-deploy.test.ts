@@ -22,16 +22,15 @@ describe('validateRepositoryUrl', () => {
     }
   });
 
-  it('rejects SSH addresses and explains what to use instead', () => {
-    // SSH would need a deploy key and a known_hosts entry on the server.
-    // Rather than half-supporting that, steer to the option that works.
+  it('rejects SSH addresses unless a deploy key is being used', () => {
+    // Without a key there is no identity to offer, and git would sit waiting
+    // for a password no service can type. With one, SSH is the normal route.
     for (const url of ['git@github.com:user/project.git', 'ssh://git@github.com/u/p.git']) {
       const result = validateRepositoryUrl(url);
       expect(result.ok, url).toBe(false);
-      if (!result.ok) {
-        expect(result.reason).toContain('https://');
-        expect(result.reason).toMatch(/access token/i);
-      }
+      if (!result.ok) expect(result.reason).toMatch(/deploy key/i);
+
+      expect(validateRepositoryUrl(url, { allowSsh: true }).ok, url).toBe(true);
     }
   });
 

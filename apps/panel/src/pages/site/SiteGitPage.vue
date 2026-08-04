@@ -13,8 +13,10 @@ import {
   Rocket,
 } from 'lucide-vue-next';
 import { api, describeError } from '../../lib/api';
+import { deployKeyPageFor, hostLabelFor, toHttpsUrl, toSshUrl } from '../../lib/repo-url';
 import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
+import HowTo from '../../components/HowTo.vue';
 
 /**
  * The repository behind this website.
@@ -48,7 +50,53 @@ const copied = ref(false);
 const editing = ref(false);
 const showAllCommits = ref(false);
 
-const form = ref({ url: '', branch: '', subdirectory: '', token: '' });
+const form = ref({ url: '', branch: '', subdirectory: '', token: '', access: 'public' as Access });
+
+type Access = 'public' | 'key' | 'token';
+
+const keyCopied = ref(false);
+const generatingKey = ref(false);
+/** Replaces the stored key the moment it is made, so it is shown once here. */
+const freshKey = ref<string | null>(null);
+
+const deployKey = computed(() => freshKey.value ?? info.value?.deployKey ?? null);
+const hostLabel = computed(() => hostLabelFor(form.value.url || info.value?.url || ''));
+const deployKeyUrl = computed(() => deployKeyPageFor(form.value.url || info.value?.url || ''));
+
+/** A deploy key only ever authenticates SSH, so the address has to match. */
+watch(
+  () => form.value.access,
+  (next) => {
+    if (!form.value.url.trim()) return;
+    form.value.url = next === 'key' ? toSshUrl(form.value.url) : toHttpsUrl(form.value.url);
+  },
+);
+
+async function createDeployKey(): Promise<void> {
+  generatingKey.value = true;
+  error.value = null;
+
+  try {
+    const result = await api.sites.git.createDeployKey.mutate({ slug: slug.value });
+    freshKey.value = result.publicKey;
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    generatingKey.value = false;
+  }
+}
+
+async function copyDeployKey(): Promise<void> {
+  if (!deployKey.value) return;
+
+  try {
+    await navigator.clipboard.writeText(deployKey.value);
+    keyCopied.value = true;
+    setTimeout(() => (keyCopied.value = false), 1500);
+  } catch {
+    // Clipboard access can be refused; the key is selectable in the box.
+  }
+}
 
 const visibleCommits = computed(() =>
   showAllCommits.value ? commits.value : commits.value.slice(0, 2),
@@ -74,6 +122,7 @@ async function load(): Promise<void> {
       branch: info.value.branch,
       subdirectory: info.value.subdirectory,
       token: '',
+      access: info.value.authMethod === 'deploy-key' ? 'key' : info.value.authMethod === 'token' ? 'token' : 'public',
     };
     await refresh();
   } catch (err) {
@@ -110,12 +159,14 @@ async function saveSource(): Promise<void> {
       url: form.value.url.trim(),
       branch: form.value.branch.trim(),
       subdirectory: form.value.subdirectory.trim(),
+      useDeployKey: form.value.access === 'key',
       // An untouched token box must not wipe a stored one.
       ...(form.value.token.trim().length > 0 ? { token: form.value.token.trim() } : {}),
     });
 
     notice.value = result.message;
     editing.value = false;
+    freshKey.value = null;
     commits.value = [];
     await load();
   } catch (err) {
@@ -200,7 +251,11 @@ watch(slug, load, { immediate: true });
 
           <p class="flex items-center gap-1.5 pb-2 text-xs text-ink-muted">
             <KeyRound :size="13" class="text-ink-faint" aria-hidden="true" />
-            {{ info.hasToken ? 'Private, using a stored token' : 'Public repository' }}
+            <template v-if="info.authMethod === 'deploy-key'">Private, using a deploy key</template>
+            <template v-else-if="info.authMethod === 'token'">
+              Private, using a stored token
+            </template>
+            <template v-else>Public repository</template>
           </p>
         </div>
 
@@ -211,7 +266,10 @@ watch(slug, load, { immediate: true });
           <div class="sm:col-span-2">
             <label for="edit-url" class="label">Repository address</label>
             <input id="edit-url" v-model="form.url" class="field font-mono" />
-            <p class="hint">An https:// address. SSH addresses are not supported.</p>
+            <p class="hint">
+              Paste either address. It is changed to match the sign-in method below if it needs
+              to be.
+            </p>
           </div>
           <div>
             <label for="edit-branch" class="label">Branch</label>
@@ -222,7 +280,83 @@ watch(slug, load, { immediate: true });
             <input id="edit-subdir" v-model="form.subdirectory" class="field font-mono"
                    placeholder="(the whole repository)" />
           </div>
-          <div class="sm:col-span-2">
+
+          <fieldset class="sm:col-span-2">
+            <legend class="label">How the server signs in</legend>
+            <div class="flex flex-wrap gap-4 text-sm text-ink-muted">
+              <label class="flex items-center gap-2">
+                <input v-model="form.access" type="radio" value="public" /> It's public
+              </label>
+              <label class="flex items-center gap-2">
+                <input v-model="form.access" type="radio" value="key" /> Deploy key
+              </label>
+              <label class="flex items-center gap-2">
+                <input v-model="form.access" type="radio" value="token" /> Access token
+              </label>
+            </div>
+          </fieldset>
+
+          <div v-if="form.access === 'key'" class="space-y-3 sm:col-span-2">
+            <div>
+              <label for="edit-deploy-key" class="label">This website's public key</label>
+              <div class="flex gap-2">
+                <textarea
+                  id="edit-deploy-key"
+                  :value="deployKey ?? ''"
+                  readonly
+                  rows="3"
+                  class="field resize-none break-all font-mono text-xs"
+                  :placeholder="generatingKey ? 'Making a key\u2026' : 'No key yet \u2014 create one'"
+                  @focus="($event.target as HTMLTextAreaElement).select()"
+                ></textarea>
+                <div class="flex shrink-0 flex-col gap-2">
+                  <button
+                    type="button"
+                    class="btn btn-ghost"
+                    :disabled="!deployKey"
+                    @click="copyDeployKey"
+                  >
+                    <component :is="keyCopied ? Check : Copy" :size="14" aria-hidden="true" />
+                    {{ keyCopied ? 'Copied' : 'Copy' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-ghost"
+                    :disabled="generatingKey"
+                    @click="createDeployKey"
+                  >
+                    <KeyRound :size="14" aria-hidden="true" />
+                    {{ deployKey ? 'Replace' : 'Create key' }}
+                  </button>
+                </div>
+              </div>
+              <p class="hint">
+                Replacing the key stops the old one working straight away. You will have to add
+                the new one to the repository before the next deploy.
+              </p>
+            </div>
+
+            <HowTo :title="`Add this key to ${hostLabel}`">
+              <li>Copy the key above.</li>
+              <li>
+                <template v-if="deployKeyUrl">
+                  Open
+                  <a :href="deployKeyUrl" target="_blank" rel="noreferrer noopener">
+                    the repository's Deploy keys page
+                  </a>
+                  and choose <strong>Add deploy key</strong>.
+                </template>
+                <template v-else>
+                  Open the repository, then
+                  <strong>Settings &rarr; Deploy keys &rarr; Add deploy key</strong>.
+                </template>
+              </li>
+              <li>Give it any title, paste the key, and leave write access unticked.</li>
+              <li>Save it, then press <strong>Check and save</strong> here.</li>
+            </HowTo>
+          </div>
+
+          <div v-else-if="form.access === 'token'" class="sm:col-span-2">
             <label for="edit-token" class="label">Access token</label>
             <input
               id="edit-token"
@@ -232,6 +366,7 @@ watch(slug, load, { immediate: true });
               :placeholder="info.hasToken ? 'Stored \u2014 leave blank to keep it' : 'Only needed for a private repository'"
             />
           </div>
+
           <div class="sm:col-span-2">
             <button type="submit" class="btn btn-primary" :disabled="saving">
               {{ saving ? 'Checking\u2026' : 'Check and save' }}

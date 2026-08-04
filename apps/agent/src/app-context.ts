@@ -88,6 +88,8 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
         sitesRoot: config.sitesRoot,
         loadEnv: (siteId) => sites.getEnv(siteId),
         loadGitToken: (siteId) => sites.getGitToken(siteId),
+        loadGitSshKey: (siteId) => sites.getGitSshKey(siteId),
+        sshKnownHostsPath: path.join(config.dataDir, 'ssh', 'known_hosts'),
       }),
     );
 

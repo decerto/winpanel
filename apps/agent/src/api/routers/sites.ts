@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { Hostname, Runtime, SiteManifest, type SiteSource } from '@winpanel/shared';
 import { protectedProcedure, router } from '../trpc.js';
 import { SiteError, SiteService } from '../../sites/site-service.js';
@@ -11,6 +12,7 @@ import { sites } from '../../db/schema.js';
 import { detectApp } from '../../detect/detector.js';
 import { discoverNodeVersions, matchVersion } from '../../sites/node-versions.js';
 import { GitClient, validateGitRef, validateRepositoryUrl } from '../../sites/git-client.js';
+import { generateDeployKey, isSshUrl } from '../../sites/ssh-keys.js';
 import { serviceIdFor } from '../../sites/deploy-handler.js';
 import { localAddresses } from '../../tls/panel-certificate.js';
 import { siteGitRouter } from './site-git.js';
@@ -31,7 +33,51 @@ const GitSourceInput = z.object({
   subdirectory: z.string().max(256).default(''),
   /** Personal access token for a private repository. */
   token: z.string().max(512).optional(),
+  /** Identifies a deploy key made earlier in the wizard by `deployKey`. */
+  deployKeyId: z.string().uuid().optional(),
 });
+
+/**
+ * Deploy keys made for a site that does not exist yet.
+ *
+ * The private half must never go near the browser, so the wizard is handed an
+ * id and the public line only, and the pair waits here until the site it
+ * belongs to is created. Kept in memory deliberately: an abandoned wizard
+ * should leave nothing behind, and a key nobody finished installing is worth
+ * nothing anyway.
+ */
+const pendingKeys = new Map<
+  string,
+  { privateKey: string; publicKey: string; fingerprint: string; createdAt: number }
+>();
+
+const PENDING_KEY_TTL_MS = 6 * 60 * 60 * 1000;
+const MAX_PENDING_KEYS = 50;
+
+function prunePendingKeys(): void {
+  const cutoff = Date.now() - PENDING_KEY_TTL_MS;
+  for (const [id, entry] of pendingKeys) {
+    if (entry.createdAt < cutoff) pendingKeys.delete(id);
+  }
+
+  // Nothing here is precious, and an unbounded map reachable from an API is
+  // a slow memory leak waiting to be triggered on purpose.
+  while (pendingKeys.size > MAX_PENDING_KEYS) {
+    const oldest = pendingKeys.keys().next().value;
+    if (oldest === undefined) break;
+    pendingKeys.delete(oldest);
+  }
+}
+
+function takePendingKey(id: string | undefined): { privateKey: string; publicKey: string } | null {
+  if (!id) return null;
+  prunePendingKeys();
+
+  const entry = pendingKeys.get(id);
+  if (!entry) return null;
+
+  return { privateKey: entry.privateKey, publicKey: entry.publicKey };
+}
 
 const UploadSourceInput = z.object({ kind: z.literal('upload') });
 const BlankSourceInput = z.object({ kind: z.literal('blank') });
@@ -62,6 +108,11 @@ function previewUrlFor(previewPort: number | null): string | null {
 
 const USAGE_CACHE_MS = 60_000;
 const usageCache = new Map<string, { usedBytes: number; at: number }>();
+
+/** Where host keys are pinned, shared by every repository this server reads. */
+function knownHostsPathFor(dataDir: string): string {
+  return path.join(dataDir, 'ssh', 'known_hosts');
+}
 
 export const sitesRouter = router({
   git: siteGitRouter,
@@ -142,6 +193,25 @@ export const sitesRouter = router({
     }),
 
   /**
+   * Makes a deploy key for a repository the panel is about to be pointed at.
+   *
+   * A deploy key is the right answer for a private repository: it grants read
+   * access to that one repository, it does not expire, and nothing has to be
+   * copied out of the server. The user pastes the public line into the
+   * repository's own settings; the private half stays here.
+   */
+  deployKey: protectedProcedure.mutation(() => {
+    prunePendingKeys();
+
+    const key = generateDeployKey(`winpanel@${os.hostname()}`.slice(0, 100));
+    const id = crypto.randomUUID();
+
+    pendingKeys.set(id, { ...key, createdAt: Date.now() });
+
+    return { keyId: id, publicKey: key.publicKey, fingerprint: key.fingerprint };
+  }),
+
+  /**
    * Checks a repository is reachable before the user commits to anything.
    *
    * Worth its own step: an unreachable repository is by far the most common
@@ -149,17 +219,35 @@ export const sitesRouter = router({
    * finding out halfway through a build.
    */
   testRepository: protectedProcedure
-    .input(z.object({ url: z.string().min(1), branch: z.string().min(1), token: z.string().optional() }))
+    .input(
+      z.object({
+        url: z.string().min(1),
+        branch: z.string().min(1),
+        token: z.string().optional(),
+        deployKeyId: z.string().uuid().optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
-      const urlCheck = validateRepositoryUrl(input.url);
+      const deployKey = takePendingKey(input.deployKeyId);
+
+      const urlCheck = validateRepositoryUrl(input.url, { allowSsh: deployKey !== null });
       if (!urlCheck.ok) return { ok: false, message: urlCheck.reason };
 
       const refCheck = validateGitRef(input.branch);
       if (!refCheck.ok) return { ok: false, message: refCheck.reason };
 
+      if (!deployKey && isSshUrl(input.url)) {
+        return {
+          ok: false,
+          message: 'That deploy key has expired. Generate a new one and add it again.',
+        };
+      }
+
       const gitPath = path.join(ctx.app.config.binDir, 'git', 'cmd', 'git.exe');
       const git = new GitClient({
         gitPath,
+        knownHostsPath: knownHostsPathFor(ctx.app.config.dataDir),
+        ...(deployKey ? { sshPrivateKey: deployKey.privateKey } : {}),
         ...(input.token ? { token: input.token } : {}),
       });
 
@@ -173,9 +261,18 @@ export const sitesRouter = router({
    * user change anything before the site is created.
    */
   inspect: protectedProcedure
-    .input(z.object({ url: z.string().min(1), branch: z.string().min(1), token: z.string().optional() }))
+    .input(
+      z.object({
+        url: z.string().min(1),
+        branch: z.string().min(1),
+        token: z.string().optional(),
+        deployKeyId: z.string().uuid().optional(),
+      }),
+    )
     .mutation(async ({ ctx, input }) => {
-      const urlCheck = validateRepositoryUrl(input.url);
+      const deployKey = takePendingKey(input.deployKeyId);
+
+      const urlCheck = validateRepositoryUrl(input.url, { allowSsh: deployKey !== null });
       if (!urlCheck.ok) throw new TRPCError({ code: 'BAD_REQUEST', message: urlCheck.reason });
 
       const workDir = await fs.mkdtemp(path.join(os.tmpdir(), 'winpanel-inspect-'));
@@ -184,6 +281,8 @@ export const sitesRouter = router({
         const gitPath = path.join(ctx.app.config.binDir, 'git', 'cmd', 'git.exe');
         const git = new GitClient({
           gitPath,
+          knownHostsPath: knownHostsPathFor(ctx.app.config.dataDir),
+          ...(deployKey ? { sshPrivateKey: deployKey.privateKey } : {}),
           ...(input.token ? { token: input.token } : {}),
         });
 
@@ -268,6 +367,9 @@ export const sitesRouter = router({
           : { kind: input.source.kind };
 
       try {
+        const deployKey =
+          input.source.kind === 'git' ? takePendingKey(input.source.deployKeyId) : null;
+
         const created = await service.create({
           displayName: input.displayName,
           domains: input.domains,
@@ -277,7 +379,13 @@ export const sitesRouter = router({
           ...(input.source.kind === 'git' && input.source.token
             ? { gitToken: input.source.token }
             : {}),
+          ...(deployKey ? { gitSshKey: deployKey } : {}),
         });
+
+        // The key now belongs to a site, so the wizard's copy is redundant.
+        if (input.source.kind === 'git' && input.source.deployKeyId) {
+          pendingKeys.delete(input.source.deployKeyId);
+        }
 
         /*
          * Every kind of site needs publishing, not just git ones.

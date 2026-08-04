@@ -55,6 +55,8 @@ export interface CreateSiteInput {
   manifest: SiteManifest;
   envVars?: Record<string, string>;
   gitToken?: string;
+  /** OpenSSH private key of a deploy key, for a private repository. */
+  gitSshKey?: { privateKey: string; publicKey: string };
   diskQuotaBytes?: number;
 }
 
@@ -217,6 +219,9 @@ export class SiteService {
 
       if (input.envVars) await this.setEnv(id, input.envVars);
       if (input.gitToken) await this.setGitToken(id, input.gitToken);
+      if (input.gitSshKey) {
+        await this.setGitSshKey(id, input.gitSshKey.privateKey, input.gitSshKey.publicKey);
+      }
 
       return { id, slug, previewPort, scaffolded };
     } catch (error) {
@@ -240,6 +245,8 @@ export class SiteService {
     this.ports.release(id);
     this.db.db.delete(secrets).where(eq(secrets.key, `site.env:${id}`)).run();
     this.db.db.delete(secrets).where(eq(secrets.key, `site.gitToken:${id}`)).run();
+    this.db.db.delete(secrets).where(eq(secrets.key, `site.gitSshKey:${id}`)).run();
+    this.db.db.delete(secrets).where(eq(secrets.key, `site.gitSshPublicKey:${id}`)).run();
     this.db.db.delete(sites).where(eq(sites.id, id)).run();
 
     if (options.deleteFiles) {
@@ -304,6 +311,55 @@ export class SiteService {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * Stores a deploy key for this site.
+   *
+   * The public half is kept as well, even though it is not secret: it has to
+   * be shown again whenever someone asks "which key did I install?", and
+   * re-deriving it would mean decrypting the private half to do so.
+   */
+  async setGitSshKey(siteId: string, privateKey: string, publicKey: string): Promise<void> {
+    for (const [suffix, value] of [
+      ['gitSshKey', privateKey],
+      ['gitSshPublicKey', publicKey],
+    ] as const) {
+      const key = `site.${suffix}:${siteId}`;
+      const ciphertext = this.vault.encrypt(value, key);
+
+      this.db.db
+        .insert(secrets)
+        .values({ key, ciphertext })
+        .onConflictDoUpdate({ target: secrets.key, set: { ciphertext, updatedAt: new Date() } })
+        .run();
+    }
+  }
+
+  private readSecret(key: string): string | undefined {
+    const row = this.db.db.select().from(secrets).where(eq(secrets.key, key)).get();
+    if (!row) return undefined;
+
+    try {
+      return this.vault.decrypt(row.ciphertext, key);
+    } catch {
+      return undefined;
+    }
+  }
+
+  async getGitSshKey(siteId: string): Promise<string | undefined> {
+    return this.readSecret(`site.gitSshKey:${siteId}`);
+  }
+
+  /** The line the user pastes into the repository's deploy keys. */
+  async getGitSshPublicKey(siteId: string): Promise<string | undefined> {
+    return this.readSecret(`site.gitSshPublicKey:${siteId}`);
+  }
+
+  /** Forgets the deploy key, for a site moving to a token or a public repo. */
+  clearGitSshKey(siteId: string): void {
+    this.db.db.delete(secrets).where(eq(secrets.key, `site.gitSshKey:${siteId}`)).run();
+    this.db.db.delete(secrets).where(eq(secrets.key, `site.gitSshPublicKey:${siteId}`)).run();
   }
 
   /** The port currently receiving traffic. */

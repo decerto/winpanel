@@ -135,7 +135,7 @@ void load();
 </script>
 
 <template>
-  <div class="max-w-5xl">
+  <div class="mx-auto w-full max-w-5xl">
     <PageHeader
       title="Email"
       description="Mailboxes live with the website that owns the domain. Pick one to add

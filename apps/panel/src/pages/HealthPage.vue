@@ -88,7 +88,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="max-w-4xl">
+  <div class="mx-auto w-full max-w-4xl">
     <!--
       A single sentence, then the numbers. Anyone opening this page is asking
       "is my server all right?", and that deserves an answer before a list.

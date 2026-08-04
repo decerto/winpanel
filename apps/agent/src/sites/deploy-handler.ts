@@ -53,6 +53,10 @@ export interface DeployDependencies {
   loadEnv: (siteId: string) => Promise<Record<string, string>>;
   /** Git token for private repositories, if configured. */
   loadGitToken: (siteId: string) => Promise<string | undefined>;
+  /** Deploy key for private repositories reached over SSH, if configured. */
+  loadGitSshKey: (siteId: string) => Promise<string | undefined>;
+  /** Where SSH host keys are pinned after the first connection. */
+  sshKnownHostsPath?: string;
   /** How many previous releases to keep for rollback. */
   keepReleases?: number;
 }
@@ -166,6 +170,8 @@ export function createDeployHandler(deps: DeployDependencies) {
         const git = new GitClient({
           gitPath: deps.gitPath,
           token: await deps.loadGitToken(site.id),
+          sshPrivateKey: await deps.loadGitSshKey(site.id),
+          ...(deps.sshKnownHostsPath ? { knownHostsPath: deps.sshKnownHostsPath } : {}),
           onOutput: (line) => {
             // Belt and braces: a token should never reach the log, but git
             // occasionally echoes a URL back on error.

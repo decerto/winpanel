@@ -99,7 +99,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="max-w-7xl">
+  <div class="mx-auto w-full max-w-7xl">
     <PageHeader
       title="Websites"
       description="Everything this server hosts. Open one, or jump straight to its files, DNS or

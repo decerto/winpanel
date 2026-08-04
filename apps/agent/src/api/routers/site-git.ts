@@ -8,6 +8,7 @@ import { protectedProcedure, router } from '../trpc.js';
 import { SiteService } from '../../sites/site-service.js';
 import { sites } from '../../db/schema.js';
 import { GitClient, validateGitRef, validateRepositoryUrl } from '../../sites/git-client.js';
+import { generateDeployKey, isSshUrl, toSshUrl } from '../../sites/ssh-keys.js';
 import type { AppContext } from '../../app-context.js';
 
 /**
@@ -41,10 +42,15 @@ function requireGitSite(app: AppContext, slug: string) {
   return { service, site, source };
 }
 
-function clientFor(app: AppContext, token: string | undefined): GitClient {
+function clientFor(
+  app: AppContext,
+  credentials: { token?: string | undefined; sshPrivateKey?: string | undefined },
+): GitClient {
   return new GitClient({
     gitPath: path.join(app.config.binDir, 'git', 'cmd', 'git.exe'),
-    ...(token ? { token } : {}),
+    knownHostsPath: path.join(app.config.dataDir, 'ssh', 'known_hosts'),
+    ...(credentials.token ? { token: credentials.token } : {}),
+    ...(credentials.sshPrivateKey ? { sshPrivateKey: credentials.sshPrivateKey } : {}),
   });
 }
 
@@ -55,6 +61,7 @@ export const siteGitRouter = router({
     .query(async ({ ctx, input }) => {
       const { service, site, source } = requireGitSite(ctx.app, input.slug);
       const token = await service.getGitToken(site.id);
+      const publicKey = await service.getGitSshPublicKey(site.id);
       const last = service.deploymentsFor(site.id, 1)[0];
 
       return {
@@ -63,6 +70,10 @@ export const siteGitRouter = router({
         subdirectory: source.subdirectory ?? '',
         /** Whether a token is stored, never the token itself. */
         hasToken: token !== undefined,
+        /** How this repository is signed in to, so the page can say so. */
+        authMethod: isSshUrl(source.url) ? 'deploy-key' : token ? 'token' : 'public',
+        /** The public half of the deploy key, which is safe to show. */
+        deployKey: publicKey ?? null,
         /** Where a successful deploy publishes to, in the site's own terms. */
         deployPath: 'current',
         lastDeployment: last
@@ -87,7 +98,10 @@ export const siteGitRouter = router({
     .input(z.object({ slug: z.string().min(1), limit: z.number().int().min(1).max(25).default(10) }))
     .mutation(async ({ ctx, input }) => {
       const { service, site, source } = requireGitSite(ctx.app, input.slug);
-      const git = clientFor(ctx.app, await service.getGitToken(site.id));
+      const git = clientFor(ctx.app, {
+        token: await service.getGitToken(site.id),
+        sshPrivateKey: await service.getGitSshKey(site.id),
+      });
 
       try {
         const commits = await git.recentCommits({
@@ -108,6 +122,24 @@ export const siteGitRouter = router({
     }),
 
   /**
+   * Makes a new deploy key for this website and stores it.
+   *
+   * Also used to replace one: a key that was never installed, or was removed
+   * from the repository, cannot be recovered — only replaced. The old key
+   * stops working the moment this returns, which is the point.
+   */
+  createDeployKey: protectedProcedure
+    .input(z.object({ slug: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const { service, site } = requireGitSite(ctx.app, input.slug);
+
+      const key = generateDeployKey(`winpanel-${site.slug}`);
+      await service.setGitSshKey(site.id, key.privateKey, key.publicKey);
+
+      return { publicKey: key.publicKey, fingerprint: key.fingerprint };
+    }),
+
+  /**
    * Points the website at a different repository, branch or folder.
    *
    * Access is proved before anything is stored: saving a repository the server
@@ -123,12 +155,30 @@ export const siteGitRouter = router({
         subdirectory: z.string().max(256).default(''),
         /** Omitted leaves the stored token alone; empty clears it. */
         token: z.string().max(512).optional(),
+        /** Sign in with this website's deploy key rather than a token. */
+        useDeployKey: z.boolean().default(false),
       }),
     )
     .mutation(async ({ ctx, input }) => {
       const { service, site } = requireGitSite(ctx.app, input.slug);
 
-      const urlCheck = validateRepositoryUrl(input.url);
+      const sshPrivateKey = input.useDeployKey
+        ? await service.getGitSshKey(site.id)
+        : undefined;
+
+      if (input.useDeployKey && !sshPrivateKey) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Create a deploy key for this website first.',
+        });
+      }
+
+      // A deploy key only authenticates SSH, so an https address saved
+      // alongside one would fail as "repository not found" and look like a
+      // missing repository rather than the wrong kind of address.
+      const url = input.useDeployKey ? toSshUrl(input.url.trim()) : input.url.trim();
+
+      const urlCheck = validateRepositoryUrl(url, { allowSsh: input.useDeployKey });
       if (!urlCheck.ok) throw new TRPCError({ code: 'BAD_REQUEST', message: urlCheck.reason });
 
       const refCheck = validateGitRef(input.branch);
@@ -137,8 +187,11 @@ export const siteGitRouter = router({
       const token =
         input.token === undefined ? await service.getGitToken(site.id) : input.token.trim();
 
-      const git = clientFor(ctx.app, token && token.length > 0 ? token : undefined);
-      const access = await git.testAccess(input.url, input.branch);
+      const git = clientFor(ctx.app, {
+        ...(input.useDeployKey ? { sshPrivateKey } : { token: token && token.length > 0 ? token : undefined }),
+      });
+
+      const access = await git.testAccess(url, input.branch);
       if (!access.ok) throw new TRPCError({ code: 'BAD_REQUEST', message: access.message });
 
       if (input.token !== undefined) {
@@ -150,7 +203,7 @@ export const siteGitRouter = router({
         .set({
           source: {
             kind: 'git',
-            url: input.url.trim(),
+            url,
             branch: input.branch.trim(),
             subdirectory: input.subdirectory.trim(),
           },

@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 import {
   ArrowLeft,
   Check,
+  Copy,
+  ExternalLink,
   FileCode,
   FolderTree,
   GitBranch,
+  KeyRound,
   Loader,
   Plus,
   Server,
@@ -14,7 +17,15 @@ import {
   Upload,
 } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
+import {
+  deployKeyPageFor,
+  hostLabelFor,
+  toHttpsUrl,
+  toSshUrl,
+  tokenPageFor,
+} from '../lib/repo-url';
 import AlertMessage from '../components/AlertMessage.vue';
+import HowTo from '../components/HowTo.vue';
 
 /**
  * Add a website.
@@ -77,28 +88,85 @@ const servesFiles = computed(() => kind.value === 'static' || kind.value === 'up
 const repoUrl = ref('');
 const branch = ref('main');
 const token = ref('');
-const isPrivate = ref(false);
+
+/**
+ * How the server proves it may read the repository.
+ *
+ * A deploy key is the default for a private repository because it is the
+ * thing that cannot go wrong later: it reads one repository, it belongs to
+ * the server rather than to a person, and it does not expire. A token is
+ * offered as well because some hosts and some company policies leave no
+ * choice, but it is not what we suggest first.
+ */
+type Access = 'public' | 'key' | 'token';
+const access = ref<Access>('public');
+
+const deployKey = ref<{ keyId: string; publicKey: string; fingerprint: string } | null>(null);
+const generatingKey = ref(false);
+const keyCopied = ref(false);
+
 const displayName = ref('');
 const domains = ref('');
 const spaFallback = ref(false);
 
+const hostLabel = computed(() => hostLabelFor(repoUrl.value));
+const deployKeyUrl = computed(() => deployKeyPageFor(repoUrl.value));
+const tokenHelpUrl = computed(() => tokenPageFor(repoUrl.value));
+
 /**
- * Deep-links to the right token page for the host being used, since every
- * provider hides it somewhere different.
+ * A deploy key only authenticates SSH, so the address has to be the SSH one.
+ * Converting it here means the user can paste whichever address their host's
+ * copy button gave them and still end up with something that works.
  */
-const tokenHelpUrl = computed(() => {
-  const url = repoUrl.value.toLowerCase();
-  if (url.includes('github.com')) return 'https://github.com/settings/tokens';
-  if (url.includes('gitlab.com')) return 'https://gitlab.com/-/user_settings/personal_access_tokens';
-  if (url.includes('bitbucket.org')) {
-    return 'https://bitbucket.org/account/settings/app-passwords/';
+watch(access, async (next) => {
+  testResult.value = null;
+
+  if (repoUrl.value.trim()) {
+    repoUrl.value = next === 'key' ? toSshUrl(repoUrl.value) : toHttpsUrl(repoUrl.value);
   }
-  return null;
+
+  if (next === 'key' && !deployKey.value) await createDeployKey();
+  if (next !== 'token') token.value = '';
 });
 
-const canContinue = computed(
-  () => repoUrl.value.trim().length > 0 && (!isPrivate.value || token.value.length > 0),
-);
+// Typing the address after choosing a deploy key should not undo the switch.
+async function createDeployKey(): Promise<void> {
+  generatingKey.value = true;
+  error.value = null;
+
+  try {
+    deployKey.value = await api.sites.deployKey.mutate();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    generatingKey.value = false;
+  }
+}
+
+async function copyDeployKey(): Promise<void> {
+  if (!deployKey.value) return;
+
+  try {
+    await navigator.clipboard.writeText(deployKey.value.publicKey);
+    keyCopied.value = true;
+    setTimeout(() => (keyCopied.value = false), 1500);
+  } catch {
+    // Clipboard access can be refused; the key is selectable in the box.
+  }
+}
+
+const canContinue = computed(() => {
+  if (repoUrl.value.trim().length === 0) return false;
+  if (access.value === 'token') return token.value.length > 0;
+  if (access.value === 'key') return deployKey.value !== null;
+  return true;
+});
+
+/** Only sent when it exists, so an expired key is not silently ignored. */
+const credentials = computed(() => ({
+  ...(access.value === 'token' && token.value ? { token: token.value } : {}),
+  ...(access.value === 'key' && deployKey.value ? { deployKeyId: deployKey.value.keyId } : {}),
+}));
 
 const busy = ref(false);
 const error = ref<string | null>(null);
@@ -134,7 +202,7 @@ async function testRepository(): Promise<void> {
     testResult.value = await api.sites.testRepository.mutate({
       url: repoUrl.value.trim(),
       branch: branch.value.trim(),
-      ...(token.value ? { token: token.value } : {}),
+      ...credentials.value,
     });
   } catch (err) {
     error.value = describeError(err);
@@ -151,7 +219,7 @@ async function inspectRepository(): Promise<void> {
     const result = await api.sites.inspect.mutate({
       url: repoUrl.value.trim(),
       branch: branch.value.trim(),
-      ...(token.value ? { token: token.value } : {}),
+      ...credentials.value,
     });
 
     inspection.value = result;
@@ -185,7 +253,7 @@ function payloadFor(): {
           url: repoUrl.value.trim(),
           branch: branch.value.trim(),
           subdirectory: '',
-          ...(token.value ? { token: token.value } : {}),
+          ...credentials.value,
         },
         runtime: 'static',
       };
@@ -232,6 +300,54 @@ async function createSite(): Promise<void> {
   }
 }
 
+/**
+ * What to do once the website exists.
+ *
+ * Creating a website is the easy half; knowing where to put the files is the
+ * half people get stuck on, and it is different for every kind. Saying it
+ * before the button is pressed costs nothing and saves a support message.
+ */
+const afterCreation = computed<{ title: string; steps: string[] }>(() => {
+  switch (kind.value) {
+    case 'git':
+      return {
+        title: 'What happens next',
+        steps: [
+          'The panel clones your repository and runs the build steps it found.',
+          'Open the website and use its preview link to check it works.',
+          'Press "Pull now" on the Git tab whenever you push new commits.',
+        ],
+      };
+    case 'node':
+      return {
+        title: 'What happens next',
+        steps: [
+          'The panel writes a small working Node server and starts it.',
+          'Open the Files tab to edit the code.',
+          'Press Restart on the App tab to pick up your changes.',
+        ],
+      };
+    case 'upload':
+      return {
+        title: 'What happens next',
+        steps: [
+          'The panel creates an empty folder for this website.',
+          'Open the Files tab and upload your files, or drop in a zip.',
+          'Anything named index.html is what visitors see first.',
+        ],
+      };
+    default:
+      return {
+        title: 'What happens next',
+        steps: [
+          'The panel creates the folder and writes a starter page.',
+          'Open the Files tab to edit index.html, or replace it with your own.',
+          'Changes are live as soon as you save them.',
+        ],
+      };
+  }
+});
+
 /** The wizard is shorter when there is no repository to look at. */
 const STEPS = computed(() => {
   const steps: Array<{ key: Step; label: string }> = [{ key: 'kind', label: 'Type' }];
@@ -253,7 +369,7 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
 </script>
 
 <template>
-  <div class="max-w-2xl">
+  <div class="mx-auto w-full max-w-2xl">
     <RouterLink
       to="/sites"
       class="mb-4 inline-flex items-center gap-1.5 text-sm text-ink-muted hover:text-ink"
@@ -337,9 +453,19 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
               id="repo"
               v-model="repoUrl"
               class="field font-mono"
-              placeholder="https://github.com/you/your-project.git"
+              :placeholder="
+                access === 'key'
+                  ? 'git@github.com:you/your-project.git'
+                  : 'https://github.com/you/your-project.git'
+              "
             />
-            <p class="hint">Use the https:// address, not the SSH one.</p>
+            <p class="hint">
+              Paste whichever address the
+              <template v-if="repoUrl">{{ hostLabel }}</template>
+              <template v-else>code host</template>
+              copy button gives you. It is changed to match the sign-in method below if it needs
+              to be.
+            </p>
           </div>
 
           <div>
@@ -352,18 +478,141 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
             choice rather than a field people have to notice.
           -->
           <fieldset class="rounded-lg border border-line p-4">
-            <legend class="px-1 text-sm font-medium text-ink">Is this repository private?</legend>
+            <legend class="px-1 text-sm font-medium text-ink">How should the server sign in?</legend>
 
-            <div class="flex gap-5 text-sm">
-              <label class="flex items-center gap-2 text-ink-muted">
-                <input v-model="isPrivate" type="radio" :value="false" /> No, it's public
+            <div class="space-y-2">
+              <label
+                class="flex cursor-pointer items-start gap-2.5 rounded-lg border p-3 text-sm
+                       transition-colors"
+                :class="
+                  access === 'public'
+                    ? 'border-brand bg-brand-soft/40'
+                    : 'border-line hover:border-brand/60'
+                "
+              >
+                <input v-model="access" type="radio" value="public" class="mt-1" />
+                <span>
+                  <span class="block font-medium text-ink">It doesn't need to &mdash; it's public</span>
+                  <span class="mt-0.5 block text-ink-muted">
+                    Anyone can read this repository without signing in.
+                  </span>
+                </span>
               </label>
-              <label class="flex items-center gap-2 text-ink-muted">
-                <input v-model="isPrivate" type="radio" :value="true" /> Yes, it's private
+
+              <label
+                class="flex cursor-pointer items-start gap-2.5 rounded-lg border p-3 text-sm
+                       transition-colors"
+                :class="
+                  access === 'key'
+                    ? 'border-brand bg-brand-soft/40'
+                    : 'border-line hover:border-brand/60'
+                "
+              >
+                <input v-model="access" type="radio" value="key" class="mt-1" />
+                <span>
+                  <span class="flex items-center gap-1.5 font-medium text-ink">
+                    <KeyRound :size="14" class="text-brand-bright" aria-hidden="true" />
+                    With a deploy key
+                    <span
+                      class="rounded-full bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold
+                             uppercase tracking-wide text-brand-bright"
+                    >
+                      Recommended
+                    </span>
+                  </span>
+                  <span class="mt-0.5 block text-ink-muted">
+                    The panel makes a key, you paste it into this one repository. Read-only, never
+                    expires, and gives away nothing else in your account.
+                  </span>
+                </span>
+              </label>
+
+              <label
+                class="flex cursor-pointer items-start gap-2.5 rounded-lg border p-3 text-sm
+                       transition-colors"
+                :class="
+                  access === 'token'
+                    ? 'border-brand bg-brand-soft/40'
+                    : 'border-line hover:border-brand/60'
+                "
+              >
+                <input v-model="access" type="radio" value="token" class="mt-1" />
+                <span>
+                  <span class="block font-medium text-ink">With an access token</span>
+                  <span class="mt-0.5 block text-ink-muted">
+                    Use this if your organisation does not allow deploy keys. Tokens expire, and
+                    the deploy stops working when they do.
+                  </span>
+                </span>
               </label>
             </div>
 
-            <div v-if="isPrivate" class="mt-4">
+            <!-- Deploy key: the panel does its half, then says what yours is. -->
+            <div v-if="access === 'key'" class="mt-4 space-y-3">
+              <div>
+                <label for="deploy-key" class="label">Your server's public key</label>
+                <div class="flex gap-2">
+                  <textarea
+                    id="deploy-key"
+                    :value="deployKey?.publicKey ?? ''"
+                    readonly
+                    rows="3"
+                    class="field resize-none break-all font-mono text-xs"
+                    :placeholder="generatingKey ? 'Making a key\u2026' : ''"
+                    @focus="($event.target as HTMLTextAreaElement).select()"
+                  ></textarea>
+                  <button
+                    type="button"
+                    class="btn btn-ghost shrink-0 self-start"
+                    :disabled="!deployKey"
+                    @click="copyDeployKey"
+                  >
+                    <component
+                      :is="keyCopied ? Check : Copy"
+                      :size="14"
+                      aria-hidden="true"
+                    />
+                    {{ keyCopied ? 'Copied' : 'Copy' }}
+                  </button>
+                </div>
+                <p class="hint">
+                  Only the half above leaves this server. The matching private half is stored
+                  encrypted here and is never shown again.
+                </p>
+              </div>
+
+              <HowTo :title="`Add this key to ${hostLabel}`">
+                <li>
+                  Copy the key above.
+                </li>
+                <li>
+                  <template v-if="deployKeyUrl">
+                    Open
+                    <a :href="deployKeyUrl" target="_blank" rel="noreferrer noopener">
+                      the repository's Deploy keys page
+                      <ExternalLink :size="12" class="inline align-baseline" aria-hidden="true" />
+                    </a>
+                    and choose <strong>Add deploy key</strong>.
+                  </template>
+                  <template v-else>
+                    Open the repository on {{ hostLabel }}, then
+                    <strong>Settings &rarr; Deploy keys &rarr; Add deploy key</strong>.
+                  </template>
+                </li>
+                <li>
+                  Give it any title &mdash; <strong>WinPanel</strong> is a good one &mdash; and paste
+                  the key into the box.
+                </li>
+                <li>
+                  Leave <strong>Allow write access</strong> unticked. The panel only ever reads.
+                </li>
+                <li>
+                  Save it, then press <strong>Test connection</strong> below to check it worked.
+                </li>
+              </HowTo>
+            </div>
+
+            <div v-if="access === 'token'" class="mt-4">
               <label for="token" class="label">Access token</label>
               <input
                 id="token"
@@ -501,6 +750,27 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
             />
             <p class="hint">Separate several with commas. Leave empty to decide later.</p>
           </div>
+
+          <!-- The half of the job that happens on somebody else's screen. -->
+          <HowTo v-if="domainList.length > 0" title="How to point this address at the server">
+            <li>
+              Sign in wherever you bought <strong>{{ domainList[0] }}</strong> and open its DNS
+              records.
+            </li>
+            <li>
+              Add an <strong>A record</strong> for each address above, pointing at this server's
+              public IP address.
+            </li>
+            <li>Save, then give it a few minutes to spread.</li>
+            <li>
+              Nothing else to do: the panel notices and gets an HTTPS certificate on its own. Until
+              then, use the preview link on the website's page.
+            </li>
+          </HowTo>
+
+          <HowTo v-else :title="afterCreation.title">
+            <li v-for="line in afterCreation.steps" :key="line">{{ line }}</li>
+          </HowTo>
 
           <!--
             Only meaningful when the web server serves the files itself. A Node

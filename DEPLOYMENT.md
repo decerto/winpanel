@@ -16,7 +16,7 @@ Have these ready:
 | Administrator access to the server | OVH control panel | Everything |
 | A Cloudflare account with your domains added | [dash.cloudflare.com](https://dash.cloudflare.com) | DNS and HTTPS certificates |
 | A Cloudflare API token | See [step 5](#5-connect-cloudflare) | DNS and HTTPS certificates |
-| A GitHub access token | See [step 7](#7-add-your-first-website) | Private repositories |
+| A GitHub access token | See [step 7](#7-add-your-first-website) | Private repositories, if you cannot use a deploy key |
 
 **Start these two now if you want email**, because OVH takes time to action them:
 
@@ -161,12 +161,23 @@ Start with the simplest one. **Websites → Add a website**.
 
 ### Step 1 — Your code
 
-Paste the **https://** address of your repository (not the SSH one).
+Paste the address of your repository — either the **https://** one or the **SSH** one. The
+panel converts it to whichever form the sign-in method needs.
 
-If the repository is private, choose **Yes, it's private** and paste an access token.
-For GitHub, create one at [github.com/settings/tokens](https://github.com/settings/tokens)
-with the **`repo`** scope. It's stored encrypted on the server and never written into your
-project files.
+Then say how the server should sign in:
+
+- **It's public** — nothing to do.
+- **With a deploy key** (recommended for a private repository) — the panel makes a key
+  pair, keeps the private half encrypted on the server, and shows you the public half.
+  Copy it, then on GitHub open the repository's **Settings → Deploy keys → Add deploy
+  key**, give it any title, paste the key, and leave **Allow write access** unticked. The
+  key reads that one repository, belongs to the server rather than to a person, and never
+  expires. GitLab and Bitbucket call the same thing "deploy keys" and "access keys".
+- **With an access token** — for hosts or company policies that do not allow deploy keys.
+  For GitHub, create one at [github.com/settings/tokens](https://github.com/settings/tokens)
+  with the **`repo`** scope. It's stored encrypted on the server and never written into
+  your project files. Remember that tokens expire, and deployments stop working when they
+  do.
 
 Press **Test connection** before continuing — an unreachable repository is the most common
 reason a first deployment fails.

@@ -19,6 +19,12 @@ data/
 *.pem
 *.key
 
+# Local development sandbox: whatever WINPANEL_ROOT / WINPANEL_SITES_ROOT are
+# pointed at when running the agent by hand. Holds a real vault key, the panel
+# database, and a junction to the installed Git.
+.devroot/
+.devsites/
+
 # Secrets
 .env
 .env.*
