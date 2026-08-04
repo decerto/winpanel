@@ -137,7 +137,10 @@ export class CaddyClient {
 
   /** The running admin block, or null when Caddy is using its own default. */
   async getAdminConfig(): Promise<unknown> {
-    return await this.getConfig('/admin');
+    // Asking for `/config/admin` directly is a 400 on a server that has never
+    // been given a config at all, which is exactly the case that matters.
+    const config = (await this.getConfig('/')) as { admin?: unknown } | null;
+    return config?.admin ?? null;
   }
 
   /** Replaces the entire configuration. */

@@ -209,9 +209,11 @@ describe('applying the configuration', () => {
     const original = globalThis.fetch;
     let loaded: any = null;
 
-    globalThis.fetch = (async (url: unknown, init: RequestInit) => {
-      if (String(url).endsWith('/config/admin')) {
-        return new Response(JSON.stringify({ listen: 'localhost:2019' }), { status: 200 });
+    globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+      if (init.method === 'GET') {
+        return new Response(JSON.stringify({ admin: { listen: 'localhost:2019' } }), {
+          status: 200,
+        });
       }
       loaded = JSON.parse(String(init.body));
       return new Response('', { status: 200 });
@@ -226,15 +228,16 @@ describe('applying the configuration', () => {
     expect(loaded.admin).toEqual({ listen: 'localhost:2019' });
   });
 
-  it('omits the admin block when the server is on its own default', async () => {
+  it('omits the admin block when the server has no config of its own', async () => {
     insertSite();
 
     const original = globalThis.fetch;
     let loaded: any = null;
 
-    globalThis.fetch = (async (url: unknown, init: RequestInit) => {
-      // Caddy answers `null` for a field it was never given.
-      if (String(url).endsWith('/config/admin')) return new Response('null', { status: 200 });
+    globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+      // A Caddy started with `--resume` and no saved config answers `null`,
+      // and rejects `/config/admin` outright with "invalid traversal path".
+      if (init.method === 'GET') return new Response('null', { status: 200 });
       loaded = JSON.parse(String(init.body));
       return new Response('', { status: 200 });
     }) as unknown as typeof fetch;
