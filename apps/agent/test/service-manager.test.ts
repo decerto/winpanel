@@ -2,7 +2,70 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ServiceManager, buildServiceXml } from '../src/windows/service-manager.js';
+import {
+  ServiceManager,
+  buildServiceXml,
+  replaceEnvironmentInXml,
+} from '../src/windows/service-manager.js';
+
+describe('replaceEnvironmentInXml', () => {
+  const base = {
+    id: 'winpanel-caddy',
+    displayName: 'WinPanel Web server',
+    description: 'Serves your websites',
+    executable: 'C:\\WinPanel\\bin\\caddy.exe',
+    args: ['run', '--resume'],
+    logPath: 'C:\\WinPanel\\logs\\caddy',
+  };
+
+  it('adds a variable to a service that had none', () => {
+    const updated = replaceEnvironmentInXml(buildServiceXml(base), { CF_API_TOKEN: 'secret' });
+    expect(updated).toContain('<env name="CF_API_TOKEN" value="secret"/>');
+  });
+
+  it('removes variables that are no longer wanted', () => {
+    /*
+     * The whole environment is replaced rather than merged, so disconnecting
+     * Cloudflare genuinely takes the token out. Merging would leave a revoked
+     * secret sitting in a config file forever.
+     */
+    const withToken = buildServiceXml({ ...base, env: { XDG_DATA_HOME: 'C:\\x', CF_API_TOKEN: 'secret' } });
+    const updated = replaceEnvironmentInXml(withToken, { XDG_DATA_HOME: 'C:\\x' });
+
+    expect(updated).not.toContain('CF_API_TOKEN');
+    expect(updated).toContain('<env name="XDG_DATA_HOME" value="C:\\x"/>');
+  });
+
+  it('matches what a fresh install would have written', () => {
+    // If a rewrite produced a different-but-equivalent file, every panel
+    // start would see a change and restart the web server for nothing.
+    const env = { XDG_DATA_HOME: 'C:\\WinPanel\\caddy', CF_API_TOKEN: 'secret' };
+
+    expect(replaceEnvironmentInXml(buildServiceXml(base), env)).toBe(
+      buildServiceXml({ ...base, env }),
+    );
+  });
+
+  it('leaves everything else in the file alone', () => {
+    const updated = replaceEnvironmentInXml(buildServiceXml(base), { A: '1' });
+
+    expect(updated).toContain('<executable>C:\\WinPanel\\bin\\caddy.exe</executable>');
+    expect(updated).toContain('<argument>--resume</argument>');
+    expect(updated).toContain('<onfailure action="restart" delay="5 sec"/>');
+    expect(updated).toContain('</service>');
+  });
+
+  it('escapes a token containing XML syntax', () => {
+    // A token is opaque text from another system; it must not be able to
+    // reshape the document it lands in.
+    const updated = replaceEnvironmentInXml(buildServiceXml(base), {
+      CF_API_TOKEN: '"/><evil a="',
+    });
+
+    expect(updated).not.toContain('<evil');
+    expect(updated).toContain('&quot;/&gt;&lt;evil a=&quot;');
+  });
+});
 
 describe('buildServiceXml', () => {
   const base = {

@@ -7,6 +7,8 @@ import type { JobContext } from '../jobs/queue.js';
 import type { ServiceManager } from '../windows/service-manager.js';
 import { runCommand } from '../process/run-command.js';
 import { buildStalwartBootstrap } from '../mail/stalwart-config.js';
+import { caddyServiceEnv } from '../caddy/service.js';
+import { loadCloudflareToken } from '../dns/token.js';
 import { downloadVerified } from './download.js';
 import { extractZip, findExecutable, listExecutables, sniffPayload } from './archive.js';
 import { findComponent } from './catalogue.js';
@@ -227,12 +229,12 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
         ? ['--config', path.join(deps.dataDir, 'mail', 'config.json')]
         : [...component.args];
 
-    // Caddy keeps its certificates and its autosaved configuration under a
-    // data directory it picks from the environment. Left unset, a service
-    // running as LocalSystem would put them somewhere nobody thinks to back up.
+    // Caddy needs its data directory and, once Cloudflare is connected, the
+    // token it answers the certificate challenge with. Reading it here means a
+    // reinstall keeps working rather than quietly losing the ability to renew.
     const env =
       component.id === 'caddy'
-        ? { XDG_DATA_HOME: deps.caddyDir, XDG_CONFIG_HOME: deps.caddyDir }
+        ? caddyServiceEnv(deps.caddyDir, loadCloudflareToken(deps.db, deps.vault))
         : undefined;
 
     ctx.log('Registering the Windows service\u2026');

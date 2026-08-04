@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import { createAppContext } from './app-context.js';
 import { config, paths } from './config.js';
 import { createServer } from './server.js';
+import { syncCaddyEnvironment } from './caddy/service.js';
 import { localAddresses } from './tls/panel-certificate.js';
 
 /**
@@ -25,17 +26,37 @@ async function main(): Promise<void> {
    * was down. Reapplying here means the answer to "why is my site not
    * loading" is never "the two processes disagree about what exists".
    *
+   * The environment goes first, because the config refers to the certificate
+   * token by name and would otherwise resolve it to nothing. Both steps are
+   * no-ops when nothing has changed, so this does not restart Caddy on every
+   * panel start.
+   *
    * It must not block start-up. If Caddy is not installed yet — which is the
    * normal state on a fresh machine — the panel still has to come up, because
    * the panel is where you go to install it.
    */
-  void app.routing.tryApply().then((error) => {
+  void (async () => {
+    try {
+      const result = await syncCaddyEnvironment({
+        db: app.db,
+        vault: app.vault,
+        services: app.services,
+        caddyDir: config.caddyDir,
+      });
+      if (result === 'updated') {
+        server.log.info('Updated the web server environment and restarted it.');
+      }
+    } catch (error) {
+      server.log.warn({ err: error }, 'Could not update the web server environment.');
+    }
+
+    const error = await app.routing.tryApply();
     if (error) {
       server.log.warn({ err: error }, 'Could not apply the website configuration yet.');
     } else {
       server.log.info('Website configuration applied.');
     }
-  });
+  })();
 
   // Generated up front so a fresh install always has a way in, even if the
   // installer's own attempt to write it failed.

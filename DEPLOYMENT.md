@@ -140,6 +140,10 @@ or wrongly-scoped token fails while you're still looking at the field.
 Both permissions are required: DNS edit alone isn't enough, because certificate issuance
 needs to read the zone first.
 
+Saving the token also hands it to the web server and reloads its configuration, so
+certificates begin issuing straight away. If you connect Cloudflare before installing the
+web server, the panel says so and applies the token when you install it.
+
 ---
 
 ## 6. Install the web server

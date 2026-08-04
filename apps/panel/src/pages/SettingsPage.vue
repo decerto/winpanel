@@ -67,7 +67,9 @@ async function connectCloudflare(): Promise<void> {
   try {
     const result = await api.dns.connect.mutate({ token: cloudflareToken.value.trim() });
     cloudflareToken.value = '';
-    notice.value = result.message;
+    // The token can verify against Cloudflare and still not be usable yet —
+    // if the web server is not installed, nothing can act on it.
+    notice.value = result.warning ? `${result.message} ${result.warning}` : result.message;
     await refresh();
   } catch (err) {
     error.value = describeError(err);

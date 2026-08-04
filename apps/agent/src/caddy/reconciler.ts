@@ -1,9 +1,11 @@
 import { eq } from 'drizzle-orm';
 import { STALWART_HTTP_PORT, mailHostnameFor, type SiteManifest } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
-import { components, secrets, sites } from '../db/schema.js';
+import { components, sites } from '../db/schema.js';
+import { hasCloudflareToken } from '../dns/token.js';
 import { contentRootFor } from '../sites/site-service.js';
 import type { CaddyClient } from './client.js';
+import { CLOUDFLARE_TOKEN_ENV_VAR } from './service.js';
 import { buildCaddyConfig, type CaddySiteInput } from './config-builder.js';
 
 /**
@@ -20,11 +22,6 @@ import { buildCaddyConfig, type CaddySiteInput } from './config-builder.js';
  * `POST /load` is graceful in Caddy — connections are drained rather than cut
  * — so this is safe to call while sites are serving traffic.
  */
-
-const CLOUDFLARE_TOKEN_KEY = 'cloudflare.token';
-
-/** The environment variable Caddy reads the Cloudflare token from. */
-export const CLOUDFLARE_TOKEN_ENV_VAR = 'CF_API_TOKEN';
 
 export interface ReconcileOptions {
   acmeEmail?: string;
@@ -67,9 +64,7 @@ export class CaddyReconciler {
   buildConfig(options: ReconcileOptions = {}): Record<string, unknown> {
     const siteInputs = siteInputsFrom(this.db, this.sitesRoot);
 
-    const hasCloudflare =
-      this.db.db.select().from(secrets).where(eq(secrets.key, CLOUDFLARE_TOKEN_KEY)).get() !==
-      undefined;
+    const hasCloudflare = hasCloudflareToken(this.db);
 
     const firstDomain = siteInputs.find((site) => site.domains.length > 0)?.domains[0];
 

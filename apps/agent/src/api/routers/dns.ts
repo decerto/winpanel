@@ -1,10 +1,14 @@
 import { TRPCError } from '@trpc/server';
-import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { DnsRecordType, Hostname } from '@winpanel/shared';
 import { protectedProcedure, router } from '../trpc.js';
 import { CloudflareClient, CloudflareError, recommendedWebsiteRecords } from '../../dns/cloudflare.js';
-import { secrets } from '../../db/schema.js';
+import {
+  clearCloudflareToken,
+  loadCloudflareToken,
+  storeCloudflareToken,
+} from '../../dns/token.js';
+import { syncCaddyEnvironment } from '../../caddy/service.js';
 import type { AppContext } from '../../app-context.js';
 
 /**
@@ -14,17 +18,8 @@ import type { AppContext } from '../../app-context.js';
  * only ever sees zone and record data.
  */
 
-const TOKEN_KEY = 'cloudflare.token';
-
 async function loadToken(app: AppContext): Promise<string | null> {
-  const row = app.db.db.select().from(secrets).where(eq(secrets.key, TOKEN_KEY)).get();
-  if (!row) return null;
-
-  try {
-    return app.vault.decrypt(row.ciphertext, TOKEN_KEY);
-  } catch {
-    return null;
-  }
+  return loadCloudflareToken(app.db, app.vault);
 }
 
 async function clientFor(app: AppContext): Promise<CloudflareClient> {
@@ -67,18 +62,59 @@ export const dnsRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: result.message });
       }
 
-      const ciphertext = ctx.app.vault.encrypt(input.token, TOKEN_KEY);
-      ctx.app.db.db
-        .insert(secrets)
-        .values({ key: TOKEN_KEY, ciphertext })
-        .onConflictDoUpdate({ target: secrets.key, set: { ciphertext, updatedAt: new Date() } })
-        .run();
+      storeCloudflareToken(ctx.app.db, ctx.app.vault, input.token);
 
-      return { ok: true, message: result.message };
+      /*
+       * Order matters. The web server config refers to the token by
+       * environment variable, so the variable has to exist before a config
+       * mentioning it is loaded. Reversed, Caddy would take the config,
+       * resolve the token to an empty string, and fail every certificate
+       * request with an authentication error that points at Cloudflare
+       * rather than at us.
+       */
+      const applied = await syncCaddyEnvironment({
+        db: ctx.app.db,
+        vault: ctx.app.vault,
+        services: ctx.app.services,
+        caddyDir: ctx.app.config.caddyDir,
+      });
+
+      const routingError = await ctx.app.routing.tryApply();
+
+      /*
+       * Precedence matters. With no web server installed, applying the config
+       * also fails — and "could not reach the web server" is a worse thing to
+       * show someone than "this will start working once you install it",
+       * because only one of them says what to do next.
+       */
+      const warning =
+        applied === 'not-installed'
+          ? 'Certificates will start being issued once the web server is installed.'
+          : routingError
+            ? `The web server did not accept the change: ${routingError.message}`
+            : null;
+
+      return {
+        ok: true,
+        message: result.message,
+        ...(warning ? { warning } : {}),
+      };
     }),
 
-  disconnect: protectedProcedure.mutation(({ ctx }) => {
-    ctx.app.db.db.delete(secrets).where(eq(secrets.key, TOKEN_KEY)).run();
+  disconnect: protectedProcedure.mutation(async ({ ctx }) => {
+    clearCloudflareToken(ctx.app.db);
+
+    // Take it back out of the web server too. Leaving a revoked token in a
+    // service configuration is both useless and a secret kept for no reason.
+    await syncCaddyEnvironment({
+      db: ctx.app.db,
+      vault: ctx.app.vault,
+      services: ctx.app.services,
+      caddyDir: ctx.app.config.caddyDir,
+    });
+
+    await ctx.app.routing.tryApply();
+
     return { ok: true };
   }),
 

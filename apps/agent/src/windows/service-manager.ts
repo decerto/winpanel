@@ -106,6 +106,35 @@ export function buildServiceXml(definition: ServiceDefinition): string {
   return `<?xml version="1.0" encoding="UTF-8"?>\n${lines.join('\n')}\n`;
 }
 
+/**
+ * Rewrites the `<env>` entries in an existing service configuration.
+ *
+ * Kept as a pure function so the rewrite can be tested without a real service.
+ * The elements are replaced wholesale rather than merged: the caller passes
+ * the complete environment, so a variable that has been removed actually goes
+ * away instead of lingering from a previous install.
+ */
+export function replaceEnvironmentInXml(
+  xml: string,
+  env: Readonly<Record<string, string>>,
+): string {
+  const eol = xml.includes('\r\n') ? '\r\n' : '\n';
+  const lines = xml.split(/\r?\n/).filter((line) => !/^\s*<env\s+name=/.test(line));
+
+  const envLines = Object.entries(env).map(
+    ([key, value]) => `  <env name="${escapeXml(key)}" value="${escapeXml(value)}"/>`,
+  );
+
+  // Before <startmode>, which is where install() puts them, so a rewritten
+  // file is byte-identical to a freshly installed one.
+  let at = lines.findIndex((line) => line.includes('<startmode>'));
+  if (at === -1) at = lines.findIndex((line) => line.includes('</service>'));
+  if (at === -1) at = lines.length;
+
+  lines.splice(at, 0, ...envLines);
+  return lines.join(eol);
+}
+
 /** Summarises a failed command for a message a person has to act on. */
 function describeFailure(result: { stderr: string; stdout: string }): string {
   const output = (result.stderr.trim() || result.stdout.trim()).split(/\r?\n/).slice(-3).join(' ');
@@ -171,6 +200,50 @@ export class ServiceManager {
           describeFailure(result),
       );
     }
+  }
+
+  /**
+   * Changes a registered service's environment variables and restarts it.
+   *
+   * Only the configuration file is touched. The Windows service registration
+   * points at the wrapper with no arguments, and the wrapper reads this file
+   * afresh every time it starts — so there is no need to unregister and
+   * re-register, which is the step most likely to leave a machine with no
+   * service at all if it fails halfway.
+   *
+   * The file can hold a secret, and does for Caddy's DNS token. That is
+   * acceptable only because this folder is the panel's data directory, which
+   * `secureDataFolder` strips of inheritance and grants to SYSTEM and
+   * Administrators alone — the same protection the vault key gets.
+   *
+   * `unchanged` is reported rather than rewriting anyway, so callers can run
+   * this on every start without restarting a healthy service each time.
+   */
+  async setEnvironment(
+    id: string,
+    env: Readonly<Record<string, string>>,
+  ): Promise<'not-installed' | 'unchanged' | 'updated'> {
+    const configPath = this.configPathFor(id);
+
+    let current: string;
+    try {
+      current = await fs.readFile(configPath, 'utf8');
+    } catch {
+      // No configuration means nothing to reconfigure. Its environment will
+      // be set when it is installed.
+      return 'not-installed';
+    }
+
+    const next = replaceEnvironmentInXml(current, env);
+    if (next === current) return 'unchanged';
+
+    await fs.writeFile(configPath, next, { mode: 0o600 });
+
+    // Only if it is up: starting a service the user has deliberately stopped
+    // would be an odd thing for a settings change to do.
+    if ((await this.getState(id)) === 'running') await this.restart(id);
+
+    return 'updated';
   }
 
   async uninstall(id: string): Promise<void> {
