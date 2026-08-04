@@ -345,7 +345,12 @@ export function createDeployHandler(deps: DeployDependencies) {
 
       try {
         await deps.caddy.switchUpstream(proxyIdFor(site.slug), targetPort);
-      } catch {
+      } catch (error) {
+        ctx.log(
+          `Could not switch the upstream directly: ${error instanceof Error ? error.message : String(error)}`,
+          'debug',
+          'switch',
+        );
         ctx.log('Rebuilding the web server configuration\u2026', 'debug', 'switch');
 
         try {

@@ -30,6 +30,21 @@ export class CaddyConflictError extends CaddyError {
   }
 }
 
+/** Caddy answers `{"error": "..."}`, but not always, and not always as JSON. */
+function reasonFrom(body: string): string {
+  const trimmed = body.trim();
+  if (trimmed === '') return '';
+
+  try {
+    const parsed = JSON.parse(trimmed) as { error?: unknown };
+    if (typeof parsed.error === 'string' && parsed.error !== '') return ` ${parsed.error}`;
+  } catch {
+    // Not JSON: whatever it said is still better than nothing.
+  }
+
+  return ` ${trimmed}`;
+}
+
 export interface CaddyClientOptions {
   baseUrl?: string;
   timeoutMs?: number;
@@ -69,10 +84,13 @@ export class CaddyClient {
       if (response.status === 412) throw new CaddyConflictError();
 
       if (!response.ok) {
+        const detail = text.slice(0, 500);
         throw new CaddyError(
-          'The web server rejected the change.',
+          // Caddy says exactly which part of the configuration it disliked,
+          // and without it the message is a dead end for everyone.
+          `The web server rejected the change.${reasonFrom(detail)}`,
           response.status,
-          text.slice(0, 500),
+          detail,
         );
       }
 

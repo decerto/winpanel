@@ -175,6 +175,9 @@ const testResult = ref<{ ok: boolean; message: string } | null>(null);
 type Inspection = Awaited<ReturnType<typeof api.sites.inspect.mutate>>;
 const inspection = ref<Inspection | null>(null);
 
+/** Detected from the lockfile, but the user gets the last word. */
+const packageManager = ref<'npm' | 'pnpm' | 'yarn' | 'bun'>('npm');
+
 const envRows = ref<Array<{ key: string; value: string }>>([]);
 
 const domainList = computed(() =>
@@ -226,6 +229,7 @@ async function inspectRepository(): Promise<void> {
 
     // Pre-fill from what was found, so the remaining steps are mostly reading.
     envRows.value = result.manifest.envVars.map((key) => ({ key, value: '' }));
+    packageManager.value = result.manifest.packageManager;
 
     if (!displayName.value) {
       const match = /\/([^/]+?)(?:\.git)?$/.exec(repoUrl.value.trim());
@@ -287,6 +291,7 @@ async function createSite(): Promise<void> {
       // Git sites carry the manifest the inspection produced; for everything
       // else the server writes one that matches the runtime.
       ...(isGit.value && inspection.value ? { manifest: inspection.value.manifest } : {}),
+      ...(isGit.value ? { packageManager: packageManager.value } : {}),
       spaFallback: spaFallback.value,
       envVars,
       deployNow: true,
@@ -706,6 +711,26 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
               <span class="ml-auto font-mono text-xs text-ink-faint">{{ s.folder }}</span>
             </li>
           </ol>
+
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <label for="new-site-package-manager" class="text-sm text-ink-muted">
+              Run those steps with
+            </label>
+            <select
+              id="new-site-package-manager"
+              v-model="packageManager"
+              class="field w-32 py-1.5"
+            >
+              <option value="npm">npm</option>
+              <option value="pnpm">pnpm</option>
+              <option value="yarn">yarn</option>
+              <option value="bun">bun</option>
+            </select>
+          </div>
+          <p class="hint">
+            Taken from the lockfile in your repository. Change it if you would rather this
+            server used something else.
+          </p>
         </div>
 
         <p

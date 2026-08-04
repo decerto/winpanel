@@ -12,6 +12,7 @@ import {
 } from '@winpanel/shared';
 import { protectedProcedure, router } from '../trpc.js';
 import { appRootFor, SiteService } from '../../sites/site-service.js';
+import { retargetSteps } from '../../sites/package-manager.js';
 import { sites } from '../../db/schema.js';
 import { serviceIdFor } from '../../sites/deploy-handler.js';
 import { discoverNodeVersions, matchVersion } from '../../sites/node-versions.js';
@@ -175,6 +176,13 @@ export const siteAppRouter = router({
       const { service, site } = requireSite(ctx.app, input.slug);
       const manifest = SiteManifest.parse(site.manifest);
 
+      // A build step names its own command, so the setting means nothing on
+      // its own — the steps have to be moved across with it.
+      const retargeted =
+        input.packageManager !== undefined
+          ? retargetSteps(manifest.steps, input.packageManager)
+          : null;
+
       const next: SiteManifest = {
         ...manifest,
         app: {
@@ -183,6 +191,7 @@ export const siteAppRouter = router({
           ...(input.startupFile !== undefined ? { entry: input.startupFile } : {}),
         },
         ...(input.packageManager !== undefined ? { packageManager: input.packageManager } : {}),
+        ...(retargeted ? { steps: retargeted.steps } : {}),
         ...(input.documentRoot !== undefined ? { staticRoot: input.documentRoot } : {}),
       };
 
@@ -201,12 +210,16 @@ export const siteAppRouter = router({
       // reach Caddy now rather than at the next deploy.
       const failure = input.documentRoot !== undefined ? await ctx.app.routing.tryApply() : null;
 
-      return {
-        ok: true,
-        note: failure
-          ? `Saved, but the web server did not accept it: ${failure.message}`
-          : 'Saved. Restart the app for it to take effect.',
-      };
+      if (failure) {
+        return { ok: true, note: `Saved, but the web server did not accept it: ${failure.message}` };
+      }
+
+      const stepNote = retargeted?.changed
+        ? ` ${retargeted.changed} build step${retargeted.changed === 1 ? '' : 's'} now use ` +
+          `${input.packageManager}, from the next deployment onwards.`
+        : '';
+
+      return { ok: true, note: `Saved. Restart the app for it to take effect.${stepNote}` };
     }),
 
   /** Stops and starts the live process. Nothing is rebuilt. */
@@ -272,19 +285,26 @@ export const siteAppRouter = router({
 
   /** Installs dependencies with whichever package manager the site uses. */
   install: protectedProcedure
-    .input(z.object({ slug: z.string().min(1) }))
+    .input(
+      z.object({
+        slug: z.string().min(1),
+        /** For a one-off install with something else; the site keeps its setting. */
+        packageManager: PackageManager.optional(),
+      }),
+    )
     .mutation(({ ctx, input }) => {
       const { site } = requireSite(ctx.app, input.slug);
       const manifest = SiteManifest.parse(site.manifest);
+      const command = input.packageManager ?? manifest.packageManager;
 
       const jobId = ctx.app.jobs.enqueue({
         kind: 'run-command',
         title: `Installing packages for ${site.displayName}`,
         payload: {
           siteId: site.id,
-          command: manifest.packageManager,
+          command,
           args: ['install'],
-          label: 'Install packages',
+          label: `Install packages with ${command}`,
         },
         siteId: site.id,
       });

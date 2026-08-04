@@ -130,7 +130,7 @@ export async function resolveTool(command: string, nodeVersion?: string): Promis
       path.join(config.binDir, 'pnpm', 'pnpm.exe'),
       path.join(nodeDir, 'pnpm.cmd'),
     ],
-    yarn: [path.join(nodeDir, 'yarn.cmd')],
+    yarn: [path.join(config.binDir, 'yarn', 'yarn.js'), path.join(nodeDir, 'yarn.cmd')],
     bun: [path.join(config.binDir, 'bun', 'bun.exe')],
     dotnet: [
       path.join(config.binDir, 'dotnet', 'dotnet.exe'),
@@ -243,6 +243,12 @@ export async function resolveToolInvocation(
   nodeVersion?: string,
 ): Promise<ToolInvocation> {
   const direct = await resolveTool(command, nodeVersion);
+
+  // Yarn 1 is published as one JavaScript file, so there is nothing to unwrap.
+  if (/\.(c|m)?js$/i.test(direct)) {
+    return { exe: await resolveTool('node', nodeVersion), args: [direct] };
+  }
+
   if (!/\.(cmd|bat)$/i.test(direct)) return { exe: direct, args: [] };
 
   const node = await resolveTool('node', nodeVersion);

@@ -16,6 +16,8 @@ export const ComponentId = z.enum([
   'git',
   'node',
   'pnpm',
+  'yarn',
+  'bun',
   'dotnet',
   'vcredist',
 ]);
@@ -34,6 +36,11 @@ export const ComponentKind = z.enum([
   'exe',
   /** Run a PowerShell script (used only for the official dotnet-install). */
   'script',
+  /**
+   * The download is a single JavaScript file run with Node. Yarn 1 is
+   * published this way and has no standalone program for Windows.
+   */
+  'node-script',
 ]);
 export type ComponentKind = z.infer<typeof ComponentKind>;
 

@@ -76,22 +76,57 @@ export function withInstallDefaults(command: string, args: readonly string[]): s
  * nothing about why it happened here, or what to do next.
  */
 export function explainToolFailure(command: string, output: string): string | null {
-  if (command !== 'pnpm') return null;
+  if (command === 'pnpm') {
+    if (output.includes('ERR_PNPM_BAD_OPTION') && output.includes('allow-all-builds')) {
+      return (
+        'The pnpm on this server is too old to be told that dependencies may run their ' +
+        'install scripts. Install pnpm from the Components list on the Settings page, which ' +
+        'installs a version that understands it.'
+      );
+    }
 
-  if (output.includes('ERR_PNPM_BAD_OPTION') && output.includes('allow-all-builds')) {
+    if (output.includes('ERR_PNPM_IGNORED_BUILDS')) {
+      return (
+        'Some dependencies wanted to run install scripts and pnpm refused. Nobody can approve ' +
+        'them on a server, so the panel normally allows them: this suggests the project pins a ' +
+        'pnpm version older than 10.9.'
+      );
+    }
+  }
+
+  const unresolved = findUnresolvedPackage(output);
+  if (unresolved) {
+    const strict = command === 'pnpm' || command === 'yarn';
+
     return (
-      'The pnpm on this server is too old to be told that dependencies may run their ' +
-      'install scripts. Install pnpm from the Components list on the Settings page, which ' +
-      'installs a version that understands it.'
+      `The build could not find the package "${unresolved}", even though the install step ` +
+      `succeeded. ${command} only puts a project\u2019s own dependencies where the build can ` +
+      `see them, so this usually means "${unresolved}" is used directly by this project but ` +
+      `is only installed as a dependency of something else. Add it to the project\u2019s ` +
+      `dependencies (\`${command} add -D ${unresolved}\`) and commit the change` +
+      (strict
+        ? ', or switch this website to npm on its Application page, which installs everything ' +
+          'in one flat folder.'
+        : '.')
     );
   }
 
-  if (output.includes('ERR_PNPM_IGNORED_BUILDS')) {
-    return (
-      'Some dependencies wanted to run install scripts and pnpm refused. Nobody can approve ' +
-      'them on a server, so the panel normally allows them: this suggests the project pins a ' +
-      'pnpm version older than 10.9.'
-    );
+  return null;
+}
+
+/** The package name from a bundler's "module not found" message, if there is one. */
+function findUnresolvedPackage(output: string): string | null {
+  const patterns = [
+    /Can't resolve '([^'\s]+)'/,
+    /Failed to resolve (?:import|entry for package) "([^"\s]+)"/,
+    /Cannot find (?:module|package) '([^'\s]+)'/,
+  ];
+
+  for (const pattern of patterns) {
+    const name = pattern.exec(output)?.[1];
+    // A relative or absolute specifier is the project's own missing file, which
+    // has nothing to do with how dependencies are linked.
+    if (name && !name.startsWith('.') && !path.isAbsolute(name)) return name;
   }
 
   return null;
@@ -341,8 +376,16 @@ export async function pruneFailedReleases(
 
   for (const id of candidates) {
     const target = path.join(releasesDir, id);
+
+    // Most of these were cleared by an earlier deploy: the database still
+    // remembers the failure long after the folder is gone. Counting those
+    // reported a growing pile of cleanups that were not happening.
+    if (!(await exists(target))) continue;
+
     try {
-      await fs.rm(target, { recursive: true, force: true });
+      // Windows holds freshly written files open for a moment after a build,
+      // and a `node_modules` tree gives it plenty to hold.
+      await fs.rm(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
       removed.push(id);
     } catch {
       // A folder held open by something is not a reason to stop deploying.
@@ -350,6 +393,13 @@ export async function pruneFailedReleases(
   }
 
   return removed;
+}
+
+async function exists(target: string): Promise<boolean> {
+  return await fs.access(target).then(
+    () => true,
+    () => false,
+  );
 }
 
 /**

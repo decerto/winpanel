@@ -5,12 +5,13 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { Hostname, Runtime, SiteManifest, type SiteSource } from '@winpanel/shared';
+import { Hostname, PackageManager, Runtime, SiteManifest, type SiteSource } from '@winpanel/shared';
 import { protectedProcedure, router } from '../trpc.js';
 import { SiteError, SiteService } from '../../sites/site-service.js';
 import { sites } from '../../db/schema.js';
 import { detectApp } from '../../detect/detector.js';
 import { discoverNodeVersions, matchVersion } from '../../sites/node-versions.js';
+import { retargetSteps } from '../../sites/package-manager.js';
 import { GitClient, validateGitRef, validateRepositoryUrl } from '../../sites/git-client.js';
 import { generateDeployKey, isSshUrl } from '../../sites/ssh-keys.js';
 import { serviceIdFor } from '../../sites/deploy-handler.js';
@@ -339,6 +340,8 @@ export const sitesRouter = router({
         runtime: Runtime.default('static'),
         /** Only git sites have one to inspect; otherwise the panel writes it. */
         manifest: SiteManifest.optional(),
+        /** Overrides whatever the repository's lockfile implied. */
+        packageManager: PackageManager.optional(),
         spaFallback: z.boolean().default(false),
         envVars: z.record(z.string(), z.string()).default({}),
         deployNow: z.boolean().default(true),
@@ -354,7 +357,15 @@ export const sitesRouter = router({
         });
       }
 
-      const manifest = input.manifest ?? defaultManifestFor(input.runtime, input.spaFallback);
+      const detected = input.manifest ?? defaultManifestFor(input.runtime, input.spaFallback);
+
+      const manifest: SiteManifest = input.packageManager
+        ? {
+            ...detected,
+            packageManager: input.packageManager,
+            steps: retargetSteps(detected.steps, input.packageManager).steps,
+          }
+        : detected;
 
       const source: SiteSource =
         input.source.kind === 'git'

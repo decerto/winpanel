@@ -236,4 +236,28 @@ describe('component catalogue', () => {
     expect(git?.kind).toBe('zip');
     expect(git?.url).toContain('MinGit');
   });
+
+  it('offers every package manager a project might ask for', () => {
+    // npm is deliberately absent: it comes inside the Node install, so a
+    // separate copy would only be a second npm to keep up to date.
+    for (const id of ['pnpm', 'yarn', 'bun']) {
+      expect(findComponent(id), id).toBeDefined();
+    }
+    expect(findComponent('npm')).toBeUndefined();
+  });
+
+  it('installs Yarn as the JavaScript file it is published as', () => {
+    // Yarn 1 ships no program for Windows: only a .js file and a system-wide
+    // installer the panel has no business running.
+    const yarn = findComponent('yarn');
+    expect(yarn?.kind).toBe('node-script');
+    expect(yarn?.url).toMatch(/\.js$/);
+    expect(yarn?.sha256).not.toBeNull();
+  });
+
+  it('installs the Windows build of Bun', () => {
+    const bun = findComponent('bun');
+    expect(bun?.kind).toBe('zip');
+    expect(bun?.url).toContain('bun-windows-x64.zip');
+  });
 });

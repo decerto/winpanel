@@ -14,6 +14,7 @@ import {
 } from 'lucide-vue-next';
 import { computed, ref, watch } from 'vue';
 import { api } from './lib/api';
+import ServerReadyBanner from './components/ServerReadyBanner.vue';
 
 /**
  * Application shell: persistent sidebar, top bar, content area.
@@ -210,6 +211,7 @@ function isCurrent(to: string): boolean {
       </header>
 
       <main class="mx-auto w-full max-w-6xl px-4 py-6 md:px-8 md:py-8">
+        <ServerReadyBanner />
         <RouterView />
       </main>
     </div>

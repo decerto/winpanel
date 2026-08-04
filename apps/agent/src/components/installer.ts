@@ -60,10 +60,11 @@ async function verifyBinary(
   component: ComponentDefinition,
   executable: string,
   ctx: JobContext,
+  prefixArgs: readonly string[] = [],
 ): Promise<void> {
   const result = await runCommand({
     exe: executable,
-    args: [...component.verifyArgs],
+    args: [...prefixArgs, ...component.verifyArgs],
     timeoutMs: 60_000,
   });
 
@@ -172,6 +173,24 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
 
     const installDir = path.join(deps.binDir, component.id);
     const wanted = executableNames(component);
+
+    if (component.kind === 'node-script') {
+      await fs.mkdir(installDir, { recursive: true });
+      const target = path.join(installDir, `${component.id}.js`);
+
+      ctx.log(`Installing into ${target}\u2026`);
+      await fs.copyFile(archivePath, target);
+      await fs.rm(archivePath, { force: true });
+
+      ctx.progress(70);
+      // The agent is a Node process, so its own runtime is always available.
+      await verifyBinary(component, process.execPath, ctx, [target]);
+
+      ctx.log(`${component.name} is installed.`);
+      ctx.progress(100);
+      return;
+    }
+
     const downloaded = await sniffPayload(archivePath);
 
     if (downloaded === 'unknown') {

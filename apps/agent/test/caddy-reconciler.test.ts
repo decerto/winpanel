@@ -164,4 +164,20 @@ describe('applying the configuration', () => {
 
     await expect(reconciler.apply()).rejects.toThrow();
   });
+
+  it('repeats what the web server said it disliked', async () => {
+    // "The web server rejected the change." on its own is a dead end: Caddy
+    // names the offending part of the config and nobody was seeing it.
+    const original = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: 'listening on :443: address in use' }), {
+        status: 400,
+      })) as typeof fetch;
+
+    try {
+      await expect(new CaddyClient().load({})).rejects.toThrow(/address in use/);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
 });

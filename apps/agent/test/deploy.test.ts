@@ -400,6 +400,17 @@ describe('pruneFailedReleases', () => {
   it('copes with a site that has never been deployed', async () => {
     await expect(pruneFailedReleases(path.join(tmpDir, 'nope'), ['x'])).resolves.toEqual([]);
   });
+
+  it('does not count a folder an earlier deploy already removed', async () => {
+    // Failures stay in the database forever, so the same ids come back on
+    // every deploy. Counting them reported a cleanup that never happened, and
+    // the number grew by one each time.
+    const releases = await makeReleases();
+    await fs.rm(path.join(releases, '20260101-000000'), { recursive: true });
+
+    const removed = await pruneFailedReleases(releases, failures);
+    expect(removed).toEqual(['20260102-000000']);
+  });
 });
 
 describe('withInstallDefaults', () => {
@@ -429,6 +440,20 @@ describe('explainToolFailure', () => {
   it('names the fix when pnpm is too old to be told about build scripts', () => {
     const hint = explainToolFailure('pnpm', 'ERR_PNPM_BAD_OPTION Unknown option: allow-all-builds');
     expect(hint).toMatch(/too old/i);
+  });
+
+  it('explains an unresolved package as a missing direct dependency', () => {
+    const hint = explainToolFailure(
+      'pnpm',
+      "Nuxt build error: Error: [@tailwindcss/vite:generate:build] Can't resolve 'tailwindcss' in " +
+        "'C:\\Sites\\example\\releases\\1\\app\\assets\\css'",
+    );
+    expect(hint).toMatch(/tailwindcss/);
+    expect(hint).toMatch(/switch this website to npm/);
+  });
+
+  it('ignores a missing file of the project itself', () => {
+    expect(explainToolFailure('pnpm', "Can't resolve './missing.css'")).toBeNull();
   });
 
   it('says nothing when there is nothing useful to add', () => {

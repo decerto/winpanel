@@ -24,6 +24,8 @@ const STALWART_VERSION = '0.16.16';
 const GIT_VERSION = '2.51.0';
 const NODE_LTS_VERSION = '22.21.1';
 const PNPM_VERSION = '11.20.0';
+const YARN_VERSION = '1.22.22';
+const BUN_VERSION = '1.3.14';
 
 /**
  * Caddy's official download service builds a binary with the plugins you ask
@@ -129,6 +131,44 @@ export const COMPONENT_CATALOGUE: readonly ComponentDefinition[] = [
     serviceName: null,
     verifyArgs: ['--version'],
     verifyExpect: PNPM_VERSION,
+    requires: [],
+  },
+  {
+    id: 'yarn',
+    name: 'Yarn',
+    description:
+      'A package manager some projects use instead of npm. Needed to deploy a website ' +
+      'whose project has a yarn.lock file.',
+    version: YARN_VERSION,
+    /*
+     * Yarn 1 publishes one JavaScript file and no program for Windows: the
+     * .msi is a system-wide install the panel has no business doing, and the
+     * tarball is not something the unpacker here reads. The file is run with
+     * the server's own Node, which is exactly what the .msi's shim does.
+     */
+    kind: 'node-script',
+    url: `https://github.com/yarnpkg/yarn/releases/download/v${YARN_VERSION}/yarn-${YARN_VERSION}.js`,
+    sha256: '1ba910c84256998c4bf4b925857c2693adebdc962a2e3075f4f8b67045f45105',
+    args: [],
+    serviceName: null,
+    verifyArgs: ['--version'],
+    verifyExpect: YARN_VERSION,
+    requires: [],
+  },
+  {
+    id: 'bun',
+    name: 'Bun',
+    description:
+      'A package manager and JavaScript runtime some projects use instead of Node.js ' +
+      'and npm. Needed to deploy a website whose project has a bun.lock file.',
+    version: BUN_VERSION,
+    kind: 'zip',
+    url: `https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-windows-x64.zip`,
+    sha256: '0a0620930b6675d7ba440e81f4e0e00d3cfbe096c4b140d3fff02205e9e18922',
+    args: [],
+    serviceName: null,
+    verifyArgs: ['--version'],
+    verifyExpect: BUN_VERSION,
     requires: [],
   },
 ];

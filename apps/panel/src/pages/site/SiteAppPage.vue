@@ -46,6 +46,7 @@ const saving = ref(false);
 const form = ref({
   nodeVersion: '',
   packageManager: 'npm' as 'npm' | 'pnpm' | 'yarn' | 'bun',
+
   applicationRoot: '',
   documentRoot: '',
   startupFile: '',
@@ -55,6 +56,12 @@ const form = ref({
 const chosenScript = ref('');
 const command = ref<'npm' | 'npx' | 'node' | 'pnpm' | 'yarn' | 'bun' | 'dotnet'>('npm');
 const commandArgs = ref('');
+
+const PACKAGE_MANAGERS = ['npm', 'pnpm', 'yarn', 'bun'] as const;
+type PackageManager = (typeof PACKAGE_MANAGERS)[number];
+
+/** A one-off choice: installing with something else does not change the site. */
+const installWith = ref<PackageManager>('npm');
 
 /**
  * Which of the three path fields is being browsed, if any.
@@ -98,6 +105,7 @@ async function refresh(): Promise<void> {
       startupFile: info.value.startupFile,
       applicationMode: info.value.applicationMode === 'development' ? 'development' : 'production',
     };
+    installWith.value = info.value.packageManager;
   } catch (err) {
     error.value = describeError(err);
   }
@@ -143,7 +151,10 @@ const togglePower = () =>
 
 const install = () =>
   act('install', async () => {
-    const result = await api.sites.app.install.mutate({ slug: slug.value });
+    const result = await api.sites.app.install.mutate({
+      slug: slug.value,
+      packageManager: installWith.value,
+    });
     job.watchJob(result.jobId);
   });
 
@@ -272,15 +283,25 @@ watch(slug, load, { immediate: true });
             {{ running ? 'Stop app' : 'Start app' }}
           </button>
 
-          <button
-            type="button"
-            class="btn btn-ghost btn-sm"
-            :disabled="busy !== null || job.running.value"
-            @click="install"
-          >
-            <Package :size="14" aria-hidden="true" />
-            {{ form.packageManager }} install
-          </button>
+          <div class="flex items-center gap-2">
+            <select
+              v-model="installWith"
+              class="field w-24 py-1.5 text-[0.8125rem]"
+              aria-label="Package manager to install with"
+            >
+              <option v-for="manager in PACKAGE_MANAGERS" :key="manager" :value="manager">
+                {{ manager }}
+              </option>
+            </select>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm"
+              :disabled="busy !== null || job.running.value"
+              @click="install"
+            >
+              <Package :size="14" aria-hidden="true" /> Install packages
+            </button>
+          </div>
 
           <div class="flex items-center gap-2">
             <select
@@ -375,11 +396,14 @@ watch(slug, load, { immediate: true });
                 class="field max-w-64 py-1.5"
                 aria-label="Package manager"
               >
-                <option value="npm">npm</option>
-                <option value="pnpm">pnpm</option>
-                <option value="yarn">yarn</option>
-                <option value="bun">bun</option>
+                <option v-for="manager in PACKAGE_MANAGERS" :key="manager" :value="manager">
+                  {{ manager }}
+                </option>
               </select>
+              <p class="hint">
+                Used for the install and build steps of every deployment, not just the
+                buttons above. Changing it rewrites those steps.
+              </p>
             </dd>
           </div>
 

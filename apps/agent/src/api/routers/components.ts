@@ -1,10 +1,12 @@
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
 import { protectedProcedure, router } from '../trpc.js';
 import { COMPONENT_CATALOGUE, findComponent } from '../../components/catalogue.js';
 import { findExecutable } from '../../components/archive.js';
 import { discoverNodeVersions } from '../../sites/node-versions.js';
+import type { ComponentDefinition } from '@winpanel/shared';
 
 /**
  * The programs the panel drives: web server, mail server, git.
@@ -15,7 +17,7 @@ import { discoverNodeVersions } from '../../sites/node-versions.js';
  * nobody chose. The panel finds the versions that exist and uses one of them.
  */
 
-const PANEL_MANAGED = new Set(['caddy', 'stalwart', 'git', 'pnpm']);
+const PANEL_MANAGED = new Set(['caddy', 'stalwart', 'git', 'pnpm', 'yarn', 'bun']);
 
 /** Names each program may go by, matching the installer's own list. */
 const EXECUTABLES: Record<string, string[]> = {
@@ -26,6 +28,18 @@ function executablesFor(id: string): string[] {
   return EXECUTABLES[id] ?? [`${id}.exe`];
 }
 
+/** Where a component's program landed, or null if it is not installed. */
+async function locate(binDir: string, component: ComponentDefinition): Promise<string | null> {
+  const installDir = path.join(binDir, component.id);
+
+  if (component.kind === 'node-script') {
+    const script = path.join(installDir, `${component.id}.js`);
+    return await fs.access(script).then(() => script, () => null);
+  }
+
+  return await findExecutable(installDir, executablesFor(component.id));
+}
+
 export const componentsRouter = router({
   list: protectedProcedure.query(async ({ ctx }) => {
     // Node is not installed by the panel, so "is it there" means "did we find
@@ -34,8 +48,7 @@ export const componentsRouter = router({
 
     return await Promise.all(
       COMPONENT_CATALOGUE.map(async (component) => {
-        const installDir = path.join(ctx.app.config.binDir, component.id);
-        const executable = await findExecutable(installDir, executablesFor(component.id));
+        const executable = await locate(ctx.app.config.binDir, component);
 
         const serviceState = component.serviceName
           ? await ctx.app.services.getState(component.serviceName)
