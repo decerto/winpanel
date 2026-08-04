@@ -28,6 +28,8 @@ export const JobKind = z.enum([
   'health-check',
   /** A package-manager or Node command the user asked to run against a site. */
   'run-command',
+  /** Installing a newer WinPanel over the running one. */
+  'update-panel',
 ]);
 export type JobKind = z.infer<typeof JobKind>;
 

@@ -23,6 +23,7 @@ const CADDY_VERSION = 'latest';
 const STALWART_VERSION = '0.16.16';
 const GIT_VERSION = '2.51.0';
 const NODE_LTS_VERSION = '22.21.1';
+const PNPM_VERSION = '11.20.0';
 
 /**
  * Caddy's official download service builds a binary with the plugins you ask
@@ -106,6 +107,28 @@ export const COMPONENT_CATALOGUE: readonly ComponentDefinition[] = [
     serviceName: null,
     verifyArgs: ['--version'],
     verifyExpect: 'v',
+    requires: [],
+  },
+  {
+    id: 'pnpm',
+    name: 'pnpm',
+    description:
+      'A package manager some projects use instead of npm. Needed to deploy a website ' +
+      'whose project has a pnpm-lock.yaml file.',
+    version: PNPM_VERSION,
+    kind: 'zip',
+    /*
+     * The standalone build, which carries its own runtime. Installing pnpm
+     * through npm instead would put a `.cmd` shim on the machine, and Windows
+     * refuses to start one of those without a shell — which is exactly what
+     * the command executor will not do.
+     */
+    url: `https://github.com/pnpm/pnpm/releases/download/v${PNPM_VERSION}/pnpm-win32-x64.zip`,
+    sha256: 'ea2528bdc3d96a1ff3c35587dc48ca692b39d77f08f26df4adeaaa9eb427024e',
+    args: [],
+    serviceName: null,
+    verifyArgs: ['--version'],
+    verifyExpect: PNPM_VERSION,
     requires: [],
   },
 ];

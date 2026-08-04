@@ -6,7 +6,7 @@ import { sites } from '../db/schema.js';
 import type { JobContext } from '../jobs/queue.js';
 import { runCommand } from '../process/run-command.js';
 import { appRootFor } from './site-service.js';
-import type { ToolPaths } from './deploy-pipeline.js';
+import { explainSpawnFailure, type ToolPaths } from './deploy-pipeline.js';
 
 /**
  * Running a command against a website, by hand.
@@ -85,6 +85,8 @@ export function createRunCommandHandler(deps: CommandRunnerDependencies) {
       onOutput: (line) => {
         if (line.trim().length > 0) ctx.log(line, 'debug', payload.label);
       },
+    }).catch((error: unknown) => {
+      throw new CommandError(explainSpawnFailure(error, payload.command, payload.label).message);
     });
 
     ctx.progress(100);

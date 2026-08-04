@@ -1,6 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { config } from '../config.js';
+import { findExecutable } from '../components/archive.js';
+import { runCommand } from '../process/run-command.js';
 import { discoverNodeVersions, matchVersion } from './node-versions.js';
 
 /**
@@ -18,10 +20,27 @@ import { discoverNodeVersions, matchVersion } from './node-versions.js';
 export class ToolNotFoundError extends Error {
   constructor(tool: string) {
     super(
-      `${tool} is not installed on this server. Install it from the Components page ` +
-        'and try again.',
+      `${tool} is not installed on this server. Install it from the Components list on the ` +
+        'Settings page and try again.',
     );
     this.name = 'ToolNotFoundError';
+  }
+}
+
+/**
+ * Windows will not start a `.cmd` without a shell, and the executor never
+ * uses one. Reaching here means the shim was found but the program behind it
+ * was not, which is a different problem from the tool being absent.
+ */
+export class ToolNotRunnableError extends Error {
+  constructor(tool: string, shim: string) {
+    super(
+      `${tool} is installed on this server as a Windows shortcut (${path.basename(shim)}) ` +
+        'that cannot be started safely, and the program behind it could not be found. ' +
+        `Install ${tool} from the Components list on the Settings page, which installs a ` +
+        'version the panel can run.',
+    );
+    this.name = 'ToolNotRunnableError';
   }
 }
 
@@ -53,6 +72,34 @@ function nodeDirFor(version?: string): string {
 }
 
 /**
+ * Where Windows would find a tool if it were typed at a prompt.
+ *
+ * The last resort, and worth having: a package manager installed globally by
+ * npm lands in the user profile, which no fixed list can predict. Only `.exe`,
+ * `.cmd` and `.bat` are considered, because those are the only things
+ * `resolveToolInvocation` knows how to turn into something startable.
+ */
+async function findOnPath(command: string): Promise<string | null> {
+  if (process.platform !== 'win32') return null;
+
+  const result = await runCommand({
+    exe: 'where.exe',
+    args: [command],
+    timeoutMs: 15_000,
+  }).catch(() => null);
+
+  if (!result || result.exitCode !== 0) return null;
+
+  const found = result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /\.(exe|cmd|bat)$/i.test(line));
+
+  // An .exe never needs unwrapping, so prefer one if the name resolves to both.
+  return found.find((line) => /\.exe$/i.test(line)) ?? found[0] ?? null;
+}
+
+/**
  * Resolves a tool name to an absolute path.
  *
  * `nodeVersion` selects the Node installation used for the whole build, so a
@@ -80,8 +127,8 @@ export async function resolveTool(command: string, nodeVersion?: string): Promis
     npm: [path.join(nodeDir, 'npm.cmd'), path.join(config.binDir, 'node', 'npm.cmd')],
     npx: [path.join(nodeDir, 'npx.cmd'), path.join(config.binDir, 'node', 'npx.cmd')],
     pnpm: [
-      path.join(nodeDir, 'pnpm.cmd'),
       path.join(config.binDir, 'pnpm', 'pnpm.exe'),
+      path.join(nodeDir, 'pnpm.cmd'),
     ],
     yarn: [path.join(nodeDir, 'yarn.cmd')],
     bun: [path.join(config.binDir, 'bun', 'bun.exe')],
@@ -102,12 +149,20 @@ export async function resolveTool(command: string, nodeVersion?: string): Promis
     if (await exists(candidate)) return candidate;
   }
 
-  // During development the bundled copies do not exist; fall back to whatever
-  // is on PATH so the pipeline can be exercised locally.
-  if (process.env['NODE_ENV'] !== 'production') {
-    if (command === 'node') return process.execPath;
-    return process.platform === 'win32' ? `${command}.cmd` : command;
-  }
+  /*
+   * A downloaded component is unpacked as whatever shape its publisher chose,
+   * and that shape changes between releases — pnpm moved from a bare .exe to
+   * an archive with the program one level down. Looking for the executable
+   * beats assuming where it landed.
+   */
+  const unpacked = await findExecutable(path.join(config.binDir, command), [`${command}.exe`]);
+  if (unpacked) return unpacked;
+
+  const onPath = await findOnPath(command);
+  if (onPath) return onPath;
+
+  // The agent is itself a Node process, so there is always a node to use.
+  if (command === 'node') return process.execPath;
 
   throw new ToolNotFoundError(command);
 }
@@ -139,6 +194,37 @@ async function cliScriptBeside(directory: string, command: string): Promise<stri
 }
 
 /**
+ * Reads the JavaScript path out of a `.cmd` shim.
+ *
+ * The shims npm writes all end in a line that runs node against a script under
+ * the shim's own folder, referred to as `%~dp0` or `%dp0%`. Extracting it
+ * covers package managers whose layout is not in the table above, and future
+ * ones that change it, without having to guess.
+ */
+export function scriptFromShim(contents: string): string | null {
+  const matches = contents.matchAll(/%~?dp0%?[\\/]([^"'\r\n]+?\.(?:cjs|mjs|js))/gi);
+
+  for (const match of matches) {
+    const relative = match[1];
+    // `node.exe` beside the shim is the interpreter, not the program.
+    if (relative && !/(^|[\\/])node\.(cjs|mjs|js)$/i.test(relative)) return relative;
+  }
+
+  return null;
+}
+
+async function scriptFromShimFile(shim: string): Promise<string | null> {
+  const contents = await fs.readFile(shim, 'utf8').catch(() => null);
+  if (contents === null) return null;
+
+  const relative = scriptFromShim(contents);
+  if (!relative) return null;
+
+  const resolved = path.resolve(path.dirname(shim), relative);
+  return (await exists(resolved)) ? resolved : null;
+}
+
+/**
  * Turns a tool name into something Windows will actually start.
  *
  * `npm` and friends are `.cmd` shims, and since Node 20.12 spawning a `.cmd`
@@ -147,6 +233,10 @@ async function cliScriptBeside(directory: string, command: string): Promise<stri
  * which is precisely the injection surface `runCommand` exists to remove. So
  * the shim is skipped and the JavaScript behind it is run with `node` instead,
  * which is what the shim would have done anyway.
+ *
+ * If that JavaScript cannot be found, this fails here with an explanation.
+ * Handing the shim back would fail later as a bare `spawn EINVAL` in the
+ * middle of a deployment, which tells the user nothing at all.
  */
 export async function resolveToolInvocation(
   command: string,
@@ -159,9 +249,12 @@ export async function resolveToolInvocation(
 
   const script =
     (await cliScriptBeside(path.dirname(direct), command)) ??
-    // The development fallback returns a bare `npm.cmd`, so look beside the
-    // Node that is running this agent instead.
+    (await scriptFromShimFile(direct)) ??
+    // Some shims are only a wrapper around a copy that lives beside the Node
+    // running this agent.
     (await cliScriptBeside(path.dirname(process.execPath), command));
 
-  return script ? { exe: node, args: [script] } : { exe: direct, args: [] };
+  if (!script) throw new ToolNotRunnableError(command, direct);
+
+  return { exe: node, args: [script] };
 }

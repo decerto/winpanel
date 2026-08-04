@@ -16,6 +16,7 @@ import {
   createInstallComponentHandler,
   createUninstallComponentHandler,
 } from './components/installer.js';
+import { createPanelUpdateHandler } from './components/panel-update.js';
 import { resolveToolInvocation } from './sites/tool-paths.js';
 
 /**
@@ -122,6 +123,10 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
 
     jobs.register('install-component', createInstallComponentHandler(installerDeps));
     jobs.register('uninstall-component', createUninstallComponentHandler(installerDeps));
+    jobs.register(
+      'update-panel',
+      createPanelUpdateHandler({ binDir: config.binDir, logDir: config.logDir }),
+    );
   }
 
   return {

@@ -3,6 +3,8 @@ import { createAppContext } from './app-context.js';
 import { config, paths } from './config.js';
 import { createServer } from './server.js';
 import { syncCaddyEnvironment } from './caddy/service.js';
+import { syncMailEnvironment } from './mail/service.js';
+import { cleanUpAfterUpdate } from './components/panel-update.js';
 import { localAddresses } from './tls/panel-certificate.js';
 
 /**
@@ -50,12 +52,36 @@ async function main(): Promise<void> {
       server.log.warn({ err: error }, 'Could not update the web server environment.');
     }
 
+    /*
+     * The mail server has no account the panel knows about until it is given
+     * one, and it is given one here. Doing it on every start also repairs an
+     * install that predates this, which is otherwise stuck: the panel cannot
+     * manage mailboxes, and the credential it would need can only be created
+     * by something that can already sign in.
+     */
+    try {
+      const result = await syncMailEnvironment({
+        db: app.db,
+        vault: app.vault,
+        services: app.services,
+      });
+      if (result === 'updated') {
+        server.log.info('Gave the mail server the panel\u2019s administrator credential.');
+      }
+    } catch (error) {
+      server.log.warn({ err: error }, 'Could not update the mail server environment.');
+    }
+
     const error = await app.routing.tryApply();
     if (error) {
       server.log.warn({ err: error }, 'Could not apply the website configuration yet.');
     } else {
       server.log.info('Website configuration applied.');
     }
+
+    // Starting up is, for an update that worked, the moment the installer
+    // finished. Nothing it needed should still be lying around.
+    await cleanUpAfterUpdate(config.binDir);
   })();
 
   // Generated up front so a fresh install always has a way in, even if the

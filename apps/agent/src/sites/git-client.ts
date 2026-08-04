@@ -328,8 +328,8 @@ export class GitClient {
       // act on and leaks where the panel lives.
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         throw new GitError(
-          'Git is not installed on this server. Install it from the Components page on the ' +
-            'Server health screen, then try again.',
+          'Git is not installed on this server. Install it from the Components list on the ' +
+            'Settings page, then try again.',
         );
       }
       throw new GitError('Git could not be started on this server.');
@@ -346,8 +346,11 @@ export class GitClient {
    *
    * Shallow and single-branch: a deploy needs the files, not ten years of
    * history, and cloning the lot is slow and wastes disk on every release.
+   *
+   * Gives back the commit it landed on, because that can only be asked while
+   * `.git` is still there and this is what removes it.
    */
-  async cloneRelease(url: string, ref: string, targetDir: string): Promise<void> {
+  async cloneRelease(url: string, ref: string, targetDir: string): Promise<string | null> {
     const urlCheck = validateRepositoryUrl(url, { allowSsh: this.usesDeployKey });
     if (!urlCheck.ok) throw new GitError(urlCheck.reason);
 
@@ -378,13 +381,23 @@ export class GitClient {
       await credentials.cleanup();
     }
 
+    const commit = await this.headCommit(targetDir);
+
     // The .git directory is not needed to run the app, and removing it means
     // there is no chance of a remote URL or cached credential surviving into
     // the release folder.
     await fs.rm(path.join(targetDir, '.git'), { recursive: true, force: true });
+
+    return commit;
   }
 
-  /** Reads the commit a clone landed on, for the deployment record. */
+  /**
+   * Reads the commit a checkout is on, for the deployment record.
+   *
+   * Only meaningful while the checkout still has its `.git` folder. Asking
+   * afterwards is not an error worth reporting — git says "not a git
+   * repository", which in a deployment log reads like the clone failed.
+   */
   async headCommit(repoDir: string): Promise<string | null> {
     try {
       return (await this.run(['rev-parse', 'HEAD'], repoDir)).trim();

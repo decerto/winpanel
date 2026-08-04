@@ -12,12 +12,14 @@ import {
   listPanelServices,
   panelServiceState,
   restartPanelService,
+  scheduleAgentRestart,
   scheduleAgentStop,
   startPanelService,
   startSupportingServices,
   stopPanelService,
   stopSupportingServices,
 } from '../../windows/panel-services.js';
+import { validateUpdateUrl } from '../../components/panel-update.js';
 
 /**
  * Facts about the machine this panel is running on.
@@ -146,6 +148,86 @@ export const systemRouter = router({
       }
 
       return { id: service.id, label: service.label };
+    }),
+
+  /**
+   * Stops and starts the panel itself.
+   *
+   * The one service `serviceAction` will not touch, because it cannot be done
+   * from inside the process being stopped without help. It is here because a
+   * panel that can only be restarted by signing in to the server is a panel
+   * that will be left broken until someone can.
+   */
+  restartPanel: protectedProcedure.mutation(async ({ ctx }) => {
+    const state = await panelServiceState(AGENT_SERVICE_ID);
+
+    if (state === 'not-installed') {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message:
+          'Windows is not managing this panel, so it cannot restart itself. Stop and start ' +
+          'it however it was started.',
+      });
+    }
+
+    const wrapper = path.join(ctx.app.config.dataDir, 'services', `${AGENT_SERVICE_ID}.exe`);
+
+    if (!fs.existsSync(wrapper)) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message:
+          'The panel service wrapper is missing, so the panel cannot restart itself. ' +
+          'Run the WinPanel installer again to register it.',
+      });
+    }
+
+    scheduleAgentRestart(wrapper);
+
+    return { restarting: true };
+  }),
+
+  /**
+   * Installs a newer WinPanel over this one.
+   *
+   * Deliberately not an uninstall-then-install: the installer replaces the
+   * program files and leaves the database, certificates, secrets and websites
+   * exactly where they are. Doing it from here is the difference between a fix
+   * being applied and a fix being postponed.
+   */
+  update: protectedProcedure
+    .input(
+      z
+        .object({
+          url: z.string().min(1).max(2048).optional(),
+          filePath: z.string().min(1).max(512).optional(),
+          /** Checked before the installer is run, when the publisher gives one. */
+          sha256: z
+            .string()
+            .regex(/^[a-fA-F0-9]{64}$/, 'A fingerprint is 64 characters of 0-9 and a-f.')
+            .optional(),
+        })
+        .refine(
+          (value) => Boolean(value.url) !== Boolean(value.filePath),
+          'Give either a download address or a file on this server, not both.',
+        ),
+    )
+    .mutation(({ ctx, input }) => {
+      if (input.url) {
+        const check = validateUpdateUrl(input.url);
+        if (!check.ok) throw new TRPCError({ code: 'BAD_REQUEST', message: check.reason });
+      }
+
+      const jobId = ctx.app.jobs.enqueue({
+        kind: 'update-panel',
+        title: 'Updating WinPanel',
+        payload: {
+          ...(input.url ? { url: input.url.trim() } : {}),
+          ...(input.filePath ? { filePath: input.filePath.trim() } : {}),
+          ...(input.sha256 ? { sha256: input.sha256 } : {}),
+        },
+      });
+
+      return { jobId };
     }),
 
   /**

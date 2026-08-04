@@ -5,6 +5,7 @@ import {
   Boxes,
   ExternalLink,
   FolderOpen,
+  FolderSearch,
   Package,
   Play,
   Power,
@@ -16,6 +17,7 @@ import { api, describeError } from '../../lib/api';
 import { siteContextKey } from '../../lib/site-context';
 import { LOG_LEVEL_CLASS, useJobLog } from '../../lib/job-log';
 import AlertMessage from '../../components/AlertMessage.vue';
+import PathPicker from '../../components/PathPicker.vue';
 
 /**
  * The application: what runs it, and the three buttons you need at 2am.
@@ -53,6 +55,17 @@ const form = ref({
 const chosenScript = ref('');
 const command = ref<'npm' | 'npx' | 'node' | 'pnpm' | 'yarn' | 'bun' | 'dotnet'>('npm');
 const commandArgs = ref('');
+
+/**
+ * Which of the three path fields is being browsed, if any.
+ *
+ * All three are relative to something the user cannot see from here, so each
+ * one opens the same browser rooted at whatever it is measured against.
+ */
+const picking = ref<'applicationRoot' | 'startupFile' | 'documentRoot' | null>(null);
+
+/** The folder the site's paths are measured from: a release, or the public folder. */
+const pathBase = computed(() => info.value?.applicationRoot.split('/')[0] ?? 'current');
 
 const job = useJobLog({ onFinished: () => refresh() });
 
@@ -373,15 +386,20 @@ watch(slug, load, { immediate: true });
           <div class="flex flex-wrap items-center gap-3 py-3">
             <dt class="w-52 shrink-0 text-ink-muted">Application root</dt>
             <dd class="flex-1">
-              <input
-                v-model="form.applicationRoot"
-                class="field max-w-md font-mono"
-                aria-label="Application root"
-                placeholder="(the project root)"
-              />
+              <div class="flex max-w-md flex-wrap items-center gap-2">
+                <input
+                  v-model="form.applicationRoot"
+                  class="field min-w-48 flex-1 font-mono"
+                  aria-label="Application root"
+                  placeholder="(the project root)"
+                />
+                <button type="button" class="btn btn-ghost btn-sm" @click="picking = 'applicationRoot'">
+                  <FolderSearch :size="14" aria-hidden="true" /> Browse
+                </button>
+              </div>
               <p class="hint">
                 The folder your <span class="font-mono">package.json</span> lives in, inside
-                <span class="font-mono">{{ info.applicationRoot.split('/')[0] }}</span>.
+                <span class="font-mono">{{ pathBase }}</span>.
               </p>
             </dd>
           </div>
@@ -389,12 +407,17 @@ watch(slug, load, { immediate: true });
           <div class="flex flex-wrap items-center gap-3 py-3">
             <dt class="w-52 shrink-0 text-ink-muted">Startup file</dt>
             <dd class="flex-1">
-              <input
-                v-model="form.startupFile"
-                class="field max-w-md font-mono"
-                aria-label="Startup file"
-                placeholder="index.js"
-              />
+              <div class="flex max-w-md flex-wrap items-center gap-2">
+                <input
+                  v-model="form.startupFile"
+                  class="field min-w-48 flex-1 font-mono"
+                  aria-label="Startup file"
+                  placeholder="index.js"
+                />
+                <button type="button" class="btn btn-ghost btn-sm" @click="picking = 'startupFile'">
+                  <FolderSearch :size="14" aria-hidden="true" /> Browse
+                </button>
+              </div>
               <p class="hint">Relative to the application root, e.g. src/server.js</p>
             </dd>
           </div>
@@ -402,12 +425,17 @@ watch(slug, load, { immediate: true });
           <div class="flex flex-wrap items-center gap-3 py-3">
             <dt class="w-52 shrink-0 text-ink-muted">Document root</dt>
             <dd class="flex-1">
-              <input
-                v-model="form.documentRoot"
-                class="field max-w-md font-mono"
-                aria-label="Document root"
-                placeholder="(the application root)"
-              />
+              <div class="flex max-w-md flex-wrap items-center gap-2">
+                <input
+                  v-model="form.documentRoot"
+                  class="field min-w-48 flex-1 font-mono"
+                  aria-label="Document root"
+                  placeholder="(the application root)"
+                />
+                <button type="button" class="btn btn-ghost btn-sm" @click="picking = 'documentRoot'">
+                  <FolderSearch :size="14" aria-hidden="true" /> Browse
+                </button>
+              </div>
               <p class="hint">Only used when the web server serves files directly.</p>
             </dd>
           </div>
@@ -515,6 +543,37 @@ watch(slug, load, { immediate: true });
           :class="LOG_LEVEL_CLASS[line.level] ?? 'text-ink'"
         >{{ line.message }}</span></pre>
       </section>
+
+      <!--
+        One browser, pointed at whatever the field being edited is measured
+        from. The startup file is relative to the application root, so it opens
+        inside the value of the field above it rather than at the release root.
+      -->
+      <PathPicker
+        v-model="form.applicationRoot"
+        :open="picking === 'applicationRoot'"
+        :site-slug="slug"
+        :base="pathBase"
+        title="Choose the application root"
+        @close="picking = null"
+      />
+      <PathPicker
+        v-model="form.startupFile"
+        :open="picking === 'startupFile'"
+        :site-slug="slug"
+        :base="[pathBase, form.applicationRoot].filter(Boolean).join('/')"
+        mode="file"
+        title="Choose the startup file"
+        @close="picking = null"
+      />
+      <PathPicker
+        v-model="form.documentRoot"
+        :open="picking === 'documentRoot'"
+        :site-slug="slug"
+        :base="pathBase"
+        title="Choose the document root"
+        @close="picking = null"
+      />
     </template>
   </div>
 </template>

@@ -15,6 +15,7 @@ export const ComponentId = z.enum([
   'stalwart',
   'git',
   'node',
+  'pnpm',
   'dotnet',
   'vcredist',
 ]);

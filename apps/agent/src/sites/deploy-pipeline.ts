@@ -38,6 +38,39 @@ export function newReleaseId(now = new Date()): string {
   );
 }
 
+/**
+ * Explains a failure to start a program at all.
+ *
+ * Windows reports these as a bare error code with no context — `spawn EINVAL`
+ * in the middle of a deployment log names neither the program nor anything the
+ * user could do about it.
+ */
+export function explainSpawnFailure(error: unknown, tool: string, step: string): DeploymentError {
+  const code = (error as NodeJS.ErrnoException).code;
+
+  if (code === 'ENOENT') {
+    return new DeploymentError(
+      `"${step}" could not run because ${tool} is not installed on this server. ` +
+        'Install it from the Components list on the Settings page, then deploy again.',
+      step,
+    );
+  }
+
+  if (code === 'EINVAL') {
+    return new DeploymentError(
+      `"${step}" could not run because the copy of ${tool} on this server is a Windows ` +
+        'shortcut rather than a program. Install ' +
+        `${tool} from the Components list on the Settings page, then deploy again.`,
+      step,
+    );
+  }
+
+  return new DeploymentError(
+    `"${step}" could not be started: ${error instanceof Error ? error.message : String(error)}`,
+    step,
+  );
+}
+
 export interface RunBuildOptions {
   manifest: SiteManifest;
   /** Absolute path to the release folder. */
@@ -101,6 +134,8 @@ export async function runBuildSteps(options: RunBuildOptions): Promise<void> {
       onOutput: (line) => {
         if (line.trim().length > 0) ctx.log(line, 'debug', step.name);
       },
+    }).catch((error: unknown) => {
+      throw explainSpawnFailure(error, step.command, step.name);
     });
 
     if (result.exitCode !== 0) {

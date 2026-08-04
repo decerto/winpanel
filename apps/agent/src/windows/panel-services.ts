@@ -298,3 +298,18 @@ export function scheduleAgentStop(delayMs = 2000): void {
     runDetached({ exe: 'sc.exe', args: ['stop', AGENT_SERVICE_ID] });
   }, delayMs);
 }
+
+/**
+ * Restarts the panel a moment from now.
+ *
+ * Not `sc stop` followed by `sc start`: the process issuing those is this one,
+ * and it is gone the instant the stop lands, so nothing is left to run the
+ * start. WinSW has a command for exactly this case — it hands the request to
+ * the service host, which stops and starts itself — so the panel comes back
+ * without anyone signing in to the server.
+ */
+export function scheduleAgentRestart(wrapperPath: string, delayMs = 2000): void {
+  setTimeout(() => {
+    runDetached({ exe: wrapperPath, args: ['restart!'] });
+  }, delayMs);
+}

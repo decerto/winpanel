@@ -15,6 +15,7 @@ import {
   testOutboundMail,
 } from '../../mail/readiness.js';
 import { MailServerError, StalwartClient, probeMailServer } from '../../mail/stalwart-client.js';
+import { syncMailEnvironment } from '../../mail/service.js';
 import {
   forgetMailAdminCredentials,
   loadMailAdminCredentials,
@@ -226,9 +227,8 @@ export const mailRouter = router({
           ? 'The mail server is not installed or not running yet.'
           : probe.manageable
             ? 'The mail server is running. Connect the panel to it to manage mailboxes.'
-            : 'The mail server is running, but this version does not offer the mailbox ' +
-              'management API the panel uses. Mailboxes have to be managed in the mail ' +
-              'server\u2019s own administration.',
+            : 'The mail server is running, but it is not offering the management API the ' +
+              'panel uses. It may still be waiting for its own first-time setup.',
       };
     }
 
@@ -243,6 +243,56 @@ export const mailRouter = router({
       manageable: result.manageable,
       message: result.message,
     };
+  }),
+
+  /**
+   * Sets the panel up on the mail server without anyone typing a password.
+   *
+   * The mail server keeps its accounts inside its own datastore, so on a fresh
+   * install there is no credential for the panel to be given — the panel has
+   * to put one there. It does that through the mail server's service
+   * configuration, which means a restart, which means waiting for it to answer
+   * again before claiming success.
+   */
+  provisionServer: protectedProcedure.mutation(async ({ ctx }) => {
+    const applied = await syncMailEnvironment({
+      db: ctx.app.db,
+      vault: ctx.app.vault,
+      services: ctx.app.services,
+    });
+
+    if (applied === 'not-installed') {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message:
+          'The mail server is not installed on this server yet. Install it from the list of ' +
+          'programs above, then try again.',
+      });
+    }
+
+    const credentials = loadMailAdminCredentials(ctx.app.db, ctx.app.vault);
+
+    if (!credentials) {
+      throw new TRPCError({
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'The panel could not store the mail server credential it just created.',
+      });
+    }
+
+    // A restarted mail server takes a few seconds to open its store and answer,
+    // and reporting failure during those seconds would be wrong.
+    let result = await new StalwartClient(credentials.username, credentials.password).ping();
+
+    for (let attempt = 0; attempt < 5 && !result.authorised; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      result = await new StalwartClient(credentials.username, credentials.password).ping();
+    }
+
+    if (!result.authorised) {
+      throw new TRPCError({ code: 'BAD_REQUEST', message: result.message });
+    }
+
+    return { ok: true, message: 'The panel can now manage mailboxes on this mail server.' };
   }),
 
   /**

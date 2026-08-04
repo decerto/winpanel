@@ -7,6 +7,7 @@ import type { JobContext } from '../jobs/queue.js';
 import type { ServiceManager } from '../windows/service-manager.js';
 import { runCommand } from '../process/run-command.js';
 import { buildStalwartBootstrap } from '../mail/stalwart-config.js';
+import { ensureMailAdminCredentials, mailServiceEnv } from '../mail/service.js';
 import { caddyServiceEnv } from '../caddy/service.js';
 import { loadCloudflareToken } from '../dns/token.js';
 import { downloadVerified } from './download.js';
@@ -232,10 +233,15 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
     // Caddy needs its data directory and, once Cloudflare is connected, the
     // token it answers the certificate challenge with. Reading it here means a
     // reinstall keeps working rather than quietly losing the ability to renew.
+    // The mail server gets the credential the panel manages mailboxes with,
+    // which is the only way it can have one: its accounts live inside its own
+    // datastore, which does not exist until it first starts.
     const env =
       component.id === 'caddy'
         ? caddyServiceEnv(deps.caddyDir, loadCloudflareToken(deps.db, deps.vault))
-        : undefined;
+        : component.id === 'stalwart'
+          ? mailServiceEnv(ensureMailAdminCredentials(deps.db, deps.vault))
+          : undefined;
 
     ctx.log('Registering the Windows service\u2026');
     await deps.services.install({

@@ -179,8 +179,7 @@ export function createDeployHandler(deps: DeployDependencies) {
           },
         });
 
-        await git.cloneRelease(source.url, ref, releaseDir);
-        commit = await git.headCommit(releaseDir);
+        commit = await git.cloneRelease(source.url, ref, releaseDir);
 
         if (source.subdirectory) {
           const inner = path.join(releaseDir, source.subdirectory);

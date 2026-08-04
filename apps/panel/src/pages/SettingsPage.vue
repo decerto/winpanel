@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { CloudCog, ExternalLink, Info, Power, Server } from 'lucide-vue-next';
+import { CloudCog, Download, ExternalLink, Info, Power, RefreshCw, Server } from 'lucide-vue-next';
 import { REQUIRED_CLOUDFLARE_SCOPES } from '@winpanel/shared';
 import { api, describeError } from '../lib/api';
+import { LOG_LEVEL_CLASS, useJobLog } from '../lib/job-log';
 import PageHeader from '../components/PageHeader.vue';
 import AlertMessage from '../components/AlertMessage.vue';
 import ComponentsPanel from '../components/ComponentsPanel.vue';
@@ -30,6 +31,8 @@ const mail = ref<MailStatus | null>(null);
 const mailUser = ref('admin');
 const mailPassword = ref('');
 const mailBusy = ref(false);
+/** The manual sign-in is the fallback, so it stays out of the way until asked for. */
+const mailManual = ref(false);
 
 const services = ref<BackgroundServices>([]);
 const shutdownBusy = ref(false);
@@ -39,6 +42,26 @@ const shutdownResult = ref<ShutdownResult | null>(null);
 
 const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
+
+/**
+ * Updating the panel from the panel.
+ *
+ * The installer upgrades in place — it stops what WinPanel runs, replaces the
+ * program files and starts it all again, keeping websites, mailboxes and
+ * settings. Without this, every fix meant uninstalling, which is why it is
+ * here rather than in a document nobody reads at the time.
+ */
+const updateSource = ref<'url' | 'file'>('url');
+const updateUrl = ref('');
+const updateFile = ref('');
+const updateChecksum = ref('');
+const updateBusy = ref(false);
+const updateJob = useJobLog();
+const restartBusy = ref(false);
+
+const canUpdate = computed(() =>
+  updateSource.value === 'url' ? updateUrl.value.trim().length > 0 : updateFile.value.trim().length > 0,
+);
 
 async function refresh(): Promise<void> {
   try {
@@ -110,6 +133,34 @@ async function connectMail(): Promise<void> {
   } catch (err) {
     error.value = describeError(err);
   } finally {
+    mailBusy.value = false;
+  }
+}
+
+/**
+ * Sets the panel up on the mail server without anyone typing a password.
+ *
+ * The mail server is restarted as part of this, so the wait is long by the
+ * standards of a settings page and needs its own deadline rather than the
+ * browser's.
+ */
+async function provisionMail(): Promise<void> {
+  mailBusy.value = true;
+  error.value = null;
+  notice.value = null;
+
+  const deadline = withDeadline(120_000);
+
+  try {
+    const result = await api.mail.provisionServer.mutate(undefined, { signal: deadline.signal });
+    notice.value = result.message;
+    await refresh();
+  } catch (err) {
+    error.value = deadline.signal.aborted
+      ? 'The mail server took too long to come back. Refresh this page to see where it got to.'
+      : describeError(err);
+  } finally {
+    deadline.done();
     mailBusy.value = false;
   }
 }
@@ -296,6 +347,83 @@ async function controlService(
     await refresh();
   }
 }
+
+/**
+ * Restarts the panel itself.
+ *
+ * The reply arrives before the restart begins, so the only honest thing to do
+ * afterwards is tell the user the connection is about to drop and when to come
+ * back — not spin forever waiting for an answer that cannot come.
+ */
+async function restartPanel(): Promise<void> {
+  if (
+    !window.confirm(
+      'Restart the control panel?\n\n' +
+        'This page will lose its connection for a few seconds. Your websites and email keep ' +
+        'running throughout.',
+    )
+  ) {
+    return;
+  }
+
+  restartBusy.value = true;
+  error.value = null;
+  notice.value = null;
+
+  const deadline = withDeadline(30_000);
+
+  try {
+    await api.system.restartPanel.mutate(undefined, { signal: deadline.signal });
+    notice.value =
+      'The panel is restarting. Reload this page in about half a minute.';
+  } catch (err) {
+    error.value = deadline.signal.aborted
+      ? 'The panel stopped answering before it confirmed, which usually means it is already ' +
+        'restarting. Reload this page shortly.'
+      : describeError(err);
+  } finally {
+    deadline.done();
+    restartBusy.value = false;
+  }
+}
+
+async function installUpdate(): Promise<void> {
+  if (
+    !window.confirm(
+      'Install this over the running WinPanel?\n\n' +
+        'Everything WinPanel runs stops while the files are replaced, so websites and email ' +
+        'are briefly offline. Your websites, mailboxes, certificates and settings are kept.',
+    )
+  ) {
+    return;
+  }
+
+  updateBusy.value = true;
+  error.value = null;
+  notice.value = null;
+
+  const deadline = withDeadline(60_000);
+
+  try {
+    const result = await api.system.update.mutate(
+      {
+        ...(updateSource.value === 'url'
+          ? { url: updateUrl.value.trim() }
+          : { filePath: updateFile.value.trim() }),
+        ...(updateChecksum.value.trim() ? { sha256: updateChecksum.value.trim() } : {}),
+      },
+      { signal: deadline.signal },
+    );
+    updateJob.watchJob(result.jobId);
+  } catch (err) {
+    error.value = deadline.signal.aborted
+      ? 'The server took too long to accept the update. Refresh and check the Activity list.'
+      : describeError(err);
+  } finally {
+    deadline.done();
+    updateBusy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -408,8 +536,9 @@ async function controlService(
             ask, and only ever talks to it over this machine's own loopback address.
           </p>
 
-          <p v-if="mail?.configured && !mail.connected" class="hint">
-            Installing the mail server from Programs above sets this up for you.
+          <p v-if="mail && !mail.connected" class="hint">
+            The panel creates its own administrator account on the mail server, so there is no
+            password to look up. Nothing already set up in the mail server is changed.
           </p>
 
           <p v-if="mail" class="mt-3 flex flex-wrap items-center gap-2 text-sm">
@@ -436,44 +565,74 @@ async function controlService(
         </div>
       </div>
 
-      <!-- No point asking for a password a version without the API cannot use. -->
-      <form
-        v-if="!mail?.connected && !(mail?.reachable && !mail.manageable)"
-        class="mt-5 space-y-3"
-        @submit.prevent="connectMail"
-      >
-        <div class="flex flex-wrap gap-3">
-          <div class="w-40">
-            <label for="mail-user" class="label">Administrator</label>
-            <input id="mail-user" v-model="mailUser" class="field font-mono" autocomplete="off" />
-          </div>
-
-          <div class="min-w-56 flex-1">
-            <label for="mail-password" class="label">Password</label>
-            <input
-              id="mail-password"
-              v-model="mailPassword"
-              type="password"
-              autocomplete="off"
-              class="field font-mono"
-              placeholder="The mail server's administrator password"
-            />
-          </div>
+      <div v-if="!mail?.connected" class="mt-5 space-y-3">
+        <div class="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            class="btn btn-primary"
+            :disabled="mailBusy || !mail?.reachable"
+            @click="provisionMail"
+          >
+            {{ mailBusy ? 'Setting up\u2026' : 'Set up mail management' }}
+          </button>
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            :disabled="mailBusy"
+            @click="mailManual = !mailManual"
+          >
+            {{ mailManual ? 'Never mind' : 'Use an existing account instead' }}
+          </button>
         </div>
 
-        <p class="hint">
-          Set when the mail server was installed. It is stored encrypted on this server and is
-          never sent to the browser.
+        <p v-if="!mail?.reachable" class="hint">
+          The mail server has to be installed and running first. Install it from the list of
+          programs above.
+        </p>
+        <p v-else class="hint">
+          This restarts the mail server, so mail pauses for a few seconds. Mailboxes and
+          messages are untouched.
         </p>
 
-        <button
-          type="submit"
-          class="btn btn-primary"
-          :disabled="mailBusy || mailPassword.length === 0"
+        <form
+          v-if="mailManual"
+          class="space-y-3 border-t border-line pt-3"
+          @submit.prevent="connectMail"
         >
-          {{ mailBusy ? 'Checking\u2026' : 'Connect mail server' }}
-        </button>
-      </form>
+          <div class="flex flex-wrap gap-3">
+            <div class="w-40">
+              <label for="mail-user" class="label">Administrator</label>
+              <input id="mail-user" v-model="mailUser" class="field font-mono" autocomplete="off" />
+            </div>
+
+            <div class="min-w-56 flex-1">
+              <label for="mail-password" class="label">Password</label>
+              <input
+                id="mail-password"
+                v-model="mailPassword"
+                type="password"
+                autocomplete="off"
+                class="field font-mono"
+                placeholder="The mail server's administrator password"
+              />
+            </div>
+          </div>
+
+          <p class="hint">
+            For a mail server you already administer yourself. The account needs permission to
+            manage domains and accounts. It is stored encrypted on this server and is never sent
+            to the browser.
+          </p>
+
+          <button
+            type="submit"
+            class="btn btn-ghost"
+            :disabled="mailBusy || mailPassword.length === 0"
+          >
+            {{ mailBusy ? 'Checking\u2026' : 'Sign in' }}
+          </button>
+        </form>
+      </div>
 
       <button
         v-else
@@ -543,6 +702,134 @@ async function controlService(
       <div class="flex items-start gap-3">
         <span
           class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border
+                 border-line bg-brand-soft/50 text-brand-bright"
+          aria-hidden="true"
+        >
+          <Download :size="19" />
+        </span>
+
+        <div class="min-w-0 flex-1">
+          <h2 class="text-base font-semibold text-ink">Update WinPanel</h2>
+          <p class="mt-1 text-sm text-ink-muted">
+            Installs a newer WinPanel over this one. There is no need to remove it first: your
+            websites, mailboxes, certificates and settings are all kept, and everything is
+            started again when the files have been replaced.
+          </p>
+        </div>
+      </div>
+
+      <div class="mt-5 flex flex-wrap gap-2">
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
+          :class="updateSource === 'url' ? 'text-ink' : ''"
+          :aria-pressed="updateSource === 'url'"
+          @click="updateSource = 'url'"
+        >
+          Download it
+        </button>
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
+          :class="updateSource === 'file' ? 'text-ink' : ''"
+          :aria-pressed="updateSource === 'file'"
+          @click="updateSource = 'file'"
+        >
+          Already on this server
+        </button>
+      </div>
+
+      <form class="mt-4 space-y-3" @submit.prevent="installUpdate">
+        <div v-if="updateSource === 'url'">
+          <label for="update-url" class="label">Address of the setup file</label>
+          <input
+            id="update-url"
+            v-model="updateUrl"
+            class="field font-mono"
+            placeholder="Paste the https:// link to WinPanel-Setup-x64.exe"
+          />
+          <p class="hint">
+            Must be an <span class="font-mono">https://</span> link straight to the setup
+            program &mdash; on a GitHub release page, the download link for the
+            <span class="font-mono">.exe</span> itself.
+          </p>
+        </div>
+
+        <div v-else>
+          <label for="update-file" class="label">Full path on this server</label>
+          <input
+            id="update-file"
+            v-model="updateFile"
+            class="field font-mono"
+            placeholder="C:\Users\Administrator\Downloads\WinPanel-Setup-x64.exe"
+          />
+          <p class="hint">For a server with no internet access. Copy the file across first.</p>
+        </div>
+
+        <div>
+          <label for="update-checksum" class="label">Fingerprint (optional)</label>
+          <input
+            id="update-checksum"
+            v-model="updateChecksum"
+            class="field font-mono"
+            placeholder="SHA-256, if the release publishes one"
+          />
+          <p class="hint">
+            Checked before anything is run, so a download that was altered on the way is
+            refused rather than installed.
+          </p>
+        </div>
+
+        <AlertMessage tone="warning">
+          Everything WinPanel runs stops while the files are replaced, so websites and email are
+          offline for a minute or two. This page will lose its connection &mdash; reload it once
+          the panel answers again.
+        </AlertMessage>
+
+        <button
+          type="submit"
+          class="btn btn-primary"
+          :disabled="updateBusy || updateJob.running.value || !canUpdate"
+        >
+          <Download :size="15" aria-hidden="true" />
+          {{ updateBusy || updateJob.running.value ? 'Working\u2026' : 'Install this update' }}
+        </button>
+      </form>
+
+      <pre
+        v-if="updateJob.lines.value.length > 0"
+        class="mt-4 max-h-64 overflow-y-auto rounded-card bg-black/25 p-4 font-mono text-xs
+               leading-relaxed"
+      ><span
+        v-for="line in updateJob.lines.value"
+        :key="line.seq"
+        class="block"
+        :class="LOG_LEVEL_CLASS[line.level] ?? 'text-ink'"
+      >{{ line.message }}</span></pre>
+
+      <div class="mt-5 border-t border-line pt-5">
+        <h3 class="text-sm font-semibold text-ink">Restart the panel</h3>
+        <p class="mt-1 text-sm text-ink-muted">
+          Stops and starts the control panel on its own. Websites and email are untouched. Worth
+          trying when the panel itself is behaving oddly, and after changing anything it only
+          reads at start-up.
+        </p>
+        <button
+          type="button"
+          class="btn btn-ghost mt-3"
+          :disabled="restartBusy"
+          @click="restartPanel"
+        >
+          <RefreshCw :size="15" :class="restartBusy ? 'animate-spin' : ''" aria-hidden="true" />
+          {{ restartBusy ? 'Restarting\u2026' : 'Restart the panel' }}
+        </button>
+      </div>
+    </section>
+
+    <section class="card mt-4 p-6">
+      <div class="flex items-start gap-3">
+        <span
+          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border
                  border-line bg-elevated text-ink-muted"
           aria-hidden="true"
         >
@@ -553,8 +840,9 @@ async function controlService(
           <h2 class="text-base font-semibold text-ink">Background programs</h2>
           <p class="mt-1 text-sm text-ink-muted">
             Everything the panel runs for you. None of these have a window of their own, so
-            this is the only place they are visible. Stop them all before updating or removing
-            WinPanel &mdash; otherwise Windows refuses to replace files they are holding open.
+            this is the only place they are visible. Stop them all before removing WinPanel
+            &mdash; otherwise Windows refuses to delete files they are holding open. Updating
+            does this for you.
           </p>
         </div>
       </div>

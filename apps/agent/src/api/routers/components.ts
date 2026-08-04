@@ -15,7 +15,7 @@ import { discoverNodeVersions } from '../../sites/node-versions.js';
  * nobody chose. The panel finds the versions that exist and uses one of them.
  */
 
-const PANEL_MANAGED = new Set(['caddy', 'stalwart', 'git']);
+const PANEL_MANAGED = new Set(['caddy', 'stalwart', 'git', 'pnpm']);
 
 /** Names each program may go by, matching the installer's own list. */
 const EXECUTABLES: Record<string, string[]> = {
