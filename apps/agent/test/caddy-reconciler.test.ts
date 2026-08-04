@@ -180,4 +180,23 @@ describe('applying the configuration', () => {
       globalThis.fetch = original;
     }
   });
+
+  it('names an origin the admin API accepts', async () => {
+    // Node attaches an empty Origin to every write, and Caddy refuses those.
+    const original = globalThis.fetch;
+    let sent: string | null = null;
+
+    globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+      sent = new Headers(init.headers).get('origin');
+      return new Response('', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    try {
+      await new CaddyClient({ baseUrl: 'http://127.0.0.1:2019' }).load({});
+    } finally {
+      globalThis.fetch = original;
+    }
+
+    expect(sent).toBe('http://127.0.0.1:2019');
+  });
 });

@@ -53,10 +53,12 @@ export interface CaddyClientOptions {
 export class CaddyClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
+  private readonly origin: string;
 
   constructor(options: CaddyClientOptions = {}) {
     this.baseUrl = options.baseUrl ?? `http://127.0.0.1:${CADDY_ADMIN_PORT}`;
     this.timeoutMs = options.timeoutMs ?? 30_000;
+    this.origin = new URL(this.baseUrl).origin;
   }
 
   private async request(
@@ -72,6 +74,14 @@ export class CaddyClient {
       const response = await fetch(`${this.baseUrl}${path}`, {
         method,
         headers: {
+          /*
+           * Node's fetch attaches an empty `Origin` on anything that is not a
+           * GET, and Caddy's admin API runs its cross-site check whenever the
+           * header is present at all — so it rejects every write with "client
+           * is not allowed to access from origin ''". Naming the endpoint we
+           * are already talking to satisfies the check.
+           */
+          origin: this.origin,
           ...(body !== undefined ? { 'content-type': 'application/json' } : {}),
           ...headers,
         },
