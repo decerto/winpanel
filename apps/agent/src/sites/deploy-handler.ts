@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import crypto from 'node:crypto';
 import { PUBLIC_DIR, SiteManifest, type SiteSource } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
@@ -13,6 +13,7 @@ import {
   newReleaseId,
   pointCurrentAt,
   pruneBuildArtifacts,
+  pruneFailedReleases,
   pruneOldReleases,
   runBuildSteps,
   waitForHealthy,
@@ -63,6 +64,15 @@ export interface DeployDependencies {
 
 export function serviceIdFor(slug: string, colour: 'blue' | 'green'): string {
   return `winpanel-site-${slug}-${colour}`;
+}
+
+/** The release `current` points at, if it points anywhere. */
+async function currentReleaseId(siteDir: string): Promise<string | null> {
+  try {
+    return path.basename(await fs.realpath(path.join(siteDir, 'current')));
+  } catch {
+    return null;
+  }
 }
 
 /** The executable that runs a site of a given runtime. */
@@ -152,6 +162,27 @@ export function createDeployHandler(deps: DeployDependencies) {
     try {
       await fs.mkdir(releasesDir, { recursive: true });
       await fs.mkdir(sharedDir, { recursive: true });
+
+      /*
+       * Attempts that failed before this one kept their folders so their logs
+       * could be read against them. One is worth keeping; a row of abandoned
+       * `node_modules` trees is not, and the site most likely to accumulate
+       * them is the one already having a bad day.
+       */
+      const failedBefore = deps.db.db
+        .select({ releaseId: deployments.releaseId })
+        .from(deployments)
+        .where(and(eq(deployments.siteId, site.id), eq(deployments.status, 'failed')))
+        .all()
+        .map((row) => row.releaseId);
+
+      const discarded = await pruneFailedReleases(releasesDir, failedBefore, {
+        protect: [await currentReleaseId(siteDir)].filter((id): id is string => id !== null),
+      });
+
+      if (discarded.length > 0) {
+        ctx.log(`Cleared ${discarded.length} folder(s) left by earlier failed attempts.`, 'debug');
+      }
 
       // 1. Get the code.
       let commit: string | null = null;

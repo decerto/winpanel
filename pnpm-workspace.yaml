@@ -1,3 +1,9 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+
+# Only these may run install scripts. The `pnpm.onlyBuiltDependencies` field in
+# package.json this replaces is silently ignored by pnpm 11.
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true

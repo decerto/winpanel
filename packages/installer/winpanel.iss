@@ -155,15 +155,18 @@ begin
 end;
 
 { Reads the one-time setup code the bootstrap command wrote, so the final
-  page can show it rather than making the user hunt for a file. }
+  page can show it rather than making the user hunt for a file.
+
+  An empty result is how this script knows the difference between a first
+  install and an update: the bootstrap writes a code only when the panel has
+  no account yet, and the code is destroyed the moment one is created. }
 function ReadSetupCode(): String;
 var
   Contents: AnsiString;
 begin
+  Result := '';
   if LoadStringFromFile(ExpandConstant('{app}\data\setup-token.txt'), Contents) then
-    Result := Trim(String(Contents))
-  else
-    Result := '(check {app}\data\setup-token.txt)';
+    Result := Trim(String(Contents));
 end;
 
 { The bootstrap command runs hidden, so anything that went wrong is only
@@ -193,20 +196,46 @@ procedure CurPageChanged(CurPageID: Integer);
 var
   Message: String;
   Warnings: String;
+  SetupCode: String;
 begin
   if (SetupCodePage <> nil) and (CurPageID = SetupCodePage.ID) then
   begin
-    Message :=
-      'Open this address in your browser:' + #13#10 +
-      '    https://<this server''s IP address>:' + '{#PanelPort}' + #13#10 + #13#10 +
-      'Setup code:' + #13#10 +
-      '    ' + ReadSetupCode() + #13#10 + #13#10 +
-      'The address must start with https, not http. The panel does not answer' + #13#10 +
-      'plain http on this port.' + #13#10 + #13#10 +
-      'Your browser will warn about the certificate the first time. That is' + #13#10 +
-      'expected: the panel is reached by IP address rather than a domain name,' + #13#10 +
-      'so its certificate is self-signed. The panel shows you its fingerprint' + #13#10 +
-      'so you can confirm you are trusting the right one.';
+    SetupCode := ReadSetupCode();
+
+    if SetupCode <> '' then
+    begin
+      SetupCodePage.Caption := 'WinPanel is ready';
+      SetupCodePage.Description := 'Open the address below to finish setting up.';
+
+      Message :=
+        'Open this address in your browser:' + #13#10 +
+        '    https://<this server''s IP address>:' + '{#PanelPort}' + #13#10 + #13#10 +
+        'Setup code:' + #13#10 +
+        '    ' + SetupCode + #13#10 + #13#10 +
+        'The address must start with https, not http. The panel does not answer' + #13#10 +
+        'plain http on this port.' + #13#10 + #13#10 +
+        'Your browser will warn about the certificate the first time. That is' + #13#10 +
+        'expected: the panel is reached by IP address rather than a domain name,' + #13#10 +
+        'so its certificate is self-signed. The panel shows you its fingerprint' + #13#10 +
+        'so you can confirm you are trusting the right one.';
+    end
+    else
+    begin
+      { No setup code means this machine already had a panel with an account
+        on it. Showing the first-run instructions here would be nonsense, and
+        offering a code nothing can redeem is worse than offering none. }
+      SetupCodePage.Caption := 'WinPanel has been updated';
+      SetupCodePage.Description := 'Version {#AppVersion} is installed and running.';
+
+      Message :=
+        'Everything was put back the way it was:' + #13#10 + #13#10 +
+        '    Your websites, mailboxes and settings are untouched.' + #13#10 +
+        '    Your sign-in details have not changed.' + #13#10 +
+        '    The panel, web server, mail server and websites are running again.' + #13#10 +
+        '' + #13#10 +
+        'Open this address in your browser and sign in as usual:' + #13#10 +
+        '    https://<this server''s IP address>:' + '{#PanelPort}';
+    end;
 
     Warnings := ReadInstallWarnings();
     if Warnings <> '' then

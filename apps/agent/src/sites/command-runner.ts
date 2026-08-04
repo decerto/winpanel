@@ -6,7 +6,12 @@ import { sites } from '../db/schema.js';
 import type { JobContext } from '../jobs/queue.js';
 import { runCommand } from '../process/run-command.js';
 import { appRootFor } from './site-service.js';
-import { explainSpawnFailure, type ToolPaths } from './deploy-pipeline.js';
+import {
+  explainSpawnFailure,
+  explainToolFailure,
+  withInstallDefaults,
+  type ToolPaths,
+} from './deploy-pipeline.js';
 
 /**
  * Running a command against a website, by hand.
@@ -78,7 +83,7 @@ export function createRunCommandHandler(deps: CommandRunnerDependencies) {
 
     const result = await runCommand({
       exe: tool.exe,
-      args: [...tool.args, ...payload.args],
+      args: [...tool.args, ...withInstallDefaults(payload.command, payload.args)],
       cwd,
       env: { ...env, CI: '1', NODE_ENV: env['NODE_ENV'] ?? 'production' },
       timeoutMs: deps.timeoutMs ?? 15 * 60 * 1000,
@@ -100,8 +105,14 @@ export function createRunCommandHandler(deps: CommandRunnerDependencies) {
     }
 
     if (result.exitCode !== 0) {
-      const tail = (result.stderr || result.stdout).trim().split('\n').slice(-8).join('\n');
-      throw new CommandError(`${payload.label} failed (exit code ${result.exitCode}).\n${tail}`);
+      const output = result.stderr || result.stdout;
+      const tail = output.trim().split('\n').slice(-8).join('\n');
+      const hint = explainToolFailure(payload.command, output);
+
+      throw new CommandError(
+        `${payload.label} failed (exit code ${result.exitCode}).\n${tail}` +
+          (hint ? `\n\n${hint}` : ''),
+      );
     }
 
     ctx.log(`${payload.label} finished.`);

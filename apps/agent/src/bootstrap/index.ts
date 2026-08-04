@@ -32,7 +32,12 @@ export { AGENT_SERVICE_ID };
 
 export interface InstallResult {
   panelUrl: string;
-  setupToken: string;
+  /**
+   * Null when this was an upgrade of a panel that already has an account.
+   * There is nothing to set up, and a code nothing can redeem is worse than
+   * no code: it is a credential-shaped file left on disk for no reason.
+   */
+  setupToken: string | null;
   buildAccountPassword: string;
   warnings: string[];
 }
@@ -138,7 +143,7 @@ export async function install(options: { skipService?: boolean } = {}): Promise<
   // Build the app context once so the database, vault and setup token all
   // exist before the service starts and races them.
   const app = await createAppContext({ registerJobHandlers: false });
-  const setupToken = await app.auth.ensureSetupToken();
+  const setupToken = app.auth.needsSetup() ? await app.auth.ensureSetupToken() : null;
 
   if (buildAccountPassword) {
     app.vault.encrypt(buildAccountPassword, 'build-account');
@@ -295,10 +300,12 @@ export async function main(argv: readonly string[]): Promise<number> {
     process.stdout.write(
       [
         '',
-        '  WinPanel is installed.',
+        result.setupToken ? '  WinPanel is installed.' : '  WinPanel has been updated.',
         '',
         `  Open:       ${result.panelUrl}`,
-        `  Setup code: ${result.setupToken}`,
+        ...(result.setupToken
+          ? [`  Setup code: ${result.setupToken}`]
+          : ['  Sign in with the account you already have.']),
         '',
         ...result.warnings.map((warning) => `  Note: ${warning}`),
         '',

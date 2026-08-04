@@ -7,10 +7,13 @@ import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/
 import { PortAllocationError, PortAllocator } from '../src/sites/port-allocator.js';
 import {
   DeploymentError,
+  explainToolFailure,
   newReleaseId,
+  pruneFailedReleases,
   pruneOldReleases,
   runBuildSteps,
   waitForHealthy,
+  withInstallDefaults,
 } from '../src/sites/deploy-pipeline.js';
 import type { JobContext } from '../src/jobs/queue.js';
 
@@ -355,5 +358,81 @@ describe('pruneOldReleases', () => {
 
   it('copes with a site that has never been deployed', async () => {
     await expect(pruneOldReleases(path.join(tmpDir, 'nope'), 3, 'x')).resolves.toEqual([]);
+  });
+});
+
+describe('pruneFailedReleases', () => {
+  const failures = ['20260101-000000', '20260102-000000', '20260103-000000'];
+
+  async function makeReleases(): Promise<string> {
+    const releases = path.join(tmpDir, 'releases');
+    for (const id of [...failures, '20260104-000000']) {
+      await fs.mkdir(path.join(releases, id), { recursive: true });
+    }
+    return releases;
+  }
+
+  it('keeps the most recent failure and discards the rest', async () => {
+    // The newest failure is the one whose folder anybody would look inside.
+    const releases = await makeReleases();
+
+    const removed = await pruneFailedReleases(releases, failures);
+    const left = await fs.readdir(releases);
+
+    expect(removed.sort()).toEqual(['20260101-000000', '20260102-000000']);
+    expect(left).toContain('20260103-000000');
+  });
+
+  it('never touches a release it was not told had failed', async () => {
+    const releases = await makeReleases();
+
+    await pruneFailedReleases(releases, failures);
+    expect(await fs.readdir(releases)).toContain('20260104-000000');
+  });
+
+  it('refuses to remove the release that is live, whatever it was told', async () => {
+    const releases = await makeReleases();
+
+    await pruneFailedReleases(releases, failures, { keep: 0, protect: ['20260101-000000'] });
+    expect(await fs.readdir(releases)).toEqual(['20260101-000000', '20260104-000000']);
+  });
+
+  it('copes with a site that has never been deployed', async () => {
+    await expect(pruneFailedReleases(path.join(tmpDir, 'nope'), ['x'])).resolves.toEqual([]);
+  });
+});
+
+describe('withInstallDefaults', () => {
+  it('lets a dependency build itself, which pnpm otherwise refuses to do unattended', async () => {
+    expect(withInstallDefaults('pnpm', ['install'])).toEqual([
+      'install',
+      '--dangerously-allow-all-builds',
+    ]);
+    expect(withInstallDefaults('pnpm', ['install', '--prod'])).toContain(
+      '--dangerously-allow-all-builds',
+    );
+  });
+
+  it('leaves every other command exactly as it was', () => {
+    expect(withInstallDefaults('pnpm', ['run', 'build'])).toEqual(['run', 'build']);
+    expect(withInstallDefaults('npm', ['install'])).toEqual(['install']);
+    expect(withInstallDefaults('yarn', ['install'])).toEqual(['install']);
+  });
+
+  it('does not add the flag twice', () => {
+    const once = withInstallDefaults('pnpm', ['install', '--dangerously-allow-all-builds']);
+    expect(once.filter((arg) => arg === '--dangerously-allow-all-builds')).toHaveLength(1);
+  });
+});
+
+describe('explainToolFailure', () => {
+  it('names the fix when pnpm is too old to be told about build scripts', () => {
+    const hint = explainToolFailure('pnpm', 'ERR_PNPM_BAD_OPTION Unknown option: allow-all-builds');
+    expect(hint).toMatch(/too old/i);
+  });
+
+  it('says nothing when there is nothing useful to add', () => {
+    expect(explainToolFailure('pnpm', 'ELIFECYCLE build failed')).toBeNull();
+    expect(explainToolFailure('npm', 'ERR_PNPM_IGNORED_BUILDS')).toBeNull();
   });
 });

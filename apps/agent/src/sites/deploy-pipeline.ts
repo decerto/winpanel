@@ -38,6 +38,65 @@ export function newReleaseId(now = new Date()): string {
   );
 }
 
+/** Extra arguments a package manager needs to behave the way a deploy expects. */
+const ALLOW_BUILDS_FLAG = '--dangerously-allow-all-builds';
+
+/**
+ * Lets a dependency's install scripts run.
+ *
+ * Since pnpm 10 a dependency that wants to run an install script is ignored
+ * unless it has been approved by hand, and since pnpm 11 that ends the install
+ * with a non-zero exit code. On a server there is nobody to approve anything,
+ * and the packages this hits are the ones that must build to work at all —
+ * `sharp`, `bcrypt`, `esbuild`. The result was a deploy that could not
+ * succeed and an error naming a command (`pnpm approve-builds`) that only
+ * works with a person sitting at a terminal.
+ *
+ * npm, yarn and bun all run these scripts without asking, and the panel is
+ * already running this repository's own build scripts as this same account, so
+ * this grants nothing that was not already granted.
+ *
+ * Applied here rather than when a project is first inspected, because the
+ * steps of a site set up before this are already stored in the database.
+ */
+export function withInstallDefaults(command: string, args: readonly string[]): string[] {
+  const isInstall = args[0] === 'install' || args[0] === 'i';
+
+  if (command !== 'pnpm' || !isInstall || args.includes(ALLOW_BUILDS_FLAG)) {
+    return [...args];
+  }
+
+  return [...args, ALLOW_BUILDS_FLAG];
+}
+
+/**
+ * A sentence about a failure the output alone does not explain.
+ *
+ * Both of these are silent-cause failures: the log says what happened but
+ * nothing about why it happened here, or what to do next.
+ */
+export function explainToolFailure(command: string, output: string): string | null {
+  if (command !== 'pnpm') return null;
+
+  if (output.includes('ERR_PNPM_BAD_OPTION') && output.includes('allow-all-builds')) {
+    return (
+      'The pnpm on this server is too old to be told that dependencies may run their ' +
+      'install scripts. Install pnpm from the Components list on the Settings page, which ' +
+      'installs a version that understands it.'
+    );
+  }
+
+  if (output.includes('ERR_PNPM_IGNORED_BUILDS')) {
+    return (
+      'Some dependencies wanted to run install scripts and pnpm refused. Nobody can approve ' +
+      'them on a server, so the panel normally allows them: this suggests the project pins a ' +
+      'pnpm version older than 10.9.'
+    );
+  }
+
+  return null;
+}
+
 /**
  * Explains a failure to start a program at all.
  *
@@ -46,6 +105,7 @@ export function newReleaseId(now = new Date()): string {
  * user could do about it.
  */
 export function explainSpawnFailure(error: unknown, tool: string, step: string): DeploymentError {
+
   const code = (error as NodeJS.ErrnoException).code;
 
   if (code === 'ENOENT') {
@@ -127,7 +187,7 @@ export async function runBuildSteps(options: RunBuildOptions): Promise<void> {
 
     const result = await runCommand({
       exe: tool.exe,
-      args: [...tool.args, ...step.args],
+      args: [...tool.args, ...withInstallDefaults(step.command, step.args)],
       cwd,
       env: { ...options.env, ...step.env, CI: '1', NODE_ENV: 'production' },
       timeoutMs: 20 * 60 * 1000,
@@ -144,14 +204,12 @@ export async function runBuildSteps(options: RunBuildOptions): Promise<void> {
         continue;
       }
 
-      const tail = (result.stderr || result.stdout)
-        .trim()
-        .split('\n')
-        .slice(-8)
-        .join('\n');
+      const output = result.stderr || result.stdout;
+      const tail = output.trim().split('\n').slice(-8).join('\n');
+      const hint = explainToolFailure(step.command, output);
 
       throw new DeploymentError(
-        `"${step.name}" failed.\n${tail}`,
+        `"${step.name}" failed.\n${tail}${hint ? `\n\n${hint}` : ''}`,
         step.name,
       );
     }
@@ -247,6 +305,48 @@ export async function pruneOldReleases(
   for (const entry of sorted.slice(Math.max(keep - 1, 0))) {
     await fs.rm(path.join(releasesDir, entry), { recursive: true, force: true });
     removed.push(entry);
+  }
+
+  return removed;
+}
+
+/**
+ * Removes what earlier failed attempts left behind.
+ *
+ * A failed deploy keeps its folder on purpose — it is the only evidence of
+ * what went wrong — but only the most recent one is evidence of anything. The
+ * rest are `node_modules` trees for versions that never ran, and a site that
+ * fails to deploy repeatedly is exactly the site that can least afford to fill
+ * the disk while doing it.
+ *
+ * `protect` is a belt-and-braces list of release ids that must survive
+ * whatever the database says about them.
+ */
+export async function pruneFailedReleases(
+  releasesDir: string,
+  failedReleaseIds: readonly string[],
+  options: { keep?: number; protect?: readonly string[] } = {},
+): Promise<string[]> {
+  const keep = options.keep ?? 1;
+  const protectedIds = new Set(options.protect ?? []);
+
+  // Newest first, so the ones kept are the most recent failures.
+  const candidates = [...new Set(failedReleaseIds)]
+    .filter((id) => !protectedIds.has(id))
+    .sort()
+    .reverse()
+    .slice(keep);
+
+  const removed: string[] = [];
+
+  for (const id of candidates) {
+    const target = path.join(releasesDir, id);
+    try {
+      await fs.rm(target, { recursive: true, force: true });
+      removed.push(id);
+    } catch {
+      // A folder held open by something is not a reason to stop deploying.
+    }
   }
 
   return removed;
