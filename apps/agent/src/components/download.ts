@@ -4,6 +4,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { replaceFile } from '../files/replace-file.js';
 
 /**
  * Verified downloads.
@@ -108,8 +109,7 @@ export async function downloadVerified(options: DownloadOptions): Promise<Downlo
       throw new ChecksumMismatchError(sha256.toLowerCase(), actual);
     }
 
-    await fsp.rm(destination, { force: true });
-    await fsp.rename(tempPath, destination);
+    await replaceFile(tempPath, destination);
 
     return {
       path: destination,

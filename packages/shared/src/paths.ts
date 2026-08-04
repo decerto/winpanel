@@ -19,6 +19,11 @@ const RESERVED_DEVICE_NAMES = new Set([
   'lpt1', 'lpt2', 'lpt3', 'lpt4', 'lpt5', 'lpt6', 'lpt7', 'lpt8', 'lpt9',
 ]);
 
+/** True for a name Windows will not accept as a file or folder. */
+export function isReservedDeviceName(name: string): boolean {
+  return RESERVED_DEVICE_NAMES.has(name.split('.')[0]?.toLowerCase() ?? '');
+}
+
 /** Characters Windows forbids in file names (excluding the path separators). */
 // eslint-disable-next-line no-control-regex
 const ILLEGAL_CHARS = /[<>:"|?*\u0000-\u001f]/;

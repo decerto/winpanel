@@ -338,8 +338,18 @@ export async function pruneOldReleases(
   const removed: string[] = [];
 
   for (const entry of sorted.slice(Math.max(keep - 1, 0))) {
-    await fs.rm(path.join(releasesDir, entry), { recursive: true, force: true });
-    removed.push(entry);
+    try {
+      await fs.rm(path.join(releasesDir, entry), {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 200,
+      });
+      removed.push(entry);
+    } catch {
+      // This runs after the site is already live. Reclaiming disk space is
+      // not worth failing a deploy that worked, and the next one retries.
+    }
   }
 
   return removed;
@@ -442,7 +452,7 @@ export async function pruneBuildArtifacts(
   for (const relative of manifest.pruneAfterBuild) {
     const target = path.join(releaseDir, relative);
     try {
-      await fs.rm(target, { recursive: true, force: true });
+      await fs.rm(target, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
       ctx.log(`Cleaned up ${relative}.`, 'debug');
     } catch {
       // Best effort: failing to reclaim disk space must not fail a deploy that

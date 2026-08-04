@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { CloudCog, Download, ExternalLink, FolderSearch, Info, Power, RefreshCw, Server } from 'lucide-vue-next';
-import { REQUIRED_CLOUDFLARE_SCOPES } from '@winpanel/shared';
+import { CLOUDFLARE_PERMISSION_SUMMARY } from '@winpanel/shared';
 import { api, describeError } from '../lib/api';
 import { LOG_LEVEL_CLASS, useJobLog } from '../lib/job-log';
 import PageHeader from '../components/PageHeader.vue';
@@ -567,9 +567,9 @@ async function installUpdate(): Promise<void> {
             placeholder="Paste your Cloudflare API token"
           />
           <p class="hint">
-            Create a token with {{ REQUIRED_CLOUDFLARE_SCOPES.join(' and ') }} permissions on the
-            zones you want the panel to manage. Each website&#8217;s DNS tab explains this step by
-            step if you would rather do it there.
+            Create a token with {{ CLOUDFLARE_PERMISSION_SUMMARY }} permissions on the zones you
+            want the panel to manage. Each website&#8217;s DNS tab explains this step by step if
+            you would rather do it there.
             <a
               href="https://dash.cloudflare.com/profile/api-tokens"
               target="_blank"

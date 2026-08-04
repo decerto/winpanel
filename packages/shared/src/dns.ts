@@ -114,7 +114,26 @@ export const CloudflareZone = z.object({
 export type CloudflareZone = z.infer<typeof CloudflareZone>;
 
 /**
- * Scopes the Cloudflare API token must carry. Checked at token-entry time so
- * the failure is reported immediately rather than during a deploy.
+ * The rows to add under Permissions when creating the token, in the order of
+ * Cloudflare's three dropdowns. Spelling them out that way matters: the second
+ * dropdown offers both `Zone` and `DNS`, and picking `Zone` there produces a
+ * token that cannot touch DNS records at all.
  */
-export const REQUIRED_CLOUDFLARE_SCOPES = ['Zone.Zone:Read', 'Zone.DNS:Edit'] as const;
+export const CLOUDFLARE_PERMISSION_ROWS = [
+  { group: 'Zone', resource: 'Zone', level: 'Read' },
+  { group: 'Zone', resource: 'DNS', level: 'Edit' },
+] as const;
+
+/**
+ * Scopes the Cloudflare API token must carry, in Cloudflare's own notation.
+ * Checked at token-entry time so the failure is reported immediately rather
+ * than during a deploy.
+ */
+export const REQUIRED_CLOUDFLARE_SCOPES = CLOUDFLARE_PERMISSION_ROWS.map(
+  (row) => `${row.group}.${row.resource}:${row.level}`,
+);
+
+/** The same rows written the way Cloudflare's own form reads. */
+export const CLOUDFLARE_PERMISSION_SUMMARY = CLOUDFLARE_PERMISSION_ROWS.map(
+  (row) => `${row.group} \u2192 ${row.resource} \u2192 ${row.level}`,
+).join(' and ');

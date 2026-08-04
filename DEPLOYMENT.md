@@ -297,7 +297,7 @@ overrides detection, so future deployments need no decisions at all.
 | --- | --- |
 | Panel unreachable | Service stopped. RDP in: `Get-Service winpanel-agent` |
 | Website shows 503 | Never deployed successfully. Check the deployment log |
-| Certificate not issued | Domain isn't pointing here yet, or the Cloudflare token lacks `Zone:Read` |
+| Certificate not issued | Domain isn't pointing here yet, or the Cloudflare token is missing `Zone → Zone → Read` or `Zone → DNS → Edit` |
 | Deployment fails installing packages | Long file names not enabled — see the Health page |
 | Blank page after deploying | Build output is gitignored; the panel should build on the server |
 | Email not sending | OVH block not lifted yet. Mail → Readiness re-checks automatically |

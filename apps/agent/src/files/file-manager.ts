@@ -135,6 +135,11 @@ export class FileManager {
     return total;
   }
 
+  /** Bytes the site may still add before it hits its quota. */
+  async remainingBytes(): Promise<number> {
+    return Math.max(0, this.options.quotaBytes - (await this.usedBytes()));
+  }
+
   private async assertQuota(additionalBytes: number): Promise<void> {
     const used = await this.usedBytes();
     if (used + additionalBytes > this.options.quotaBytes) {

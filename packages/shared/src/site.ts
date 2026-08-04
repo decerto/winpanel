@@ -1,12 +1,17 @@
 import { z } from 'zod';
 import { Runtime, SiteManifest } from './manifest.js';
+import { isReservedDeviceName } from './paths.js';
 
 /** URL-safe identifier used for folder names, service names, and Caddy `@id`s. */
 export const Slug = z
   .string()
   .min(2)
   .max(48)
-  .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/, 'Use lowercase letters, numbers and hyphens.');
+  .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/, 'Use lowercase letters, numbers and hyphens.')
+  // The slug becomes a folder name, and Windows has no folder called `con`.
+  .refine((value) => !isReservedDeviceName(value), {
+    message: 'That is a reserved Windows name. Choose another.',
+  });
 export type Slug = z.infer<typeof Slug>;
 
 export const Hostname = z

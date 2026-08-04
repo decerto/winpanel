@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import type { AppContext } from '../app-context.js';
+import { replaceFile } from '../files/replace-file.js';
 import { uploadedInstallerPath } from '../components/panel-update.js';
 import { SESSION_COOKIE } from './trpc.js';
 
@@ -88,8 +89,7 @@ export async function saveUploadedInstaller(
 
     await closeStream(out);
 
-    await fs.rm(destination, { force: true });
-    await fs.rename(temp, destination);
+    await replaceFile(temp, destination);
 
     return { path: destination, bytes };
   } catch (error) {

@@ -2,7 +2,7 @@
 import { computed, inject, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { CloudCog, ExternalLink, Globe2, RefreshCw, Trash2 } from 'lucide-vue-next';
-import { REQUIRED_CLOUDFLARE_SCOPES } from '@winpanel/shared';
+import { CLOUDFLARE_PERMISSION_ROWS } from '@winpanel/shared';
 import { api, describeError } from '../../lib/api';
 import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
@@ -233,14 +233,26 @@ watch(primaryDomain, load, { immediate: true });
           </li>
           <li>Select <strong>Create Token</strong>, then <strong>Create Custom Token</strong>.</li>
           <li>
-            Under Permissions add <strong>{{ REQUIRED_CLOUDFLARE_SCOPES.join(' and ') }}</strong>,
-            both set to <strong>Edit</strong>.
+            Under Permissions add two rows, using all three dropdowns on each. The middle
+            dropdown offers both Zone and DNS, and only DNS grants access to records:
+            <ul class="mt-1.5 space-y-1">
+              <li v-for="row in CLOUDFLARE_PERMISSION_ROWS" :key="row.resource">
+                <code class="rounded bg-sunken px-1.5 py-0.5 text-ink">
+                  {{ row.group }} &rarr; {{ row.resource }} &rarr; {{ row.level }}
+                </code>
+              </li>
+            </ul>
           </li>
           <li>
             Under Zone Resources choose <strong>Include &rarr; Specific zone</strong> and pick
             <strong>{{ primaryDomain || 'this domain' }}</strong
             >. Including only what this website needs means a leaked token cannot touch your
             other domains.
+          </li>
+          <li>
+            Leave <strong>Client IP Address Filtering</strong> empty. &ldquo;Use my IP&rdquo;
+            fills in the address of the computer you are sitting at, which locks this server
+            out of the token.
           </li>
           <li>
             Create the token and copy it. Cloudflare shows it once, and the panel keeps it

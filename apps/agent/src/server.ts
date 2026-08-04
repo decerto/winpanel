@@ -6,6 +6,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { AppContext } from './app-context.js';
 import { appRouter } from './api/routers/index.js';
 import { registerInstallerUpload } from './api/installer-upload.js';
+import { registerSiteFileRoutes } from './api/site-files.js';
 import { createContextFactory } from './api/trpc.js';
 import { paths } from './config.js';
 import { loadOrCreatePanelCertificate } from './tls/panel-certificate.js';
@@ -70,6 +71,7 @@ export async function createServer(app: AppContext): Promise<FastifyInstance> {
   server.get('/api/health', async () => ({ ok: true }));
 
   registerInstallerUpload(server, app);
+  registerSiteFileRoutes(server, app);
 
   // The built panel SPA. Absent during development, when Vite serves it.
   if (fs.existsSync(app.config.panelDir)) {

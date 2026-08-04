@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   ServiceManager,
   buildServiceXml,
+  readServiceState,
   replaceEnvironmentInXml,
+  waitUntilGone,
+  type ServiceState,
 } from '../src/windows/service-manager.js';
 
 describe('replaceEnvironmentInXml', () => {
@@ -165,6 +168,52 @@ describe('buildServiceXml', () => {
 
   it('omits the account block entirely when none is given', () => {
     expect(buildServiceXml(base)).not.toContain('<serviceaccount>');
+  });
+});
+
+describe('readServiceState', () => {
+  const block = (code: string, word: string) =>
+    [
+      'SERVICE_NAME: winpanel-site-running-late-blue',
+      '        TYPE               : 10  WIN32_OWN_PROCESS',
+      `        STATE              : ${code}  ${word}`,
+      '        WIN32_EXIT_CODE    : 0  (0x0)',
+    ].join('\r\n');
+
+  it('reads the state of a service whose own name contains a state word', () => {
+    // Searching the whole output for "RUNNING" matched the service name, so a
+    // stopped website reported itself as running.
+    expect(readServiceState(block('1', 'STOPPED'))).toBe('stopped');
+  });
+
+  it('trusts the number rather than the word, which is translated', () => {
+    expect(readServiceState(block('4', 'WIRD_AUSGEF\u00dcHRT'))).toBe('running');
+  });
+
+  it('treats output with no state line as nothing installed', () => {
+    expect(readServiceState('The specified service does not exist.')).toBe('not-installed');
+  });
+});
+
+describe('waitUntilGone', () => {
+  it('gives a deleted service time to disappear', async () => {
+    // sc delete only marks the service; Windows reports it as stopped until
+    // the last handle to it closes. Checking once fails a deploy needlessly.
+    const states: ServiceState[] = ['stopped', 'stopped', 'not-installed'];
+    let seen = 0;
+
+    const gone = await waitUntilGone(
+      async () => states[seen++] ?? 'not-installed',
+      1_000,
+      1,
+    );
+
+    expect(gone).toBe(true);
+    expect(seen).toBe(3);
+  });
+
+  it('gives up on a service that never goes away', async () => {
+    expect(await waitUntilGone(async () => 'running', 5, 1)).toBe(false);
   });
 });
 

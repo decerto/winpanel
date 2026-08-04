@@ -1,5 +1,5 @@
 import {
-  REQUIRED_CLOUDFLARE_SCOPES,
+  CLOUDFLARE_PERMISSION_SUMMARY,
   validateDnsRecord,
   type CloudflareZone,
   type DnsRecord,
@@ -43,8 +43,9 @@ function explain(status: number, errors: ReadonlyArray<{ code: number; message: 
 
   if (status === 401 || status === 403 || first?.code === 9109 || first?.code === 10000) {
     return (
-      'Cloudflare rejected the access token. Check that it is correct and that it has ' +
-      'permission to read zones and edit DNS records.'
+      'Cloudflare rejected the access token. Copy it again from Cloudflare — it is the long ' +
+      'value shown once when the token is created, not the token name or your account API key ' +
+      `— and check its permissions include ${CLOUDFLARE_PERMISSION_SUMMARY}.`
     );
   }
   if (first?.code === 81057) {
@@ -60,11 +61,17 @@ function explain(status: number, errors: ReadonlyArray<{ code: number; message: 
 }
 
 export class CloudflareClient {
+  private readonly token: string;
+
   constructor(
-    private readonly token: string,
+    token: string,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly baseUrl: string = API_BASE,
-  ) {}
+  ) {
+    // Tokens are pasted, and a stray newline makes Cloudflare answer with the
+    // same "invalid token" it gives a genuinely wrong one.
+    this.token = token.trim();
+  }
 
   private async request<T>(
     method: string,
@@ -127,17 +134,29 @@ export class CloudflareClient {
 
     // Verification only proves the token exists. Listing zones proves it can
     // actually do the job.
+    let zones: CloudflareZone[];
     try {
-      await this.listZones();
-      return { valid: true, message: 'Connected to Cloudflare.' };
+      zones = await this.listZones();
     } catch {
       return {
         valid: false,
         message:
-          'The token works but cannot read your domains. It needs ' +
-          `${REQUIRED_CLOUDFLARE_SCOPES.join(' and ')} permissions.`,
+          'The token works but cannot read your domains. Add the permission ' +
+          `${CLOUDFLARE_PERMISSION_SUMMARY} to it in Cloudflare.`,
       };
     }
+
+    if (zones.length === 0) {
+      return {
+        valid: false,
+        message:
+          'The token works but no domains are in reach of it. Under Zone Resources, include ' +
+          'the domains this server should manage \u2014 and check the token was made in the ' +
+          'Cloudflare account those domains belong to.',
+      };
+    }
+
+    return { valid: true, message: 'Connected to Cloudflare.' };
   }
 
   async listZones(): Promise<CloudflareZone[]> {

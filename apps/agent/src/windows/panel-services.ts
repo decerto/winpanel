@@ -48,15 +48,22 @@ const STOP_ORDER: Record<PanelServiceKind, number> = {
   panel: 3,
 };
 
-function toState(word: string): PanelServiceState {
-  switch (word.toUpperCase()) {
-    case 'RUNNING':
+/**
+ * Windows' own service state codes.
+ *
+ * The number is read rather than the word beside it: `sc.exe` prints both, and
+ * only the number is guaranteed to mean the same thing on a server installed
+ * in another language.
+ */
+function toState(code: string): PanelServiceState {
+  switch (code) {
+    case '4':
       return 'running';
-    case 'STOPPED':
+    case '1':
       return 'stopped';
-    case 'START_PENDING':
+    case '2':
       return 'starting';
-    case 'STOP_PENDING':
+    case '3':
       return 'stopping';
     default:
       return 'unknown';
@@ -107,7 +114,7 @@ export function parseServiceQuery(output: string, prefix: string): PanelService[
 
     if (!current) continue;
 
-    const state = /^\s*STATE\s*:\s*\d+\s+(\S+)/.exec(line);
+    const state = /^\s*STATE\s*:\s*(\d+)/.exec(line);
     if (state?.[1]) {
       current.state = toState(state[1]);
       current = null;
@@ -149,7 +156,7 @@ export async function panelServiceState(id: string): Promise<PanelServiceState |
   const result = await runCommand({ exe: 'sc.exe', args: ['query', id], timeoutMs: 15_000 });
   if (result.exitCode !== 0) return 'not-installed';
 
-  const state = /^\s*STATE\s*:\s*\d+\s+(\S+)/m.exec(result.stdout);
+  const state = /^\s*STATE\s*:\s*(\d+)/m.exec(result.stdout);
   return state?.[1] ? toState(state[1]) : 'unknown';
 }
 

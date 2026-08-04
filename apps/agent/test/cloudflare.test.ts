@@ -91,6 +91,35 @@ describe('token verification', () => {
     expect(result.valid).toBe(false);
     expect(result.message).toMatch(/cannot read your domains/i);
   });
+
+  it('catches a token that reaches no domains at all', async () => {
+    // The usual cause is a token made in the wrong Cloudflare account, or
+    // Zone Resources left on a zone this server has nothing to do with.
+    const { impl } = stubFetch({
+      '/user/tokens/verify': { result: { id: 't1', status: 'active' } },
+      '/zones?per_page=50': { result: [] },
+    });
+
+    const result = await new CloudflareClient('empty', impl).verifyToken();
+    expect(result.valid).toBe(false);
+    expect(result.message).toMatch(/no domains are in reach/i);
+  });
+
+  it('ignores whitespace around a pasted token', async () => {
+    let sent: string | undefined;
+
+    const impl = (async (_url: string | URL, init?: RequestInit) => {
+      sent = (init?.headers as Record<string, string> | undefined)?.authorization;
+      return new Response(
+        JSON.stringify({ success: true, errors: [], result: [ZONE] }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+
+    await new CloudflareClient('  token\n', impl).verifyToken();
+
+    expect(sent).toBe('Bearer token');
+  });
 });
 
 describe('zone lookup', () => {

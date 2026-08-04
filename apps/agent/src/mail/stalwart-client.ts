@@ -9,16 +9,23 @@ import { STALWART_HTTP_PORT } from '@winpanel/shared';
  *
  * Since 0.16 that API is JMAP. The REST endpoints under `/api/principal` were
  * removed outright, and every management object — domains, accounts, and the
- * server's own settings — is now reached by posting JMAP method calls to
- * `/api` under the `urn:stalwart:jmap` capability. Those objects are named
- * with an `x:` prefix to keep them apart from the mail objects JMAP already
- * defines.
+ * server's own settings — is now reached by posting JMAP method calls to the
+ * JMAP endpoint under the `urn:stalwart:jmap` capability. Those objects are
+ * named with an `x:` prefix to keep them apart from the mail objects JMAP
+ * already defines.
  *
  * The API is bound to loopback only (see `ports.ts`), so the credential never
  * leaves this machine and the traffic never leaves the adapter.
  */
 
 const DEFAULT_BASE_URL = `http://127.0.0.1:${STALWART_HTTP_PORT}`;
+
+/**
+ * Where method calls go. `/api` is a different thing on this server — login,
+ * autodiscover, the schema — and answers 404 to a JMAP request, which reads
+ * exactly like a build that has no management API at all.
+ */
+const JMAP_ENDPOINT = '/jmap';
 
 /** Management objects live behind Stalwart's own capability. */
 const CAPABILITIES = ['urn:ietf:params:jmap:core', 'urn:stalwart:jmap'];
@@ -191,7 +198,7 @@ export async function probeMailServer(
 
   // Unauthenticated, a build with this API answers 401; one without it answers
   // 404. Either way no credentials are needed to tell them apart.
-  const probe = await fetchImpl(`${baseUrl}/api`, {
+  const probe = await fetchImpl(`${baseUrl}${JMAP_ENDPOINT}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ using: CAPABILITIES, methodCalls: [] }),
@@ -218,7 +225,7 @@ export class StalwartClient {
     const timer = setTimeout(() => controller.abort(), 15_000);
 
     try {
-      const response = await this.fetchImpl(`${this.baseUrl}/api`, {
+      const response = await this.fetchImpl(`${this.baseUrl}${JMAP_ENDPOINT}`, {
         method: 'POST',
         headers: {
           authorization: this.authorisation,

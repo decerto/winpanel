@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import { PANEL_PORT } from '@winpanel/shared';
 import { runCommand } from '../process/run-command.js';
 import { listPanelServices } from '../windows/panel-services.js';
+import { readServiceState } from '../windows/service-manager.js';
 import type { CheckDefinition, CheckOutcome } from './engine.js';
 
 /**
@@ -92,7 +93,7 @@ export async function detectIis(): Promise<{ present: boolean; running: boolean 
   });
 
   if (result.exitCode !== 0) return { present: false, running: false };
-  return { present: true, running: result.stdout.toUpperCase().includes('RUNNING') };
+  return { present: true, running: readServiceState(result.stdout) === 'running' };
 }
 
 /** Reads the registry flag that lets Windows handle paths beyond 260 chars. */

@@ -294,7 +294,14 @@ export function createUninstallComponentHandler(deps: InstallerDependencies) {
     }
 
     ctx.log('Removing the program files\u2026');
-    await fs.rm(path.join(deps.binDir, component.id), { recursive: true, force: true });
+    // The service stopped a moment ago, and Windows keeps an executable open
+    // for a little while after the process using it has gone.
+    await fs.rm(path.join(deps.binDir, component.id), {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 250,
+    });
 
     // Mail and website data are deliberately left alone. Removing a program
     // is not the same as agreeing to lose what it was holding.

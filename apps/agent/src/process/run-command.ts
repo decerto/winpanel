@@ -57,6 +57,33 @@ export class CommandError extends Error {
   }
 }
 
+/**
+ * Ends a timed-out command and everything it started.
+ *
+ * Windows has no process groups to signal: killing the process we spawned
+ * leaves its children running, and a package manager is several processes
+ * deep. The orphans go on holding the release folder open and the port bound,
+ * so the next deploy fails on a file in use that names nothing recognisable.
+ * `taskkill /T` is the only way to take the tree down with the parent.
+ */
+function killTree(child: { pid?: number; kill: (signal: NodeJS.Signals) => boolean }): void {
+  if (process.platform === 'win32' && child.pid !== undefined) {
+    try {
+      spawn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      }).on('error', () => {
+        child.kill('SIGKILL');
+      });
+      return;
+    } catch {
+      // taskkill is missing or refused to start: settle for the direct child.
+    }
+  }
+
+  child.kill('SIGKILL');
+}
+
 /** Rejects arguments that cannot be passed safely to a Windows process. */
 function assertSafeArgs(args: readonly string[]): void {
   for (const arg of args) {
@@ -119,10 +146,15 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
     let truncated = false;
     let timedOut = false;
     let settled = false;
+    let backstop: NodeJS.Timeout | undefined;
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      killTree(child);
+
+      // Whatever taskkill managed, the process this promise waits on must end.
+      backstop = setTimeout(() => child.kill('SIGKILL'), 5_000);
+      backstop.unref();
     }, timeoutMs);
 
     const makeCollector = (stream: 'stdout' | 'stderr') => {
@@ -163,6 +195,7 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(backstop);
       resolve({
         exitCode,
         stdout,
@@ -177,6 +210,7 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(backstop);
       reject(error);
     });
 

@@ -13,7 +13,11 @@ import { mount } from '@vue/test-utils';
 
 vi.mock('../src/lib/api', () => ({
   api: {
-    files: { list: { query: vi.fn(async () => ({ entries: [] })) } },
+    files: {
+      list: { query: vi.fn(async () => ({ entries: [] })) },
+      read: { query: vi.fn(async () => ({ content: 'hello', modifiedAt: new Date(0) })) },
+      write: { mutate: vi.fn(async () => ({ modifiedAt: new Date(0) })) },
+    },
     system: {
       browse: {
         query: vi.fn(async () => ({
@@ -32,6 +36,7 @@ vi.mock('../src/lib/api', () => ({
 
 const PathPicker = (await import('../src/components/PathPicker.vue')).default;
 const ServerPathPicker = (await import('../src/components/ServerPathPicker.vue')).default;
+const FileEditorDialog = (await import('../src/components/FileEditorDialog.vue')).default;
 
 const pickers = [
   {
@@ -43,6 +48,11 @@ const pickers = [
     name: 'ServerPathPicker',
     component: ServerPathPicker,
     props: { modelValue: '' },
+  },
+  {
+    name: 'FileEditorDialog',
+    component: FileEditorDialog,
+    props: { siteSlug: 'example', path: 'public/index.html' },
   },
 ] as const;
 

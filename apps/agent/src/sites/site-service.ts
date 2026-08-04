@@ -5,6 +5,7 @@ import { desc, eq } from 'drizzle-orm';
 import {
   PUBLIC_DIR,
   Slug,
+  isReservedDeviceName,
   type SiteManifest,
   type SiteSource,
 } from '@winpanel/shared';
@@ -42,9 +43,13 @@ export function slugify(input: string): string {
     .slice(0, 48);
 
   // A slug becomes a folder name and a Windows service id, so it can never be
-  // empty and must not end in a hyphen.
+  // empty, must not end in a hyphen, and must not be a name Windows reserves
+  // for a device — there is no folder called `con`, `nul` or `lpt1`.
   const cleaned = base.replace(/-+$/g, '');
-  return cleaned.length >= 2 ? cleaned : `site-${crypto.randomBytes(3).toString('hex')}`;
+  if (cleaned.length < 2 || isReservedDeviceName(cleaned)) {
+    return `site-${crypto.randomBytes(3).toString('hex')}`;
+  }
+  return cleaned;
 }
 
 export interface CreateSiteInput {
@@ -251,7 +256,14 @@ export class SiteService {
     this.db.db.delete(sites).where(eq(sites.id, id)).run();
 
     if (options.deleteFiles) {
-      await fs.rm(path.join(this.sitesRoot, site.slug), { recursive: true, force: true });
+      // The site's services stopped moments ago and Windows keeps their files
+      // open a little longer than the processes that had them.
+      await fs.rm(path.join(this.sitesRoot, site.slug), {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 250,
+      });
     }
   }
 

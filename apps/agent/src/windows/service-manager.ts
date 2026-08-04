@@ -24,6 +24,55 @@ import { runCommand } from '../process/run-command.js';
 
 export type ServiceState = 'running' | 'stopped' | 'starting' | 'stopping' | 'not-installed';
 
+/**
+ * Reads a service's state out of `sc.exe query` output.
+ *
+ * The numeric code is used rather than the word beside it, for two reasons:
+ * the word is a translated string on a server installed in another language,
+ * and searching the whole output for "RUNNING" matches the service's own name
+ * as readily as its state — a website whose slug contains "running" reported
+ * itself as running whatever it was actually doing.
+ */
+export function readServiceState(output: string): ServiceState {
+  const match = /^\s*STATE\s*:\s*(\d+)/m.exec(output);
+
+  switch (match?.[1]) {
+    case '1':
+      return 'stopped';
+    case '2':
+      return 'starting';
+    case '3':
+      return 'stopping';
+    case '4':
+      return 'running';
+    default:
+      return 'not-installed';
+  }
+}
+
+/**
+ * Waits for a deleted service to actually disappear.
+ *
+ * `sc delete` only marks a service for deletion. Windows keeps it in
+ * DELETE_PENDING until every open handle to it is closed — a services.msc
+ * window, Task Manager's Services tab, or the process that has just exited —
+ * and `sc query` goes on reporting it as stopped throughout. Checking once
+ * straight after deleting therefore fails on a service that is on its way out.
+ */
+export async function waitUntilGone(
+  probe: () => Promise<ServiceState>,
+  timeoutMs = 20_000,
+  intervalMs = 500,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    if ((await probe()) === 'not-installed') return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
 export interface ServiceDefinition {
   /** Windows service id. Prefixed `winpanel-` so ours are identifiable. */
   id: string;
@@ -270,10 +319,14 @@ export class ServiceManager {
      * wrapper then refuses to run at all, and the only way to remove the
      * service is by hand with sc.exe.
      */
-    if ((await this.getState(id)) !== 'not-installed') {
+    if (!(await waitUntilGone(() => this.getState(id)))) {
       throw new Error(
-        `The "${id}" service could not be removed. It may need administrator rights, or ` +
-          'something may still be using it.',
+        (await this.getState(id)) === 'running'
+          ? `The "${id}" service would not stop, so it could not be removed. End its process ` +
+            'in Task Manager, then try again.'
+          : `The "${id}" service was deleted but Windows is still holding it open. Close ` +
+            'services.msc and the Services tab of Task Manager if either is open, then try ' +
+            'again. Restarting the server always clears it.',
       );
     }
 
@@ -359,12 +412,7 @@ export class ServiceManager {
 
     if (result.exitCode !== 0) return 'not-installed';
 
-    const output = result.stdout.toUpperCase();
-    if (output.includes('START_PENDING')) return 'starting';
-    if (output.includes('STOP_PENDING')) return 'stopping';
-    if (output.includes('RUNNING')) return 'running';
-    if (output.includes('STOPPED')) return 'stopped';
-    return 'not-installed';
+    return readServiceState(result.stdout);
   }
 
   async isInstalled(id: string): Promise<boolean> {

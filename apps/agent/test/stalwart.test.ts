@@ -8,7 +8,7 @@ import { MailServerError, StalwartClient, probeMailServer } from '../src/mail/st
  * somebody can act on rather than a status code.
  *
  * Stalwart 0.16 removed the REST management API entirely. Domains and accounts
- * are now JMAP objects posted to `/api`, which is what all of this describes.
+ * are now JMAP objects posted to `/jmap`, which is what all of this describes.
  */
 
 const BASE = 'http://mail.test';
@@ -108,7 +108,7 @@ describe('connecting to the mail server', () => {
     const { mail, seen } = client(DOMAIN_HANDLERS);
     await mail.ping();
 
-    expect(seen[0]?.path).toBe('/api');
+    expect(seen[0]?.path).toBe('/jmap');
     expect(seen[0]?.method).toBe('POST');
     expect(seen[0]?.using).toContain('urn:stalwart:jmap');
   });
@@ -169,14 +169,14 @@ describe('connecting to the mail server', () => {
   it('tells an installed mail server apart from one without the API, unauthenticated', async () => {
     const answering = await probeMailServer(
       (async (url: string) =>
-        new Response('{}', { status: url.endsWith('/api') ? 401 : 200 })) as unknown as typeof fetch,
+        new Response('{}', { status: url.endsWith('/jmap') ? 401 : 200 })) as unknown as typeof fetch,
       BASE,
     );
     expect(answering).toEqual({ running: true, manageable: true });
 
     const legacy = await probeMailServer(
       (async (url: string) =>
-        new Response('{}', { status: url.endsWith('/api') ? 404 : 200 })) as unknown as typeof fetch,
+        new Response('{}', { status: url.endsWith('/jmap') ? 404 : 200 })) as unknown as typeof fetch,
       BASE,
     );
     expect(legacy).toEqual({ running: true, manageable: false });

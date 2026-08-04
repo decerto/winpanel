@@ -386,7 +386,14 @@ export class GitClient {
     // The .git directory is not needed to run the app, and removing it means
     // there is no chance of a remote URL or cached credential surviving into
     // the release folder.
-    await fs.rm(path.join(targetDir, '.git'), { recursive: true, force: true });
+    await fs.rm(path.join(targetDir, '.git'), {
+      recursive: true,
+      force: true,
+      // git has only just exited, and its pack files are the sort Windows
+      // keeps open a moment longer than the process that wrote them.
+      maxRetries: 3,
+      retryDelay: 200,
+    });
 
     return commit;
   }
