@@ -21,16 +21,18 @@ const TONES = {
   info: { icon: Info, classes: 'border-line bg-elevated/70 text-ink-muted' },
 } as const;
 
-const tone = computed(() => TONES[props.tone]);
+// Not named `tone`: a setup binding shadows the prop of the same name in the
+// template, which is how a dialog once ended up permanently open.
+const appearance = computed(() => TONES[props.tone]);
 </script>
 
 <template>
   <div
     class="flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 text-sm"
-    :class="tone.classes"
+    :class="appearance.classes"
     role="status"
   >
-    <component :is="tone.icon" :size="16" class="mt-0.5 shrink-0" aria-hidden="true" />
+    <component :is="appearance.icon" :size="16" class="mt-0.5 shrink-0" aria-hidden="true" />
     <div class="min-w-0">
       <p v-if="title" class="font-semibold">{{ title }}</p>
       <div class="min-w-0 [&_a]:underline [&_a]:underline-offset-2">

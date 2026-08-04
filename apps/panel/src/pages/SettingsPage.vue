@@ -52,7 +52,7 @@ const notice = ref<string | null>(null);
  * settings. Without this, every fix meant uninstalling, which is why it is
  * here rather than in a document nobody reads at the time.
  */
-const updateSource = ref<'url' | 'file'>('url');
+const updateSource = ref<'upload' | 'url' | 'file'>('upload');
 const updateUrl = ref('');
 const updateFile = ref('');
 const updateChecksum = ref('');
@@ -62,9 +62,78 @@ const restartBusy = ref(false);
 /** The server file browser, so nobody has to type a Windows path from memory. */
 const browsingForInstaller = ref(false);
 
-const canUpdate = computed(() =>
-  updateSource.value === 'url' ? updateUrl.value.trim().length > 0 : updateFile.value.trim().length > 0,
-);
+/**
+ * The installer picked with the ordinary Windows file dialog.
+ *
+ * A browser hands over a file's contents but never its path, so this one is
+ * sent up to the server rather than pointed at. It is the only option that
+ * works when the setup file is on the computer you are sitting at and the
+ * server has no way to reach it.
+ */
+const installerFile = ref<File | null>(null);
+const uploadPercent = ref<number | null>(null);
+let upload: XMLHttpRequest | null = null;
+
+const canUpdate = computed(() => {
+  if (updateSource.value === 'url') return updateUrl.value.trim().length > 0;
+  if (updateSource.value === 'upload') return installerFile.value !== null;
+  return updateFile.value.trim().length > 0;
+});
+
+function chooseInstaller(event: Event): void {
+  installerFile.value = (event.target as HTMLInputElement).files?.[0] ?? null;
+}
+
+function describeSize(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * Sends the installer to the server and answers with where it landed.
+ *
+ * XMLHttpRequest rather than fetch purely for the progress events: this is a
+ * transfer measured in tens of megabytes, and a button that says nothing for a
+ * minute is indistinguishable from one that has hung.
+ */
+function sendInstaller(file: File): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    upload = request;
+    uploadPercent.value = 0;
+
+    request.open('POST', '/api/panel-update/installer');
+    request.setRequestHeader('Content-Type', 'application/octet-stream');
+
+    request.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable) {
+        uploadPercent.value = Math.floor((event.loaded / event.total) * 100);
+      }
+    });
+
+    request.addEventListener('load', () => {
+      let body: { path?: string; error?: string } = {};
+      try {
+        body = JSON.parse(request.responseText) as typeof body;
+      } catch {
+        // Left empty: the status code below is enough to say what happened.
+      }
+
+      if (request.status === 200 && body.path) resolve(body.path);
+      else reject(new Error(body.error ?? `The server refused the upload (${request.status}).`));
+    });
+
+    request.addEventListener('error', () =>
+      reject(new Error('The upload was interrupted. Check the connection and try again.')),
+    );
+    request.addEventListener('abort', () => reject(new Error('The upload was stopped.')));
+
+    request.send(file);
+  });
+}
+
+function cancelUpload(): void {
+  upload?.abort();
+}
 
 async function refresh(): Promise<void> {
   try {
@@ -408,11 +477,17 @@ async function installUpdate(): Promise<void> {
   const deadline = withDeadline(60_000);
 
   try {
+    // Sent first, so a transfer that fails leaves the running panel alone.
+    const serverPath =
+      updateSource.value === 'upload' && installerFile.value
+        ? await sendInstaller(installerFile.value)
+        : updateFile.value.trim();
+
     const result = await api.system.update.mutate(
       {
         ...(updateSource.value === 'url'
           ? { url: updateUrl.value.trim() }
-          : { filePath: updateFile.value.trim() }),
+          : { filePath: serverPath }),
         ...(updateChecksum.value.trim() ? { sha256: updateChecksum.value.trim() } : {}),
       },
       { signal: deadline.signal },
@@ -424,6 +499,8 @@ async function installUpdate(): Promise<void> {
       : describeError(err);
   } finally {
     deadline.done();
+    upload = null;
+    uploadPercent.value = null;
     updateBusy.value = false;
   }
 }
@@ -728,6 +805,15 @@ async function installUpdate(): Promise<void> {
         <button
           type="button"
           class="btn btn-ghost btn-sm"
+          :class="updateSource === 'upload' ? 'text-ink' : ''"
+          :aria-pressed="updateSource === 'upload'"
+          @click="updateSource = 'upload'"
+        >
+          From my computer
+        </button>
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
           :class="updateSource === 'url' ? 'text-ink' : ''"
           :aria-pressed="updateSource === 'url'"
           @click="updateSource = 'url'"
@@ -746,7 +832,38 @@ async function installUpdate(): Promise<void> {
       </div>
 
       <form class="mt-4 space-y-3" @submit.prevent="installUpdate">
-        <div v-if="updateSource === 'url'">
+        <div v-if="updateSource === 'upload'">
+          <label for="update-upload" class="label">Choose the setup file</label>
+          <input
+            id="update-upload"
+            type="file"
+            accept=".exe,application/vnd.microsoft.portable-executable"
+            class="field file:mr-3 file:rounded-md file:border-0 file:bg-elevated file:px-3
+                   file:py-1.5 file:text-sm file:text-ink"
+            :disabled="updateBusy"
+            @change="chooseInstaller"
+          />
+          <p class="hint">
+            Opens the ordinary Windows file dialog and sends the setup program to the server, so
+            this works even when the server itself cannot reach the internet.
+            <span v-if="installerFile">
+              Sending {{ describeSize(installerFile.size) }}.
+            </span>
+          </p>
+
+          <div v-if="uploadPercent !== null" class="mt-3 flex items-center gap-3">
+            <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-elevated">
+              <div
+                class="h-full rounded-full bg-brand-bright transition-all"
+                :style="{ width: `${uploadPercent}%` }"
+              />
+            </div>
+            <span class="text-xs tabular-nums text-ink-muted">{{ uploadPercent }}%</span>
+            <button type="button" class="btn btn-ghost btn-sm" @click="cancelUpload">Stop</button>
+          </div>
+        </div>
+
+        <div v-else-if="updateSource === 'url'">
           <label for="update-url" class="label">Address of the setup file</label>
           <input
             id="update-url"

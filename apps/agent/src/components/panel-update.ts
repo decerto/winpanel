@@ -37,6 +37,16 @@ export interface PanelUpdateDependencies {
 export const UPDATE_TASK_NAME = 'WinPanelUpdate';
 
 /**
+ * Where an installer sent up from the browser lands.
+ *
+ * Fixed rather than derived from anything the browser said, so an upload can
+ * only ever replace the last one.
+ */
+export function uploadedInstallerPath(binDir: string): string {
+  return path.join(binDir, '.downloads', 'winpanel-upload.exe');
+}
+
+/**
  * The silent-install flags Inno Setup understands.
  *
  * `/NORESTART` matters: the installer must never decide on its own to reboot a
@@ -105,6 +115,8 @@ export async function cleanUpAfterUpdate(binDir: string): Promise<void> {
   await fs
     .rm(path.join(binDir, '.downloads', 'winpanel-update.exe'), { force: true })
     .catch(() => undefined);
+
+  await fs.rm(uploadedInstallerPath(binDir), { force: true }).catch(() => undefined);
 }
 
 /**

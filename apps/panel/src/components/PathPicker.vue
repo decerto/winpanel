@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { ChevronRight, CornerLeftUp, File, Folder, X } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
 
@@ -96,7 +96,10 @@ async function load(target: string): Promise<void> {
   }
 }
 
-function open(entry: Entry): void {
+// Not called `open`: a binding in <script setup> shadows the prop of the same
+// name in the template, so `v-if="open"` would test a function and the dialog
+// could never be closed.
+function openEntry(entry: Entry): void {
   if (entry.kind === 'directory') {
     chosenFile.value = '';
     void load(joined(here.value, entry.name));
@@ -117,12 +120,22 @@ function confirm(): void {
   emit('close');
 }
 
+// A dialog with no keyboard way out is a trap when a button misbehaves.
+function closeOnEscape(event: KeyboardEvent): void {
+  if (event.key === 'Escape') emit('close');
+}
+
 // Reopening should start where the current value points, not where the last
 // visit ended up.
 watch(
   () => props.open,
   (isOpen) => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      window.removeEventListener('keydown', closeOnEscape);
+      return;
+    }
+
+    window.addEventListener('keydown', closeOnEscape);
 
     const value = props.modelValue.replace(/^\/+|\/+$/g, '');
     if (props.mode === 'file') {
@@ -135,6 +148,8 @@ watch(
   },
   { immediate: true },
 );
+
+onBeforeUnmount(() => window.removeEventListener('keydown', closeOnEscape));
 </script>
 
 <template>
@@ -211,7 +226,7 @@ watch(
                 ? 'bg-brand-soft/40 text-brand-bright'
                 : 'text-ink'
             "
-            @click="open(entry)"
+            @click="openEntry(entry)"
           >
             <Folder v-if="entry.kind === 'directory'" :size="15" class="text-ink-faint" aria-hidden="true" />
             <File v-else :size="15" class="text-ink-faint" aria-hidden="true" />

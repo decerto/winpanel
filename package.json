@@ -12,7 +12,8 @@
     "dev": "pnpm -r --parallel dev",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "check": "pnpm build && pnpm typecheck && pnpm test"
+    "check": "pnpm build && pnpm typecheck && pnpm test",
+    "installer": "pnpm build && pnpm -C packages/installer release"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
