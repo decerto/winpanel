@@ -3,7 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
-import { secrets, sites } from '../src/db/schema.js';
+import { sites } from '../src/db/schema.js';
+import { SecretVault } from '../src/security/vault.js';
+import { storeCloudflareToken } from '../src/dns/token.js';
 import { CaddyReconciler, siteInputsFrom } from '../src/caddy/reconciler.js';
 import { previewServerIdFor, routeIdFor } from '../src/caddy/config-builder.js';
 import { CaddyClient } from '../src/caddy/client.js';
@@ -22,6 +24,7 @@ const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
 
 let tmpDir: string;
 let db: DatabaseHandle;
+let vault: SecretVault;
 const sitesRoot = (): string => path.join(tmpDir, 'sites');
 
 function insertSite(overrides: Partial<typeof sites.$inferInsert> = {}): void {
@@ -47,9 +50,13 @@ beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'winpanel-reconcile-'));
   db = createDatabase(path.join(tmpDir, 'panel.db'));
   migrateDatabase(db, MIGRATIONS);
+
+  vault = new SecretVault(path.join(tmpDir, 'vault.key'));
+  await vault.initialise();
 });
 
 afterEach(async () => {
+  vault.lock();
   db.close();
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
@@ -58,7 +65,7 @@ describe('turning the database into a Caddy config', () => {
   it('produces a route for a site that has a domain', () => {
     insertSite();
 
-    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot()).buildConfig() as any;
+    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
     const route = config.apps.http.servers.main.routes.find(
       (r: any) => r['@id'] === routeIdFor('example'),
     );
@@ -100,7 +107,7 @@ describe('turning the database into a Caddy config', () => {
   it('gives a domainless site a preview listener and nothing on port 80', () => {
     insertSite({ domains: [] });
 
-    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot()).buildConfig() as any;
+    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
 
     expect(config.apps.http.servers[previewServerIdFor('example')].listen).toEqual([':7001']);
     expect(config.apps.http.servers.main.routes).toHaveLength(0);
@@ -113,11 +120,11 @@ describe('turning the database into a Caddy config', () => {
      * every HTTPS request rather than serving the site over HTTP.
      */
     insertSite();
-    const reconciler = new CaddyReconciler(db, new CaddyClient(), sitesRoot());
+    const reconciler = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault);
 
     expect(JSON.stringify(reconciler.buildConfig())).not.toContain('acme');
 
-    db.db.insert(secrets).values({ key: 'cloudflare.token', ciphertext: 'x' }).run();
+    storeCloudflareToken(db, vault, 'cf-secret-token');
 
     expect(JSON.stringify(reconciler.buildConfig())).toContain('acme');
   });
@@ -125,7 +132,7 @@ describe('turning the database into a Caddy config', () => {
   it('leaves out a site that has been disabled', () => {
     insertSite({ enabled: false });
 
-    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot()).buildConfig() as any;
+    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
     expect(config.apps.http.servers.main.routes).toHaveLength(0);
     expect(config.apps.http.servers[previewServerIdFor('example')]).toBeUndefined();
   });
@@ -133,7 +140,7 @@ describe('turning the database into a Caddy config', () => {
   it('leaves out the mail route until the mail server is installed', () => {
     insertSite();
 
-    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot()).buildConfig() as any;
+    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
     const ids = config.apps.http.servers.main.routes.map((r: any) => r['@id']);
     expect(ids).not.toContain('mail_route');
   });
@@ -149,6 +156,7 @@ describe('applying the configuration', () => {
       db,
       new CaddyClient({ baseUrl: 'http://127.0.0.1:1', timeoutMs: 500 }),
       sitesRoot(),
+      vault,
     );
 
     const error = await reconciler.tryApply();

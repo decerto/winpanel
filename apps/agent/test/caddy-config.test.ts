@@ -194,7 +194,7 @@ describe('certificate automation', () => {
     // would mean renewals silently broke the moment the proxy was enabled.
     const config = buildCaddyConfig({
       sites: [site()],
-      cloudflareTokenEnvVar: 'CF_API_TOKEN',
+      dnsChallenges: [{ envVar: 'CF_API_TOKEN', domains: ['example.com'] }],
     }) as any;
 
     const issuer = config.apps.tls.automation.policies[0].issuers[0];
@@ -206,7 +206,7 @@ describe('certificate automation', () => {
   it('reads the Cloudflare token from the environment, never inlining it', () => {
     const config = buildCaddyConfig({
       sites: [site()],
-      cloudflareTokenEnvVar: 'CF_API_TOKEN',
+      dnsChallenges: [{ envVar: 'CF_API_TOKEN', domains: ['example.com'] }],
     }) as any;
 
     const provider = config.apps.tls.automation.policies[0].issuers[0].challenges.dns.provider;
@@ -223,7 +223,7 @@ describe('certificate automation', () => {
     // challenge record, and validation then times out for no visible reason.
     const config = buildCaddyConfig({
       sites: [site()],
-      cloudflareTokenEnvVar: 'CF_API_TOKEN',
+      dnsChallenges: [{ envVar: 'CF_API_TOKEN', domains: ['example.com'] }],
     }) as any;
 
     expect(config.apps.tls.automation.policies[0].issuers[0].challenges.dns.resolvers).toContain(
@@ -234,7 +234,7 @@ describe('certificate automation', () => {
   it('configures a fallback certificate authority', () => {
     const config = buildCaddyConfig({
       sites: [site()],
-      cloudflareTokenEnvVar: 'CF_API_TOKEN',
+      dnsChallenges: [{ envVar: 'CF_API_TOKEN', domains: ['example.com'] }],
     }) as any;
 
     const issuers = config.apps.tls.automation.policies[0].issuers;
@@ -242,13 +242,13 @@ describe('certificate automation', () => {
     expect(issuers[1].ca).toContain('zerossl');
   });
 
-  it('covers every domain across every site', () => {
+  it('covers every domain the token can see', () => {
     const config = buildCaddyConfig({
       sites: [
         site({ slug: 'a', domains: ['a.com'] }),
         site({ slug: 'b', domains: ['b.com', 'www.b.com'] }),
       ],
-      cloudflareTokenEnvVar: 'CF_API_TOKEN',
+      dnsChallenges: [{ envVar: 'CF_API_TOKEN', domains: ['a.com', 'b.com', 'www.b.com'] }],
     }) as any;
 
     expect(config.apps.tls.automation.policies[0].subjects).toEqual([
@@ -256,6 +256,39 @@ describe('certificate automation', () => {
       'b.com',
       'www.b.com',
     ]);
+  });
+
+  it('gives each token its own policy, and leaves uncovered domains to Caddy', () => {
+    /*
+     * A token only reaches the zones of the account that issued it. Listing a
+     * domain under a token that cannot see it would fail its DNS challenge
+     * forever, so it is left with no issuer instead and Caddy tries its own.
+     */
+    const config = buildCaddyConfig({
+      sites: [
+        site({ slug: 'a', domains: ['a.com'] }),
+        site({ slug: 'b', domains: ['b.com'] }),
+        site({ slug: 'c', domains: ['c.com'] }),
+      ],
+      dnsChallenges: [
+        { envVar: 'CF_API_TOKEN', domains: ['a.com'] },
+        { envVar: 'CF_API_TOKEN_DEADBEEF', domains: ['b.com'] },
+      ],
+    }) as any;
+
+    const policies = config.apps.tls.automation.policies;
+    expect(policies).toHaveLength(3);
+
+    expect(policies[0].subjects).toEqual(['a.com']);
+    expect(policies[0].issuers[0].challenges.dns.provider.api_token).toBe('{env.CF_API_TOKEN}');
+
+    expect(policies[1].subjects).toEqual(['b.com']);
+    expect(policies[1].issuers[0].challenges.dns.provider.api_token).toBe(
+      '{env.CF_API_TOKEN_DEADBEEF}',
+    );
+
+    expect(policies[2].subjects).toEqual(['c.com']);
+    expect(policies[2].issuers).toBeUndefined();
   });
 
   it('omits certificate automation entirely when there are no domains', () => {
@@ -340,7 +373,7 @@ describe('mail routing', () => {
     const config = buildCaddyConfig({
       sites: [],
       mailHost: { hostname: 'mail.example.com', port: 8080 },
-      cloudflareTokenEnvVar: 'CF_API_TOKEN',
+      dnsChallenges: [{ envVar: 'CF_API_TOKEN', domains: ['example.com', 'mail.example.com'] }],
     }) as any;
 
     expect(config.apps.tls.automation.policies[0].subjects).toContain('mail.example.com');

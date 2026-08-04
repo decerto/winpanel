@@ -2,11 +2,11 @@ import { eq } from 'drizzle-orm';
 import { STALWART_HTTP_PORT, mailHostnameFor, type SiteManifest } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
 import { components, sites } from '../db/schema.js';
-import { hasCloudflareToken } from '../dns/token.js';
+import { cloudflareTokenGroups } from '../dns/token.js';
+import type { SecretVault } from '../security/vault.js';
 import { contentRootFor } from '../sites/site-service.js';
 import type { CaddyClient } from './client.js';
-import { CLOUDFLARE_TOKEN_ENV_VAR } from './service.js';
-import { buildCaddyConfig, type CaddySiteInput } from './config-builder.js';
+import { buildCaddyConfig, type CaddySiteInput, type DnsChallengeGroup } from './config-builder.js';
 
 /**
  * Keeps Caddy's running configuration in step with the panel's database.
@@ -58,15 +58,29 @@ export class CaddyReconciler {
     private readonly db: DatabaseHandle,
     private readonly caddy: CaddyClient,
     private readonly sitesRoot: string,
+    private readonly vault: SecretVault,
   ) {}
 
   /** Builds the configuration that matches the current database state. */
   buildConfig(options: ReconcileOptions = {}): Record<string, unknown> {
     const siteInputs = siteInputsFrom(this.db, this.sitesRoot);
 
-    const hasCloudflare = hasCloudflareToken(this.db);
+    const rows = this.db.db.select({ id: sites.id, domains: sites.domains }).from(sites).all();
+    const dnsChallenges: DnsChallengeGroup[] = cloudflareTokenGroups(
+      this.db,
+      this.vault,
+      rows.map((row) => ({ id: row.id, domains: row.domains as string[] })),
+    ).map((group) => ({ envVar: group.envVar, domains: group.domains }));
 
     const firstDomain = siteInputs.find((site) => site.domains.length > 0)?.domains[0];
+
+    // The mail server's own hostname needs a certificate too, and the only
+    // token that can obtain one is whichever covers the domain it sits under.
+    if (firstDomain) {
+      const mailHostname = mailHostnameFor(firstDomain);
+      const owner = dnsChallenges.find((group) => group.domains.includes(firstDomain));
+      if (owner) owner.domains = [...owner.domains, mailHostname];
+    }
 
     // Derived rather than passed in: a caller that forgot the flag would take
     // the webmail interface offline without anything appearing to be wrong.
@@ -76,10 +90,13 @@ export class CaddyReconciler {
 
     return buildCaddyConfig({
       sites: siteInputs,
-      // Without a token there is no DNS challenge, and TLS-ALPN cannot work
-      // through Cloudflare's proxy. Asking for certificates we cannot obtain
-      // would make every request fail rather than fall back to HTTP.
-      ...(hasCloudflare ? { cloudflareTokenEnvVar: CLOUDFLARE_TOKEN_ENV_VAR } : {}),
+      /*
+       * Without a token for a domain there is no DNS challenge, and TLS-ALPN
+       * cannot work through Cloudflare's proxy. Those domains are left to
+       * Caddy's defaults rather than pointed at a token that cannot see them,
+       * which would fail every renewal forever.
+       */
+      ...(dnsChallenges.length > 0 ? { dnsChallenges } : {}),
       ...(options.acmeEmail ? { acmeEmail: options.acmeEmail } : {}),
       ...(mailInstalled && firstDomain
         ? { mailHost: { hostname: mailHostnameFor(firstDomain), port: STALWART_HTTP_PORT } }

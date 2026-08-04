@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { CloudCog, Download, ExternalLink, Info, Power, RefreshCw, Server } from 'lucide-vue-next';
+import { CloudCog, Download, ExternalLink, FolderSearch, Info, Power, RefreshCw, Server } from 'lucide-vue-next';
 import { REQUIRED_CLOUDFLARE_SCOPES } from '@winpanel/shared';
 import { api, describeError } from '../lib/api';
 import { LOG_LEVEL_CLASS, useJobLog } from '../lib/job-log';
 import PageHeader from '../components/PageHeader.vue';
 import AlertMessage from '../components/AlertMessage.vue';
 import ComponentsPanel from '../components/ComponentsPanel.vue';
+import ServerPathPicker from '../components/ServerPathPicker.vue';
 
 /**
  * Server-wide settings: the services this panel drives on your behalf.
@@ -58,6 +59,8 @@ const updateChecksum = ref('');
 const updateBusy = ref(false);
 const updateJob = useJobLog();
 const restartBusy = ref(false);
+/** The server file browser, so nobody has to type a Windows path from memory. */
+const browsingForInstaller = ref(false);
 
 const canUpdate = computed(() =>
   updateSource.value === 'url' ? updateUrl.value.trim().length > 0 : updateFile.value.trim().length > 0,
@@ -450,10 +453,12 @@ async function installUpdate(): Promise<void> {
         </span>
 
         <div class="min-w-0 flex-1">
-          <h2 class="text-base font-semibold text-ink">Cloudflare</h2>
+          <h2 class="text-base font-semibold text-ink">Cloudflare (shared token)</h2>
           <p class="mt-1 text-sm text-ink-muted">
-            Lets the panel point your domains at this server and keep their records tidy,
-            without you copying values between two windows.
+            Used by every website that has no token of its own, which is what you want when all
+            your domains live in one Cloudflare account. A token only reaches the domains of the
+            account that made it, so a website in a different account gets its own token on its
+            DNS tab instead. This one is optional.
           </p>
 
           <p v-if="cloudflare" class="mt-3 flex flex-wrap items-center gap-2 text-sm">
@@ -486,7 +491,8 @@ async function installUpdate(): Promise<void> {
           />
           <p class="hint">
             Create a token with {{ REQUIRED_CLOUDFLARE_SCOPES.join(' and ') }} permissions on the
-            zones you want the panel to manage.
+            zones you want the panel to manage. Each website&#8217;s DNS tab explains this step by
+            step if you would rather do it there.
             <a
               href="https://dash.cloudflare.com/profile/api-tokens"
               target="_blank"
@@ -757,12 +763,22 @@ async function installUpdate(): Promise<void> {
 
         <div v-else>
           <label for="update-file" class="label">Full path on this server</label>
-          <input
-            id="update-file"
-            v-model="updateFile"
-            class="field font-mono"
-            placeholder="C:\Users\Administrator\Downloads\WinPanel-Setup-x64.exe"
-          />
+          <div class="flex flex-wrap items-center gap-2">
+            <input
+              id="update-file"
+              v-model="updateFile"
+              class="field min-w-64 flex-1 font-mono"
+              placeholder="Browse to the setup file, or paste its path"
+            />
+            <button
+              type="button"
+              class="btn btn-ghost"
+              :disabled="updateBusy"
+              @click="browsingForInstaller = true"
+            >
+              <FolderSearch :size="15" aria-hidden="true" /> Browse
+            </button>
+          </div>
           <p class="hint">For a server with no internet access. Copy the file across first.</p>
         </div>
 
@@ -824,6 +840,14 @@ async function installUpdate(): Promise<void> {
           {{ restartBusy ? 'Restarting\u2026' : 'Restart the panel' }}
         </button>
       </div>
+
+      <ServerPathPicker
+        v-model="updateFile"
+        :open="browsingForInstaller"
+        :extensions="['.exe']"
+        title="Find the WinPanel setup file"
+        @close="browsingForInstaller = false"
+      />
     </section>
 
     <section class="card mt-4 p-6">

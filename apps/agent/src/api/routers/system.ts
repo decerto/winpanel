@@ -20,6 +20,7 @@ import {
   stopSupportingServices,
 } from '../../windows/panel-services.js';
 import { validateUpdateUrl } from '../../components/panel-update.js';
+import { BrowseError, browseDirectory } from '../../files/server-browse.js';
 
 /**
  * Facts about the machine this panel is running on.
@@ -91,6 +92,40 @@ export const systemRouter = router({
    * here is what holds the program folder open.
    */
   backgroundServices: protectedProcedure.query(async () => await listPanelServices()),
+
+  /**
+   * Lists a folder on the server, so a path can be pointed at rather than
+   * typed from memory.
+   *
+   * Read-only and names-only: there is no way to get a file's contents from
+   * here. Site files are browsed through the files router instead, which is
+   * contained inside one website; this is not contained, which is why it lists
+   * and nothing more.
+   */
+  browse: protectedProcedure
+    .input(
+      z.object({
+        /** Omitted lists the machine's drives. A file lists the folder it is in. */
+        path: z.string().max(1024).optional(),
+        /** Restricts which files are shown, e.g. ['.exe']. Folders always show. */
+        extensions: z
+          .array(z.string().regex(/^\.[A-Za-z0-9]{1,10}$/, 'That is not a file extension.'))
+          .max(8)
+          .optional(),
+      }),
+    )
+    .query(async ({ input }) => {
+      try {
+        return await browseDirectory(input.path ?? null, {
+          ...(input.extensions ? { extensions: input.extensions } : {}),
+        });
+      } catch (error) {
+        if (error instanceof BrowseError) {
+          throw new TRPCError({ code: 'BAD_REQUEST', message: error.message, cause: error });
+        }
+        throw error;
+      }
+    }),
 
   /**
    * Starts, stops or restarts one background program.

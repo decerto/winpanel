@@ -32,10 +32,21 @@ export interface CaddySiteInput {
   enabled: boolean;
 }
 
+/** One Cloudflare token, and the domains it is able to answer a challenge for. */
+export interface DnsChallengeGroup {
+  /** The environment variable Caddy reads the token from. */
+  envVar: string;
+  domains: readonly string[];
+}
+
 export interface CaddyConfigInput {
   sites: readonly CaddySiteInput[];
-  /** Present once the user has connected Cloudflare. */
-  cloudflareTokenEnvVar?: string;
+  /**
+   * One entry per Cloudflare token in use. A token only reaches the zones of
+   * the account that issued it, so domains belonging to different accounts
+   * cannot share a certificate policy.
+   */
+  dnsChallenges?: readonly DnsChallengeGroup[];
   /** Contact address for the certificate authority. */
   acmeEmail?: string;
   /** Route mail.<domain> to the mail server's web interface. */
@@ -151,6 +162,40 @@ function buildSubroute(site: CaddySiteInput, proxyId: string): unknown {
   };
 }
 
+/**
+ * The two certificate authorities, both answering by DNS challenge.
+ *
+ * ZeroSSL is listed second so a Let's Encrypt rate limit or outage is not the
+ * end of it. Both are asked to resolve against Cloudflare's own nameservers:
+ * the server's default resolver often caches the absence of the challenge
+ * record, and the validation then times out for no visible reason.
+ */
+function dnsIssuers(envVar: string, acmeEmail?: string): unknown[] {
+  const challenges = {
+    dns: {
+      provider: {
+        name: 'cloudflare',
+        api_token: `{env.${envVar}}`,
+      },
+      resolvers: ['1.1.1.1', '1.0.0.1'],
+    },
+  };
+
+  return [
+    {
+      module: 'acme',
+      ...(acmeEmail ? { email: acmeEmail } : {}),
+      challenges,
+    },
+    {
+      module: 'acme',
+      ca: 'https://acme.zerossl.com/v2/DV90',
+      ...(acmeEmail ? { email: acmeEmail } : {}),
+      challenges,
+    },
+  ];
+}
+
 export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknown> {
   const routes: unknown[] = [];
   const allDomains = new Set<string>();
@@ -230,51 +275,40 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
   };
 
   if (allDomains.size > 0) {
-    const policy: Record<string, unknown> = {
-      subjects: [...allDomains],
-    };
+    /*
+     * A policy per token, then one for whatever is left over.
+     *
+     * Caddy matches a subject against the first policy that names it, so the
+     * domains a token cannot see must not be listed under it: they would
+     * inherit its DNS challenge and fail forever. Domains with no token at all
+     * get a policy with no issuers, which leaves Caddy to try its own default
+     * challenges — the only thing that can work for a domain the panel has no
+     * credentials for.
+     */
+    const policies: unknown[] = [];
+    const covered = new Set<string>();
 
-    if (input.cloudflareTokenEnvVar) {
-      policy['issuers'] = [
-        {
-          module: 'acme',
-          ...(input.acmeEmail ? { email: input.acmeEmail } : {}),
-          challenges: {
-            dns: {
-              provider: {
-                name: 'cloudflare',
-                api_token: `{env.${input.cloudflareTokenEnvVar}}`,
-              },
-              // Ask Cloudflare's own resolver directly. The server's default
-              // resolver often caches the absence of the challenge record and
-              // the validation then times out for no visible reason.
-              resolvers: ['1.1.1.1', '1.0.0.1'],
-            },
-          },
-        },
-        {
-          module: 'acme',
-          ca: 'https://acme.zerossl.com/v2/DV90',
-          ...(input.acmeEmail ? { email: input.acmeEmail } : {}),
-          challenges: {
-            dns: {
-              provider: {
-                name: 'cloudflare',
-                api_token: `{env.${input.cloudflareTokenEnvVar}}`,
-              },
-              resolvers: ['1.1.1.1', '1.0.0.1'],
-            },
-          },
-        },
-      ];
+    for (const group of input.dnsChallenges ?? []) {
+      const subjects = group.domains.filter(
+        (domain) => allDomains.has(domain) && !covered.has(domain),
+      );
+      if (subjects.length === 0) continue;
+
+      for (const domain of subjects) covered.add(domain);
+
+      policies.push({
+        subjects,
+        issuers: dnsIssuers(group.envVar, input.acmeEmail),
+      });
     }
+
+    const uncovered = [...allDomains].filter((domain) => !covered.has(domain));
+    if (uncovered.length > 0) policies.push({ subjects: uncovered });
 
     config['apps'] = {
       ...(config['apps'] as object),
       tls: {
-        automation: {
-          policies: [policy],
-        },
+        automation: { policies },
       },
     };
   }

@@ -69,7 +69,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
   jobs.reconcileOrphans();
 
   const caddy = new CaddyClient();
-  const routing = new CaddyReconciler(db, caddy, config.sitesRoot);
+  const routing = new CaddyReconciler(db, caddy, config.sitesRoot, vault);
   const services = new ServiceManager(
     path.join(config.binDir, 'WinSW.exe'),
     path.join(config.dataDir, 'services'),

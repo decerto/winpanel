@@ -247,6 +247,7 @@ export class SiteService {
     this.db.db.delete(secrets).where(eq(secrets.key, `site.gitToken:${id}`)).run();
     this.db.db.delete(secrets).where(eq(secrets.key, `site.gitSshKey:${id}`)).run();
     this.db.db.delete(secrets).where(eq(secrets.key, `site.gitSshPublicKey:${id}`)).run();
+    this.db.db.delete(secrets).where(eq(secrets.key, `site.cloudflareToken:${id}`)).run();
     this.db.db.delete(sites).where(eq(sites.id, id)).run();
 
     if (options.deleteFiles) {

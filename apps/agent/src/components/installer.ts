@@ -8,8 +8,7 @@ import type { ServiceManager } from '../windows/service-manager.js';
 import { runCommand } from '../process/run-command.js';
 import { buildStalwartBootstrap } from '../mail/stalwart-config.js';
 import { ensureMailAdminCredentials, mailServiceEnv } from '../mail/service.js';
-import { caddyServiceEnv } from '../caddy/service.js';
-import { loadCloudflareToken } from '../dns/token.js';
+import { caddyServiceEnv, cloudflareTokenEnvironment } from '../caddy/service.js';
 import { downloadVerified } from './download.js';
 import { extractZip, findExecutable, listExecutables, sniffPayload } from './archive.js';
 import { findComponent } from './catalogue.js';
@@ -238,7 +237,7 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
     // datastore, which does not exist until it first starts.
     const env =
       component.id === 'caddy'
-        ? caddyServiceEnv(deps.caddyDir, loadCloudflareToken(deps.db, deps.vault))
+        ? caddyServiceEnv(deps.caddyDir, cloudflareTokenEnvironment(deps.db, deps.vault))
         : component.id === 'stalwart'
           ? mailServiceEnv(ensureMailAdminCredentials(deps.db, deps.vault))
           : undefined;
