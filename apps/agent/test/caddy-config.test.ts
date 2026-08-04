@@ -112,12 +112,17 @@ describe('static sites without a root', () => {
 });
 
 describe('buildCaddyConfig', () => {
-  it('binds the admin API to loopback only', () => {
-    // This endpoint can reconfigure every site on the machine. Exposing it
-    // would be equivalent to an unauthenticated root shell.
-    const config = buildCaddyConfig({ sites: [] }) as any;
-    expect(config.admin.listen).toBe('127.0.0.1:2019');
-    expect(config.admin.listen).not.toContain('0.0.0.0');
+  it('leaves the admin endpoint exactly as the running server has it', () => {
+    // Caddy binds the replacement admin listener before releasing the old one,
+    // so naming any address other than the one already in use fails the whole
+    // load with "address already in use".
+    expect(buildCaddyConfig({ sites: [] })).not.toHaveProperty('admin');
+
+    const carried = buildCaddyConfig({
+      sites: [],
+      admin: { listen: '127.0.0.1:2019' },
+    }) as any;
+    expect(carried.admin).toEqual({ listen: '127.0.0.1:2019' });
   });
 
   it('listens on both web ports and enables HTTP/3', () => {

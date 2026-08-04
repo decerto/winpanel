@@ -62,7 +62,7 @@ export class CaddyReconciler {
   ) {}
 
   /** Builds the configuration that matches the current database state. */
-  buildConfig(options: ReconcileOptions = {}): Record<string, unknown> {
+  buildConfig(options: ReconcileOptions = {}, admin?: unknown): Record<string, unknown> {
     const siteInputs = siteInputsFrom(this.db, this.sitesRoot);
 
     const rows = this.db.db.select({ id: sites.id, domains: sites.domains }).from(sites).all();
@@ -90,6 +90,7 @@ export class CaddyReconciler {
 
     return buildCaddyConfig({
       sites: siteInputs,
+      ...(admin != null ? { admin } : {}),
       /*
        * Without a token for a domain there is no DNS challenge, and TLS-ALPN
        * cannot work through Cloudflare's proxy. Those domains are left to
@@ -106,7 +107,13 @@ export class CaddyReconciler {
 
   /** Rebuilds and loads the configuration. Throws if Caddy refuses it. */
   async apply(options: ReconcileOptions = {}): Promise<void> {
-    await this.caddy.load(this.buildConfig(options));
+    /*
+     * The admin endpoint is whatever the running server decided at startup,
+     * and it has to be handed back unchanged: Caddy binds the replacement
+     * listener before it releases the old one, so naming any other address
+     * here fails the entire load with "address already in use".
+     */
+    await this.caddy.load(this.buildConfig(options, await this.caddy.getAdminConfig()));
   }
 
   /**

@@ -199,4 +199,52 @@ describe('applying the configuration', () => {
 
     expect(sent).toBe('http://127.0.0.1:2019');
   });
+
+  it('hands the admin endpoint back exactly as it found it', async () => {
+    // Caddy binds the replacement admin listener before releasing the old one,
+    // so a config naming any other address fails the whole load with "Only one
+    // usage of each socket address" and the deploy cannot switch traffic.
+    insertSite();
+
+    const original = globalThis.fetch;
+    let loaded: any = null;
+
+    globalThis.fetch = (async (url: unknown, init: RequestInit) => {
+      if (String(url).endsWith('/config/admin')) {
+        return new Response(JSON.stringify({ listen: 'localhost:2019' }), { status: 200 });
+      }
+      loaded = JSON.parse(String(init.body));
+      return new Response('', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    try {
+      await new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).apply();
+    } finally {
+      globalThis.fetch = original;
+    }
+
+    expect(loaded.admin).toEqual({ listen: 'localhost:2019' });
+  });
+
+  it('omits the admin block when the server is on its own default', async () => {
+    insertSite();
+
+    const original = globalThis.fetch;
+    let loaded: any = null;
+
+    globalThis.fetch = (async (url: unknown, init: RequestInit) => {
+      // Caddy answers `null` for a field it was never given.
+      if (String(url).endsWith('/config/admin')) return new Response('null', { status: 200 });
+      loaded = JSON.parse(String(init.body));
+      return new Response('', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    try {
+      await new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).apply();
+    } finally {
+      globalThis.fetch = original;
+    }
+
+    expect(loaded).not.toHaveProperty('admin');
+  });
 });

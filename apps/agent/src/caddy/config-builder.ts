@@ -51,6 +51,17 @@ export interface CaddyConfigInput {
   acmeEmail?: string;
   /** Route mail.<domain> to the mail server's web interface. */
   mailHost?: { hostname: string; port: number };
+  /**
+   * The admin block exactly as the running server has it.
+   *
+   * Caddy binds the new admin listener *before* releasing the old one, so a
+   * config that names a different address than the server is already using
+   * cannot load at all: it fails with "address already in use" and takes the
+   * whole reload down with it. Carrying the running value over means the
+   * endpoint is never touched. Omitted means Caddy's own default, which is
+   * `localhost:2019` — loopback only, like every value we would have chosen.
+   */
+  admin?: unknown;
 }
 
 export function proxyIdFor(slug: string): string {
@@ -249,11 +260,7 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
   }
 
   const config: Record<string, unknown> = {
-    admin: {
-      // Loopback only. This endpoint can reconfigure every site on the box,
-      // so it must never be reachable from outside.
-      listen: '127.0.0.1:2019',
-    },
+    ...(input.admin != null ? { admin: input.admin } : {}),
     logging: {
       logs: {
         default: { level: 'INFO' },

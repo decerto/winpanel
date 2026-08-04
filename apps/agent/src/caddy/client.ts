@@ -135,6 +135,11 @@ export class CaddyClient {
     return text ? JSON.parse(text) : null;
   }
 
+  /** The running admin block, or null when Caddy is using its own default. */
+  async getAdminConfig(): Promise<unknown> {
+    return await this.getConfig('/admin');
+  }
+
   /** Replaces the entire configuration. */
   async load(config: unknown): Promise<void> {
     await this.request('POST', '/load', config);
