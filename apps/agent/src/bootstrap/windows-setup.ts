@@ -1,6 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { PANEL_PORT, CADDY_ADMIN_PORT, STALWART_HTTP_PORT } from '@winpanel/shared';
+import {
+  PANEL_PORT,
+  CADDY_ADMIN_PORT,
+  PREVIEW_PORT_RANGE_END,
+  PREVIEW_PORT_RANGE_START,
+  STALWART_HTTP_PORT,
+} from '@winpanel/shared';
 import { runCommand } from '../process/run-command.js';
 
 /**
@@ -17,7 +23,8 @@ import { runCommand } from '../process/run-command.js';
 
 export interface FirewallRule {
   name: string;
-  port: number;
+  /** A single port, or a `start-end` range in netsh's own syntax. */
+  port: number | string;
   protocol: 'TCP' | 'UDP';
   action: 'allow' | 'block';
   /** Human-readable reason, shown in the panel. */
@@ -55,6 +62,16 @@ export function requiredFirewallRules(): FirewallRule[] {
       protocol: 'UDP',
       action: 'allow',
       purpose: 'Faster connections for visitors whose browsers support it.',
+    },
+    {
+      // Every site gets one of these, so it can be opened in a browser before
+      // a domain is bought or DNS has propagated. Without it a new site can
+      // only be reached from the server's own desktop.
+      name: `${RULE_PREFIX} - Website previews`,
+      port: `${PREVIEW_PORT_RANGE_START}-${PREVIEW_PORT_RANGE_END}`,
+      protocol: 'TCP',
+      action: 'allow',
+      purpose: 'Lets you open a website by IP address before its domain works.',
     },
     {
       // Blocked rather than merely unbound: this endpoint can reconfigure

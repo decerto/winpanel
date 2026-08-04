@@ -13,6 +13,11 @@ import {
   secureDataFolder,
 } from './windows-setup.js';
 import { localAddresses } from '../tls/panel-certificate.js';
+import {
+  AGENT_SERVICE_ID,
+  listPanelServices,
+  stopPanelService,
+} from '../windows/panel-services.js';
 
 /**
  * Everything the installer needs to do, as a command rather than a script.
@@ -23,7 +28,7 @@ import { localAddresses } from '../tls/panel-certificate.js';
  */
 
 export const BUILD_ACCOUNT = 'winpanel-run';
-export const AGENT_SERVICE_ID = 'winpanel-agent';
+export { AGENT_SERVICE_ID };
 
 export interface InstallResult {
   panelUrl: string;
@@ -201,6 +206,28 @@ export async function uninstall(options: { keepSites: boolean }): Promise<string
     path.join(config.dataDir, 'services'),
   );
 
+  /*
+   * Everything, not just the panel. The web server, the mail server and a
+   * service per website per colour all hold files inside the program folder
+   * open, so removing only the panel leaves the uninstaller unable to delete
+   * the very folder it is uninstalling — reported to the user as a folder
+   * being "in use" by nothing they can see.
+   *
+   * The list comes from Windows rather than from the database: a service left
+   * behind by an abandoned deployment is not in the database, and is exactly
+   * the thing that blocks removal.
+   */
+  for (const service of await listPanelServices()) {
+    if (service.id.toLowerCase() === AGENT_SERVICE_ID) continue;
+
+    try {
+      await services.uninstall(service.id);
+      messages.push(`Removed ${service.label}.`);
+    } catch (error) {
+      messages.push(`Could not remove ${service.label}: ${(error as Error).message}`);
+    }
+  }
+
   try {
     if (await services.isInstalled(AGENT_SERVICE_ID)) {
       await services.uninstall(AGENT_SERVICE_ID);
@@ -222,6 +249,26 @@ export async function uninstall(options: { keepSites: boolean }): Promise<string
     messages.push('Removed website files.');
   } else {
     messages.push(`Website files were kept in ${config.sitesRoot}.`);
+  }
+
+  return messages;
+}
+
+/**
+ * Stops everything WinPanel runs, without removing anything.
+ *
+ * The installer calls this before overwriting files. Upgrading with the web
+ * server or a website still running fails on files the user has no way to
+ * connect to a program, because none of these have a window.
+ */
+export async function stopAll(): Promise<string[]> {
+  const messages: string[] = [];
+
+  for (const service of await listPanelServices()) {
+    if (service.state === 'stopped') continue;
+
+    const ok = await stopPanelService(service.id).catch(() => false);
+    messages.push(ok ? `Stopped ${service.label}.` : `Could not stop ${service.label}.`);
   }
 
   return messages;
@@ -263,6 +310,13 @@ export async function main(argv: readonly string[]): Promise<number> {
   if (command === 'uninstall') {
     const keepSites = !argv.includes('--remove-sites');
     for (const message of await uninstall({ keepSites })) {
+      process.stdout.write(`  ${message}\n`);
+    }
+    return 0;
+  }
+
+  if (command === 'stop-all') {
+    for (const message of await stopAll()) {
       process.stdout.write(`  ${message}\n`);
     }
     return 0;

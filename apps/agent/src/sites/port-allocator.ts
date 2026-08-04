@@ -1,9 +1,11 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import {
   APP_PORT_RANGE_END,
   APP_PORT_RANGE_START,
   DOTNET_PORT_RANGE_END,
   DOTNET_PORT_RANGE_START,
+  PREVIEW_PORT_RANGE_END,
+  PREVIEW_PORT_RANGE_START,
   validateAssignablePort,
 } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
@@ -60,10 +62,10 @@ export class PortAllocator {
       .where(eq(portAllocations.siteId, siteId))
       .all();
 
-    if (existing.length >= 2) {
-      const blue = existing.find((row) => row.colour === 'blue');
-      const green = existing.find((row) => row.colour === 'green');
-      if (blue && green) return { blue: blue.port, green: green.port };
+    const alreadyBlue = existing.find((row) => row.colour === 'blue');
+    const alreadyGreen = existing.find((row) => row.colour === 'green');
+    if (alreadyBlue && alreadyGreen) {
+      return { blue: alreadyBlue.port, green: alreadyGreen.port };
     }
 
     const [start, end] =
@@ -92,7 +94,14 @@ export class PortAllocator {
     const [blue, green] = found as [number, number];
 
     this.handle.db.transaction((tx) => {
-      tx.delete(portAllocations).where(eq(portAllocations.siteId, siteId)).run();
+      tx.delete(portAllocations)
+        .where(
+          and(
+            eq(portAllocations.siteId, siteId),
+            inArray(portAllocations.colour, ['blue', 'green']),
+          ),
+        )
+        .run();
       tx.insert(portAllocations).values([
         { port: blue, siteId, colour: 'blue' },
         { port: green, siteId, colour: 'green' },
@@ -100,6 +109,43 @@ export class PortAllocator {
     });
 
     return { blue, green };
+  }
+
+  /**
+   * Hands out the public port a site can be reached on without a domain.
+   *
+   * Separate from the app ports because these are deliberately exposed: the
+   * app ports bind to loopback and must stay there, while this one is what
+   * Caddy listens on so `http://<server-ip>:<port>` reaches the site. Being
+   * able to look at a site before its DNS exists is the difference between
+   * "it works" and "wait 24 hours and hope".
+   */
+  async allocatePreviewPort(siteId: string): Promise<number> {
+    const existing = this.handle.db
+      .select()
+      .from(portAllocations)
+      .where(and(eq(portAllocations.siteId, siteId), eq(portAllocations.colour, 'preview')))
+      .get();
+    if (existing) return existing.port;
+
+    const taken = this.takenPorts();
+    const excluded = await excludedPortRanges();
+
+    for (let port = PREVIEW_PORT_RANGE_START; port <= PREVIEW_PORT_RANGE_END; port++) {
+      if (!validateAssignablePort(port, taken).ok) continue;
+      if (isPortExcluded(port, excluded)) continue;
+      if (!(await isPortFree(port, '0.0.0.0'))) continue;
+
+      this.handle.db
+        .insert(portAllocations)
+        .values({ port, siteId, colour: 'preview' })
+        .run();
+      return port;
+    }
+
+    throw new PortAllocationError(
+      'There are no free preview ports left. Remove an unused website and try again.',
+    );
   }
 
   /** Validates a port the user typed in themselves. */

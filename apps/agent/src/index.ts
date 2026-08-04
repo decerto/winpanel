@@ -17,6 +17,26 @@ async function main(): Promise<void> {
 
   app.jobs.start();
 
+  /*
+   * Push the site configuration into Caddy on every start.
+   *
+   * Caddy is a separate service with its own lifecycle: it may have been
+   * restarted, reinstalled, or started from an empty config while the panel
+   * was down. Reapplying here means the answer to "why is my site not
+   * loading" is never "the two processes disagree about what exists".
+   *
+   * It must not block start-up. If Caddy is not installed yet — which is the
+   * normal state on a fresh machine — the panel still has to come up, because
+   * the panel is where you go to install it.
+   */
+  void app.routing.tryApply().then((error) => {
+    if (error) {
+      server.log.warn({ err: error }, 'Could not apply the website configuration yet.');
+    } else {
+      server.log.info('Website configuration applied.');
+    }
+  });
+
   // Generated up front so a fresh install always has a way in, even if the
   // installer's own attempt to write it failed.
   if (app.auth.needsSetup()) {

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { SiteManifest } from '@winpanel/shared';
 import {
   buildCaddyConfig,
+  previewServerIdFor,
   proxyIdFor,
   routeIdFor,
   type CaddySiteInput,
@@ -21,6 +22,94 @@ function site(overrides: Partial<CaddySiteInput> = {}): CaddySiteInput {
 function findRoute(config: any, id: string): any {
   return config.apps.http.servers.main.routes.find((r: any) => r['@id'] === id);
 }
+
+describe('preview listeners', () => {
+  /*
+   * The route that makes a site reachable at http://<server-ip>:<port>.
+   *
+   * Without it a website is unreachable until a domain exists and DNS has
+   * propagated, which means the first thing anyone can check about a site they
+   * just created is nothing at all.
+   */
+  it('gives a site its own server on the preview port', () => {
+    const config = buildCaddyConfig({ sites: [site({ previewPort: 7001 })] }) as any;
+    const preview = config.apps.http.servers[previewServerIdFor('example')];
+
+    expect(preview.listen).toEqual([':7001']);
+  });
+
+  it('matches every host, so an IP address reaches it', () => {
+    const config = buildCaddyConfig({ sites: [site({ previewPort: 7001 })] }) as any;
+    const routes = config.apps.http.servers[previewServerIdFor('example')].routes;
+
+    // A host matcher here would defeat the entire point: the request arrives
+    // with an IP in the Host header, which matches no domain.
+    expect(routes[0].match).toBeUndefined();
+  });
+
+  it('does not try to get a certificate for an IP address', () => {
+    const config = buildCaddyConfig({ sites: [site({ previewPort: 7001 })] }) as any;
+    const preview = config.apps.http.servers[previewServerIdFor('example')];
+
+    // Left on, Caddy would attempt issuance for a name that does not exist
+    // and log a renewal failure every few minutes forever.
+    expect(preview.automatic_https.disable).toBe(true);
+  });
+
+  it('serves a site that has no domain at all', () => {
+    const config = buildCaddyConfig({
+      sites: [site({ domains: [], previewPort: 7002 })],
+    }) as any;
+
+    expect(config.apps.http.servers[previewServerIdFor('example')]).toBeDefined();
+    // It has no domain, so it must not appear on the public listener.
+    expect(config.apps.http.servers.main.routes).toHaveLength(0);
+  });
+
+  it('uses a different proxy id from the public route', () => {
+    // Caddy rejects a configuration containing a duplicate @id outright, so
+    // the whole config would fail to load rather than one route misbehaving.
+    const config = buildCaddyConfig({ sites: [site({ previewPort: 7001 })] }) as any;
+
+    const ids = JSON.stringify(config).match(/"@id":"[^"]+"/g) ?? [];
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('is left out entirely for a site with no preview port', () => {
+    const config = buildCaddyConfig({ sites: [site({ previewPort: null })] }) as any;
+    expect(config.apps.http.servers[previewServerIdFor('example')]).toBeUndefined();
+  });
+
+  it('is left out for a disabled site', () => {
+    const config = buildCaddyConfig({
+      sites: [site({ previewPort: 7001, enabled: false })],
+    }) as any;
+    expect(config.apps.http.servers[previewServerIdFor('example')]).toBeUndefined();
+  });
+});
+
+describe('static sites without a root', () => {
+  it('refuses to serve rather than falling back to the working directory', () => {
+    /*
+     * `root: ''` makes Caddy serve its own current directory, which is the
+     * panel's installation folder. That would publish the database, the vault
+     * key and the panel certificate to the internet.
+     */
+    const config = buildCaddyConfig({
+      sites: [
+        site({
+          manifest: SiteManifest.parse({ runtime: 'static' }),
+          ...({ staticRoot: undefined } as object),
+        }),
+      ],
+    }) as any;
+
+    const handlers = findRoute(config, routeIdFor('example')).handle[0].routes[0].handle;
+    expect(handlers[0].handler).toBe('static_response');
+    expect(handlers[0].status_code).toBe(503);
+    expect(JSON.stringify(config)).not.toContain('"root":""');
+  });
+});
 
 describe('buildCaddyConfig', () => {
   it('binds the admin API to loopback only', () => {
@@ -194,6 +283,29 @@ describe('single-page app fallback', () => {
       '{http.request.uri.path}',
       '/index.html',
     ]);
+  });
+
+  it('rewrites first and serves second, so a request is handled once', () => {
+    /*
+     * Caddy's `try_files` is a matcher plus a rewrite; the file_server comes
+     * after it. Serving the file in the matched route as well would run two
+     * file_servers for every request.
+     */
+    const config = buildCaddyConfig({
+      sites: [
+        site({
+          manifest: SiteManifest.parse({ runtime: 'static', spaFallback: true }),
+          staticRoot: 'C:\\Sites\\example\\public',
+        }),
+      ],
+    }) as any;
+
+    const subroutes = findRoute(config, routeIdFor('example')).handle[0].routes;
+
+    expect(subroutes[0].handle[0].handler).toBe('rewrite');
+    expect(subroutes[0].handle).toHaveLength(1);
+    expect(subroutes[1].handle[0].handler).toBe('file_server');
+    expect(subroutes[1].handle[0].root).toBe('C:\\Sites\\example\\public');
   });
 
   it('does NOT add a fallback when the app serves its own frontend', () => {

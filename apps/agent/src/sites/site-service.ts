@@ -2,10 +2,16 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { desc, eq } from 'drizzle-orm';
-import { Slug, type SiteManifest, type SiteSource } from '@winpanel/shared';
+import {
+  PUBLIC_DIR,
+  Slug,
+  type SiteManifest,
+  type SiteSource,
+} from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
 import { deployments, sites } from '../db/schema.js';
 import { PortAllocator } from './port-allocator.js';
+import { scaffoldSite } from './scaffold.js';
 import type { SecretVault } from '../security/vault.js';
 import { secrets } from '../db/schema.js';
 
@@ -43,12 +49,43 @@ export function slugify(input: string): string {
 
 export interface CreateSiteInput {
   displayName: string;
+  /** May be empty: the site is then reachable on its preview port only. */
   domains: string[];
   source: SiteSource;
   manifest: SiteManifest;
   envVars?: Record<string, string>;
   gitToken?: string;
   diskQuotaBytes?: number;
+}
+
+export interface CreatedSite {
+  id: string;
+  slug: string;
+  previewPort: number | null;
+  /** Starter files written into the public folder, if any. */
+  scaffolded: string[];
+}
+
+/**
+ * Where a site's served files live.
+ *
+ * Git sites are served out of the release the last successful deploy pointed
+ * `current` at. Everything else is served straight from `public`, which the
+ * user owns and the panel never overwrites.
+ */
+export function contentRootFor(
+  sitesRoot: string,
+  site: { slug: string; source: unknown; manifest: unknown },
+): string {
+  const siteDir = path.join(sitesRoot, site.slug);
+  const source = site.source as SiteSource;
+  const manifest = site.manifest as SiteManifest;
+
+  if (source.kind !== 'git') {
+    return path.join(siteDir, PUBLIC_DIR, manifest.staticRoot ?? '');
+  }
+
+  return path.join(siteDir, 'current', manifest.staticRoot ?? '');
 }
 
 export class SiteService {
@@ -95,7 +132,7 @@ export class SiteService {
     return candidate;
   }
 
-  async create(input: CreateSiteInput): Promise<{ id: string; slug: string }> {
+  async create(input: CreateSiteInput): Promise<CreatedSite> {
     const preferred = slugify(input.domains[0] ?? input.displayName);
     const parsed = Slug.safeParse(preferred);
     if (!parsed.success) {
@@ -124,9 +161,19 @@ export class SiteService {
     try {
       const pair = await this.ports.allocatePair(id, input.manifest.runtime);
 
+      // A site with no domain would otherwise be unreachable, and a site whose
+      // DNS has not propagated yet indistinguishable from a broken one.
+      let previewPort: number | null = null;
+      try {
+        previewPort = await this.ports.allocatePreviewPort(id);
+      } catch {
+        // Running out of preview ports is not a reason to refuse the site.
+        previewPort = null;
+      }
+
       this.db.db
         .update(sites)
-        .set({ portBlue: pair.blue, portGreen: pair.green })
+        .set({ portBlue: pair.blue, portGreen: pair.green, previewPort })
         .where(eq(sites.id, id))
         .run();
 
@@ -134,17 +181,36 @@ export class SiteService {
       await fs.mkdir(path.join(siteDir, 'releases'), { recursive: true });
       await fs.mkdir(path.join(siteDir, 'shared'), { recursive: true });
       await fs.mkdir(path.join(siteDir, 'logs'), { recursive: true });
+      // Created for every site, not only the ones that use it: the Files tab
+      // needs somewhere obvious to put things, whatever the site turns out
+      // to be, and an empty folder costs nothing.
+      await fs.mkdir(path.join(siteDir, PUBLIC_DIR), { recursive: true });
+
+      const scaffolded =
+        input.source.kind === 'blank'
+          ? await scaffoldSite({
+              publicDir: path.join(siteDir, PUBLIC_DIR),
+              runtime: input.manifest.runtime,
+              displayName: input.displayName,
+            })
+          : [];
 
       if (input.envVars) await this.setEnv(id, input.envVars);
       if (input.gitToken) await this.setGitToken(id, input.gitToken);
 
-      return { id, slug };
+      return { id, slug, previewPort, scaffolded };
     } catch (error) {
       // Do not leave a half-created site behind: it would occupy the slug and
       // show up in the list as something that can never work.
       this.db.db.delete(sites).where(eq(sites.id, id)).run();
       throw error;
     }
+  }
+
+  /** Absolute path to the folder this site's files are served from. */
+  contentRoot(slug: string): string | null {
+    const site = this.get(slug);
+    return site ? contentRootFor(this.sitesRoot, site) : null;
   }
 
   async remove(id: string, options: { deleteFiles: boolean }): Promise<void> {

@@ -1,0 +1,159 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
+import { secrets, sites } from '../src/db/schema.js';
+import { CaddyReconciler, siteInputsFrom } from '../src/caddy/reconciler.js';
+import { previewServerIdFor, routeIdFor } from '../src/caddy/config-builder.js';
+import { CaddyClient } from '../src/caddy/client.js';
+
+/**
+ * The step that was missing entirely.
+ *
+ * `buildCaddyConfig` was written, exported and thoroughly tested, but nothing
+ * ever handed the result to Caddy — so no website was ever served, and the
+ * upstream switch at the end of a deploy patched an `@id` that had never been
+ * registered. The tests below exist so that the *wiring*, not just the shape
+ * of the JSON, has to keep working.
+ */
+
+const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
+
+let tmpDir: string;
+let db: DatabaseHandle;
+const sitesRoot = (): string => path.join(tmpDir, 'sites');
+
+function insertSite(overrides: Partial<typeof sites.$inferInsert> = {}): void {
+  db.db
+    .insert(sites)
+    .values({
+      id: crypto.randomUUID(),
+      slug: 'example',
+      displayName: 'Example',
+      runtime: 'node',
+      domains: ['example.com'],
+      source: { kind: 'git', url: 'https://example.com/x.git', branch: 'main', subdirectory: '' },
+      manifest: { schemaVersion: 1, runtime: 'node' },
+      portBlue: 3001,
+      portGreen: 3002,
+      previewPort: 7001,
+      ...overrides,
+    })
+    .run();
+}
+
+beforeEach(async () => {
+  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'winpanel-reconcile-'));
+  db = createDatabase(path.join(tmpDir, 'panel.db'));
+  migrateDatabase(db, MIGRATIONS);
+});
+
+afterEach(async () => {
+  db.close();
+  await fs.rm(tmpDir, { recursive: true, force: true });
+});
+
+describe('turning the database into a Caddy config', () => {
+  it('produces a route for a site that has a domain', () => {
+    insertSite();
+
+    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot()).buildConfig() as any;
+    const route = config.apps.http.servers.main.routes.find(
+      (r: any) => r['@id'] === routeIdFor('example'),
+    );
+
+    expect(route.match[0].host).toEqual(['example.com']);
+  });
+
+  it('proxies to the colour that is actually serving', () => {
+    insertSite({ activeColour: 'green' });
+
+    const [site] = siteInputsFrom(db, sitesRoot());
+    expect(site!.activePort).toBe(3002);
+  });
+
+  it('serves a static site out of its public folder when it has no repository', () => {
+    // The case the panel could not do at all: a folder of HTML files.
+    insertSite({
+      runtime: 'static',
+      source: { kind: 'blank' },
+      manifest: { schemaVersion: 1, runtime: 'static' },
+    });
+
+    const [site] = siteInputsFrom(db, sitesRoot());
+    expect(site!.staticRoot).toBe(path.join(sitesRoot(), 'example', 'public'));
+  });
+
+  it('serves a static git site out of the current release', () => {
+    // `current` is a junction the deploy repoints, so the path stays stable
+    // while the release behind it changes.
+    insertSite({
+      runtime: 'static',
+      manifest: { schemaVersion: 1, runtime: 'static' },
+    });
+
+    const [site] = siteInputsFrom(db, sitesRoot());
+    expect(site!.staticRoot).toBe(path.join(sitesRoot(), 'example', 'current'));
+  });
+
+  it('gives a domainless site a preview listener and nothing on port 80', () => {
+    insertSite({ domains: [] });
+
+    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot()).buildConfig() as any;
+
+    expect(config.apps.http.servers[previewServerIdFor('example')].listen).toEqual([':7001']);
+    expect(config.apps.http.servers.main.routes).toHaveLength(0);
+  });
+
+  it('asks for certificates only once Cloudflare is connected', () => {
+    /*
+     * Requesting them without a token means the DNS challenge cannot run, and
+     * TLS-ALPN cannot work through Cloudflare's proxy. Caddy would then fail
+     * every HTTPS request rather than serving the site over HTTP.
+     */
+    insertSite();
+    const reconciler = new CaddyReconciler(db, new CaddyClient(), sitesRoot());
+
+    expect(JSON.stringify(reconciler.buildConfig())).not.toContain('acme');
+
+    db.db.insert(secrets).values({ key: 'cloudflare.token', ciphertext: 'x' }).run();
+
+    expect(JSON.stringify(reconciler.buildConfig())).toContain('acme');
+  });
+
+  it('leaves out a site that has been disabled', () => {
+    insertSite({ enabled: false });
+
+    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot()).buildConfig() as any;
+    expect(config.apps.http.servers.main.routes).toHaveLength(0);
+    expect(config.apps.http.servers[previewServerIdFor('example')]).toBeUndefined();
+  });
+
+  it('leaves out the mail route until the mail server is installed', () => {
+    insertSite();
+
+    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot()).buildConfig() as any;
+    const ids = config.apps.http.servers.main.routes.map((r: any) => r['@id']);
+    expect(ids).not.toContain('mail_route');
+  });
+});
+
+describe('applying the configuration', () => {
+  it('reports rather than throws when the web server is not running', async () => {
+    // A fresh machine has no Caddy yet, and the panel is where you go to
+    // install it. Failing hard here would make the panel unusable.
+    insertSite();
+
+    const reconciler = new CaddyReconciler(
+      db,
+      new CaddyClient({ baseUrl: 'http://127.0.0.1:1', timeoutMs: 500 }),
+      sitesRoot(),
+    );
+
+    const error = await reconciler.tryApply();
+    expect(error).toBeInstanceOf(Error);
+
+    await expect(reconciler.apply()).rejects.toThrow();
+  });
+});

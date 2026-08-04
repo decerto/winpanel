@@ -1,0 +1,1 @@
+ALTER TABLE `sites` ADD `preview_port` integer;

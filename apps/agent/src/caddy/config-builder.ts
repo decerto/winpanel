@@ -24,6 +24,11 @@ export interface CaddySiteInput {
   manifest: SiteManifest;
   /** Absolute path served directly, for static sites. */
   staticRoot?: string;
+  /**
+   * Public port this site answers on regardless of Host header, so it can be
+   * reached at `http://<server-ip>:<port>` before any domain exists.
+   */
+  previewPort?: number | null;
   enabled: boolean;
 }
 
@@ -45,28 +50,41 @@ export function routeIdFor(slug: string): string {
   return `${slug}_route`;
 }
 
-/** Builds the handler chain for one site. */
-function buildHandlers(site: CaddySiteInput): unknown[] {
-  if (site.manifest.runtime === 'static') {
-    const handlers: unknown[] = [];
+export function previewServerIdFor(slug: string): string {
+  return `preview_${slug}`;
+}
 
-    if (site.manifest.spaFallback) {
-      // The classic single-page-app problem: refreshing on /dashboard must
-      // serve index.html rather than 404. This is the Caddy equivalent of the
-      // URL Rewrite rule people put in web.config under IIS.
-      handlers.push({
-        handler: 'rewrite',
-        uri: '{http.matchers.file.relative}',
-      });
+export function previewProxyIdFor(slug: string): string {
+  return `${slug}_preview_proxy`;
+}
+
+/**
+ * Builds the handler chain for one site.
+ *
+ * `proxyId` differs between the public route and the preview route because
+ * Caddy requires `@id` values to be unique across the whole config.
+ */
+function buildHandlers(site: CaddySiteInput, proxyId: string): unknown[] {
+  if (site.manifest.runtime === 'static') {
+    // An empty root would make Caddy serve its own working directory, which
+    // is the panel's installation folder. Refusing is the only safe answer.
+    if (!site.staticRoot) {
+      return [
+        {
+          handler: 'static_response',
+          status_code: 503,
+          body: 'This website has no files yet.',
+        },
+      ];
     }
 
-    handlers.push({
-      handler: 'file_server',
-      root: site.staticRoot ?? '',
-      index_names: ['index.html'],
-    });
-
-    return handlers;
+    return [
+      {
+        handler: 'file_server',
+        root: site.staticRoot,
+        index_names: ['index.html'],
+      },
+    ];
   }
 
   if (site.activePort === null) {
@@ -83,7 +101,7 @@ function buildHandlers(site: CaddySiteInput): unknown[] {
 
   return [
     {
-      '@id': proxyIdFor(site.slug),
+      '@id': proxyId,
       handler: 'reverse_proxy',
       upstreams: [{ dial: `127.0.0.1:${site.activePort}` }],
       headers: {
@@ -98,37 +116,74 @@ function buildHandlers(site: CaddySiteInput): unknown[] {
   ];
 }
 
-function buildStaticFileRoute(site: CaddySiteInput): unknown | null {
-  if (site.manifest.runtime !== 'static' || !site.manifest.spaFallback) return null;
+/** The subroute handler chain a site is served through, on any listener. */
+function buildSubroute(site: CaddySiteInput, proxyId: string): unknown {
+  const wantsSpaFallback =
+    site.manifest.runtime === 'static' && site.manifest.spaFallback && Boolean(site.staticRoot);
+
+  if (wantsSpaFallback) {
+    /*
+     * The classic single-page-app problem: refreshing on /dashboard must serve
+     * index.html rather than 404. This is the Caddy equivalent of the URL
+     * Rewrite rule people put in web.config under IIS.
+     *
+     * Two routes, in this order, because that is how Caddy expresses
+     * `try_files`: the first rewrites the request to whichever candidate
+     * exists on disk, the second serves it. Putting a file_server in the
+     * first route instead would serve the file and then fall through to a
+     * second file_server, handling every request twice.
+     */
+    return {
+      handler: 'subroute',
+      routes: [
+        {
+          match: [{ file: { try_files: ['{http.request.uri.path}', '/index.html'] } }],
+          handle: [{ handler: 'rewrite', uri: '{http.matchers.file.relative}' }],
+        },
+        { handle: buildHandlers(site, proxyId) },
+      ],
+    };
+  }
 
   return {
-    match: [{ file: { try_files: ['{http.request.uri.path}', '/index.html'] } }],
-    handle: [{ handler: 'file_server', root: site.staticRoot ?? '' }],
+    handler: 'subroute',
+    routes: [{ handle: buildHandlers(site, proxyId) }],
   };
 }
 
 export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknown> {
   const routes: unknown[] = [];
   const allDomains = new Set<string>();
+  const servers: Record<string, unknown> = {};
 
   for (const site of input.sites) {
-    if (!site.enabled || site.domains.length === 0) continue;
+    if (!site.enabled) continue;
+
+    /*
+     * The preview listener, on its own port with no host matcher.
+     *
+     * This is what makes a site usable before DNS exists — and for a site
+     * that will never have a domain, it is the only way in. It is plain HTTP
+     * on purpose: there is no name to put on a certificate.
+     */
+    if (site.previewPort) {
+      servers[previewServerIdFor(site.slug)] = {
+        listen: [`:${site.previewPort}`],
+        routes: [{ handle: [buildSubroute(site, previewProxyIdFor(site.slug))] }],
+        // No automatic HTTPS: the request arrives by IP, so there is nothing
+        // to issue a certificate for and Caddy must not try.
+        automatic_https: { disable: true },
+      };
+    }
+
+    if (site.domains.length === 0) continue;
 
     for (const domain of site.domains) allDomains.add(domain);
-
-    const fileRoute = buildStaticFileRoute(site);
 
     routes.push({
       '@id': routeIdFor(site.slug),
       match: [{ host: [...site.domains] }],
-      handle: [
-        {
-          handler: 'subroute',
-          routes: fileRoute
-            ? [fileRoute, { handle: buildHandlers(site) }]
-            : [{ handle: buildHandlers(site) }],
-        },
-      ],
+      handle: [buildSubroute(site, proxyIdFor(site.slug))],
       terminal: true,
     });
   }
@@ -162,6 +217,7 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
     apps: {
       http: {
         servers: {
+          ...servers,
           main: {
             listen: [':80', ':443'],
             routes,

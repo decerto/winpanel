@@ -219,6 +219,7 @@ describe('server check definitions', () => {
     expect(ids).toContain('server.time-sync');
     expect(ids).toContain('server.disk-space');
     expect(ids).toContain('server.internet');
+    expect(ids).toContain('server.background-services');
   });
 
   it('runs every check without throwing on this machine', async () => {

@@ -20,6 +20,7 @@
 #define AppPublisher "WinPanel"
 #define PanelPort "8443"
 #define ServiceId "winpanel-agent"
+#define SitesRoot "C:\Sites"
 
 [Setup]
 AppId={{8F3C1A94-2E7B-4D5A-9C61-7B2E4F8A1D33}
@@ -63,7 +64,7 @@ Source: "staging\panel\*"; DestDir: "{app}\panel"; Flags: ignoreversion recurses
 Name: "{app}\data"
 Name: "{app}\logs"
 Name: "{app}\caddy"
-Name: "C:\Sites"
+Name: "{#SitesRoot}"
 
 [Run]
 ; Creates folders and permissions, the restricted build account, firewall
@@ -93,7 +94,7 @@ Type: filesandordirs; Name: "{app}\logs"
 [Code]
 var
   SetupCodePage: TOutputMsgMemoWizardPage;
-  RemoveSitesCheckbox: TNewCheckBox;
+  RemoveSites: Boolean;
 
 function GetPanelUrl(Param: String): String;
 begin
@@ -102,17 +103,39 @@ begin
   Result := 'https://localhost:' + '{#PanelPort}';
 end;
 
-{ Upgrading over a running install cannot work while the service is up: it
-  holds node.exe and the agent's native modules open, and Inno Setup would
-  stall on "the file is in use" for files the user has no idea about. `net
-  stop` is used rather than `sc stop` because it waits for the service to
-  actually stop instead of merely asking. A first install has nothing to stop,
-  so the result code is deliberately ignored. }
+{ Upgrading over a running install cannot work while anything is up: the
+  panel, the web server, the mail server and a service per website all hold
+  files in the program folder open, and Inno Setup would stall on "the file is
+  in use" naming a folder rather than a program the user could recognise -
+  none of these have a window.
+
+  The previous install's own bootstrap does the enumerating, because only it
+  knows what a WinPanel service looks like, and because that logic is testable
+  where Pascal here is not. A first install has no such file, so `net stop`
+  remains as the fallback that at least frees the panel itself. Result codes
+  are ignored throughout: having nothing to stop is the normal case. }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
+  Bootstrap: String;
 begin
   Result := '';
+  Bootstrap := ExpandConstant('{app}\agent\dist\bootstrap-cli.js');
+
+  if FileExists(Bootstrap) and FileExists(ExpandConstant('{app}\bin\node\node.exe')) then
+  begin
+    Exec(
+      ExpandConstant('{app}\bin\node\node.exe'),
+      '"' + Bootstrap + '" stop-all',
+      ExpandConstant('{app}'),
+      SW_HIDE,
+      ewWaitUntilTerminated,
+      ResultCode
+    );
+  end;
+
+  { `net stop` rather than `sc stop` because it waits for the service to
+    actually stop instead of merely asking. }
   Exec(
     ExpandConstant('{sys}\net.exe'),
     'stop {#ServiceId} /y',
@@ -125,7 +148,7 @@ end;
 
 function GetRemoveSitesFlag(Param: String): String;
 begin
-  if (RemoveSitesCheckbox <> nil) and RemoveSitesCheckbox.Checked then
+  if RemoveSites then
     Result := ' --remove-sites'
   else
     Result := '';
@@ -195,14 +218,132 @@ begin
   end;
 end;
 
-procedure InitializeUninstallProgressForm();
+{ The one question the uninstaller has to ask, asked before it starts.
+
+  This used to be a checkbox added to the progress form, which meant the most
+  consequential choice the product ever offers - keep or destroy every website
+  on the server - appeared next to a progress bar that was already moving. By
+  the time it was readable it was arguably already answered.
+
+  Two radio buttons rather than one checkbox: an unticked box is not a decision
+  a user has made, and this is not something to be decided by default. Keeping
+  is preselected because a wrong "keep" costs disk space and a wrong "delete"
+  costs the websites. }
+function InitializeUninstall(): Boolean;
+var
+  Form: TSetupForm;
+  Heading: TNewStaticText;
+  Body: TNewStaticText;
+  KeepChoice: TNewRadioButton;
+  KeepHint: TNewStaticText;
+  RemoveChoice: TNewRadioButton;
+  RemoveHint: TNewStaticText;
+  ContinueButton: TNewButton;
+  CancelButton: TNewButton;
+  ContentWidth: Integer;
+  ButtonWidth: Integer;
 begin
-  RemoveSitesCheckbox := TNewCheckBox.Create(UninstallProgressForm);
-  RemoveSitesCheckbox.Parent := UninstallProgressForm.InnerPage;
-  RemoveSitesCheckbox.Left := ScaleX(16);
-  RemoveSitesCheckbox.Top := UninstallProgressForm.StatusLabel.Top + ScaleY(48);
-  RemoveSitesCheckbox.Width := UninstallProgressForm.InnerPage.ClientWidth - ScaleX(32);
-  RemoveSitesCheckbox.Caption := 'Also delete all website files in C:\Sites';
-  { Unchecked by default: removing the panel should not destroy the websites. }
-  RemoveSitesCheckbox.Checked := False;
+  RemoveSites := False;
+
+  { Size is fixed at construction from Inno 6.6 onwards, so it cannot be
+    trimmed to the content afterwards. Scaling is proportional, so the text
+    wraps to the same number of lines at every DPI: this height was measured
+    against the laid-out controls rather than guessed. }
+  Form := CreateCustomForm(ScaleX(460), ScaleY(252), False, False);
+  try
+    Form.Caption := 'Remove {#AppName}';
+
+    ContentWidth := Form.ClientWidth - ScaleX(40);
+
+    Heading := TNewStaticText.Create(Form);
+    Heading.Parent := Form;
+    Heading.Left := ScaleX(20);
+    Heading.Top := ScaleY(20);
+    Heading.Width := ContentWidth;
+    Heading.Font.Style := [fsBold];
+    Heading.Caption := 'What should happen to your websites?';
+
+    Body := TNewStaticText.Create(Form);
+    Body.Parent := Form;
+    Body.Left := ScaleX(20);
+    Body.Top := Heading.Top + Heading.Height + ScaleY(10);
+    Body.Width := ContentWidth;
+    Body.WordWrap := True;
+    Body.AutoSize := True;
+    Body.Caption :=
+      'Removing {#AppName} stops and removes the control panel, the web server, the mail ' +
+      'server and every website''s background program. Your website files are separate, ' +
+      'and are kept unless you say otherwise.';
+
+    KeepChoice := TNewRadioButton.Create(Form);
+    KeepChoice.Parent := Form;
+    KeepChoice.Left := ScaleX(20);
+    KeepChoice.Top := Body.Top + Body.Height + ScaleY(18);
+    KeepChoice.Width := ContentWidth;
+    KeepChoice.Caption := 'Keep my website files';
+    KeepChoice.Checked := True;
+
+    KeepHint := TNewStaticText.Create(Form);
+    KeepHint.Parent := Form;
+    KeepHint.Left := ScaleX(38);
+    KeepHint.Top := KeepChoice.Top + KeepChoice.Height + ScaleY(2);
+    KeepHint.Width := ContentWidth - ScaleX(18);
+    KeepHint.WordWrap := True;
+    KeepHint.AutoSize := True;
+    KeepHint.Caption :=
+      '{#SitesRoot} is left exactly as it is, so you can reinstall or move the sites ' +
+      'elsewhere later.';
+
+    RemoveChoice := TNewRadioButton.Create(Form);
+    RemoveChoice.Parent := Form;
+    RemoveChoice.Left := ScaleX(20);
+    RemoveChoice.Top := KeepHint.Top + KeepHint.Height + ScaleY(16);
+    RemoveChoice.Width := ContentWidth;
+    RemoveChoice.Caption := 'Delete my website files as well';
+
+    RemoveHint := TNewStaticText.Create(Form);
+    RemoveHint.Parent := Form;
+    RemoveHint.Left := ScaleX(38);
+    RemoveHint.Top := RemoveChoice.Top + RemoveChoice.Height + ScaleY(2);
+    RemoveHint.Width := ContentWidth - ScaleX(18);
+    RemoveHint.WordWrap := True;
+    RemoveHint.AutoSize := True;
+    RemoveHint.Caption :=
+      'Everything in {#SitesRoot} is deleted permanently, including uploads and anything ' +
+      'not stored elsewhere. This cannot be undone.';
+
+    CancelButton := TNewButton.Create(Form);
+    CancelButton.Parent := Form;
+    CancelButton.Caption := 'Cancel';
+    CancelButton.ModalResult := mrCancel;
+    CancelButton.Cancel := True;
+
+    ContinueButton := TNewButton.Create(Form);
+    ContinueButton.Parent := Form;
+    ContinueButton.Caption := 'Continue';
+    ContinueButton.ModalResult := mrOk;
+    ContinueButton.Default := True;
+
+    { Left to itself a button sizes to its own caption, which leaves two
+      buttons of visibly different widths sitting side by side. }
+    ButtonWidth := Form.CalculateButtonWidth([ContinueButton.Caption, CancelButton.Caption]);
+
+    CancelButton.Width := ButtonWidth;
+    CancelButton.Height := ScaleY(26);
+    CancelButton.Left := Form.ClientWidth - ScaleX(20) - ButtonWidth;
+    CancelButton.Top := Form.ClientHeight - ScaleY(20) - CancelButton.Height;
+
+    ContinueButton.Width := ButtonWidth;
+    ContinueButton.Height := ScaleY(26);
+    ContinueButton.Left := CancelButton.Left - ScaleX(8) - ButtonWidth;
+    ContinueButton.Top := CancelButton.Top;
+
+    Form.ActiveControl := KeepChoice;
+
+    Result := Form.ShowModal() = mrOk;
+    if Result then
+      RemoveSites := RemoveChoice.Checked;
+  finally
+    Form.Free();
+  end;
 end;

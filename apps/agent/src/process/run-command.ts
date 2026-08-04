@@ -198,3 +198,29 @@ export async function runCommandOrThrow(options: RunOptions): Promise<RunResult>
   }
   return result;
 }
+
+/**
+ * Starts a command that must outlive this process, and forgets about it.
+ *
+ * The one case for this is the agent asking Windows to stop the agent: the
+ * moment that request lands, this process is killed, and a normal child would
+ * be taken down with it before Windows had finished reading the request.
+ *
+ * Deliberately gives back nothing. There is no exit code to wait for, and
+ * pretending otherwise would invite it to be used where `runCommand` belongs.
+ */
+export function runDetached(options: Pick<RunOptions, 'exe' | 'args' | 'cwd' | 'env'>): void {
+  assertSafeArgs(options.args);
+
+  const child = spawn(options.exe, [...options.args], {
+    cwd: options.cwd,
+    env: buildEnv(options.env),
+    // Never true. See the module comment.
+    shell: false,
+    windowsHide: true,
+    detached: true,
+    stdio: 'ignore',
+  });
+
+  child.unref();
+}

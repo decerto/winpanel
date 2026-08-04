@@ -16,11 +16,14 @@ export interface SiteStatus {
 export function siteStatus(site: {
   lastDeploymentStatus: string | null;
   activePort: number | null;
+  runtime?: string;
 }): SiteStatus {
   switch (site.lastDeploymentStatus) {
     case 'succeeded':
       return {
-        label: site.activePort ? `Live on ${site.activePort}` : 'Live',
+        // A static site has no process and therefore no port; naming one
+        // would be inventing a detail that does not exist.
+        label: site.runtime !== 'static' && site.activePort ? `Live on ${site.activePort}` : 'Live',
         dot: 'bg-ok',
         text: 'text-ok',
       };
@@ -30,7 +33,7 @@ export function siteStatus(site: {
     case 'pending':
       return { label: 'Deploying', dot: 'bg-info', text: 'text-info' };
     default:
-      return { label: 'Not deployed', dot: 'bg-idle', text: 'text-ink-faint' };
+      return { label: 'Not published yet', dot: 'bg-idle', text: 'text-ink-faint' };
   }
 }
 

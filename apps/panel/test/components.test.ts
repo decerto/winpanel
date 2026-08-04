@@ -353,11 +353,19 @@ describe('what a website is said to be doing', () => {
     // nothing. Claiming "live" for something never deployed sends people
     // looking for a fault in DNS.
     expect(siteStatus({ lastDeploymentStatus: null, activePort: 3001 }).label).toBe(
-      'Not deployed',
+      'Not published yet',
     );
     expect(siteStatus({ lastDeploymentStatus: 'succeeded', activePort: 3001 }).label).toBe(
       'Live on 3001',
     );
+  });
+
+  it('does not claim a port for a static site, which has no process', () => {
+    // Static files are served by the web server itself. Naming a port would
+    // send someone looking for a service that was never meant to exist.
+    expect(
+      siteStatus({ lastDeploymentStatus: 'succeeded', activePort: 3001, runtime: 'static' }).label,
+    ).toBe('Live');
   });
 
   it('distinguishes a failed deploy from one still running', () => {

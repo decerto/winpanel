@@ -150,6 +150,8 @@ export const sites = sqliteTable(
     manifest: text('manifest', { mode: 'json' }).notNull(),
     portBlue: integer('port_blue'),
     portGreen: integer('port_green'),
+    /** Public port that reaches this site without a domain. */
+    previewPort: integer('preview_port'),
     activeColour: text('active_colour', { enum: ['blue', 'green'] }).notNull().default('blue'),
     enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
     diskQuotaBytes: integer('disk_quota_bytes').notNull().default(21474836480),
@@ -165,7 +167,7 @@ export const portAllocations = sqliteTable(
     siteId: text('site_id')
       .notNull()
       .references(() => sites.id, { onDelete: 'cascade' }),
-    colour: text('colour', { enum: ['blue', 'green'] }).notNull(),
+    colour: text('colour', { enum: ['blue', 'green', 'preview'] }).notNull(),
     allocatedAt: integer('allocated_at', { mode: 'timestamp_ms' })
       .notNull()
       .default(sql`(unixepoch() * 1000)`),

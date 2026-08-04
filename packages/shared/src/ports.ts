@@ -46,6 +46,20 @@ export const APP_PORT_RANGE_END = 3999;
 export const DOTNET_PORT_RANGE_START = 5000;
 export const DOTNET_PORT_RANGE_END = 5999;
 
+/**
+ * Every site also gets a "preview" port on the public interface.
+ *
+ * Without one, a site is only reachable once a domain exists and DNS has
+ * propagated — which makes it impossible to check that what you just uploaded
+ * actually works. This band is served by Caddy with no host matching, so
+ * `http://<server-ip>:<preview-port>` always reaches the site.
+ *
+ * Distinct from the app port band on purpose: app ports bind to loopback only
+ * and must never be exposed, whereas these are deliberately public.
+ */
+export const PREVIEW_PORT_RANGE_START = 7000;
+export const PREVIEW_PORT_RANGE_END = 7999;
+
 export const Port = z.number().int().min(1).max(65535);
 
 export interface PortRejection {
@@ -100,7 +114,7 @@ export function isAssignablePort(port: number, takenPorts?: ReadonlySet<number>)
 export const PortAllocation = z.object({
   port: Port,
   siteId: z.string().uuid(),
-  colour: z.enum(['blue', 'green']),
+  colour: z.enum(['blue', 'green', 'preview']),
   allocatedAt: z.coerce.date(),
 });
 export type PortAllocation = z.infer<typeof PortAllocation>;

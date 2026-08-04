@@ -4,13 +4,15 @@ import { eq } from 'drizzle-orm';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import os from 'node:os';
-import { Hostname, SiteManifest } from '@winpanel/shared';
+import { Hostname, Runtime, SiteManifest, type SiteSource } from '@winpanel/shared';
 import { protectedProcedure, router } from '../trpc.js';
 import { SiteError, SiteService } from '../../sites/site-service.js';
 import { sites } from '../../db/schema.js';
 import { detectApp } from '../../detect/detector.js';
 import { discoverNodeVersions, matchVersion } from '../../sites/node-versions.js';
 import { GitClient, validateGitRef, validateRepositoryUrl } from '../../sites/git-client.js';
+import { serviceIdFor } from '../../sites/deploy-handler.js';
+import { localAddresses } from '../../tls/panel-certificate.js';
 
 /**
  * Websites: creating, inspecting, deploying.
@@ -29,6 +31,31 @@ const GitSourceInput = z.object({
 });
 
 const UploadSourceInput = z.object({ kind: z.literal('upload') });
+const BlankSourceInput = z.object({ kind: z.literal('blank') });
+
+/**
+ * The manifest for a site that was not read out of a repository.
+ *
+ * A site created from a zip, or from nothing at all, has no `winpanel.json` to
+ * inspect — so the panel supplies one that matches the runtime the user chose.
+ * Static sites are served straight out of `public`, which is why `staticRoot`
+ * is left unset: the empty relative path *is* the public folder.
+ */
+function defaultManifestFor(runtime: Runtime, spaFallback: boolean): SiteManifest {
+  return SiteManifest.parse({
+    runtime,
+    steps: [],
+    spaFallback: runtime === 'static' ? spaFallback : false,
+    app: runtime === 'node' ? { entry: 'index.js' } : {},
+  });
+}
+
+/** `http://<server-ip>:<port>`, the address that works before DNS does. */
+function previewUrlFor(previewPort: number | null): string | null {
+  if (previewPort === null) return null;
+  const address = localAddresses().find((ip) => !ip.includes(':')) ?? 'your-server-ip';
+  return `http://${address}:${previewPort}`;
+}
 
 export const sitesRouter = router({
   list: protectedProcedure.query(({ ctx }) => {
@@ -44,9 +71,12 @@ export const sitesRouter = router({
         slug: site.slug,
         displayName: site.displayName,
         runtime: site.runtime,
+        sourceKind: (site.source as SiteSource).kind,
         domains: site.domains as string[],
         enabled: site.enabled,
         activePort: site.activeColour === 'blue' ? site.portBlue : site.portGreen,
+        previewPort: site.previewPort,
+        previewUrl: previewUrlFor(site.previewPort),
         lastDeploymentStatus: last?.status ?? null,
         updatedAt: site.updatedAt,
       };
@@ -63,6 +93,10 @@ export const sitesRouter = router({
       return {
         ...site,
         domains: site.domains as string[],
+        sourceKind: (site.source as SiteSource).kind,
+        previewUrl: previewUrlFor(site.previewPort),
+        /** Folder the user should put files in, relative to the site root. */
+        contentFolder: (site.source as SiteSource).kind === 'git' ? 'current' : 'public',
         deployments: service.deploymentsFor(site.id, 10),
       };
     }),
@@ -142,13 +176,31 @@ export const sitesRouter = router({
       }
     }),
 
+  /**
+   * Creates a website of any kind.
+   *
+   * Three things are deliberately independent here: where the files come from
+   * (`source`), what runs them (`runtime`), and what address they answer on
+   * (`domains`). Tying them together is what made this git-only: a folder of
+   * HTML files has no repository, and a site being set up has no DNS yet.
+   * Neither is a reason to refuse to create it.
+   */
   create: protectedProcedure
     .input(
       z.object({
         displayName: z.string().min(1).max(120),
-        domains: z.array(Hostname).min(1).max(20),
-        source: z.discriminatedUnion('kind', [GitSourceInput, UploadSourceInput]),
-        manifest: SiteManifest,
+        /** May be empty. The site is then reachable on its preview port. */
+        domains: z.array(Hostname).max(20).default([]),
+        source: z.discriminatedUnion('kind', [
+          GitSourceInput,
+          UploadSourceInput,
+          BlankSourceInput,
+        ]),
+        /** Ignored when a manifest is supplied, which already names one. */
+        runtime: Runtime.default('static'),
+        /** Only git sites have one to inspect; otherwise the panel writes it. */
+        manifest: SiteManifest.optional(),
+        spaFallback: z.boolean().default(false),
         envVars: z.record(z.string(), z.string()).default({}),
         deployNow: z.boolean().default(true),
       }),
@@ -156,39 +208,65 @@ export const sitesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
 
-      const source =
+      if (input.source.kind === 'git' && !input.manifest) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Check the repository first so the panel knows how to build it.',
+        });
+      }
+
+      const manifest = input.manifest ?? defaultManifestFor(input.runtime, input.spaFallback);
+
+      const source: SiteSource =
         input.source.kind === 'git'
           ? {
-              kind: 'git' as const,
+              kind: 'git',
               url: input.source.url,
               branch: input.source.branch,
               subdirectory: input.source.subdirectory,
             }
-          : { kind: 'upload' as const };
+          : { kind: input.source.kind };
 
       try {
         const created = await service.create({
           displayName: input.displayName,
           domains: input.domains,
           source,
-          manifest: input.manifest,
+          manifest,
           envVars: input.envVars,
           ...(input.source.kind === 'git' && input.source.token
             ? { gitToken: input.source.token }
             : {}),
         });
 
+        /*
+         * Every kind of site needs publishing, not just git ones.
+         *
+         * A static site has nothing to build, but it still has to be added to
+         * the web server's configuration before anything reaches it — which
+         * is exactly the step that used to be missing.
+         */
         let jobId: string | null = null;
-        if (input.deployNow && input.source.kind === 'git') {
+        if (input.deployNow) {
           jobId = ctx.app.jobs.enqueue({
             kind: 'deploy',
-            title: `Deploying ${input.displayName}`,
+            title:
+              source.kind === 'git'
+                ? `Deploying ${input.displayName}`
+                : `Publishing ${input.displayName}`,
             payload: { siteId: created.id },
             siteId: created.id,
           });
+        } else {
+          // Still make the route exist, so the site answers immediately.
+          await ctx.app.routing.tryApply();
         }
 
-        return { ...created, jobId };
+        return {
+          ...created,
+          jobId,
+          previewUrl: previewUrlFor(created.previewPort),
+        };
       } catch (error) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
@@ -205,14 +283,86 @@ export const sitesRouter = router({
       const site = service.get(input.slug);
       if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
 
+      const isGit = (site.source as SiteSource).kind === 'git';
+
       const jobId = ctx.app.jobs.enqueue({
         kind: 'deploy',
-        title: `Deploying ${site.displayName}`,
+        title: `${isGit ? 'Deploying' : 'Publishing'} ${site.displayName}`,
         payload: { siteId: site.id, ...(input.ref ? { ref: input.ref } : {}) },
         siteId: site.id,
       });
 
       return { jobId };
+    }),
+
+  /**
+   * Changes which addresses a website answers on.
+   *
+   * Applied to the web server immediately rather than on the next deploy: a
+   * domain you have just pointed at this server is expected to work now, and
+   * a static site may never deploy again.
+   */
+  setDomains: protectedProcedure
+    .input(
+      z.object({
+        slug: z.string().min(1),
+        domains: z.array(Hostname).max(20),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
+      const site = service.get(input.slug);
+      if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
+
+      // Two sites answering on the same host is a config Caddy accepts and
+      // then resolves unpredictably, so it is refused here instead.
+      const clash = service
+        .list()
+        .filter((other) => other.id !== site.id)
+        .flatMap((other) => other.domains as string[])
+        .find((domain) => input.domains.includes(domain));
+
+      if (clash) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `${clash} is already used by another website on this server.`,
+        });
+      }
+
+      ctx.app.db.db
+        .update(sites)
+        .set({ domains: input.domains, updatedAt: new Date() })
+        .where(eq(sites.id, site.id))
+        .run();
+
+      const error = await ctx.app.routing.tryApply();
+      return {
+        ok: true,
+        ...(error
+          ? { warning: `Saved, but the web server did not accept it: ${error.message}` }
+          : {}),
+      };
+    }),
+
+  /** Takes a website offline without deleting anything. */
+  setEnabled: protectedProcedure
+    .input(z.object({ slug: z.string().min(1), enabled: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
+      const site = service.get(input.slug);
+      if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
+
+      ctx.app.db.db
+        .update(sites)
+        .set({ enabled: input.enabled, updatedAt: new Date() })
+        .where(eq(sites.id, site.id))
+        .run();
+
+      const error = await ctx.app.routing.tryApply();
+      return {
+        ok: true,
+        ...(error ? { warning: `Saved, but the web server did not accept it: ${error.message}` } : {}),
+      };
     }),
 
   /**
@@ -307,7 +457,34 @@ export const sitesRouter = router({
       const site = service.get(input.slug);
       if (!site) return { ok: true };
 
+      /*
+       * Stop the site's processes before its records go.
+       *
+       * Deleting the row alone would leave two Windows services running for a
+       * website that no longer exists, holding ports the allocator has just
+       * been told are free. The next site created would then be handed a port
+       * something is already listening on, and fail to start for reasons that
+       * point nowhere near here.
+       */
+      for (const colour of ['blue', 'green'] as const) {
+        const serviceId = serviceIdFor(site.slug, colour);
+        try {
+          if (await ctx.app.services.isInstalled(serviceId)) {
+            await ctx.app.services.stop(serviceId).catch(() => undefined);
+            await ctx.app.services.uninstall(serviceId);
+          }
+        } catch {
+          // A service that cannot be removed must not block deleting the site;
+          // it is reported by the health checks instead.
+        }
+      }
+
       await service.remove(site.id, { deleteFiles: input.deleteFiles });
+
+      // Otherwise the route outlives the site and keeps answering, or worse,
+      // keeps proxying to a port that has since been given to something else.
+      await ctx.app.routing.tryApply();
+
       return { ok: true };
     }),
 });

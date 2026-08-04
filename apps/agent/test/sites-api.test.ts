@@ -84,6 +84,19 @@ afterEach(async () => {
   await server.close();
   await app.shutdown();
   await fs.rm(tmpDir, { recursive: true, force: true });
+
+  /*
+   * The site folders too, not just the database.
+   *
+   * `config` reads its environment once when the module is first imported,
+   * which is before any `beforeEach` runs — so WINPANEL_SITES_ROOT set above
+   * does not apply and every test in the suite shares one real folder. Left
+   * behind, those folders make a test that checks a file was created pass on
+   * a clean machine and fail on the second run, which is the least useful
+   * kind of failure there is.
+   */
+  await fs.rm(app.config.sitesRoot, { recursive: true, force: true });
+
   delete process.env['WINPANEL_HTTPS'];
   delete process.env['WINPANEL_SITES_ROOT'];
 });
@@ -152,8 +165,61 @@ describe('creating a website', () => {
     expect(result.body.error).toBeDefined();
   });
 
-  it('requires at least one web address', async () => {
+  it('creates a website with no web address at all', async () => {
+    /*
+     * A site being set up has no DNS yet, and a site being used as a staging
+     * copy may never get any. Refusing to create one was what forced every
+     * website through a domain it did not have.
+     */
+    const result = await call('POST', 'sites.create', {
+      ...validInput,
+      displayName: 'No Domain Yet',
+      domains: [],
+    });
+
+    expect(result.body.error).toBeUndefined();
+    expect(result.body.result.data.slug).toBe('no-domain-yet');
+  }, 30_000);
+
+  it('gives every website a preview address that works without a domain', async () => {
     const result = await call('POST', 'sites.create', { ...validInput, domains: [] });
+
+    const { previewPort, previewUrl } = result.body.result.data;
+    expect(previewPort).toBeGreaterThanOrEqual(7000);
+    expect(previewPort).toBeLessThanOrEqual(7999);
+    expect(previewUrl).toMatch(/^http:\/\/.+:\d+$/);
+  }, 30_000);
+
+  it('creates a blank static website with a starter page', async () => {
+    // The case that was impossible before: a website that is just HTML files.
+    const result = await call('POST', 'sites.create', {
+      displayName: 'Just HTML',
+      domains: [],
+      source: { kind: 'blank' },
+      runtime: 'static',
+      deployNow: false,
+    });
+
+    expect(result.body.error).toBeUndefined();
+    expect(result.body.result.data.scaffolded).toContain('index.html');
+
+    const page = await fs.readFile(
+      path.join(app.config.sitesRoot, result.body.result.data.slug, 'public', 'index.html'),
+      'utf8',
+    );
+    expect(page).toContain('Just HTML');
+  }, 30_000);
+
+  it('refuses a git website that has not been inspected', async () => {
+    // Without a manifest the panel has no idea how to build it, and would
+    // fail much later with something far less obvious.
+    const result = await call('POST', 'sites.create', {
+      displayName: 'From Git',
+      domains: [],
+      source: { kind: 'git', url: 'https://github.com/example/x.git', branch: 'main' },
+      deployNow: false,
+    });
+
     expect(result.body.error).toBeDefined();
   });
 

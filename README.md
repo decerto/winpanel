@@ -26,12 +26,37 @@ artifact. The equivalent configuration here is generated for you — see
 
 | Area | Capability |
 | --- | --- |
-| **Websites** | Deploy from Git or a zip upload, zero-downtime releases, one-click rollback |
+| **Websites** | Static files, Node and .NET apps, from Git or managed by hand |
+| **Releases** | Zero-downtime deploys and one-click rollback, for sites built from Git |
 | **HTTPS** | Free certificates, renewed automatically, using the DNS challenge |
 | **DNS** | Manage records through Cloudflare, including the proxy toggle |
 | **Email** | Self-hosted mailboxes you can use from Outlook |
 | **Files** | Browse, upload, edit and download each site's files from the browser |
 | **Server** | Detects and fixes the Windows settings that break Node hosting |
+
+---
+
+## Kinds of website
+
+The panel asks one question first — what you are hosting — because it decides
+everything after it.
+
+| Kind | What it does |
+| --- | --- |
+| **A simple website** | Creates the folder and a starter page. Edit or replace the files from the Files tab; changes are live immediately. |
+| **I already have the files** | The same, starting empty. |
+| **From a Git repository** | Clones your repository, works out how to build it, and deploys it blue/green. |
+| **A Node app from scratch** | Writes a small working Node server you can edit here. |
+
+The first two, and the last, keep their files in the site's `public` folder.
+Nothing the panel does ever overwrites that folder — it is yours. Only sites
+built from Git use `releases/`, which *is* replaced on every deploy.
+
+### Reaching a site before it has a domain
+
+Every website gets a **preview address**, `http://<your-server-ip>:<port>`,
+allocated from ports 7000–7999. It works the moment the site is created, with
+no domain and no DNS. A web address is optional and can be added at any time.
 
 ---
 
@@ -80,6 +105,7 @@ packages/
 | `security/vault.ts` | Encrypts stored secrets |
 | `checks/` | The status checks and their fixes |
 | `caddy/` | Generates and applies web server configuration |
+| `caddy/reconciler.ts` | Pushes the database's view of what should be served into Caddy |
 | `detect/` | Works out how to build a project |
 | `jobs/queue.ts` | Runs deployments and other long tasks |
 
@@ -87,9 +113,10 @@ packages/
 
 ## Site configuration
 
-Each site gets a `winpanel.json` describing how to build and run it. The panel works
-this out by looking at your project and asks you to confirm; you can commit the file so
-later deploys need no setup at all.
+Sites built from Git get a `winpanel.json` describing how to build and run
+them. The panel works this out by looking at your project and asks you to
+confirm; you can commit the file so later deploys need no setup at all.
+(Sites you manage by hand have no build, so there is nothing to configure.)
 
 A repository with a `frontend/` and a `backend/`, where the frontend builds into the
 backend and the backend serves it, is detected automatically and produces:
@@ -121,6 +148,7 @@ then run — this file is read from your repository, so it is treated as untrust
 | 8443 | The control panel | Anywhere |
 | 80, 443 | Your websites | Anywhere |
 | 25, 465, 587, 993 | Email | Anywhere |
+| 7000–7999 | Website previews | Anywhere |
 | 2019 | Web server admin | This machine only |
 | 8080 | Mail server admin | This machine only |
 | 3001+ | Your apps | This machine only |

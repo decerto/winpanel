@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, inject, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import {
   ChevronRight,
@@ -11,6 +11,7 @@ import {
 } from 'lucide-vue-next';
 import { api, describeError } from '../../lib/api';
 import { formatBytes } from '../../lib/format';
+import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
 import EmptyState from '../../components/EmptyState.vue';
 
@@ -24,6 +25,16 @@ import EmptyState from '../../components/EmptyState.vue';
 
 const route = useRoute();
 const slug = computed(() => (route.params['slug'] as string) ?? '');
+
+/*
+ * Open where the files are, not at the site root.
+ *
+ * The root holds `releases`, `shared` and `logs` — all panel bookkeeping. For
+ * a website that is just HTML, landing there means the first thing you see is
+ * four folders none of which are yours.
+ */
+const { site } = inject(siteContextKey)!;
+const startPath = computed(() => site.value?.contentFolder ?? '');
 
 type Listing = Awaited<ReturnType<typeof api.files.list.query>>;
 
@@ -121,6 +132,23 @@ async function remove(entry: { name: string; path: string }): Promise<void> {
 }
 
 watch([slug, showHidden], load, { immediate: true });
+
+/*
+ * The site loads after this page mounts, so the starting folder is only known
+ * once it arrives. Applied once, and never afterwards, so it cannot yank the
+ * user back out of a folder they have navigated into.
+ */
+const startApplied = ref(false);
+watch(
+  startPath,
+  (folder) => {
+    if (startApplied.value || !folder) return;
+    startApplied.value = true;
+    currentPath.value = folder;
+    void load();
+  },
+  { immediate: true },
+);
 </script>
 
 <template>

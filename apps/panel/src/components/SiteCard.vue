@@ -62,7 +62,24 @@ const TOOLS = [
             <ExternalLink :size="11" class="shrink-0" aria-hidden="true" />
           </a>
           <span v-if="extras > 0" class="text-xs text-ink-faint">+{{ extras }} more</span>
-          <span v-if="!primary" class="text-sm text-ink-faint">No web address yet</span>
+
+          <!--
+            The address that works before DNS does.
+            Shown only when there is no domain, because once there is one this
+            is a detail rather than the way in.
+          -->
+          <a
+            v-if="!primary && site.previewUrl"
+            :href="site.previewUrl"
+            target="_blank"
+            rel="noreferrer noopener"
+            class="inline-flex min-w-0 items-center gap-1 text-sm text-ink-muted
+                   hover:text-brand-bright"
+          >
+            <span class="truncate font-mono">{{ site.previewUrl }}</span>
+            <ExternalLink :size="11" class="shrink-0" aria-hidden="true" />
+          </a>
+          <span v-else-if="!primary" class="text-sm text-ink-faint">No web address yet</span>
         </div>
       </div>
 

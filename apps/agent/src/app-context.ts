@@ -7,6 +7,7 @@ import { JobQueue } from './jobs/queue.js';
 import { SecretVault } from './security/vault.js';
 import { AuthService } from './services/auth-service.js';
 import { CaddyClient } from './caddy/client.js';
+import { CaddyReconciler } from './caddy/reconciler.js';
 import { ServiceManager } from './windows/service-manager.js';
 import { SiteService } from './sites/site-service.js';
 import { createDeployHandler } from './sites/deploy-handler.js';
@@ -31,6 +32,8 @@ export interface AppContext {
   auth: AuthService;
   jobs: JobQueue;
   caddy: CaddyClient;
+  /** Pushes the panel's view of what should be served into Caddy. */
+  routing: CaddyReconciler;
   services: ServiceManager;
   sites: SiteService;
   shutdown: () => Promise<void>;
@@ -64,6 +67,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
   jobs.reconcileOrphans();
 
   const caddy = new CaddyClient();
+  const routing = new CaddyReconciler(db, caddy, config.sitesRoot);
   const services = new ServiceManager(
     path.join(config.binDir, 'WinSW.exe'),
     path.join(config.dataDir, 'services'),
@@ -76,6 +80,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
       createDeployHandler({
         db,
         caddy,
+        routing,
         services,
         tools: { resolve: resolveTool },
         gitPath: path.join(config.binDir, 'git', 'cmd', 'git.exe'),
@@ -114,6 +119,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     auth,
     jobs,
     caddy,
+    routing,
     services,
     sites,
     shutdown: async () => {

@@ -1,22 +1,78 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
-import { ArrowLeft, Check, FolderTree, Loader, Plus, Trash2 } from 'lucide-vue-next';
+import {
+  ArrowLeft,
+  Check,
+  FileCode,
+  FolderTree,
+  GitBranch,
+  Loader,
+  Plus,
+  Server,
+  Trash2,
+  Upload,
+} from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
 import AlertMessage from '../components/AlertMessage.vue';
 
 /**
  * Add a website.
  *
- * Built around confirming rather than configuring: the panel clones the
- * repository, works out how to build it, and shows the result in plain
- * English. The user only has to intervene when the guess is wrong.
+ * The first question is what kind of website it is, because that decides
+ * everything after it. Assuming a git repository — as this page used to —
+ * made a folder of HTML files impossible to host, which is the simplest kind
+ * of website there is.
+ *
+ * For git the page still confirms rather than configures: the panel clones the
+ * repository, works out how to build it, and shows the result in plain English.
  */
 
 const router = useRouter();
 
-type Step = 'source' | 'confirm' | 'domain' | 'secrets';
-const step = ref<Step>('source');
+type Kind = 'static' | 'upload' | 'git' | 'node';
+
+const KINDS = [
+  {
+    key: 'static' as const,
+    icon: FileCode,
+    title: 'A simple website',
+    blurb:
+      'HTML, CSS and images. We create the folder and a starter page for you to edit or replace.',
+  },
+  {
+    key: 'upload' as const,
+    icon: Upload,
+    title: 'I already have the files',
+    blurb:
+      'The same, but starting empty. Add your files from the Files tab once the website exists.',
+  },
+  {
+    key: 'git' as const,
+    icon: GitBranch,
+    title: 'From a Git repository',
+    blurb:
+      'We clone your repository, work out how to build it, and redeploy whenever you ask.',
+  },
+  {
+    key: 'node' as const,
+    icon: Server,
+    title: 'A Node app from scratch',
+    blurb:
+      'Creates a small working Node server you can edit here. Choose this to start writing code straight away.',
+  },
+];
+
+type Step = 'kind' | 'source' | 'confirm' | 'domain' | 'secrets';
+const step = ref<Step>('kind');
+const kind = ref<Kind>('static');
+
+/** Everything except git is created from a folder rather than a build. */
+const isGit = computed(() => kind.value === 'git');
+/** Only these run a process, so only these can have secrets. */
+const hasSecrets = computed(() => kind.value === 'git' || kind.value === 'node');
+/** Only these are served by the web server directly. */
+const servesFiles = computed(() => kind.value === 'static' || kind.value === 'upload');
 
 const repoUrl = ref('');
 const branch = ref('main');
@@ -24,6 +80,7 @@ const token = ref('');
 const isPrivate = ref(false);
 const displayName = ref('');
 const domains = ref('');
+const spaFallback = ref(false);
 
 /**
  * Deep-links to the right token page for the host being used, since every
@@ -62,6 +119,11 @@ const domainList = computed(() =>
 const lowConfidence = computed(
   () => inspection.value !== null && inspection.value.confidence < 0.6,
 );
+
+function chooseKind(next: Kind): void {
+  kind.value = next;
+  step.value = next === 'git' ? 'source' : 'domain';
+}
 
 async function testRepository(): Promise<void> {
   busy.value = true;
@@ -110,8 +172,34 @@ async function inspectRepository(): Promise<void> {
   }
 }
 
+/** The source and runtime each choice on the first step maps to. */
+function payloadFor(): {
+  source: Record<string, unknown> & { kind: 'git' | 'upload' | 'blank' };
+  runtime: 'static' | 'node';
+} {
+  switch (kind.value) {
+    case 'git':
+      return {
+        source: {
+          kind: 'git',
+          url: repoUrl.value.trim(),
+          branch: branch.value.trim(),
+          subdirectory: '',
+          ...(token.value ? { token: token.value } : {}),
+        },
+        runtime: 'static',
+      };
+    case 'upload':
+      return { source: { kind: 'upload' }, runtime: 'static' };
+    case 'node':
+      return { source: { kind: 'blank' }, runtime: 'node' };
+    default:
+      return { source: { kind: 'blank' }, runtime: 'static' };
+  }
+}
+
 async function createSite(): Promise<void> {
-  if (!inspection.value) return;
+  if (isGit.value && !inspection.value) return;
 
   busy.value = true;
   error.value = null;
@@ -121,17 +209,17 @@ async function createSite(): Promise<void> {
       envRows.value.filter((row) => row.key.trim()).map((row) => [row.key.trim(), row.value]),
     );
 
+    const { source, runtime } = payloadFor();
+
     const created = await api.sites.create.mutate({
       displayName: displayName.value.trim(),
       domains: domainList.value,
-      source: {
-        kind: 'git',
-        url: repoUrl.value.trim(),
-        branch: branch.value.trim(),
-        subdirectory: '',
-        ...(token.value ? { token: token.value } : {}),
-      },
-      manifest: inspection.value.manifest,
+      source: source as never,
+      runtime,
+      // Git sites carry the manifest the inspection produced; for everything
+      // else the server writes one that matches the runtime.
+      ...(isGit.value && inspection.value ? { manifest: inspection.value.manifest } : {}),
+      spaFallback: spaFallback.value,
       envVars,
       deployNow: true,
     });
@@ -144,14 +232,24 @@ async function createSite(): Promise<void> {
   }
 }
 
-const STEPS = [
-  { key: 'source', label: 'Your code' },
-  { key: 'confirm', label: 'What we found' },
-  { key: 'domain', label: 'Web address' },
-  { key: 'secrets', label: 'Settings' },
-] as const;
+/** The wizard is shorter when there is no repository to look at. */
+const STEPS = computed(() => {
+  const steps: Array<{ key: Step; label: string }> = [{ key: 'kind', label: 'Type' }];
 
-const stepIndex = computed(() => STEPS.findIndex((s) => s.key === step.value));
+  if (isGit.value) {
+    steps.push({ key: 'source', label: 'Your code' }, { key: 'confirm', label: 'What we found' });
+  }
+
+  steps.push({ key: 'domain', label: 'Web address' });
+  if (hasSecrets.value) steps.push({ key: 'secrets', label: 'Settings' });
+
+  return steps;
+});
+
+const stepIndex = computed(() => STEPS.value.findIndex((s) => s.key === step.value));
+
+/** Where "Back" goes from the address step, which differs per kind. */
+const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
 </script>
 
 <template>
@@ -163,7 +261,7 @@ const stepIndex = computed(() => STEPS.findIndex((s) => s.key === step.value));
       <ArrowLeft :size="15" aria-hidden="true" /> All websites
     </RouterLink>
 
-    <!-- Where you are in four steps, and how much is left. -->
+    <!-- Where you are, and how much is left. -->
     <ol class="mb-6 flex items-center gap-2">
       <li v-for="(entry, index) in STEPS" :key="entry.key" class="flex flex-1 items-center gap-2">
         <span
@@ -194,8 +292,38 @@ const stepIndex = computed(() => STEPS.findIndex((s) => s.key === step.value));
     </ol>
 
     <div class="card p-6">
-      <!-- Step 1 -->
-      <template v-if="step === 'source'">
+      <!-- Step 1: what kind of website this is. -->
+      <template v-if="step === 'kind'">
+        <h2 class="text-lg font-semibold tracking-tight text-ink">What are you hosting?</h2>
+        <p class="mt-1 text-sm text-ink-muted">
+          This decides where your files come from. Everything else can be changed later.
+        </p>
+
+        <div class="mt-5 space-y-2">
+          <button
+            v-for="option in KINDS"
+            :key="option.key"
+            type="button"
+            class="flex w-full gap-3 rounded-lg border border-line bg-black/20 p-4 text-left
+                   transition-colors hover:border-brand hover:bg-brand-soft"
+            @click="chooseKind(option.key)"
+          >
+            <component
+              :is="option.icon"
+              :size="18"
+              class="mt-0.5 shrink-0 text-brand-bright"
+              aria-hidden="true"
+            />
+            <span>
+              <span class="block text-sm font-medium text-ink">{{ option.title }}</span>
+              <span class="mt-0.5 block text-sm text-ink-muted">{{ option.blurb }}</span>
+            </span>
+          </button>
+        </div>
+      </template>
+
+      <!-- Git only: where the code lives. -->
+      <template v-else-if="step === 'source'">
         <h2 class="text-lg font-semibold tracking-tight text-ink">Where is your code?</h2>
         <p class="mt-1 text-sm text-ink-muted">
           Paste the address of your repository. The panel will look at it and work out how to
@@ -268,6 +396,7 @@ const stepIndex = computed(() => STEPS.findIndex((s) => s.key === step.value));
           <AlertMessage v-if="error">{{ error }}</AlertMessage>
 
           <div class="flex gap-2">
+            <button type="button" class="btn btn-ghost" @click="step = 'kind'">Back</button>
             <button
               type="button"
               class="btn btn-ghost"
@@ -288,7 +417,7 @@ const stepIndex = computed(() => STEPS.findIndex((s) => s.key === step.value));
         </div>
       </template>
 
-      <!-- Step 2 -->
+      <!-- Git only: what the inspection found. -->
       <template v-else-if="step === 'confirm' && inspection">
         <h2 class="text-lg font-semibold tracking-tight text-ink">Here's what we found</h2>
         <p class="mt-1 text-sm text-ink-muted">{{ inspection.summary }}</p>
@@ -346,45 +475,80 @@ const stepIndex = computed(() => STEPS.findIndex((s) => s.key === step.value));
         </div>
       </template>
 
-      <!-- Step 3 -->
+      <!-- Name and, optionally, a web address. -->
       <template v-else-if="step === 'domain'">
-        <h2 class="text-lg font-semibold tracking-tight text-ink">What web address?</h2>
+        <h2 class="text-lg font-semibold tracking-tight text-ink">What should it be called?</h2>
         <p class="mt-1 text-sm text-ink-muted">
-          The address visitors will type. You can add more later.
+          A web address is optional. Without one you still get a link that works immediately, and
+          you can add a domain whenever you have it.
         </p>
 
         <div class="mt-5 space-y-4">
           <div>
             <label for="name" class="label">Name</label>
-            <input id="name" v-model="displayName" class="field" />
+            <input id="name" v-model="displayName" class="field" placeholder="My website" />
           </div>
 
           <div>
-            <label for="domains" class="label">Web address</label>
+            <label for="domains" class="label">
+              Web address <span class="font-normal text-ink-faint">(optional)</span>
+            </label>
             <input
               id="domains"
               v-model="domains"
               class="field font-mono"
               placeholder="example.com, www.example.com"
             />
-            <p class="hint">Separate several with commas.</p>
+            <p class="hint">Separate several with commas. Leave empty to decide later.</p>
           </div>
 
+          <!--
+            Only meaningful when the web server serves the files itself. A Node
+            app has its own routing, and adding a fallback there would swallow
+            genuine 404s from its API.
+          -->
+          <label
+            v-if="servesFiles"
+            class="flex items-start gap-2.5 rounded-lg border border-line bg-black/20 p-4 text-sm"
+          >
+            <input v-model="spaFallback" type="checkbox" class="mt-0.5" />
+            <span>
+              <span class="block font-medium text-ink">This is a single-page app</span>
+              <span class="mt-0.5 block text-ink-muted">
+                Serves index.html for addresses that do not match a file, so refreshing a page
+                inside the app works. Leave this off for an ordinary website.
+              </span>
+            </span>
+          </label>
+
+          <AlertMessage v-if="error">{{ error }}</AlertMessage>
+
           <div class="flex gap-2">
-            <button type="button" class="btn btn-ghost" @click="step = 'confirm'">Back</button>
+            <button type="button" class="btn btn-ghost" @click="step = backFromDomain">Back</button>
             <button
+              v-if="hasSecrets"
               type="button"
               class="btn btn-primary flex-1"
-              :disabled="domainList.length === 0 || !displayName"
+              :disabled="!displayName"
               @click="step = 'secrets'"
             >
               Continue
+            </button>
+            <button
+              v-else
+              type="button"
+              class="btn btn-primary flex-1"
+              :disabled="!displayName || busy"
+              @click="createSite"
+            >
+              <Loader v-if="busy" :size="14" class="animate-spin" aria-hidden="true" />
+              {{ busy ? 'Creating\u2026' : 'Create website' }}
             </button>
           </div>
         </div>
       </template>
 
-      <!-- Step 4 -->
+      <!-- Secrets, for anything that runs a process. -->
       <template v-else-if="step === 'secrets'">
         <h2 class="text-lg font-semibold tracking-tight text-ink">Anything secret?</h2>
         <p class="mt-1 text-sm text-ink-muted">
@@ -423,7 +587,7 @@ const stepIndex = computed(() => STEPS.findIndex((s) => s.key === step.value));
           <button type="button" class="btn btn-ghost" @click="step = 'domain'">Back</button>
           <button type="button" class="btn btn-primary flex-1" :disabled="busy" @click="createSite">
             <Loader v-if="busy" :size="14" class="animate-spin" aria-hidden="true" />
-            {{ busy ? 'Creating\u2026' : 'Create and deploy' }}
+            {{ busy ? 'Creating\u2026' : isGit ? 'Create and deploy' : 'Create website' }}
           </button>
         </div>
       </template>

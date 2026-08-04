@@ -25,6 +25,19 @@ const standbyPort = computed(() =>
   site.value?.activeColour === 'blue' ? site.value?.portGreen : site.value?.portBlue,
 );
 
+/** Static files are served by the web server itself, with no process at all. */
+const runsAProcess = computed(
+  () => site.value?.runtime !== 'static' && site.value?.runtime !== 'proxy',
+);
+
+/** Where to put files, which differs depending on how the site was made. */
+const filesNote = computed(() => {
+  if (source.value?.kind === 'git') return null;
+  return runsAProcess.value
+    ? 'Your app runs from this website\u2019s public folder. Edit it in the Files tab, then publish.'
+    : 'Your files are served straight from this website\u2019s public folder. Edit them in the Files tab \u2014 changes are live immediately.';
+});
+
 const RUNTIME_LABEL: Record<string, string> = {
   node: 'Node.js app',
   static: 'Static files',
@@ -47,11 +60,30 @@ function when(value: Date | number | null | undefined): string {
 <template>
   <div v-if="site" class="space-y-6">
     <dl class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <!--
+        The address that works without DNS. First, because on a site that has
+        just been made it is the only way to look at it.
+      -->
       <div class="card p-4">
+        <dt class="text-xs font-medium uppercase tracking-wide text-ink-faint">Preview address</dt>
+        <dd class="mt-1 truncate text-sm">
+          <a
+            v-if="site.previewUrl"
+            :href="site.previewUrl"
+            target="_blank"
+            rel="noreferrer noopener"
+            class="font-mono text-brand-bright underline underline-offset-2"
+          >
+            {{ site.previewUrl }}
+          </a>
+          <span v-else class="text-ink-muted">&#8212;</span>
+        </dd>
+      </div>
+      <div v-if="runsAProcess" class="card p-4">
         <dt class="text-xs font-medium uppercase tracking-wide text-ink-faint">Active port</dt>
         <dd class="mt-1 font-mono text-lg text-ink">{{ livePort ?? '\u2014' }}</dd>
       </div>
-      <div class="card p-4">
+      <div v-if="runsAProcess" class="card p-4">
         <dt class="text-xs font-medium uppercase tracking-wide text-ink-faint">Standby port</dt>
         <dd class="mt-1 font-mono text-lg text-ink-muted">{{ standbyPort ?? '\u2014' }}</dd>
       </div>
@@ -69,14 +101,15 @@ function when(value: Date | number | null | undefined): string {
 
     <section class="card p-5">
       <h3 class="mb-3 flex items-center gap-2 text-sm font-semibold text-ink">
-        <GitBranch :size="15" class="text-ink-faint" aria-hidden="true" /> Where the code comes from
+        <GitBranch :size="15" class="text-ink-faint" aria-hidden="true" />
+        {{ source?.kind === 'git' ? 'Where the code comes from' : 'Where the files live' }}
       </h3>
 
       <p v-if="source?.kind === 'git'" class="break-all font-mono text-sm text-ink-muted">
         {{ source.url }}
         <span class="text-brand-bright">#{{ source.branch }}</span>
       </p>
-      <p v-else class="text-sm text-ink-muted">Uploaded by hand rather than pulled from a repository.</p>
+      <p v-else class="text-sm text-ink-muted">{{ filesNote }}</p>
     </section>
 
     <section class="card overflow-hidden">

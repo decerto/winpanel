@@ -67,7 +67,10 @@ describe('mail firewall rules', () => {
   const rules = mailFirewallRules();
 
   it('covers receiving and sending', () => {
-    const ports = rules.map((rule) => rule.port).sort((a, b) => a - b);
+    const ports = rules
+      .map((rule) => rule.port)
+      .filter((port): port is number => typeof port === 'number')
+      .sort((a, b) => a - b);
     expect(ports).toEqual([25, 465, 587, 993]);
   });
 

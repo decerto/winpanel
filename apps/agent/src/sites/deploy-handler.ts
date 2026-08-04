@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { eq } from 'drizzle-orm';
 import crypto from 'node:crypto';
-import { SiteManifest, type SiteSource } from '@winpanel/shared';
+import { PUBLIC_DIR, SiteManifest, type SiteSource } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
 import { deployments, sites } from '../db/schema.js';
 import type { JobContext } from '../jobs/queue.js';
@@ -19,6 +19,7 @@ import {
   type ToolPaths,
 } from './deploy-pipeline.js';
 import type { CaddyClient } from '../caddy/client.js';
+import type { CaddyReconciler } from '../caddy/reconciler.js';
 import { proxyIdFor } from '../caddy/config-builder.js';
 import type { ServiceManager } from '../windows/service-manager.js';
 
@@ -42,6 +43,8 @@ export interface DeployPayload {
 export interface DeployDependencies {
   db: DatabaseHandle;
   caddy: CaddyClient;
+  /** Rebuilds Caddy's whole configuration from the database. */
+  routing: CaddyReconciler;
   services: ServiceManager;
   tools: ToolPaths;
   gitPath: string;
@@ -58,12 +61,47 @@ export function serviceIdFor(slug: string, colour: 'blue' | 'green'): string {
   return `winpanel-site-${slug}-${colour}`;
 }
 
+/** The executable that runs a site of a given runtime. */
+async function resolveRuntimeExecutable(
+  deps: DeployDependencies,
+  manifest: SiteManifest,
+): Promise<{ exe: string; args: string[] }> {
+  const entry = manifest.app.entry ?? (manifest.runtime === 'dotnet' ? undefined : 'index.js');
+
+  if (manifest.runtime === 'dotnet') {
+    if (!entry) {
+      throw new DeploymentError(
+        'This .NET website does not say which .dll to run. Set the entry file in its settings.',
+      );
+    }
+    return { exe: await deps.tools.resolve('dotnet'), args: [entry] };
+  }
+
+  return {
+    exe: await deps.tools.resolve('node', manifest.nodeVersion ?? undefined),
+    args: [entry ?? 'index.js'],
+  };
+}
+
 export function createDeployHandler(deps: DeployDependencies) {
   return async function handleDeploy(rawPayload: unknown, ctx: JobContext): Promise<void> {
     const payload = rawPayload as DeployPayload;
 
     const site = deps.db.db.select().from(sites).where(eq(sites.id, payload.siteId)).get();
     if (!site) throw new DeploymentError('That website no longer exists.');
+
+    const source = site.source as SiteSource;
+
+    /*
+     * Sites the user manages themselves have no build and no releases: their
+     * files sit in `public` and are already the live copy. "Deploying" one
+     * means making the web server aware of it, and restarting its process if
+     * it has one.
+     */
+    if (source.kind !== 'git' && !payload.uploadedReleaseDir) {
+      await publishManagedSite(deps, site, ctx);
+      return;
+    }
 
     if (site.portBlue === null || site.portGreen === null) {
       throw new DeploymentError(
@@ -119,7 +157,6 @@ export function createDeployHandler(deps: DeployDependencies) {
         ctx.log('Using the files you uploaded.');
         await fs.rename(payload.uploadedReleaseDir, releaseDir);
       } else {
-        const source = site.source as SiteSource;
         if (source.kind !== 'git') {
           throw new DeploymentError('This website has no repository configured.');
         }
@@ -174,14 +211,48 @@ export function createDeployHandler(deps: DeployDependencies) {
       await pruneBuildArtifacts(releaseDir, manifest, ctx);
       ctx.throwIfCancelled();
 
+      /*
+       * A static site has no process to start and nothing to health-check.
+       * Publishing it is one atomic operation: repoint `current`, then tell
+       * the web server where to look. Running it through the blue/green
+       * machinery would mean starting a Node service that serves nothing.
+       */
+      if (manifest.runtime === 'static') {
+        setStatus('switching');
+        await pointCurrentAt(siteDir, releaseDir);
+
+        ctx.log('Publishing your files\u2026', 'info', 'switch');
+        await deps.routing.apply();
+
+        deps.db.db
+          .update(sites)
+          .set({ updatedAt: new Date() })
+          .where(eq(sites.id, site.id))
+          .run();
+
+        const removed = await pruneOldReleases(releasesDir, deps.keepReleases ?? 5, releaseId);
+        if (removed.length > 0) {
+          ctx.log(`Cleaned up ${removed.length} old release(s).`, 'debug');
+        }
+
+        deps.db.db
+          .update(deployments)
+          .set({ commit, status: 'succeeded', finishedAt: new Date() })
+          .where(eq(deployments.id, deploymentId))
+          .run();
+
+        ctx.progress(100);
+        ctx.log('Done. Your website is live.');
+        return;
+      }
+
       // 4. Start the new version on the idle port.
       const appDir = path.join(releaseDir, manifest.app.cwd);
       const serviceId = serviceIdFor(site.slug, targetColour);
 
       ctx.log(`Starting the new version on port ${targetPort}\u2026`, 'info', 'start');
 
-      const nodeExe = await deps.tools.resolve('node', manifest.nodeVersion ?? undefined);
-      const entry = manifest.app.entry ?? 'index.js';
+      const runtimeExe = await resolveRuntimeExecutable(deps, manifest);
 
       if (await deps.services.isInstalled(serviceId)) {
         await deps.services.uninstall(serviceId);
@@ -191,8 +262,8 @@ export function createDeployHandler(deps: DeployDependencies) {
         id: serviceId,
         displayName: `${site.displayName} (${targetColour})`,
         description: `Website: ${site.displayName}`,
-        executable: nodeExe,
-        args: [entry],
+        executable: runtimeExe.exe,
+        args: runtimeExe.args,
         // For the frontend-builds-into-backend layout this is the backend
         // folder, not the repository root.
         workingDirectory: appDir,
@@ -222,25 +293,48 @@ export function createDeployHandler(deps: DeployDependencies) {
       setStatus('switching');
       ctx.log('Switching visitors to the new version\u2026', 'info', 'switch');
 
-      try {
-        await deps.caddy.switchUpstream(proxyIdFor(site.slug), targetPort);
-      } catch (error) {
-        // The old version is still serving, so stop the new one rather than
-        // leaving an orphan process holding a port.
-        await deps.services.stop(serviceId).catch(() => undefined);
-        throw new DeploymentError(
-          'The new version started, but traffic could not be switched to it. ' +
-            'Your site is still running the previous version.',
-        );
-      }
-
-      await pointCurrentAt(siteDir, releaseDir);
-
+      /*
+       * The fast path patches a single upstream by `@id`. It fails if that id
+       * is not in the running config — which is the normal state on a site's
+       * very first deploy, and after Caddy has been restarted or reinstalled.
+       *
+       * Falling back to a full config load handles all of those. Only if that
+       * fails too is the deploy genuinely unable to take traffic, and then the
+       * new process is stopped so it is not left holding a port for nothing.
+       */
       deps.db.db
         .update(sites)
         .set({ activeColour: targetColour, updatedAt: new Date() })
         .where(eq(sites.id, site.id))
         .run();
+
+      try {
+        await deps.caddy.switchUpstream(proxyIdFor(site.slug), targetPort);
+      } catch {
+        ctx.log('Rebuilding the web server configuration\u2026', 'debug', 'switch');
+
+        try {
+          await deps.routing.apply();
+        } catch (error) {
+          // Put the record back: traffic never moved.
+          deps.db.db
+            .update(sites)
+            .set({ activeColour: site.activeColour })
+            .where(eq(sites.id, site.id))
+            .run();
+
+          // The old version is still serving, so stop the new one rather than
+          // leaving an orphan process holding a port.
+          await deps.services.stop(serviceId).catch(() => undefined);
+          throw new DeploymentError(
+            'The new version started, but traffic could not be switched to it. ' +
+              'Your site is still running the previous version. ' +
+              (error instanceof Error ? error.message : ''),
+          );
+        }
+      }
+
+      await pointCurrentAt(siteDir, releaseDir);
 
       // 7. Stop the old version, now that nothing is using it.
       const oldServiceId = serviceIdFor(site.slug, site.activeColour);
@@ -278,6 +372,127 @@ export function createDeployHandler(deps: DeployDependencies) {
 async function writeEnvFile(sharedDir: string, env: Record<string, string>): Promise<void> {
   const lines = Object.entries(env).map(([key, value]) => `${key}=${value}`);
   await fs.writeFile(path.join(sharedDir, '.env'), `${lines.join('\n')}\n`, { mode: 0o600 });
+}
+
+type SiteRow = typeof sites.$inferSelect;
+
+/**
+ * Publishes a site whose files the user manages directly.
+ *
+ * There is no build, no clone and no release folder: `public` *is* the live
+ * copy, and the panel must never move or overwrite it. All that is left is to
+ * make sure the web server knows about the site, and — if the site runs a
+ * process — that the process is running the current files.
+ *
+ * A static site is therefore published instantly and with no downtime at all.
+ * A Node or .NET one is restarted in place rather than deployed blue/green:
+ * both colours would be running out of the same folder, so there is no second
+ * copy to switch to, and pretending otherwise would only add a second process
+ * competing for the same files.
+ */
+async function publishManagedSite(
+  deps: DeployDependencies,
+  site: SiteRow,
+  ctx: JobContext,
+): Promise<void> {
+  const manifest = SiteManifest.parse(site.manifest);
+  const siteDir = path.join(deps.sitesRoot, site.slug);
+  const publicDir = path.join(siteDir, PUBLIC_DIR);
+
+  const deploymentId = crypto.randomUUID();
+  deps.db.db
+    .insert(deployments)
+    .values({
+      id: deploymentId,
+      siteId: site.id,
+      releaseId: PUBLIC_DIR,
+      status: 'switching',
+      targetColour: site.activeColour,
+      jobId: ctx.jobId,
+    })
+    .run();
+
+  const fail = (message: string): never => {
+    deps.db.db
+      .update(deployments)
+      .set({ status: 'failed', errorMessage: message, finishedAt: new Date() })
+      .where(eq(deployments.id, deploymentId))
+      .run();
+    throw new DeploymentError(message);
+  };
+
+  try {
+    await fs.mkdir(publicDir, { recursive: true });
+
+    if (manifest.runtime === 'node' || manifest.runtime === 'dotnet') {
+      const port = site.activeColour === 'blue' ? site.portBlue : site.portGreen;
+      if (port === null) {
+        fail('This website has no port assigned yet. Remove and re-create it to fix this.');
+        return;
+      }
+
+      const env = await deps.loadEnv(site.id);
+      await fs.mkdir(path.join(siteDir, 'shared'), { recursive: true });
+      await writeEnvFile(path.join(siteDir, 'shared'), env);
+
+      const serviceId = serviceIdFor(site.slug, site.activeColour);
+      const runtimeExe = await resolveRuntimeExecutable(deps, manifest);
+
+      ctx.log(`Restarting your app on port ${port}\u2026`, 'info', 'start');
+
+      if (await deps.services.isInstalled(serviceId)) {
+        await deps.services.uninstall(serviceId);
+      }
+
+      await deps.services.install({
+        id: serviceId,
+        displayName: site.displayName,
+        description: `Website: ${site.displayName}`,
+        executable: runtimeExe.exe,
+        args: runtimeExe.args,
+        workingDirectory: path.join(publicDir, manifest.app.cwd),
+        env: {
+          ...env,
+          [manifest.app.portEnvVar]: String(port),
+          NODE_ENV: 'production',
+          HOST: '127.0.0.1',
+        },
+        logPath: path.join(siteDir, 'logs'),
+      });
+
+      await deps.services.start(serviceId);
+      ctx.progress(60);
+
+      await waitForHealthy({
+        port,
+        path: manifest.app.healthCheckPath,
+        timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
+        ctx,
+      });
+    }
+
+    ctx.progress(85);
+    ctx.log('Telling the web server about your site\u2026', 'info', 'switch');
+    await deps.routing.apply();
+
+    deps.db.db.update(sites).set({ updatedAt: new Date() }).where(eq(sites.id, site.id)).run();
+    deps.db.db
+      .update(deployments)
+      .set({ status: 'succeeded', finishedAt: new Date() })
+      .where(eq(deployments.id, deploymentId))
+      .run();
+
+    ctx.progress(100);
+    ctx.log('Done. Your website is live.');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Publishing failed.';
+    deps.db.db
+      .update(deployments)
+      .set({ status: 'failed', errorMessage: message, finishedAt: new Date() })
+      .where(eq(deployments.id, deploymentId))
+      .run();
+    throw error;
+  }
 }
 
 /** Strips anything that looks like a credential out of log output. */

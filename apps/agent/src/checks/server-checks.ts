@@ -3,6 +3,7 @@ import os from 'node:os';
 import fs from 'node:fs/promises';
 import { PANEL_PORT } from '@winpanel/shared';
 import { runCommand } from '../process/run-command.js';
+import { listPanelServices } from '../windows/panel-services.js';
 import type { CheckDefinition, CheckOutcome } from './engine.js';
 
 /**
@@ -316,6 +317,58 @@ export function buildServerChecks(): CheckDefinition[] {
         }
 
         return { state: 'ok', detail: `Port ${PANEL_PORT} is in use by this panel.` };
+      },
+    },
+
+    {
+      id: 'server.background-services',
+      category: 'server',
+      name: 'Background programs',
+      plainDescription:
+        'This panel, the web server, the mail server and every website run in the ' +
+        'background with no window of their own. Whatever is running here is what has to ' +
+        'be stopped before the panel can be updated or removed.',
+      ttlSeconds: 60,
+      run: async (): Promise<CheckOutcome> => {
+        if (process.platform !== 'win32') {
+          return { state: 'ok', detail: 'Not applicable on this platform.' };
+        }
+
+        const services = await listPanelServices();
+        const running = services.filter((service) => service.state === 'running');
+
+        /*
+         * No registered services at all means the panel is running as a plain
+         * program. It works, right up until the machine restarts and nothing
+         * comes back, and the uninstaller cannot stop something Windows was
+         * never told about.
+         */
+        if (!services.some((service) => service.kind === 'panel')) {
+          return {
+            state: 'warning',
+            detail: 'Windows is not managing this panel.',
+            reason:
+              'The panel is running, but not as a background program Windows knows about. ' +
+              'It will not start again by itself after a restart, and removing it will ' +
+              'leave it running.',
+            fix: {
+              kind: 'manual',
+              label: 'Register it with Windows',
+              instructions:
+                'Run the WinPanel installer again. It registers the panel and everything ' +
+                'it runs so Windows starts and stops them for you.',
+            },
+          };
+        }
+
+        const names = running.map((service) => service.label);
+        const shown = names.slice(0, 5).join(', ');
+        const rest = names.length > 5 ? `, and ${names.length - 5} more` : '';
+
+        return {
+          state: 'ok',
+          detail: `${names.length} of ${services.length} running: ${shown}${rest}.`,
+        };
       },
     },
 
