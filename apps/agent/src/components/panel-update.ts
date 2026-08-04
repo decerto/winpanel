@@ -186,6 +186,13 @@ export function createPanelUpdateHandler(deps: PanelUpdateDependencies) {
       // panel owns, and at a path this code chose rather than one it was told.
       await fs.mkdir(path.dirname(installer), { recursive: true });
       await fs.copyFile(source, installer);
+
+      // An upload is the panel's own temporary file, so the copy leaves two of
+      // it on the disk. Anything the user put on the server themselves is
+      // theirs and is left alone.
+      if (path.resolve(uploadedInstallerPath(deps.binDir)) === source) {
+        await fs.rm(source, { force: true }).catch(() => undefined);
+      }
     } else {
       throw new Error('Give either a download address or the path to an installer on this server.');
     }
