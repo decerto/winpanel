@@ -1,0 +1,61 @@
+name: Bug report
+description: Something in the panel does not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security vulnerabilities do not belong here — please use
+        [private reporting](../security/policy) instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Include the exact wording of any message the panel showed you.
+      placeholder: I clicked Point domain here and the panel said…
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to Websites
+        2. …
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: WinPanel version
+      description: Shown at the bottom of the panel, and under Server → Health.
+      placeholder: "0.2.0"
+    validations:
+      required: true
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows Server 2025 (26100.2314)
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Anything from the logs
+      description: >
+        From C:\WinPanel\logs, or the log folder of the affected service.
+        Please remove tokens, passwords and private keys first.
+      render: text
