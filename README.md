@@ -295,6 +295,50 @@ are trusting the right one.
 
 ---
 
+## Updating
+
+New versions are published on the [releases
+page](https://github.com/decerto/winpanel/releases), each with the installer and a
+`SHA256SUMS.txt`. Nothing checks for them on your behalf, so subscribe to releases if you
+want to be told about them.
+
+![Updating the panel](docs/screenshots/update.png)
+
+**From the panel.** Settings → **Update WinPanel** (the owner account only). Three ways in,
+because servers differ:
+
+| | For |
+| --- | --- |
+| **From my computer** | The normal case. Pick the setup file you downloaded and it is sent up to the server — so this works even when the server itself has no internet access. |
+| **Download it** | Paste the `https://` link to the `.exe` on the release page and the server fetches it. |
+| **Already on this server** | You have copied the file across yourself. Browse to it or paste the path. |
+
+Paste the release's SHA-256 into the **Fingerprint** box if you want it checked. The
+installer is fetched and proved to be a Windows program *before* anything is stopped, so a
+bad download leaves you with a running panel rather than a dead one.
+
+Then it stops every WinPanel service, replaces the program files and starts everything
+again. Websites and email are **offline for a minute or two**, and the page you are
+watching will lose its connection — reload it once the panel answers. What it did is
+written to `C:\WinPanel\logs\winpanel-update.log`.
+
+**From the server.** Downloading the new `WinPanel-Setup-x64.exe` and running it over the
+top does exactly the same thing. That is the fallback if the panel is too broken to update
+itself.
+
+Either way it is an upgrade in place, not a reinstall: your websites, mailboxes,
+certificates, users, settings and history are all kept, and you stay signed in. The
+version you are on is shown at the top of the Settings page.
+
+> There is no rollback. Updates go forward only, so take a copy of
+> `C:\WinPanel\data\panel.db` and `C:\WinPanel\data\vault.key` first — see
+> [DEPLOYMENT.md](DEPLOYMENT.md#what-to-back-up).
+
+How the mechanism works, and why the installer is run by the Windows task scheduler rather
+than by the panel, is in [docs/updating.md](docs/updating.md).
+
+---
+
 ## Repository layout
 
 ```
@@ -477,6 +521,7 @@ scratch folder instead — [docs/development.md](docs/development.md) walks thro
 | [docs/dns.md](docs/dns.md) | Cloudflare tokens, the record planner, certificate issuance |
 | [docs/email.md](docs/email.md) | Stalwart, JMAP, mailboxes, DKIM and the certificate sync |
 | [docs/users-and-roles.md](docs/users-and-roles.md) | Roles, limits, ownership checks, sessions and IP bans |
+| [docs/updating.md](docs/updating.md) | How the panel updates itself in place |
 | [docs/testing.md](docs/testing.md) | Testing conventions, including the adversarial ones |
 
 ---

@@ -781,14 +781,21 @@ export const mailRouter = router({
         }
 
         if (!(await waitForIssuedCertificate(caddyDir, mailHostname))) {
+          /*
+           * Cloudflare's proxy is deliberately not mentioned here. A proxied
+           * record resolves to Cloudflare rather than to this server, so the
+           * address check above has already rejected that case — repeating the
+           * advice sent people to look at a record that was never the problem.
+           */
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
             message:
               `The web server is asking for a certificate for ${mailHostname} but has not got ` +
-              'one yet. It usually arrives within a minute \u2014 try again shortly. If it keeps ' +
-              'failing, check that port 80 is open to the internet, and that the ' +
-              `${mailHostname} record is not on Cloudflare\u2019s proxy. Adding a Cloudflare ` +
-              'token on the DNS tab lets the certificate be issued without either.',
+              `one yet. ${mailHostname} points at this server, so what is left is the route in: ` +
+              'the certificate authority connects back on port 80, which has to be open to the ' +
+              'internet and reach this machine. Adding a Cloudflare token on the DNS tab avoids ' +
+              'that connection entirely. Otherwise this usually just needs another minute \u2014 ' +
+              'try again shortly.',
           });
         }
       }

@@ -10,6 +10,7 @@ Written for people changing the code, not for people running the panel. The
 | [dns.md](dns.md) | Cloudflare tokens, the record planner, certificate issuance |
 | [email.md](email.md) | Stalwart over JMAP, mailboxes, DKIM, and the certificate sync |
 | [users-and-roles.md](users-and-roles.md) | Roles, limits, ownership enforcement, sessions and IP bans |
+| [updating.md](updating.md) | How the panel updates itself, and why the installer is run by the task scheduler |
 | [testing.md](testing.md) | Testing conventions, including the adversarial ones |
 
 `screenshots/` holds the images used by the README. They are captured from a local

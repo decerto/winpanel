@@ -1,8 +1,7 @@
 import path from 'node:path';
-import { eq } from 'drizzle-orm';
 import { STALWART_HTTP_PORT, mailHostnameFor, type SiteManifest } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
-import { components, sites } from '../db/schema.js';
+import { sites } from '../db/schema.js';
 import { cloudflareTokenGroups } from '../dns/token.js';
 import { mailHostnames } from '../mail/domains.js';
 import type { SecretVault } from '../security/vault.js';
@@ -100,12 +99,6 @@ export class CaddyReconciler {
       if (owned.length > 0) group.domains = [...group.domains, ...owned];
     }
 
-    // Derived rather than passed in: a caller that forgot the flag would take
-    // the webmail interface offline without anything appearing to be wrong.
-    const mailInstalled =
-      this.db.db.select().from(components).where(eq(components.id, 'stalwart')).get()?.state ===
-      'installed';
-
     return buildCaddyConfig({
       sites: siteInputs,
       ...(admin != null ? { admin } : {}),
@@ -118,7 +111,17 @@ export class CaddyReconciler {
        */
       ...(dnsChallenges.length > 0 ? { dnsChallenges } : {}),
       ...(options.acmeEmail ? { acmeEmail: options.acmeEmail } : {}),
-      ...(mailInstalled && mailNames.length > 0
+      /*
+       * The list itself is the proof the mail server is there: it only ever
+       * comes back from a successful `listDomains()` against it, and is
+       * emptied again when the component is removed. It used to be gated on a
+       * `components` row as well — a table nothing has ever written, so the
+       * gate was always shut and no `mail.<domain>` was ever put in front of
+       * Caddy. Every mail port stayed on the self-signed certificate, and the
+       * fix button reported that the certificate was taking a while to arrive
+       * when in truth it had never been asked for.
+       */
+      ...(mailNames.length > 0
         ? { mailHost: { hostnames: mailNames, port: STALWART_HTTP_PORT } }
         : {}),
     });

@@ -8,6 +8,7 @@ import type { ServiceManager } from '../windows/service-manager.js';
 import { runCommand } from '../process/run-command.js';
 import { buildStalwartBootstrap } from '../mail/stalwart-config.js';
 import { ensureMailAdminCredentials, mailServiceEnv } from '../mail/service.js';
+import { storeMailDomains } from '../mail/domains.js';
 import { caddyServiceEnv, cloudflareTokenEnvironment } from '../caddy/service.js';
 import { downloadVerified } from './download.js';
 import { extractZip, findExecutable, listExecutables, sniffPayload } from './archive.js';
@@ -302,6 +303,11 @@ export function createUninstallComponentHandler(deps: InstallerDependencies) {
       maxRetries: 5,
       retryDelay: 250,
     });
+
+    // The web server builds its `mail.<domain>` routes and certificate list
+    // from this copy of what the mail server last reported. Left behind, it
+    // would keep asking a certificate authority for names nothing answers on.
+    if (component.id === 'stalwart') storeMailDomains(deps.db, []);
 
     // Mail and website data are deliberately left alone. Removing a program
     // is not the same as agreeing to lose what it was holding.

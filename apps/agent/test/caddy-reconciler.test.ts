@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
-import { components, sites } from '../src/db/schema.js';
+import { sites } from '../src/db/schema.js';
 import { SecretVault } from '../src/security/vault.js';
 import { storeCloudflareToken } from '../src/dns/token.js';
 import { storeMailDomains } from '../src/mail/domains.js';
@@ -156,9 +156,9 @@ describe('turning the database into a Caddy config', () => {
     expect(JSON.stringify(config)).not.toContain('/shared/*');
   });
 
-  it('leaves out the mail route until the mail server is installed', () => {
+  it('leaves out the mail route until the mail server reports a domain', () => {
     insertSite();
-    storeMailDomains(db, ['example.com']);
+    storeMailDomains(db, []);
 
     const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
     const ids = config.apps.http.servers.main.routes.map((r: any) => r['@id']);
@@ -169,7 +169,6 @@ describe('turning the database into a Caddy config', () => {
     // Covering only the first site left every other domain's mail ports on the
     // mail server's self-signed certificate, which no mail client accepts.
     insertSite();
-    db.db.insert(components).values({ id: 'stalwart', state: 'installed' }).run();
     storeMailDomains(db, ['example.com', 'second.com']);
 
     const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
@@ -182,7 +181,6 @@ describe('turning the database into a Caddy config', () => {
     // `mail.<every subdomain>` is a name nobody set up, and asking a
     // certificate authority for it fails on repeat rather than harmlessly.
     insertSite({ domains: ['example.com', 'app.example.com'] });
-    db.db.insert(components).values({ id: 'stalwart', state: 'installed' }).run();
     storeMailDomains(db, ['example.com']);
 
     const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
@@ -193,7 +191,6 @@ describe('turning the database into a Caddy config', () => {
 
   it('puts a mail hostname under the token that can see its domain', () => {
     insertSite();
-    db.db.insert(components).values({ id: 'stalwart', state: 'installed' }).run();
     storeMailDomains(db, ['example.com']);
     storeCloudflareToken(db, vault, 'cf-secret-token');
 

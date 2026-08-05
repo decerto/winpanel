@@ -291,11 +291,32 @@ overrides detection, so future deployments need no decisions at all.
 
 ---
 
+## Updating WinPanel itself
+
+Different thing from deploying a website. Settings → **Update WinPanel**, as the owner:
+upload the new setup file from your computer, give the server an `https://` link to it, or
+point at a copy already on the server's disk. Running the new
+`WinPanel-Setup-x64.exe` on the server by hand does the same job, and is the fallback if
+the panel is too broken to update itself.
+
+It is an upgrade in place — sites, mailboxes, certificates, users and settings are all
+kept. Every service is stopped while the files are replaced and started again afterwards,
+so **websites and email are offline for a minute or two**. The record is in
+`C:\WinPanel\logs\winpanel-update.log`.
+
+There is no rollback and nothing checks for new versions on your behalf. Back up the two
+files listed under [What to back up](#what-to-back-up) before updating, and watch the
+releases page.
+
+---
+
 ## If something goes wrong
 
 | Symptom | Likely cause |
 | --- | --- |
 | Panel unreachable | Service stopped. RDP in: `Get-Service winpanel-agent` |
+| Panel not back after an update | Read `C:\WinPanel\logs\winpanel-update.log`, then `Start-Service winpanel-agent`. If that fails, run the setup file on the server by hand |
+| Websites still down after an update | The panel came back alone. Settings → Background programs → **Start everything** |
 | Website shows 503 | Never deployed successfully. Check the deployment log |
 | Certificate not issued | Domain isn't pointing here yet, or the Cloudflare token is missing `Zone → Zone → Read` or `Zone → DNS → Edit` |
 | Deployment fails installing packages | Long file names not enabled — see the Health page |
