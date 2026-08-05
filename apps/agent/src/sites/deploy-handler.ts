@@ -11,6 +11,7 @@ import { GitClient } from './git-client.js';
 import {
   DeploymentError,
   discardPrevious,
+  explainRuntimeFailure,
   newReleaseId,
   prepareStaging,
   promoteStaging,
@@ -335,7 +336,10 @@ export function createDeployHandler(deps: DeployDependencies) {
         });
       } catch (error) {
         if (await rollBack(deps, { folders, serviceId, ctx })) liveIsPrevious = true;
-        throw error;
+
+        const message = error instanceof Error ? error.message : String(error);
+        const hint = explainRuntimeFailure(message, manifest.packageManager);
+        throw hint ? new DeploymentError(`${message}\n\n${hint}`) : error;
       }
 
       /*

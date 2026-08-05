@@ -114,6 +114,49 @@ export function explainToolFailure(command: string, output: string): string | nu
   return null;
 }
 
+/**
+ * A sentence about an app that built but would not start.
+ *
+ * A build and a running process do not look for packages in the same places,
+ * so "it compiled" is no promise that it will run: pnpm and yarn give each
+ * package its own folder and link in only what it declares, which leaves
+ * anything the built output reaches for indirectly missing at the one moment
+ * it matters. npm's single flat folder hides the same mistake.
+ */
+export function explainRuntimeFailure(message: string, packageManager: string): string | null {
+  const missing = /Cannot find (?:module|package) ['"]([^'"]+)['"]/.exec(message)?.[1];
+  if (!missing) return null;
+
+  if (missing.startsWith('.') || missing.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(missing)) {
+    return (
+      `Your website looked for the file "${missing}" and it is not there. The startup file on ` +
+      'the Application page has to name the file your build produces \u2014 for a Nuxt site ' +
+      'that is .output/server/index.mjs.'
+    );
+  }
+
+  const name = missing.startsWith('@')
+    ? missing.split('/').slice(0, 2).join('/')
+    : (missing.split('/')[0] ?? missing);
+
+  const opening =
+    `Your website started and immediately asked for the package "${name}", which is not ` +
+    'anywhere it can see. The build succeeded because building and running do not resolve ' +
+    'packages the same way.';
+
+  if (packageManager === 'pnpm' || packageManager === 'yarn') {
+    return (
+      `${opening} ${packageManager} only puts a project\u2019s own dependencies where it can ` +
+      `reach them, so this usually means "${name}" is only installed as a dependency of ` +
+      `something else. Add it to the project\u2019s dependencies (\`${packageManager} add ` +
+      `${name}\`) and commit that, or switch this website to npm on its Application page, ` +
+      'which installs everything in one flat folder.'
+    );
+  }
+
+  return `${opening} Add "${name}" to the project\u2019s dependencies and commit that.`;
+}
+
 /** The package name from a bundler's "module not found" message, if there is one. */
 function findUnresolvedPackage(output: string): string | null {
   const patterns = [
@@ -353,10 +396,21 @@ export async function prepareStaging(folders: ReleaseFolders): Promise<void> {
  * health check it is still the only version known to work.
  */
 export async function promoteStaging(folders: ReleaseFolders): Promise<void> {
-  await removeDirectory(folders.previous);
+  /*
+   * A `.previous` that is still here belongs to a deploy that failed after
+   * this point, which makes it the newest version known to have served
+   * traffic — and `release/` a build that never started. Replacing it with
+   * that build, which is what deleting it here used to do, threw away the
+   * last working copy of the site on the second failure in a row.
+   */
+  const keepPrevious = await exists(folders.previous);
 
   if (await exists(folders.release)) {
-    await renameWithRetry(folders.release, folders.previous);
+    if (keepPrevious) {
+      await removeDirectory(folders.release);
+    } else {
+      await renameWithRetry(folders.release, folders.previous);
+    }
   }
 
   try {

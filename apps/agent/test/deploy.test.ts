@@ -9,6 +9,7 @@ import {
   DeploymentError,
   discardPrevious,
   explainToolFailure,
+  explainRuntimeFailure,
   newReleaseId,
   prepareStaging,
   promoteStaging,
@@ -404,6 +405,26 @@ describe('the release swap', () => {
     expect(await restorePrevious(folders)).toBe(false);
   });
 
+  it('keeps the last working version when a second deploy follows a failed one', async () => {
+    // A leftover `.previous` means the last deploy failed after swapping, so
+    // `release/` holds a build that never ran. Overwriting the working copy
+    // with it would leave nothing to go back to.
+    const siteDir = await siteWithRelease('broken');
+    const folders = releaseFoldersFor(siteDir);
+    await fs.mkdir(folders.previous, { recursive: true });
+    await fs.writeFile(path.join(folders.previous, 'index.js'), 'working');
+
+    await stage(siteDir, 'newer');
+    await promoteStaging(folders);
+
+    expect(await fs.readFile(path.join(folders.release, 'index.js'), 'utf8')).toBe('newer');
+    expect(await fs.readFile(path.join(folders.previous, 'index.js'), 'utf8')).toBe('working');
+
+    // And a rollback therefore lands on the version that actually served.
+    expect(await restorePrevious(folders)).toBe(true);
+    expect(await fs.readFile(path.join(folders.release, 'index.js'), 'utf8')).toBe('working');
+  });
+
   it('leaves exactly one copy of the site once the deploy has finished', async () => {
     const siteDir = await siteWithRelease('old');
     const folders = releaseFoldersFor(siteDir);
@@ -472,5 +493,44 @@ describe('explainToolFailure', () => {
   it('says nothing when there is nothing useful to add', () => {
     expect(explainToolFailure('pnpm', 'ELIFECYCLE build failed')).toBeNull();
     expect(explainToolFailure('npm', 'ERR_PNPM_IGNORED_BUILDS')).toBeNull();
+  });
+});
+
+describe('explainRuntimeFailure', () => {
+  it('explains a package the built output cannot reach under pnpm', () => {
+    // The build passed: `entities` is only ever a dependency of a dependency,
+    // which pnpm does not put where the running app looks.
+    const hint = explainRuntimeFailure(
+      "Error: Cannot find module 'entities/decode'",
+      'pnpm',
+    );
+
+    expect(hint).toMatch(/"entities"/);
+    expect(hint).toMatch(/pnpm add entities/);
+    expect(hint).toMatch(/switch this website to npm/);
+  });
+
+  it('keeps the scope on a scoped package', () => {
+    const hint = explainRuntimeFailure("Cannot find module '@vue/shared/dist/x.js'", 'pnpm');
+    expect(hint).toMatch(/"@vue\/shared"/);
+  });
+
+  it('points a missing file at the startup file setting', () => {
+    const hint = explainRuntimeFailure(
+      "Error: Cannot find module 'C:\\Sites\\example\\release\\index.js'",
+      'npm',
+    );
+    expect(hint).toMatch(/startup file/i);
+    expect(hint).toMatch(/\.output\/server\/index\.mjs/);
+  });
+
+  it('does not blame the package manager when npm is doing the installing', () => {
+    const hint = explainRuntimeFailure("Cannot find module 'entities'", 'npm');
+    expect(hint).toMatch(/Add "entities"/);
+    expect(hint).not.toMatch(/flat folder/);
+  });
+
+  it('says nothing about a crash that is not a missing module', () => {
+    expect(explainRuntimeFailure('Error: listen EADDRINUSE 127.0.0.1:3002', 'pnpm')).toBeNull();
   });
 });
