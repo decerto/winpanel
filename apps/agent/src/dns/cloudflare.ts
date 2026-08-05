@@ -1,5 +1,7 @@
 import {
   CLOUDFLARE_PERMISSION_SUMMARY,
+  CloudflareMinTlsVersion,
+  CloudflareSslMode,
   validateDnsRecord,
   type CloudflareZone,
   type DnsRecord,
@@ -37,9 +39,39 @@ interface CloudflareResponse<T> {
   result_info?: { page: number; total_pages: number };
 }
 
+/** Cloudflare's own SSL settings for one zone, as the panel presents them. */
+export interface ZoneSslSettings {
+  /** False when the token cannot see zone settings at all. */
+  readable: boolean;
+  /** False when the plan does not allow the settings to be changed. */
+  editable: boolean;
+  sslMode: CloudflareSslMode | null;
+  alwaysUseHttps: boolean | null;
+  automaticHttpsRewrites: boolean | null;
+  minTlsVersion: CloudflareMinTlsVersion | null;
+  tls13: boolean | null;
+}
+
+const UNKNOWN_SSL_SETTINGS: ZoneSslSettings = {
+  readable: true,
+  editable: false,
+  sslMode: null,
+  alwaysUseHttps: null,
+  automaticHttpsRewrites: null,
+  minTlsVersion: null,
+  tls13: null,
+};
+
 /** Turns Cloudflare's error codes into something a person can act on. */
 function explain(status: number, errors: ReadonlyArray<{ code: number; message: string }>): string {
   const first = errors[0];
+
+  if (status === 400 && /required data field/i.test(first?.message ?? '')) {
+    return (
+      `Cloudflare rejected the record: ${first?.message}. The panel could not break that ` +
+      'record into the parts Cloudflare wants \u2014 check its value.'
+    );
+  }
 
   if (status === 401 || status === 403 || first?.code === 9109 || first?.code === 10000) {
     return (
@@ -58,6 +90,75 @@ function explain(status: number, errors: ReadonlyArray<{ code: number; message: 
     return 'Cloudflare is rate limiting requests. Wait a moment and try again.';
   }
   return first?.message ?? 'Cloudflare rejected the request.';
+}
+
+/** `0 issue "letsencrypt.org"` -> the three fields Cloudflare wants. */
+function parseCaa(content: string): { flags: number; tag: string; value: string } {
+  const match = /^\s*(\d{1,3})\s+(issue|issuewild|iodef)\s+"?([^"]*)"?\s*$/i.exec(content);
+
+  if (!match) {
+    throw new CloudflareError(
+      `"${content}" is not a certificate authority record. It should read like ` +
+        '0 issue "letsencrypt.org".',
+    );
+  }
+
+  return { flags: Number(match[1]), tag: match[2]!.toLowerCase(), value: match[3]!.trim() };
+}
+
+/** `10 5 443 sip.example.com` — or the same without the leading priority. */
+function parseSrv(
+  content: string,
+  priority: number | undefined,
+): { priority: number; weight: number; port: number; target: string } {
+  const parts = content.trim().split(/\s+/);
+  const fields = parts.length === 4 ? parts : [String(priority ?? 0), ...parts];
+  const [p, weight, port, target] = fields;
+
+  if (fields.length !== 4 || !target || [p, weight, port].some((n) => !/^\d+$/.test(n ?? ''))) {
+    throw new CloudflareError(
+      `"${content}" is not a service record. It should read like 10 5 443 sip.example.com.`,
+    );
+  }
+
+  return {
+    priority: Number(p),
+    weight: Number(weight),
+    port: Number(port),
+    target: target.replace(/\.$/, ''),
+  };
+}
+
+/**
+ * The body Cloudflare expects for a write.
+ *
+ * Most types are a single `content` string, but CAA and SRV are structured:
+ * sent as text they are rejected with "flags is a required data field" (or the
+ * SRV equivalent), which says nothing about which record was at fault.
+ * Cloudflare still *returns* them as one string, so the rest of the panel deals
+ * in strings and the split happens only here.
+ */
+function recordPayload(record: Omit<DnsRecord, 'id'>): Record<string, unknown> {
+  const base = {
+    type: record.type,
+    name: record.name,
+    ttl: record.ttl,
+    proxied: record.proxied,
+  };
+
+  if (record.type === 'CAA') return { ...base, data: parseCaa(record.content) };
+  if (record.type === 'SRV') return { ...base, data: parseSrv(record.content, record.priority) };
+
+  return {
+    ...base,
+    content: record.content,
+    ...(record.priority !== undefined ? { priority: record.priority } : {}),
+  };
+}
+
+/** Trailing dots and case are Cloudflare's, not the user's. */
+function normaliseName(name: string): string {
+  return name.trim().toLowerCase().replace(/\.$/, '');
 }
 
 export class CloudflareClient {
@@ -224,14 +325,7 @@ export class CloudflareClient {
     const payload = await this.request<{ id: string }>(
       'POST',
       `/zones/${record.zoneId}/dns_records`,
-      {
-        type: record.type,
-        name: record.name,
-        content: record.content,
-        ttl: record.ttl,
-        proxied: record.proxied,
-        ...(record.priority !== undefined ? { priority: record.priority } : {}),
-      },
+      recordPayload(record),
     );
 
     return { ...record, id: payload.result.id };
@@ -241,14 +335,11 @@ export class CloudflareClient {
     if (!record.id) throw new CloudflareError('That record has no identifier.');
     await this.assertSafeToWrite(record);
 
-    await this.request('PUT', `/zones/${record.zoneId}/dns_records/${record.id}`, {
-      type: record.type,
-      name: record.name,
-      content: record.content,
-      ttl: record.ttl,
-      proxied: record.proxied,
-      ...(record.priority !== undefined ? { priority: record.priority } : {}),
-    });
+    await this.request(
+      'PUT',
+      `/zones/${record.zoneId}/dns_records/${record.id}`,
+      recordPayload(record),
+    );
 
     return record;
   }
@@ -265,18 +356,47 @@ export class CloudflareClient {
    */
   async upsertRecord(record: Omit<DnsRecord, 'id'>): Promise<DnsRecord> {
     const existing = await this.listRecords(record.zoneId);
+    // Several MX and CAA records legitimately coexist under one name, so those
+    // match on content as well; replacing one by name would quietly delete a
+    // second mail server or a second certificate authority.
+    const contentMatters = record.type === 'MX' || record.type === 'CAA';
     const match = existing.find(
       (candidate) =>
         candidate.type === record.type &&
-        candidate.name.toLowerCase() === record.name.toLowerCase() &&
-        // Several MX records legitimately coexist, so those match on content.
-        (record.type !== 'MX' || candidate.content === record.content),
+        normaliseName(candidate.name) === normaliseName(record.name) &&
+        (!contentMatters || candidate.content === record.content),
     );
 
     if (match?.id) {
       return await this.updateRecord({ ...record, id: match.id });
     }
     return await this.createRecord(record);
+  }
+
+  /**
+   * Runs a plan from `planWebsiteRecords`.
+   *
+   * Deletions go first and that ordering is load-bearing: a CNAME cannot
+   * coexist with anything else at the same name, so creating the new A record
+   * before removing the old CNAME fails outright.
+   */
+  async applyPlan(changes: readonly DnsChange[]): Promise<void> {
+    const order: Record<DnsChange['action'], number> = {
+      delete: 0,
+      update: 1,
+      create: 2,
+      unchanged: 3,
+    };
+
+    for (const change of [...changes].sort((a, b) => order[a.action] - order[b.action])) {
+      if (change.action === 'delete') {
+        await this.deleteRecord(change.record.zoneId, change.record.id!);
+      } else if (change.action === 'update') {
+        await this.updateRecord(change.record);
+      } else if (change.action === 'create') {
+        await this.createRecord(change.record);
+      }
+    }
   }
 
   /**
@@ -300,6 +420,59 @@ export class CloudflareClient {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Everything on the SSL/TLS screen of Cloudflare's own dashboard.
+   *
+   * One call for the lot, because Cloudflare charges the same round trip per
+   * setting and there are five of them. A token without Zone Settings
+   * permission is refused here while it still works perfectly well for DNS,
+   * so the caller is told which of the two it is rather than being handed a
+   * blank screen.
+   */
+  async getSslSettings(zoneId: string): Promise<ZoneSslSettings> {
+    let entries: Array<{ id: string; value: unknown; editable?: boolean }>;
+
+    try {
+      const payload = await this.request<
+        Array<{ id: string; value: unknown; editable?: boolean }>
+      >('GET', `/zones/${zoneId}/settings`);
+      entries = payload.result ?? [];
+    } catch (error) {
+      if (error instanceof CloudflareError && (error.status === 403 || error.status === 401)) {
+        return { ...UNKNOWN_SSL_SETTINGS, readable: false };
+      }
+      throw error;
+    }
+
+    const byId = new Map(entries.map((entry) => [entry.id, entry]));
+    const value = (id: string): unknown => byId.get(id)?.value;
+    const onOff = (id: string): boolean | null => {
+      const raw = value(id);
+      return raw === 'on' ? true : raw === 'off' ? false : null;
+    };
+
+    const sslMode = CloudflareSslMode.safeParse(value('ssl'));
+    const minTls = CloudflareMinTlsVersion.safeParse(value('min_tls_version'));
+
+    return {
+      readable: true,
+      // Cloudflare marks a setting uneditable when the plan does not include
+      // it, so the panel can grey the control instead of failing on save.
+      editable: byId.get('ssl')?.editable !== false,
+      sslMode: sslMode.success ? sslMode.data : null,
+      alwaysUseHttps: onOff('always_use_https'),
+      automaticHttpsRewrites: onOff('automatic_https_rewrites'),
+      minTlsVersion: minTls.success ? minTls.data : null,
+      // `zrt` is zero-round-trip resumption, which is 1.3 with an extra.
+      tls13: value('tls_1_3') === 'off' ? false : value('tls_1_3') === undefined ? null : true,
+    };
+  }
+
+  /** Changes one setting. Cloudflare has no bulk write worth the risk. */
+  async setSslSetting(zoneId: string, setting: string, value: unknown): Promise<void> {
+    await this.request('PATCH', `/zones/${zoneId}/settings/${setting}`, { value });
   }
 
   /** Rejects a write that would break mail or certificate renewal. */
@@ -360,4 +533,183 @@ export function recommendedWebsiteRecords(input: {
   });
 
   return records;
+}
+
+/** One edit the panel intends to make, with the reason in the user's terms. */
+export interface DnsChange {
+  readonly action: 'create' | 'update' | 'delete' | 'unchanged';
+  readonly reason: string;
+  readonly record: DnsRecord;
+  /** What the record said before, when it is being changed or removed. */
+  readonly was?: string;
+}
+
+/** Types that cannot share a name with the one we are about to write. */
+function conflicts(desired: DnsRecordType, existing: DnsRecordType): boolean {
+  // A CNAME may not coexist with any other record for the same name, in
+  // either direction.
+  if (desired === 'CNAME') return existing === 'A' || existing === 'AAAA' || existing === 'CNAME';
+  if (desired === 'A') return existing === 'CNAME' || existing === 'AAAA';
+  return false;
+}
+
+function conflictReason(existing: DnsRecord): string {
+  if (existing.type === 'AAAA') {
+    return `Removed: it sent visitors on IPv6 to ${existing.content} instead of this server.`;
+  }
+  return `Removed: a ${existing.type} record cannot share a name with the one this website needs.`;
+}
+
+/**
+ * Works out every edit needed to make a domain reach this server.
+ *
+ * Upserting the two or three records a website wants is only right on an empty
+ * zone. A domain moved from another host arrives with a full set: a second
+ * A record at the apex round-robins half the visitors back to the old machine,
+ * an AAAA sends every IPv6 visitor there permanently, a CNAME at the apex or at
+ * www blocks the write entirely, and the mail, ftp and webmail names still
+ * resolve to a server that is being switched off. None of that shows up as an
+ * error — the site simply works for some people and not others.
+ *
+ * So the whole zone is read first and reconciled. Records that have nothing to
+ * do with addressing (MX, TXT, SRV, NS, and any CAA already present) are never
+ * touched: they are how mail and domain verification keep working.
+ */
+export function planWebsiteRecords(input: {
+  zoneId: string;
+  domain: string;
+  serverIpv4: string;
+  proxied: boolean;
+  existing: ReadonlyArray<DnsRecord>;
+  /** Also repoint other names that still resolve to the previous server. */
+  repointStale?: boolean;
+}): DnsChange[] {
+  const domain = normaliseName(input.domain);
+  const managed = new Set([domain, `www.${domain}`]);
+  const changes: DnsChange[] = [];
+  const handled = new Set<string>();
+
+  const at = (name: string) =>
+    input.existing.filter((record) => normaliseName(record.name) === name);
+
+  /*
+   * Addresses the domain resolves to today and shouldn't. Anything else in the
+   * zone still pointing at one of them is pointing at the old server, which is
+   * what makes repointing mail/ftp/webmail safe to offer rather than a guess.
+   */
+  const previous = new Set(
+    at(domain)
+      .filter((record) => record.type === 'A' && record.content !== input.serverIpv4)
+      .map((record) => record.content),
+  );
+
+  const [apex, www] = recommendedWebsiteRecords({
+    zoneId: input.zoneId,
+    domain,
+    serverIpv4: input.serverIpv4,
+    proxied: input.proxied,
+  });
+
+  for (const desired of [apex!, www!]) {
+    const name = normaliseName(desired.name);
+    let kept = false;
+
+    for (const record of at(name)) {
+      if (!record.id || handled.has(record.id)) continue;
+
+      if (record.type === desired.type) {
+        handled.add(record.id);
+
+        if (kept) {
+          changes.push({
+            action: 'delete',
+            reason: `Removed: a second ${record.type} record here would send some visitors to ${record.content}.`,
+            record,
+            was: record.content,
+          });
+          continue;
+        }
+
+        kept = true;
+        const sameTarget = normaliseName(record.content) === normaliseName(desired.content);
+        const same = sameTarget && record.proxied === desired.proxied;
+
+        changes.push({
+          action: same ? 'unchanged' : 'update',
+          reason: same
+            ? 'Already correct.'
+            : sameTarget
+              ? `Already points here; only the Cloudflare setting changes.`
+              : `Updated from ${record.content}.`,
+          record: { ...desired, id: record.id },
+          ...(same ? {} : { was: record.content }),
+        });
+        continue;
+      }
+
+      if (conflicts(desired.type, record.type)) {
+        handled.add(record.id);
+        changes.push({
+          action: 'delete',
+          reason: conflictReason(record),
+          record,
+          was: record.content,
+        });
+      }
+    }
+
+    if (!kept) {
+      changes.push({
+        action: 'create',
+        reason: 'Added: this is what makes the address reach this server.',
+        record: { ...desired, id: null },
+      });
+    }
+  }
+
+  /*
+   * CAA is additive — several may name several authorities — so an existing one
+   * is never replaced. Ours is only added when Let's Encrypt is not already
+   * allowed, otherwise renewals would start failing the moment somebody else's
+   * CAA record was overwritten.
+   */
+  const caa = recommendedWebsiteRecords({
+    zoneId: input.zoneId,
+    domain,
+    serverIpv4: input.serverIpv4,
+    proxied: false,
+  })[2]!;
+
+  const hasLetsEncrypt = at(domain).some(
+    (record) => record.type === 'CAA' && /issue\s+"?letsencrypt\.org/i.test(record.content),
+  );
+
+  if (!hasLetsEncrypt) {
+    changes.push({
+      action: 'create',
+      reason: 'Added: allows this server to renew the HTTPS certificate.',
+      record: { ...caa, id: null },
+    });
+  }
+
+  if (input.repointStale !== false) {
+    for (const record of input.existing) {
+      if (!record.id || handled.has(record.id)) continue;
+      if (record.type !== 'A') continue;
+      if (managed.has(normaliseName(record.name))) continue;
+      if (!previous.has(record.content)) continue;
+
+      handled.add(record.id);
+      changes.push({
+        action: 'update',
+        // The proxy setting is kept: mail hostnames must not be proxied, and
+        // this record's existing value already reflects that.
+        record: { ...record, content: input.serverIpv4 },
+        reason: `Updated from ${record.content}, the server this website is moving off.`,
+        was: record.content,
+      });
+    }
+  }
+
+  return changes;
 }

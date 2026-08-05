@@ -104,12 +104,20 @@ export function validateDnsRecord(
   return { ok: true };
 }
 
+/** How Cloudflare secures the leg between itself and this server. */
+export const CloudflareSslMode = z.enum(['off', 'flexible', 'full', 'strict']);
+export type CloudflareSslMode = z.infer<typeof CloudflareSslMode>;
+
+/** The oldest TLS version Cloudflare will accept from a visitor. */
+export const CloudflareMinTlsVersion = z.enum(['1.0', '1.1', '1.2', '1.3']);
+export type CloudflareMinTlsVersion = z.infer<typeof CloudflareMinTlsVersion>;
+
 export const CloudflareZone = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   status: z.string().min(1),
   /** Cloudflare's SSL mode. Must be `strict` whenever anything is proxied. */
-  sslMode: z.enum(['off', 'flexible', 'full', 'strict']).nullable().default(null),
+  sslMode: CloudflareSslMode.nullable().default(null),
 });
 export type CloudflareZone = z.infer<typeof CloudflareZone>;
 
@@ -122,6 +130,27 @@ export type CloudflareZone = z.infer<typeof CloudflareZone>;
 export const CLOUDFLARE_PERMISSION_ROWS = [
   { group: 'Zone', resource: 'Zone', level: 'Read' },
   { group: 'Zone', resource: 'DNS', level: 'Edit' },
+] as const;
+
+/**
+ * The extra row that lets the panel read and change Cloudflare's own SSL
+ * settings for a domain.
+ *
+ * Deliberately separate from the required rows. DNS works without it, and a
+ * token created before the SSL tab existed will not carry it, so demanding it
+ * everywhere would report perfectly good tokens as broken. The SSL tab asks
+ * for it, and says so, only when it finds it missing.
+ */
+export const CLOUDFLARE_SSL_PERMISSION_ROW = {
+  group: 'Zone',
+  resource: 'Zone Settings',
+  level: 'Edit',
+} as const;
+
+/** Every row worth adding to a token that manages one website end to end. */
+export const CLOUDFLARE_TOKEN_PERMISSION_ROWS = [
+  ...CLOUDFLARE_PERMISSION_ROWS,
+  CLOUDFLARE_SSL_PERMISSION_ROW,
 ] as const;
 
 /**

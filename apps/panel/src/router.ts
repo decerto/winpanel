@@ -78,6 +78,11 @@ export const router = createRouter({
           component: () => import('./pages/site/SiteDnsPage.vue'),
         },
         {
+          path: 'ssl',
+          name: 'site-ssl',
+          component: () => import('./pages/site/SiteSslPage.vue'),
+        },
+        {
           path: 'email',
           name: 'site-email',
           component: () => import('./pages/site/SiteEmailPage.vue'),

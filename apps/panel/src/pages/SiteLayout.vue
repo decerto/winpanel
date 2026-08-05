@@ -12,6 +12,7 @@ import {
   Globe2,
   RefreshCw,
   Rocket,
+  ShieldCheck,
   SlidersHorizontal,
 } from 'lucide-vue-next';
 import type { CheckState } from '@winpanel/shared';
@@ -92,6 +93,7 @@ const TABS = computed(() => {
       show: runsAProcess,
     },
     { name: 'site-dns', label: 'DNS', icon: Globe2, show: true },
+    { name: 'site-ssl', label: 'SSL', icon: ShieldCheck, show: true },
     { name: 'site-email', label: 'Email', icon: AtSign, show: true },
     { name: 'site-settings', label: 'Settings', icon: SlidersHorizontal, show: true },
   ].filter((tab) => tab.show);

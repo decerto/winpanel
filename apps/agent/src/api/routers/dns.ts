@@ -2,7 +2,12 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { DnsRecordType, Hostname } from '@winpanel/shared';
 import { protectedProcedure, router } from '../trpc.js';
-import { CloudflareClient, CloudflareError, recommendedWebsiteRecords } from '../../dns/cloudflare.js';
+import {
+  CloudflareClient,
+  CloudflareError,
+  planWebsiteRecords,
+  type DnsChange,
+} from '../../dns/cloudflare.js';
 import {
   clearCloudflareToken,
   clearSiteCloudflareToken,
@@ -74,6 +79,48 @@ function toTrpcError(error: unknown): never {
 
 /** Every DNS operation may be scoped to one website, and usually is. */
 const SiteScope = z.object({ slug: z.string().min(1).optional() });
+
+const PointDomain = SiteScope.extend({
+  domain: Hostname,
+  serverIpv4: z.string().min(7).max(15),
+  proxied: z.boolean().default(false),
+  /** Also repoint other names still resolving to the previous server. */
+  repointStale: z.boolean().default(true),
+});
+
+/**
+ * Reads the whole zone and works out what has to change.
+ *
+ * Shared by the preview and the mutation deliberately: what the user is shown
+ * before they commit has to be produced by the same code that then runs, or
+ * the preview is a description of a different operation.
+ */
+async function planFor(
+  client: CloudflareClient,
+  input: z.infer<typeof PointDomain>,
+): Promise<{ zone: { id: string; name: string }; changes: DnsChange[] }> {
+  const zone = await client.findZoneForHostname(input.domain);
+
+  if (!zone) {
+    throw new TRPCError({
+      code: 'NOT_FOUND',
+      message:
+        `${input.domain} is not in your Cloudflare account. Add the domain to ` +
+        'Cloudflare first, then try again.',
+    });
+  }
+
+  const changes = planWebsiteRecords({
+    zoneId: zone.id,
+    domain: input.domain,
+    serverIpv4: input.serverIpv4,
+    proxied: input.proxied,
+    repointStale: input.repointStale,
+    existing: await client.listRecords(zone.id),
+  });
+
+  return { zone, changes };
+}
 
 /**
  * Pushes new tokens into the web server.
@@ -235,45 +282,42 @@ export const dnsRouter = router({
     }),
 
   /**
+   * What "Point domain here" would do, without doing it.
+   *
+   * A domain moved from another host arrives with records that have to be
+   * deleted rather than edited, and deleting somebody's DNS without showing
+   * them the list first is not a decision the panel should make quietly.
+   */
+  previewPointDomain: protectedProcedure
+    .input(PointDomain)
+    .query(async ({ ctx, input }) => {
+      try {
+        const { zone, changes } = await planFor(clientFor(ctx.app, input.slug), input);
+        return {
+          zone: zone.name,
+          changes,
+          upToDate: changes.every((change) => change.action === 'unchanged'),
+        };
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        toTrpcError(error);
+      }
+    }),
+
+  /**
    * Points a domain at this server in one action.
    *
    * Idempotent, so running it again after a change is safe rather than
    * producing duplicates.
    */
   pointDomainHere: protectedProcedure
-    .input(
-      SiteScope.extend({
-        domain: Hostname,
-        serverIpv4: z.string().min(7).max(15),
-        proxied: z.boolean().default(false),
-      }),
-    )
+    .input(PointDomain)
     .mutation(async ({ ctx, input }) => {
       try {
         const client = clientFor(ctx.app, input.slug);
-        const zone = await client.findZoneForHostname(input.domain);
+        const { zone, changes } = await planFor(client, input);
 
-        if (!zone) {
-          throw new TRPCError({
-            code: 'NOT_FOUND',
-            message:
-              `${input.domain} is not in your Cloudflare account. Add the domain to ` +
-              'Cloudflare first, then try again.',
-          });
-        }
-
-        const records = recommendedWebsiteRecords({
-          zoneId: zone.id,
-          domain: input.domain,
-          serverIpv4: input.serverIpv4,
-          proxied: input.proxied,
-        });
-
-        const applied: string[] = [];
-        for (const record of records) {
-          await client.upsertRecord(record);
-          applied.push(`${record.type} ${record.name}`);
-        }
+        await client.applyPlan(changes);
 
         // Anything less than strict leaves the leg between Cloudflare and this
         // server unverified, which undoes much of the point of a certificate.
@@ -281,12 +325,17 @@ export const dnsRouter = router({
           await client.setStrictSsl(zone.id).catch(() => undefined);
         }
 
+        const applied = changes.filter((change) => change.action !== 'unchanged');
+
         return {
           zone: zone.name,
-          applied,
-          note: input.proxied
-            ? 'Traffic will go through Cloudflare. It can take a few minutes to take effect.'
-            : 'Your domain now points straight at this server.',
+          changes,
+          applied: applied.map((change) => `${change.record.type} ${change.record.name}`),
+          note: applied.length === 0
+            ? 'Everything was already correct \u2014 nothing needed changing.'
+            : input.proxied
+              ? 'Traffic will go through Cloudflare. It can take a few minutes to take effect.'
+              : 'Your domain now points straight at this server.',
         };
       } catch (error) {
         if (error instanceof TRPCError) throw error;

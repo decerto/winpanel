@@ -5,6 +5,7 @@ import { checksRouter } from './checks.js';
 import { sitesRouter } from './sites.js';
 import { filesRouter } from './files.js';
 import { dnsRouter } from './dns.js';
+import { sslRouter } from './ssl.js';
 import { mailRouter } from './mail.js';
 import { systemRouter } from './system.js';
 import { componentsRouter } from './components.js';
@@ -59,6 +60,7 @@ export const appRouter = router({
   sites: sitesRouter,
   files: filesRouter,
   dns: dnsRouter,
+  ssl: sslRouter,
   mail: mailRouter,
   system: systemRouter,
   components: componentsRouter,

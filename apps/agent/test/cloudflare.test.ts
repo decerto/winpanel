@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { DnsRecord } from '@winpanel/shared';
 import {
   CloudflareClient,
   CloudflareError,
+  planWebsiteRecords,
   recommendedWebsiteRecords,
 } from '../src/dns/cloudflare.js';
 
@@ -390,5 +392,300 @@ describe('recommendedWebsiteRecords', () => {
 
   it('never marks the certificate record as proxied', () => {
     expect(records.find((r) => r.type === 'CAA')?.proxied).toBe(false);
+  });
+});
+
+describe('structured record types', () => {
+  const routes = {
+    '/zones/zone1/dns_records?per_page=500': { result: [] },
+    'POST /zones/zone1/dns_records': { result: { id: 'rec1' } },
+  };
+
+  it('sends a CAA record as flags, tag and value', async () => {
+    // Cloudflare rejects a CAA written as one string with "flags is a required
+    // data field", which names neither the record nor the website it broke.
+    const { impl, calls } = stubFetch(routes);
+
+    await new CloudflareClient('token', impl).createRecord({
+      zoneId: 'zone1',
+      type: 'CAA',
+      name: 'example.com',
+      content: '0 issue "letsencrypt.org"',
+      ttl: 1,
+      proxied: false,
+    });
+
+    const post = calls.find((c) => c.method === 'POST');
+    expect(post?.body).toMatchObject({
+      type: 'CAA',
+      name: 'example.com',
+      data: { flags: 0, tag: 'issue', value: 'letsencrypt.org' },
+    });
+    expect(post?.body).not.toHaveProperty('content');
+  });
+
+  it('sends an SRV record as its four parts', async () => {
+    const { impl, calls } = stubFetch(routes);
+
+    await new CloudflareClient('token', impl).createRecord({
+      zoneId: 'zone1',
+      type: 'SRV',
+      name: '_imaps._tcp.example.com',
+      content: '0 993 mail.example.com',
+      ttl: 1,
+      priority: 10,
+      proxied: false,
+    });
+
+    expect(calls.find((c) => c.method === 'POST')?.body).toMatchObject({
+      data: { priority: 10, weight: 0, port: 993, target: 'mail.example.com' },
+    });
+  });
+
+  it('refuses a CAA value it cannot break apart', async () => {
+    const { impl } = stubFetch(routes);
+
+    await expect(
+      new CloudflareClient('token', impl).createRecord({
+        zoneId: 'zone1',
+        type: 'CAA',
+        name: 'example.com',
+        content: 'letsencrypt.org',
+        ttl: 1,
+        proxied: false,
+      }),
+    ).rejects.toThrow(/0 issue/);
+  });
+
+  it('does not replace a CAA record naming another authority', async () => {
+    // CAA records are additive. Overwriting one by name alone would revoke
+    // another certificate authority the owner deliberately allowed.
+    const { impl, calls } = stubFetch({
+      '/zones/zone1/dns_records?per_page=500': {
+        result: [
+          {
+            id: 'other',
+            type: 'CAA',
+            name: 'example.com',
+            content: '0 issue "digicert.com"',
+            ttl: 1,
+          },
+        ],
+      },
+      'POST /zones/zone1/dns_records': { result: { id: 'new' } },
+    });
+
+    await new CloudflareClient('token', impl).upsertRecord({
+      zoneId: 'zone1',
+      type: 'CAA',
+      name: 'example.com',
+      content: '0 issue "letsencrypt.org"',
+      ttl: 1,
+      proxied: false,
+    });
+
+    expect(calls.some((c) => c.method === 'PUT')).toBe(false);
+    expect(calls.some((c) => c.method === 'POST')).toBe(true);
+  });
+});
+
+describe('planWebsiteRecords', () => {
+  const base = {
+    zoneId: 'zone1',
+    domain: 'example.com',
+    serverIpv4: '203.0.113.10',
+    proxied: false,
+  };
+
+  const record = (over: {
+    id: string;
+    type: DnsRecord['type'];
+    name: string;
+    content: string;
+    priority?: number;
+    proxied?: boolean;
+  }): DnsRecord => ({
+    zoneId: 'zone1',
+    ttl: 1,
+    proxied: false,
+    ...over,
+  });
+
+  const find = (changes: ReturnType<typeof planWebsiteRecords>, type: string, name: string) =>
+    changes.filter((c) => c.record.type === type && c.record.name.toLowerCase() === name);
+
+  it('creates everything for a zone with nothing in it', () => {
+    const changes = planWebsiteRecords({ ...base, existing: [] });
+
+    expect(changes.every((c) => c.action === 'create')).toBe(true);
+    expect(changes.map((c) => c.record.type)).toEqual(['A', 'CNAME', 'CAA']);
+  });
+
+  it('updates the apex rather than adding a second address', () => {
+    const changes = planWebsiteRecords({
+      ...base,
+      existing: [
+        record({ id: 'apex', type: 'A', name: 'example.com', content: '51.89.153.91' }),
+      ],
+    });
+
+    const apex = find(changes, 'A', 'example.com');
+    expect(apex).toHaveLength(1);
+    expect(apex[0]?.action).toBe('update');
+    expect(apex[0]?.record.content).toBe('203.0.113.10');
+  });
+
+  it('deletes a second A record at the apex', () => {
+    // Left alone it round-robins half the visitors back to the old server,
+    // which looks like an intermittent outage rather than a DNS mistake.
+    const changes = planWebsiteRecords({
+      ...base,
+      existing: [
+        record({ id: 'a1', type: 'A', name: 'example.com', content: '51.89.153.91' }),
+        record({ id: 'a2', type: 'A', name: 'example.com', content: '51.89.153.92' }),
+      ],
+    });
+
+    const apex = find(changes, 'A', 'example.com');
+    expect(apex.map((c) => c.action).sort()).toEqual(['delete', 'update']);
+  });
+
+  it('deletes an AAAA record that points somewhere else', () => {
+    const changes = planWebsiteRecords({
+      ...base,
+      existing: [
+        record({ id: 'v6', type: 'AAAA', name: 'example.com', content: '2001:db8::1' }),
+      ],
+    });
+
+    const removed = changes.find((c) => c.record.type === 'AAAA');
+    expect(removed?.action).toBe('delete');
+    expect(removed?.reason).toMatch(/IPv6/);
+  });
+
+  it('replaces a CNAME sitting where the A record belongs', () => {
+    const changes = planWebsiteRecords({
+      ...base,
+      existing: [
+        record({ id: 'c1', type: 'CNAME', name: 'example.com', content: 'old.host.net' }),
+      ],
+    });
+
+    expect(find(changes, 'CNAME', 'example.com')[0]?.action).toBe('delete');
+    expect(find(changes, 'A', 'example.com')[0]?.action).toBe('create');
+  });
+
+  it('replaces an A record at www with the CNAME', () => {
+    const changes = planWebsiteRecords({
+      ...base,
+      existing: [
+        record({ id: 'w', type: 'A', name: 'www.example.com', content: '51.89.153.91' }),
+      ],
+    });
+
+    expect(find(changes, 'A', 'www.example.com')[0]?.action).toBe('delete');
+    expect(find(changes, 'CNAME', 'www.example.com')[0]?.action).toBe('create');
+  });
+
+  it('moves other names off the old server', () => {
+    const changes = planWebsiteRecords({
+      ...base,
+      existing: [
+        record({ id: 'apex', type: 'A', name: 'example.com', content: '51.89.153.91' }),
+        record({ id: 'mail', type: 'A', name: 'mail.example.com', content: '51.89.153.91' }),
+        record({ id: 'ftp', type: 'A', name: 'ftp.example.com', content: '51.89.153.91' }),
+      ],
+    });
+
+    for (const name of ['mail.example.com', 'ftp.example.com']) {
+      const change = find(changes, 'A', name)[0];
+      expect(change?.action).toBe('update');
+      expect(change?.record.content).toBe('203.0.113.10');
+    }
+  });
+
+  it('leaves other names alone when asked not to move them', () => {
+    const changes = planWebsiteRecords({
+      ...base,
+      repointStale: false,
+      existing: [
+        record({ id: 'apex', type: 'A', name: 'example.com', content: '51.89.153.91' }),
+        record({ id: 'mail', type: 'A', name: 'mail.example.com', content: '51.89.153.91' }),
+      ],
+    });
+
+    expect(find(changes, 'A', 'mail.example.com')).toHaveLength(0);
+  });
+
+  it('never touches a name pointing at an unrelated address', () => {
+    const changes = planWebsiteRecords({
+      ...base,
+      existing: [
+        record({ id: 'apex', type: 'A', name: 'example.com', content: '51.89.153.91' }),
+        record({ id: 'crm', type: 'A', name: 'crm.example.com', content: '198.51.100.7' }),
+      ],
+    });
+
+    expect(find(changes, 'A', 'crm.example.com')).toHaveLength(0);
+  });
+
+  it('leaves mail delivery and verification records alone', () => {
+    const changes = planWebsiteRecords({
+      ...base,
+      existing: [
+        record({ id: 'mx', type: 'MX', name: 'example.com', content: 'mail.example.com', priority: 10 }),
+        record({ id: 'txt', type: 'TXT', name: 'example.com', content: 'v=spf1 -all' }),
+        record({ id: 'srv', type: 'SRV', name: '_imaps._tcp.example.com', content: '0 993 example.com' }),
+        record({ id: 'ns', type: 'NS', name: 'sub.example.com', content: 'ns1.other.net' }),
+      ],
+    });
+
+    expect(changes.some((c) => ['MX', 'TXT', 'SRV', 'NS'].includes(c.record.type))).toBe(false);
+  });
+
+  it('keeps an existing certificate record instead of adding another', () => {
+    const changes = planWebsiteRecords({
+      ...base,
+      existing: [
+        record({ id: 'caa', type: 'CAA', name: 'example.com', content: '0 issue "letsencrypt.org"' }),
+      ],
+    });
+
+    expect(changes.some((c) => c.record.type === 'CAA')).toBe(false);
+  });
+
+  it('reports a correct zone as needing nothing', () => {
+    const changes = planWebsiteRecords({
+      ...base,
+      existing: [
+        record({ id: 'apex', type: 'A', name: 'example.com', content: '203.0.113.10' }),
+        record({ id: 'www', type: 'CNAME', name: 'www.example.com', content: 'example.com' }),
+        record({ id: 'caa', type: 'CAA', name: 'example.com', content: '0 issue "letsencrypt.org"' }),
+      ],
+    });
+
+    expect(changes.every((c) => c.action === 'unchanged')).toBe(true);
+  });
+
+  it('removes conflicts before it writes', async () => {
+    // A CNAME cannot share a name with anything, so creating the A record
+    // first fails outright.
+    const changes = planWebsiteRecords({
+      ...base,
+      existing: [
+        record({ id: 'c1', type: 'CNAME', name: 'example.com', content: 'old.host.net' }),
+      ],
+    });
+
+    const { impl, calls } = stubFetch({
+      '/zones/zone1/dns_records?per_page=500': { result: [] },
+      'POST /zones/zone1/dns_records': { result: { id: 'new' } },
+      'DELETE /zones/zone1/dns_records/c1': { result: { id: 'c1' } },
+    });
+
+    await new CloudflareClient('token', impl).applyPlan(changes);
+
+    const methods = calls.map((c) => c.method);
+    expect(methods.indexOf('DELETE')).toBeLessThan(methods.indexOf('POST'));
   });
 });

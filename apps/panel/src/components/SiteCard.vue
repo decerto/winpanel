@@ -12,6 +12,7 @@ import {
   HardDrive,
   KeyRound,
   Rocket,
+  ShieldCheck,
   SlidersHorizontal,
   Terminal,
 } from 'lucide-vue-next';
@@ -35,12 +36,45 @@ import { RUNTIME_LABEL, siteStatus } from '../lib/site-status';
  */
 
 type Site = Awaited<ReturnType<typeof api.sites.list.query>>[number];
+type Certificate = Awaited<ReturnType<typeof api.ssl.overview.query>>[number];
 
-const props = defineProps<{ site: Site }>();
+const props = defineProps<{ site: Site; certificate?: Certificate }>();
 
 const status = computed(() => siteStatus(props.site));
 const primary = computed(() => props.site.domains[0] ?? null);
 const extras = computed(() => Math.max(0, props.site.domains.length - 2));
+
+/*
+ * Certificate state, in the words a tile has room for.
+ *
+ * Passed down rather than fetched here: the answer for every website comes
+ * from one request on the list page, and forty cards each asking for their
+ * own is forty round trips for the same file read.
+ */
+const CERTIFICATE_DETAIL = {
+  valid: 'Secured with HTTPS',
+  expiring: 'Renewing soon',
+  expired: 'Certificate expired',
+  absent: 'No certificate yet',
+  'no-domain': 'Needs a domain first',
+} as const;
+
+const sslDetail = computed(() =>
+  props.certificate ? CERTIFICATE_DETAIL[props.certificate.state] : 'Certificates and Cloudflare',
+);
+
+const sslTint = computed(() => {
+  switch (props.certificate?.state) {
+    case 'valid':
+      return 'text-ok';
+    case 'expiring':
+      return 'text-warn';
+    case 'expired':
+      return 'text-danger';
+    default:
+      return 'text-ink-muted';
+  }
+});
 
 const isGit = computed(() => props.site.sourceKind === 'git');
 const runsAProcess = computed(
@@ -137,10 +171,17 @@ const domainTiles = computed<Tile[]>(() => {
   const tiles: Tile[] = [
     {
       label: 'DNS',
-      detail: 'Records and HTTPS',
+      detail: 'Records and where the domain points',
       icon: Globe2,
       to: `/sites/${props.site.slug}/dns`,
       tint: 'text-info',
+    },
+    {
+      label: 'SSL',
+      detail: sslDetail.value,
+      icon: ShieldCheck,
+      to: `/sites/${props.site.slug}/ssl`,
+      tint: sslTint.value,
     },
     {
       label: 'Email',

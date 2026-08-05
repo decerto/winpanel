@@ -11,6 +11,7 @@ import {
   Plus,
   Rows3,
   Search,
+  ShieldCheck,
   SlidersHorizontal,
 } from 'lucide-vue-next';
 import EmptyState from '../components/EmptyState.vue';
@@ -38,8 +39,10 @@ import { RUNTIME_LABEL, siteStatus } from '../lib/site-status';
 const router = useRouter();
 
 type Site = Awaited<ReturnType<typeof api.sites.list.query>>[number];
+type Certificate = Awaited<ReturnType<typeof api.ssl.overview.query>>[number];
 
 const sites = ref<Site[]>([]);
+const certificates = ref<Record<string, Certificate>>({});
 const loading = ref(true);
 const error = ref<string | null>(null);
 const query = ref('');
@@ -55,6 +58,7 @@ const VIEWS = [
 const TOOLS = [
   { path: 'files', label: 'Files', icon: FolderOpen },
   { path: 'dns', label: 'DNS', icon: Globe2 },
+  { path: 'ssl', label: 'SSL', icon: ShieldCheck },
   { path: 'email', label: 'Email', icon: AtSign },
   { path: 'settings', label: 'Settings', icon: SlidersHorizontal },
 ] as const;
@@ -92,6 +96,18 @@ async function load(): Promise<void> {
     error.value = describeError(err);
   } finally {
     loading.value = false;
+  }
+
+  /*
+   * Certificate state is asked for separately and allowed to fail quietly. It
+   * only decorates the SSL tile, and a stopped web server should not keep the
+   * list of websites off the screen.
+   */
+  try {
+    const overview = await api.ssl.overview.query();
+    certificates.value = Object.fromEntries(overview.map((entry) => [entry.slug, entry]));
+  } catch {
+    certificates.value = {};
   }
 }
 
@@ -155,7 +171,12 @@ onMounted(load);
 
     <template v-else>
       <div v-if="view === 'cards'" class="space-y-4">
-        <SiteCard v-for="site in visible" :key="site.id" :site="site" />
+        <SiteCard
+          v-for="site in visible"
+          :key="site.id"
+          :site="site"
+          :certificate="certificates[site.slug]"
+        />
       </div>
 
       <div v-else class="card overflow-hidden">

@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, inject, ref, watch } from 'vue';
+import { computed, inject, onUnmounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { CloudCog, ExternalLink, Globe2, RefreshCw, Trash2 } from 'lucide-vue-next';
-import { CLOUDFLARE_PERMISSION_ROWS } from '@winpanel/shared';
+import { CLOUDFLARE_TOKEN_PERMISSION_ROWS } from '@winpanel/shared';
 import { api, describeError } from '../../lib/api';
 import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
@@ -36,6 +36,7 @@ const IP_STORAGE_KEY = 'winpanel.serverIpv4';
 type Zone = Awaited<ReturnType<typeof api.dns.zones.query>>[number];
 type ZoneRecord = Awaited<ReturnType<typeof api.dns.records.query>>[number];
 type Connection = Awaited<ReturnType<typeof api.dns.status.query>>;
+type Plan = Awaited<ReturnType<typeof api.dns.previewPointDomain.query>>;
 
 const slug = computed(() => route.params['slug'] as string);
 
@@ -53,6 +54,11 @@ const tokenBusy = ref(false);
 
 const serverIpv4 = ref(localStorage.getItem(IP_STORAGE_KEY) ?? '');
 const proxied = ref(false);
+const repointStale = ref(true);
+
+const plan = ref<Plan | null>(null);
+const planning = ref(false);
+const planError = ref<string | null>(null);
 
 const primaryDomain = computed(() => site.value?.domains[0] ?? '');
 
@@ -68,6 +74,13 @@ const zone = computed(() => {
 const looksLikeIpv4 = computed(() =>
   /^(\d{1,3}\.){3}\d{1,3}$/.test(serverIpv4.value.trim()),
 );
+
+/** Only the edits, so "nothing to do" reads as nothing rather than a list. */
+const pending = computed(
+  () => plan.value?.changes.filter((change) => change.action !== 'unchanged') ?? [],
+);
+
+const removals = computed(() => pending.value.filter((change) => change.action === 'delete'));
 
 /** Records that concern this site, rather than the whole zone. */
 const relevant = computed(() => {
@@ -96,10 +109,44 @@ async function load(): Promise<void> {
     records.value = zone.value
       ? await api.dns.records.query({ slug: slug.value, zoneId: zone.value.id })
       : null;
+    await refreshPlan();
   } catch (err) {
     error.value = describeError(err);
   } finally {
     loading.value = false;
+  }
+}
+
+/**
+ * Works out what pointing the domain here would change, before it changes it.
+ *
+ * A domain arriving from another host brings records that have to be deleted
+ * rather than edited — a stray AAAA, a second A record, a CNAME where an A
+ * belongs. Showing that list first is the difference between an informed click
+ * and a surprise.
+ */
+async function refreshPlan(): Promise<void> {
+  if (!zone.value || !looksLikeIpv4.value) {
+    plan.value = null;
+    return;
+  }
+
+  planning.value = true;
+  planError.value = null;
+
+  try {
+    plan.value = await api.dns.previewPointDomain.query({
+      slug: slug.value,
+      domain: primaryDomain.value,
+      serverIpv4: serverIpv4.value.trim(),
+      proxied: proxied.value,
+      repointStale: repointStale.value,
+    });
+  } catch (err) {
+    plan.value = null;
+    planError.value = describeError(err);
+  } finally {
+    planning.value = false;
   }
 }
 
@@ -147,6 +194,26 @@ async function forgetToken(): Promise<void> {
 }
 
 async function pointHere(): Promise<void> {
+  /*
+   * Deletions are the only irreversible part, and they are also the part
+   * nobody expects, so they are the only part worth interrupting for.
+   */
+  if (removals.value.length > 0) {
+    const list = removals.value
+      .map((change) => `\u2022 ${change.record.type} ${change.record.name} (${change.was})`)
+      .join('\n');
+
+    if (
+      !window.confirm(
+        `${removals.value.length} existing DNS record${removals.value.length === 1 ? '' : 's'} ` +
+          'will be deleted, because they send visitors somewhere other than this server:\n\n' +
+          `${list}\n\nContinue?`,
+      )
+    ) {
+      return;
+    }
+  }
+
   busy.value = true;
   error.value = null;
   notice.value = null;
@@ -157,9 +224,12 @@ async function pointHere(): Promise<void> {
       domain: primaryDomain.value,
       serverIpv4: serverIpv4.value.trim(),
       proxied: proxied.value,
+      repointStale: repointStale.value,
     });
     localStorage.setItem(IP_STORAGE_KEY, serverIpv4.value.trim());
-    notice.value = `${result.applied.join(', ')}. ${result.note}`;
+    notice.value = result.applied.length
+      ? `${result.applied.join(', ')}. ${result.note}`
+      : result.note;
     await load();
   } catch (err) {
     error.value = describeError(err);
@@ -181,6 +251,19 @@ async function removeRecord(recordId: string, name: string): Promise<void> {
 }
 
 watch(primaryDomain, load, { immediate: true });
+
+/*
+ * Debounced: the address field is typed into a character at a time, and
+ * Cloudflare rate limits. The button is never gated on this, so a slow or
+ * failed preview costs the user nothing.
+ */
+let planTimer: ReturnType<typeof setTimeout> | undefined;
+watch([serverIpv4, proxied, repointStale], () => {
+  if (loading.value) return;
+  clearTimeout(planTimer);
+  planTimer = setTimeout(() => void refreshPlan(), 500);
+});
+onUnmounted(() => clearTimeout(planTimer));
 </script>
 
 <template>
@@ -233,13 +316,16 @@ watch(primaryDomain, load, { immediate: true });
           </li>
           <li>Select <strong>Create Token</strong>, then <strong>Create Custom Token</strong>.</li>
           <li>
-            Under Permissions add two rows, using all three dropdowns on each. The middle
+            Under Permissions add these rows, using all three dropdowns on each. The middle
             dropdown offers both Zone and DNS, and only DNS grants access to records:
             <ul class="mt-1.5 space-y-1">
-              <li v-for="row in CLOUDFLARE_PERMISSION_ROWS" :key="row.resource">
+              <li v-for="row in CLOUDFLARE_TOKEN_PERMISSION_ROWS" :key="row.resource">
                 <code class="rounded bg-sunken px-1.5 py-0.5 text-ink">
                   {{ row.group }} &rarr; {{ row.resource }} &rarr; {{ row.level }}
                 </code>
+                <span v-if="row.resource === 'Zone Settings'" class="ml-1 text-xs text-ink-faint">
+                  &mdash; only for the SSL tab; DNS works without it
+                </span>
               </li>
             </ul>
           </li>
@@ -327,33 +413,95 @@ watch(primaryDomain, load, { immediate: true });
             Add the domain to Cloudflare first, then come back.
           </AlertMessage>
 
-          <div v-else class="mt-4 flex flex-wrap items-end gap-3">
-            <div class="min-w-48">
-              <label for="server-ip" class="label">This server's public address</label>
-              <input
-                id="server-ip"
-                v-model="serverIpv4"
-                class="field font-mono"
-                placeholder="203.0.113.10"
-                inputmode="numeric"
-              />
-              <p class="hint">Detected from this server. Change it if your host gave you another.</p>
+          <div v-else class="mt-4 space-y-4">
+            <div class="flex flex-wrap items-end gap-3">
+              <div class="min-w-48">
+                <label for="server-ip" class="label">This server's public address</label>
+                <input
+                  id="server-ip"
+                  v-model="serverIpv4"
+                  class="field font-mono"
+                  placeholder="203.0.113.10"
+                  inputmode="numeric"
+                />
+                <p class="hint">Detected from this server. Change it if your host gave you another.</p>
+              </div>
+
+              <label class="mb-1 flex items-center gap-2 text-sm text-ink-muted">
+                <input v-model="proxied" type="checkbox" />
+                Route traffic through Cloudflare
+              </label>
+
+              <button
+                type="button"
+                class="btn btn-primary mb-1"
+                :disabled="!looksLikeIpv4 || busy"
+                @click="pointHere"
+              >
+                <RefreshCw v-if="busy" :size="15" class="animate-spin" aria-hidden="true" />
+                {{ busy ? 'Applying\u2026' : 'Point domain here' }}
+              </button>
             </div>
 
-            <label class="mb-1 flex items-center gap-2 text-sm text-ink-muted">
-              <input v-model="proxied" type="checkbox" />
-              Route traffic through Cloudflare
+            <label class="flex items-start gap-2 text-sm text-ink-muted">
+              <input v-model="repointStale" type="checkbox" class="mt-0.5" />
+              <span>
+                Also move other names that still point at the old server
+                <span class="block text-xs text-ink-faint">
+                  Things like <span class="font-mono">mail</span>,
+                  <span class="font-mono">ftp</span> and
+                  <span class="font-mono">webmail</span>, if they currently resolve to whatever
+                  this domain resolved to before.
+                </span>
+              </span>
             </label>
 
-            <button
-              type="button"
-              class="btn btn-primary mb-1"
-              :disabled="!looksLikeIpv4 || busy"
-              @click="pointHere"
-            >
-              <RefreshCw v-if="busy" :size="15" class="animate-spin" aria-hidden="true" />
-              {{ busy ? 'Applying\u2026' : 'Point domain here' }}
-            </button>
+            <!--
+              What the button will do, before it does it. A domain moved from
+              another host arrives with records that must be deleted rather than
+              edited, and that is not something to spring on someone.
+            -->
+            <AlertMessage v-if="planError" tone="warning">{{ planError }}</AlertMessage>
+
+            <div v-else-if="planning" class="h-16 animate-pulse rounded-lg bg-sunken" />
+
+            <p v-else-if="plan && pending.length === 0" class="text-sm text-ok">
+              Nothing to change &mdash; this domain already points at this server.
+            </p>
+
+            <div v-else-if="plan" class="rounded-lg border border-line bg-sunken/60 p-3">
+              <p class="text-xs font-semibold uppercase tracking-wide text-ink-faint">
+                What this will change in {{ plan.zone }}
+              </p>
+              <ul class="mt-2 space-y-1.5">
+                <li
+                  v-for="(change, index) in pending"
+                  :key="`${change.record.type}-${change.record.name}-${index}`"
+                  class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 text-sm"
+                >
+                  <span
+                    class="rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide"
+                    :class="{
+                      'bg-ok-soft text-ok': change.action === 'create',
+                      'bg-brand-soft text-brand-bright': change.action === 'update',
+                      'bg-danger-soft text-danger': change.action === 'delete',
+                    }"
+                  >
+                    {{ change.action === 'create' ? 'Add' : change.action === 'update' ? 'Change' : 'Delete' }}
+                  </span>
+                  <span class="font-mono text-ink">
+                    {{ change.record.type }} {{ change.record.name }}
+                  </span>
+                  <span
+                    v-if="change.action !== 'delete'"
+                    class="font-mono text-xs text-ink-muted"
+                  >
+                    &rarr; {{ change.record.content }}
+                  </span>
+                  <span class="w-full text-xs text-ink-faint">{{ change.reason }}</span>
+                </li>
+              </ul>
+            </div>
           </div>
         </section>
 
