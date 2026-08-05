@@ -146,6 +146,14 @@ export function createDeployHandler(deps: DeployDependencies) {
         .run();
     };
 
+    /*
+     * Whether the folder the site serves from still holds the version that was
+     * there before this deploy started. It stops being true the moment staging
+     * is promoted, and becomes true again only if a rollback succeeds — which
+     * is the difference between "nothing changed" and "your site is down".
+     */
+    let liveIsPrevious = true;
+
     try {
       await fs.mkdir(sharedDir, { recursive: true });
 
@@ -277,6 +285,7 @@ export function createDeployHandler(deps: DeployDependencies) {
       }
 
       await promoteStaging(folders);
+      liveIsPrevious = false;
 
       // 5. Start it.
       // For the frontend-builds-into-backend layout this is the backend
@@ -286,31 +295,38 @@ export function createDeployHandler(deps: DeployDependencies) {
 
       const runtimeExe = await resolveRuntimeExecutable(deps, manifest);
 
-      if (wasInstalled) await deps.services.uninstall(serviceId);
-
-      await deps.services.install({
-        id: serviceId,
-        displayName: site.displayName,
-        description: `Website: ${site.displayName}`,
-        executable: runtimeExe.exe,
-        args: runtimeExe.args,
-        workingDirectory: appDir,
-        env: {
-          ...env,
-          [manifest.app.portEnvVar]: String(targetPort),
-          NODE_ENV: 'production',
-          HOST: '127.0.0.1',
-        },
-        logPath: path.join(siteDir, 'logs'),
-      });
-
-      await deps.services.start(serviceId);
-
-      setStatus('healthchecking');
-      ctx.progress(80);
-
-      // 6. Prove it works. If it does not, put the old version back.
+      /*
+       * 6. Register it, start it, and prove it works.
+       *
+       * All three roll back together. Starting used to sit outside this, so a
+       * build that compiled but could not run left the new code in `release/`,
+       * the service stopped, and the deploy log claiming the site was still on
+       * the version it had before — while it was in fact down.
+       */
       try {
+        if (wasInstalled) await deps.services.uninstall(serviceId);
+
+        await deps.services.install({
+          id: serviceId,
+          displayName: site.displayName,
+          description: `Website: ${site.displayName}`,
+          executable: runtimeExe.exe,
+          args: runtimeExe.args,
+          workingDirectory: appDir,
+          env: {
+            ...env,
+            [manifest.app.portEnvVar]: String(targetPort),
+            NODE_ENV: 'production',
+            HOST: '127.0.0.1',
+          },
+          logPath: path.join(siteDir, 'logs'),
+        });
+
+        await deps.services.start(serviceId);
+
+        setStatus('healthchecking');
+        ctx.progress(80);
+
         await waitForHealthy({
           port: targetPort,
           path: manifest.app.healthCheckPath,
@@ -318,7 +334,7 @@ export function createDeployHandler(deps: DeployDependencies) {
           ctx,
         });
       } catch (error) {
-        await rollBack(deps, { folders, serviceId, ctx });
+        if (await rollBack(deps, { folders, serviceId, ctx })) liveIsPrevious = true;
         throw error;
       }
 
@@ -348,7 +364,7 @@ export function createDeployHandler(deps: DeployDependencies) {
         try {
           await deps.routing.apply();
         } catch (error) {
-          await rollBack(deps, { folders, serviceId, ctx });
+          if (await rollBack(deps, { folders, serviceId, ctx })) liveIsPrevious = true;
           throw new DeploymentError(
             'The new version started, but the web server could not be pointed at it. ' +
               'The previous version has been put back. ' +
@@ -381,7 +397,13 @@ export function createDeployHandler(deps: DeployDependencies) {
       // The staged build is left where it is: it is the only evidence of what
       // went wrong, it is hidden from the file manager, and the next deploy
       // clears it before it starts.
-      ctx.log('Your site was left running the version it had before.', 'info');
+      ctx.log(
+        liveIsPrevious
+          ? 'Your site was left running the version it had before.'
+          : 'Your site is NOT running: the new version is in place but would not start, and ' +
+            'there was no previous version to go back to. Fix the problem and deploy again.',
+        liveIsPrevious ? 'info' : 'error',
+      );
       throw error;
     }
   };
@@ -393,27 +415,31 @@ export function createDeployHandler(deps: DeployDependencies) {
  * The new process has to stop before its folder can be moved, and the service
  * definition is unchanged — same id, same port, same working directory — so
  * starting it again is all it takes to have the old version serving.
+ *
+ * Returns whether the live folder now holds the previous version, which is
+ * what decides whether the deploy can honestly say the site is still up.
  */
 async function rollBack(
   deps: DeployDependencies,
   options: { folders: ReleaseFolders; serviceId: string; ctx: JobContext },
-): Promise<void> {
+): Promise<boolean> {
   const { folders, serviceId, ctx } = options;
 
   await deps.services.stop(serviceId).catch(() => undefined);
 
   try {
-    if (!(await restorePrevious(folders))) return;
+    if (!(await restorePrevious(folders))) return false;
   } catch (error) {
     ctx.log(
       `The previous version could not be put back: ${error instanceof Error ? error.message : String(error)}`,
       'error',
     );
-    return;
+    return false;
   }
 
   ctx.log('Put the previous version back.', 'info');
   await deps.services.start(serviceId).catch(() => undefined);
+  return true;
 }
 
 /** Clears the timestamped folders sites created before this layout existed. */

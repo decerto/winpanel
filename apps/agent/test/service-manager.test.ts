@@ -5,11 +5,49 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   ServiceManager,
   buildServiceXml,
+  describeCrashLog,
   readServiceState,
   replaceEnvironmentInXml,
   waitUntilGone,
   type ServiceState,
 } from '../src/windows/service-manager.js';
+
+describe('describeCrashLog', () => {
+  it('picks the reason out of a Node crash rather than the version banner', () => {
+    const log = [
+      'node:internal/modules/cjs/loader:1215',
+      '  throw err;',
+      '  ^',
+      '',
+      "Error: Cannot find module 'C:\\WinPanel\\sites\\demo\\release\\index.js'",
+      '    at Module._resolveFilename (node:internal/modules/cjs/loader:1212:15)',
+      '    at Module._load (node:internal/modules/cjs/loader:1043:27) {',
+      "  code: 'MODULE_NOT_FOUND',",
+      '  requireStack: []',
+      '}',
+      '',
+      'Node.js v24.18.1',
+    ].join('\r\n');
+
+    expect(describeCrashLog(log)).toBe(
+      "Error: Cannot find module 'C:\\WinPanel\\sites\\demo\\release\\index.js'",
+    );
+  });
+
+  it('finds a namespaced error class', () => {
+    const log = 'starting up\nTypeError: handler is not a function\n    at run (app.js:3:1)\nNode.js v22.0.0';
+    expect(describeCrashLog(log)).toBe('TypeError: handler is not a function');
+  });
+
+  it('falls back to the last meaningful line when nothing names an error', () => {
+    const log = '{"level":30,"msg":"ready"}\nport 3001 is already taken\n\n';
+    expect(describeCrashLog(log)).toBe('port 3001 is already taken');
+  });
+
+  it('has nothing to say about an empty log', () => {
+    expect(describeCrashLog('\n\n   \n')).toBeNull();
+  });
+});
 
 describe('replaceEnvironmentInXml', () => {
   const base = {

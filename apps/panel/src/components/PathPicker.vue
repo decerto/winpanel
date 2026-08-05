@@ -96,8 +96,25 @@ async function load(target: string): Promise<void> {
     entries.value = result.entries;
     here.value = target;
   } catch (err) {
-    error.value = controller.signal.aborted
-      ? 'The server took too long to list that folder.'
+    if (controller.signal.aborted) {
+      error.value = 'The server took too long to list that folder.';
+      return;
+    }
+
+    // The folder this setting points at can have been renamed, deleted or
+    // never deployed. Back out to the nearest one that is still there, so the
+    // dialog always has something to click instead of an empty dead end.
+    if (target.length > 0) {
+      const parts = target.split('/').filter(Boolean);
+      parts.pop();
+      await load(parts.join('/'));
+      return;
+    }
+
+    entries.value = [];
+    error.value = props.base
+      ? `The folder "${props.base}" is not on the server. Check the folder this setting is ` +
+        'measured from, above.'
       : describeError(err);
   } finally {
     clearTimeout(timer);

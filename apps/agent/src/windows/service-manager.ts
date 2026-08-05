@@ -195,6 +195,39 @@ function settle(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 3_000));
 }
 
+/** Lines that are part of a crash dump's furniture rather than its reason. */
+const CRASH_NOISE = [
+  /^at\s/,
+  /^\^+$/,
+  /^[}\])],?$/,
+  /^Node\.js v/,
+  /^Require stack:/,
+  /^-\s/,
+  /^throw\s/,
+  /^\s*\w+:\s*'[^']*',?$/,
+];
+
+/**
+ * The one line out of a crash log that says why the program stopped.
+ *
+ * Taking the last line looks obvious and is wrong: Node prints its own version
+ * banner after the stack trace, so "Node.js v24.18.1" is what a user was being
+ * shown instead of "Cannot find module". The line that names an error is the
+ * answer, wherever in the dump it appears.
+ */
+export function describeCrashLog(text: string): string | null {
+  const lines = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0 && !line.startsWith('{'))
+    .filter((line) => !CRASH_NOISE.some((pattern) => pattern.test(line)));
+
+  const named = lines.find((line) => /^[\w.$]*(Error|Exception)\b/.test(line));
+  const chosen = named ?? lines.at(-1);
+
+  return chosen ? chosen.slice(0, 300) : null;
+}
+
 export class ServiceManager {
   constructor(
     private readonly winswPath: string,
@@ -385,7 +418,7 @@ export class ServiceManager {
   }
 
   /**
-   * The last plain-text line the service printed before it gave up.
+   * The reason a service gave for dying, out of its error log.
    *
    * Worth the trouble because the alternative is telling somebody their web
    * server "stopped immediately" and leaving them to find a log folder they
@@ -406,13 +439,7 @@ export class ServiceManager {
       const buffer = Buffer.alloc(length);
       await handle.read(buffer, 0, length, size - length);
 
-      const lines = buffer
-        .toString('utf8')
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter((line) => line.length > 0 && !line.startsWith('{'));
-
-      return lines.at(-1) ?? null;
+      return describeCrashLog(buffer.toString('utf8'));
     } finally {
       await handle.close();
     }

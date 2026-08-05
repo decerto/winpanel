@@ -114,8 +114,8 @@ async function refresh(): Promise<void> {
     form.value = {
       nodeVersion: info.value.nodeVersion,
       packageManager: info.value.packageManager,
-      applicationRoot: info.value.applicationRoot.replace(/^(current|public)\/?/, ''),
-      documentRoot: info.value.documentRoot.replace(/^(current|public)\/?/, ''),
+      applicationRoot: info.value.applicationRoot.replace(/^(release|current|public)\/?/, ''),
+      documentRoot: info.value.documentRoot.replace(/^(release|current|public)\/?/, ''),
       startupFile: info.value.startupFile,
       applicationMode: info.value.applicationMode === 'development' ? 'development' : 'production',
     };
