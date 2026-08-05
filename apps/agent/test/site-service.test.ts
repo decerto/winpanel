@@ -216,3 +216,72 @@ describe('SiteService.ensurePreviewPorts', () => {
     expect(await service.ensurePreviewPorts()).toBe(0);
   }, 30_000);
 });
+
+describe('SiteService.cleanUpLegacyLayouts', () => {
+  const baseInput = {
+    displayName: 'Kitora',
+    domains: ['kitora.io'],
+    source: { kind: 'git' as const, url: 'https://github.com/me/kitora.git', branch: 'main', subdirectory: '' },
+    manifest: SiteManifest.parse({ runtime: 'node' }),
+  };
+
+  it('removes the dated release folders left by the old layout', async () => {
+    const { slug } = await service.create(baseInput);
+    const siteDir = path.join(tmpDir, 'sites', slug);
+
+    await fs.mkdir(path.join(siteDir, 'releases', '20260804-195841'), { recursive: true });
+    await fs.mkdir(path.join(siteDir, 'releases', '20260804-203657'), { recursive: true });
+    await fs.mkdir(path.join(siteDir, 'current'), { recursive: true });
+
+    expect(await service.cleanUpLegacyLayouts()).toBe(1);
+
+    await expect(fs.access(path.join(siteDir, 'releases'))).rejects.toThrow();
+    await expect(fs.access(path.join(siteDir, 'current'))).rejects.toThrow();
+    // The folder that is actually being served is untouched.
+    await expect(fs.access(path.join(siteDir, 'release'))).resolves.toBeUndefined();
+  }, 30_000);
+
+  it('does nothing for a site that is already on the current layout', async () => {
+    await service.create(baseInput);
+    expect(await service.cleanUpLegacyLayouts()).toBe(0);
+  }, 30_000);
+
+  it('removes the unused public folder from a git site, but only while it is empty', async () => {
+    const { slug } = await service.create(baseInput);
+    const publicDir = path.join(tmpDir, 'sites', slug, 'public');
+
+    await fs.mkdir(publicDir, { recursive: true });
+    await fs.writeFile(path.join(publicDir, 'notes.txt'), 'mine');
+
+    expect(await service.cleanUpLegacyLayouts()).toBe(0);
+    await expect(fs.access(path.join(publicDir, 'notes.txt'))).resolves.toBeUndefined();
+
+    await fs.rm(path.join(publicDir, 'notes.txt'));
+    expect(await service.cleanUpLegacyLayouts()).toBe(1);
+    await expect(fs.access(publicDir)).rejects.toThrow();
+  }, 30_000);
+
+  it('leaves the public folder of a site the user manages alone', async () => {
+    const { slug } = await service.create({
+      ...baseInput,
+      domains: ['example.com'],
+      source: { kind: 'upload' as const },
+    });
+
+    expect(await service.cleanUpLegacyLayouts()).toBe(0);
+    await expect(
+      fs.access(path.join(tmpDir, 'sites', slug, 'public')),
+    ).resolves.toBeUndefined();
+  }, 30_000);
+
+  it('leaves the old folders alone when the live folder is missing', async () => {
+    const { slug } = await service.create(baseInput);
+    const siteDir = path.join(tmpDir, 'sites', slug);
+
+    await fs.rm(path.join(siteDir, 'release'), { recursive: true, force: true });
+    await fs.mkdir(path.join(siteDir, 'releases', '20260804-195841'), { recursive: true });
+
+    expect(await service.cleanUpLegacyLayouts()).toBe(0);
+    await expect(fs.access(path.join(siteDir, 'releases'))).resolves.toBeUndefined();
+  }, 30_000);
+});

@@ -152,6 +152,20 @@ async function main(): Promise<void> {
       server.log.warn({ err: error }, 'Could not assign missing preview addresses.');
     }
 
+    /*
+     * Sites deployed before the single `release/` folder still have their old
+     * dated folders sitting in the file manager, where they look like live
+     * copies and are not.
+     */
+    try {
+      const cleaned = await app.sites.cleanUpLegacyLayouts();
+      if (cleaned > 0) {
+        server.log.info(`Removed the old release folders from ${cleaned} website(s).`);
+      }
+    } catch (error) {
+      server.log.warn({ err: error }, 'Could not remove the old release folders.');
+    }
+
     const error = await app.routing.applyWhenReady();
     if (error) {
       server.log.warn({ err: error }, 'Could not apply the website configuration.');

@@ -18,6 +18,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-vue-next';
+import { LEGACY_RELEASE_DIRS } from '@winpanel/shared';
 import { api, describeError } from '../../lib/api';
 import { downloadUrl, uploadFile } from '../../lib/file-transfer';
 import { formatBytes } from '../../lib/format';
@@ -74,6 +75,17 @@ const transfer = ref<{ name: string; index: number; total: number; fraction: num
 const dragging = ref(false);
 
 const entries = computed(() => listing.value?.entries ?? []);
+
+/**
+ * Folders from the layout the panel used before a site had one `release`
+ * folder. Nothing is served from them, so "which of these is live?" has no
+ * answer and the page has to say so outright.
+ */
+const leftOver = computed(() =>
+  LEGACY_RELEASE_DIRS.some(
+    (dir) => currentPath.value === dir || currentPath.value.startsWith(`${dir}/`),
+  ),
+);
 
 const breadcrumbs = computed(() => {
   const parts = currentPath.value.split('/').filter(Boolean);
@@ -334,7 +346,14 @@ watch(
 
 <template>
   <div class="space-y-4">
-    <AlertMessage v-if="listing?.ephemeral" tone="warning">
+    <AlertMessage v-if="leftOver" tone="warning">
+      This folder is left over from an older version of the panel and nothing in it is being
+      served &mdash; whichever dated folder you open, it is not the live one. Your website runs
+      from <strong>release</strong>. The panel clears this out on its own when it restarts, or on
+      your next deployment.
+    </AlertMessage>
+
+    <AlertMessage v-else-if="listing?.ephemeral" tone="warning">
       Files here are replaced every time you deploy. To change something permanently, edit it in
       your project and deploy again, or use the <strong>shared</strong> folder.
     </AlertMessage>

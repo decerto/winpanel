@@ -6,9 +6,9 @@ import {
   ListDirectoryRequest,
   MoveRequest,
   ReadFileRequest,
-  RELEASE_DIR,
   RenameRequest,
   WriteFileRequest,
+  isEphemeralSitePath,
 } from '@winpanel/shared';
 import { protectedProcedure, router } from '../trpc.js';
 import { FileManager, FileOperationError } from '../../files/file-manager.js';
@@ -88,7 +88,7 @@ export const filesRouter = router({
       return {
         path: input.path,
         entries: sorted,
-        ephemeral: input.path === RELEASE_DIR || input.path.startsWith(`${RELEASE_DIR}/`),
+        ephemeral: isEphemeralSitePath(input.path),
         quotaUsedBytes: used,
         quotaTotalBytes: site.diskQuotaBytes,
       };

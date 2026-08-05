@@ -93,6 +93,25 @@ export const STAGING_DIR = '.staging';
 export const PREVIOUS_DIR = '.previous';
 
 /**
+ * Folders left behind by the timestamped layout sites used before
+ * {@link RELEASE_DIR}. Nothing is served from them; the agent removes them on
+ * start, and until it manages to they must not look like the live copy.
+ */
+export const LEGACY_RELEASE_DIRS = ['releases', 'current'] as const;
+
+/**
+ * True when a path inside a site is replaced by the next deploy, so anything
+ * the user puts there is lost.
+ */
+export function isEphemeralSitePath(relativePath: string): boolean {
+  const normalised = relativePath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+
+  return [RELEASE_DIR, ...LEGACY_RELEASE_DIRS].some(
+    (dir) => normalised === dir || normalised.startsWith(`${dir}/`),
+  );
+}
+
+/**
  * The pair of ports reserved for a site. Only the active one is ever bound —
  * the spare exists so a port can be changed without colliding with the one
  * currently in use.

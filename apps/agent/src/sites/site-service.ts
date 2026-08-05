@@ -12,6 +12,7 @@ import {
 } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
 import { deployments, sites } from '../db/schema.js';
+import { removeLegacyLayout } from './deploy-pipeline.js';
 import { PortAllocator } from './port-allocator.js';
 import { scaffoldSite } from './scaffold.js';
 import type { SecretVault } from '../security/vault.js';
@@ -117,6 +118,18 @@ export function appRootFor(
   return path.join(base, manifest.app.cwd ?? '');
 }
 
+/** Removes a directory only if it holds nothing at all. */
+async function removeEmptyDirectory(target: string): Promise<boolean> {
+  try {
+    const entries = await fs.readdir(target);
+    if (entries.length > 0) return false;
+    await fs.rmdir(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class SiteService {
   private readonly ports: PortAllocator;
 
@@ -176,6 +189,51 @@ export class SiteService {
     }
 
     return assigned;
+  }
+
+  /**
+   * Leaves a site with exactly one folder that holds its website.
+   *
+   * Removes the timestamped `releases/` tree and `current` junction sites used
+   * before they had a single `release/` folder, and — for a git site — the
+   * empty `public/` that used to be created whether anything served it or not.
+   * A deploy already did the first part, but only a deploy did, so a server
+   * that updated and then sat there still showed two dated folders with
+   * nothing to say which was live. The answer was neither.
+   *
+   * Nothing goes unless it is provably dead: the live folder has to exist,
+   * and `public/` has to be empty.
+   *
+   * @returns the number of sites that had something removed.
+   */
+  async cleanUpLegacyLayouts(): Promise<number> {
+    let cleaned = 0;
+
+    for (const site of this.list()) {
+      const siteDir = path.join(this.sitesRoot, site.slug);
+      const live = contentRootFor(this.sitesRoot, site);
+
+      try {
+        await fs.access(live);
+      } catch {
+        continue;
+      }
+
+      try {
+        let removed = await removeLegacyLayout(siteDir);
+
+        if ((site.source as SiteSource).kind === 'git') {
+          const unused = await removeEmptyDirectory(path.join(siteDir, PUBLIC_DIR));
+          removed = removed || unused;
+        }
+
+        if (removed) cleaned++;
+      } catch {
+        // A file held open by something else. The next start tries again.
+      }
+    }
+
+    return cleaned;
   }
 
   private uniqueSlug(preferred: string): string {
@@ -238,10 +296,13 @@ export class SiteService {
       await fs.mkdir(path.join(siteDir, RELEASE_DIR), { recursive: true });
       await fs.mkdir(path.join(siteDir, 'shared'), { recursive: true });
       await fs.mkdir(path.join(siteDir, 'logs'), { recursive: true });
-      // Created for every site, not only the ones that use it: the Files tab
-      // needs somewhere obvious to put things, whatever the site turns out
-      // to be, and an empty folder costs nothing.
-      await fs.mkdir(path.join(siteDir, PUBLIC_DIR), { recursive: true });
+
+      // Only for sites the user fills in themselves. A git site is served out
+      // of `release/` alone, and a second folder that looks like it holds the
+      // website but never serves it is the whole of the confusion.
+      if (input.source.kind !== 'git') {
+        await fs.mkdir(path.join(siteDir, PUBLIC_DIR), { recursive: true });
+      }
 
       const scaffolded =
         input.source.kind === 'blank'

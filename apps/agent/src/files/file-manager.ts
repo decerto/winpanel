@@ -8,7 +8,7 @@ import {
   FileName,
   MAX_EDITABLE_FILE_BYTES,
   RECYCLE_DIRNAME,
-  RELEASE_DIR,
+  isEphemeralSitePath,
   type FileEntry,
 } from '@winpanel/shared';
 import { STAT_CONCURRENCY, mapWithConcurrency } from './concurrency.js';
@@ -81,7 +81,7 @@ export class FileManager {
         hidden: dirent.name.startsWith('.'),
         // Anything under release/ is replaced by the next deployment, so the
         // UI can warn before someone edits a file that will vanish.
-        ephemeral: childRelative === RELEASE_DIR || childRelative.startsWith(`${RELEASE_DIR}/`),
+        ephemeral: isEphemeralSitePath(childRelative),
       };
     };
 
