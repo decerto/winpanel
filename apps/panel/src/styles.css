@@ -251,6 +251,33 @@
     opacity: 0.55;
   }
 
+  /*
+   * A dropdown draws its own arrow, tucked in beside the text rather than
+   * pinned to the edge where the native one sits. The opaque background is
+   * not decoration: Windows builds the drop-down list from the control's own
+   * background colour, and a translucent one composites over white and leaves
+   * pale text on a pale list.
+   */
+  select.field {
+    appearance: none;
+    padding-right: 2.1rem;
+    background-color: var(--color-sunken);
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23b3aec0' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6 4 4 4-4'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.6rem center;
+    background-size: 0.85rem;
+    cursor: pointer;
+  }
+
+  select.field:disabled {
+    cursor: not-allowed;
+  }
+
+  select.field option {
+    background-color: var(--color-elevated);
+    color: var(--color-ink);
+  }
+
   .label {
     display: block;
     margin-bottom: 0.35rem;

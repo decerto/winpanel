@@ -9,6 +9,7 @@ import { appRootFor } from './site-service.js';
 import {
   explainSpawnFailure,
   explainToolFailure,
+  isInstallStep,
   withInstallDefaults,
   type ToolPaths,
 } from './deploy-pipeline.js';
@@ -85,7 +86,15 @@ export function createRunCommandHandler(deps: CommandRunnerDependencies) {
       exe: tool.exe,
       args: [...tool.args, ...withInstallDefaults(payload.command, payload.args)],
       cwd,
-      env: { ...env, CI: '1', NODE_ENV: env['NODE_ENV'] ?? 'production' },
+      env: {
+        ...env,
+        CI: '1',
+        // Installing under production loses the devDependencies the project
+        // needs to build, however the site itself is configured to run.
+        NODE_ENV: isInstallStep(payload.command, payload.args)
+          ? 'development'
+          : (env['NODE_ENV'] ?? 'production'),
+      },
       timeoutMs: deps.timeoutMs ?? 15 * 60 * 1000,
       onOutput: (line) => {
         if (line.trim().length > 0) ctx.log(line, 'debug', payload.label);

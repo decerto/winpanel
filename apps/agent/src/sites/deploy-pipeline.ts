@@ -40,6 +40,15 @@ export function newReleaseId(now = new Date()): string {
 
 /** Extra arguments a package manager needs to behave the way a deploy expects. */
 const ALLOW_BUILDS_FLAG = '--dangerously-allow-all-builds';
+const LINKER_OPTION = '--config.node-linker=';
+const HOISTED_LINKER = `${LINKER_OPTION}hoisted`;
+
+/** Whether a step is the one that fills `node_modules`. */
+export function isInstallStep(command: string, args: readonly string[]): boolean {
+  if (!['npm', 'pnpm', 'yarn', 'bun'].includes(command)) return false;
+  // A bare `yarn` installs, and npm's reproducible install is `ci`.
+  return args.length === 0 || args[0] === 'install' || args[0] === 'i' || args[0] === 'ci';
+}
 
 /**
  * Lets a dependency's install scripts run.
@@ -56,17 +65,25 @@ const ALLOW_BUILDS_FLAG = '--dangerously-allow-all-builds';
  * already running this repository's own build scripts as this same account, so
  * this grants nothing that was not already granted.
  *
+ * The linker matters just as much. pnpm's default layout gives each package
+ * its own folder and links the rest in, and on Windows those links are
+ * junctions, which store an ABSOLUTE path. A deploy builds in `.staging` and
+ * then renames it to `release`, so every one of those junctions would be left
+ * pointing at a folder that no longer exists and the site would not start.
+ * `hoisted` writes the same flat folder npm does: nothing to break when the
+ * folder moves, and packages reached indirectly are found too.
+ *
  * Applied here rather than when a project is first inspected, because the
  * steps of a site set up before this are already stored in the database.
  */
 export function withInstallDefaults(command: string, args: readonly string[]): string[] {
-  const isInstall = args[0] === 'install' || args[0] === 'i';
+  if (command !== 'pnpm' || !isInstallStep(command, args)) return [...args];
 
-  if (command !== 'pnpm' || !isInstall || args.includes(ALLOW_BUILDS_FLAG)) {
-    return [...args];
-  }
+  const next = [...args];
+  if (!next.includes(ALLOW_BUILDS_FLAG)) next.push(ALLOW_BUILDS_FLAG);
+  if (!next.some((arg) => arg.startsWith(LINKER_OPTION))) next.push(HOISTED_LINKER);
 
-  return [...args, ALLOW_BUILDS_FLAG];
+  return next;
 }
 
 /**
@@ -96,18 +113,11 @@ export function explainToolFailure(command: string, output: string): string | nu
 
   const unresolved = findUnresolvedPackage(output);
   if (unresolved) {
-    const strict = command === 'pnpm' || command === 'yarn';
-
     return (
       `The build could not find the package "${unresolved}", even though the install step ` +
-      `succeeded. ${command} only puts a project\u2019s own dependencies where the build can ` +
-      `see them, so this usually means "${unresolved}" is used directly by this project but ` +
-      `is only installed as a dependency of something else. Add it to the project\u2019s ` +
-      `dependencies (\`${command} add -D ${unresolved}\`) and commit the change` +
-      (strict
-        ? ', or switch this website to npm on its Application page, which installs everything ' +
-          'in one flat folder.'
-        : '.')
+      `succeeded. The project uses "${unresolved}" directly but never lists it, so it is only ` +
+      `ever there when something else happens to bring it along. Add it to the project\u2019s ` +
+      `dependencies (\`${command} add -D ${unresolved}\`) and commit the change.`
     );
   }
 
@@ -118,10 +128,8 @@ export function explainToolFailure(command: string, output: string): string | nu
  * A sentence about an app that built but would not start.
  *
  * A build and a running process do not look for packages in the same places,
- * so "it compiled" is no promise that it will run: pnpm and yarn give each
- * package its own folder and link in only what it declares, which leaves
- * anything the built output reaches for indirectly missing at the one moment
- * it matters. npm's single flat folder hides the same mistake.
+ * so "it compiled" is no promise that it will run: a bundler will follow a
+ * package the finished app then has to find on disk for itself.
  */
 export function explainRuntimeFailure(message: string, packageManager: string): string | null {
   const missing = /Cannot find (?:module|package) ['"]([^'"]+)['"]/.exec(message)?.[1];
@@ -139,22 +147,12 @@ export function explainRuntimeFailure(message: string, packageManager: string): 
     ? missing.split('/').slice(0, 2).join('/')
     : (missing.split('/')[0] ?? missing);
 
-  const opening =
+  return (
     `Your website started and immediately asked for the package "${name}", which is not ` +
     'anywhere it can see. The build succeeded because building and running do not resolve ' +
-    'packages the same way.';
-
-  if (packageManager === 'pnpm' || packageManager === 'yarn') {
-    return (
-      `${opening} ${packageManager} only puts a project\u2019s own dependencies where it can ` +
-      `reach them, so this usually means "${name}" is only installed as a dependency of ` +
-      `something else. Add it to the project\u2019s dependencies (\`${packageManager} add ` +
-      `${name}\`) and commit that, or switch this website to npm on its Application page, ` +
-      'which installs everything in one flat folder.'
-    );
-  }
-
-  return `${opening} Add "${name}" to the project\u2019s dependencies and commit that.`;
+    `packages the same way. Add "${name}" to the project\u2019s dependencies ` +
+    `(\`${packageManager} add ${name}\`) and commit that.`
+  );
 }
 
 /** The package name from a bundler's "module not found" message, if there is one. */
@@ -267,7 +265,18 @@ export async function runBuildSteps(options: RunBuildOptions): Promise<void> {
       exe: tool.exe,
       args: [...tool.args, ...withInstallDefaults(step.command, step.args)],
       cwd,
-      env: { ...options.env, ...step.env, CI: '1', NODE_ENV: 'production' },
+      env: {
+        ...options.env,
+        ...step.env,
+        CI: '1',
+        /*
+         * npm and yarn read NODE_ENV and leave out devDependencies when it
+         * says production — which is where the bundler, the compiler and the
+         * framework's own modules live, so the build then fails looking for
+         * the tools it was meant to run.
+         */
+        NODE_ENV: isInstallStep(step.command, step.args) ? 'development' : 'production',
+      },
       timeoutMs: 20 * 60 * 1000,
       onOutput: (line) => {
         if (line.trim().length > 0) ctx.log(line, 'debug', step.name);

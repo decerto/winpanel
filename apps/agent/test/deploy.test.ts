@@ -10,6 +10,7 @@ import {
   discardPrevious,
   explainToolFailure,
   explainRuntimeFailure,
+  isInstallStep,
   newReleaseId,
   prepareStaging,
   promoteStaging,
@@ -263,6 +264,33 @@ describe('runBuildSteps', () => {
 
     expect(ctx.lines.join(' ')).toMatch(/optional/i);
   }, 30_000);
+
+  it('installs with the devDependencies the build needs, then builds for production', async () => {
+    // npm and yarn read NODE_ENV: told production, they leave out the very
+    // packages the next step is about to run.
+    await fs.mkdir(path.join(tmpDir, 'app'), { recursive: true });
+    const ctx = fakeCtx();
+
+    await runBuildSteps({
+      manifest: SiteManifest.parse({
+        steps: [
+          { name: 'Install', cwd: 'app', command: 'npm', args: ['install'] },
+          { name: 'Build', cwd: 'app', command: 'npm', args: ['run', 'build'] },
+        ],
+      }),
+      releaseDir: tmpDir,
+      tools: {
+        resolve: async () => ({
+          exe: process.execPath,
+          args: ['-e', 'console.log(`saw ${process.env.NODE_ENV}`)'],
+        }),
+      },
+      ctx,
+    });
+
+    expect(ctx.lines).toContain('saw development');
+    expect(ctx.lines).toContain('saw production');
+  }, 30_000);
 });
 
 describe('waitForHealthy', () => {
@@ -449,13 +477,24 @@ describe('the release swap', () => {
 
 describe('withInstallDefaults', () => {
   it('lets a dependency build itself, which pnpm otherwise refuses to do unattended', async () => {
-    expect(withInstallDefaults('pnpm', ['install'])).toEqual([
-      'install',
-      '--dangerously-allow-all-builds',
-    ]);
+    expect(withInstallDefaults('pnpm', ['install'])).toContain('--dangerously-allow-all-builds');
     expect(withInstallDefaults('pnpm', ['install', '--prod'])).toContain(
       '--dangerously-allow-all-builds',
     );
+  });
+
+  it('installs flat, because the folder is renamed after the install', () => {
+    // pnpm's default layout links packages together with Windows junctions,
+    // which hold an absolute path: renaming .staging to release would leave
+    // every one of them pointing at a folder that is gone.
+    expect(withInstallDefaults('pnpm', ['install'])).toContain('--config.node-linker=hoisted');
+  });
+
+  it('leaves a project that has chosen its own linker alone', () => {
+    const args = withInstallDefaults('pnpm', ['install', '--config.node-linker=pnp']);
+    expect(args.filter((arg) => arg.startsWith('--config.node-linker='))).toEqual([
+      '--config.node-linker=pnp',
+    ]);
   });
 
   it('leaves every other command exactly as it was', () => {
@@ -467,6 +506,22 @@ describe('withInstallDefaults', () => {
   it('does not add the flag twice', () => {
     const once = withInstallDefaults('pnpm', ['install', '--dangerously-allow-all-builds']);
     expect(once.filter((arg) => arg === '--dangerously-allow-all-builds')).toHaveLength(1);
+  });
+});
+
+describe('isInstallStep', () => {
+  it('recognises every way a package manager is asked to install', () => {
+    expect(isInstallStep('npm', ['install'])).toBe(true);
+    expect(isInstallStep('npm', ['ci'])).toBe(true);
+    expect(isInstallStep('pnpm', ['i', '--frozen-lockfile'])).toBe(true);
+    expect(isInstallStep('yarn', [])).toBe(true);
+    expect(isInstallStep('bun', ['install'])).toBe(true);
+  });
+
+  it('is not fooled by a script that happens to be called install', () => {
+    expect(isInstallStep('npm', ['run', 'install'])).toBe(false);
+    expect(isInstallStep('node', ['install'])).toBe(false);
+    expect(isInstallStep('npm', ['run', 'build'])).toBe(false);
   });
 });
 
@@ -483,7 +538,7 @@ describe('explainToolFailure', () => {
         "'C:\\Sites\\example\\releases\\1\\app\\assets\\css'",
     );
     expect(hint).toMatch(/tailwindcss/);
-    expect(hint).toMatch(/switch this website to npm/);
+    expect(hint).toMatch(/never lists it/);
   });
 
   it('ignores a missing file of the project itself', () => {
@@ -497,17 +552,13 @@ describe('explainToolFailure', () => {
 });
 
 describe('explainRuntimeFailure', () => {
-  it('explains a package the built output cannot reach under pnpm', () => {
-    // The build passed: `entities` is only ever a dependency of a dependency,
-    // which pnpm does not put where the running app looks.
-    const hint = explainRuntimeFailure(
-      "Error: Cannot find module 'entities/decode'",
-      'pnpm',
-    );
+  it('names the package a built app asked for and could not find', () => {
+    // The build passed: a bundler resolves packages differently from the
+    // finished app, which has to find `entities` on disk for itself.
+    const hint = explainRuntimeFailure("Error: Cannot find module 'entities/decode'", 'pnpm');
 
     expect(hint).toMatch(/"entities"/);
     expect(hint).toMatch(/pnpm add entities/);
-    expect(hint).toMatch(/switch this website to npm/);
   });
 
   it('keeps the scope on a scoped package', () => {
@@ -524,10 +575,10 @@ describe('explainRuntimeFailure', () => {
     expect(hint).toMatch(/\.output\/server\/index\.mjs/);
   });
 
-  it('does not blame the package manager when npm is doing the installing', () => {
+  it('names the manager the website actually uses', () => {
     const hint = explainRuntimeFailure("Cannot find module 'entities'", 'npm');
     expect(hint).toMatch(/Add "entities"/);
-    expect(hint).not.toMatch(/flat folder/);
+    expect(hint).toMatch(/npm add entities/);
   });
 
   it('says nothing about a crash that is not a missing module', () => {
