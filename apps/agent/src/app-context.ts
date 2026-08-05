@@ -10,6 +10,7 @@ import { CaddyClient } from './caddy/client.js';
 import { CaddyReconciler } from './caddy/reconciler.js';
 import { ServiceManager } from './windows/service-manager.js';
 import { SiteService } from './sites/site-service.js';
+import { TrafficCollector } from './traffic/collector.js';
 import { createDeployHandler } from './sites/deploy-handler.js';
 import { createRunCommandHandler } from './sites/command-runner.js';
 import {
@@ -38,6 +39,8 @@ export interface AppContext {
   routing: CaddyReconciler;
   services: ServiceManager;
   sites: SiteService;
+  /** Counts the web server's access logs into per-website traffic figures. */
+  traffic: TrafficCollector;
   shutdown: () => Promise<void>;
 }
 
@@ -69,12 +72,13 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
   jobs.reconcileOrphans();
 
   const caddy = new CaddyClient();
-  const routing = new CaddyReconciler(db, caddy, config.sitesRoot, vault);
+  const routing = new CaddyReconciler(db, caddy, config.sitesRoot, vault, config.accessLogDir);
   const services = new ServiceManager(
     path.join(config.binDir, 'WinSW.exe'),
     path.join(config.dataDir, 'services'),
   );
   const sites = new SiteService(db, vault, config.sitesRoot);
+  const traffic = new TrafficCollector({ db, accessLogDir: config.accessLogDir });
 
   if (options.registerJobHandlers !== false) {
     jobs.register(
@@ -140,8 +144,10 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     routing,
     services,
     sites,
+    traffic,
     shutdown: async () => {
       await jobs.stop();
+      traffic.stop();
       vault.lock();
       db.close();
     },

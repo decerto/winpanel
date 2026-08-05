@@ -78,6 +78,11 @@ export const router = createRouter({
           component: () => import('./pages/site/SiteAppPage.vue'),
         },
         {
+          path: 'traffic',
+          name: 'site-traffic',
+          component: () => import('./pages/site/SiteTrafficPage.vue'),
+        },
+        {
           path: 'dns',
           name: 'site-dns',
           component: () => import('./pages/site/SiteDnsPage.vue'),

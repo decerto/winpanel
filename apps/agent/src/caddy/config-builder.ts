@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { SHARED_URL_PREFIX, type SiteManifest } from '@winpanel/shared';
 
 /**
@@ -47,6 +48,16 @@ export interface DnsChallengeGroup {
 export interface CaddyConfigInput {
   sites: readonly CaddySiteInput[];
   /**
+   * Folder the per-site access logs are written to.
+   *
+   * Omitted means no access logging at all, which is what the tests and any
+   * caller that only cares about routing want. Supplying it is what makes the
+   * traffic figures in the panel possible: Caddy is the only thing that sees
+   * every request, including the ones a static site serves with no app
+   * running behind it.
+   */
+  accessLogDir?: string;
+  /**
    * One entry per Cloudflare token in use. A token only reaches the zones of
    * the account that issued it, so domains belonging to different accounts
    * cannot share a certificate policy.
@@ -90,6 +101,16 @@ export function previewServerIdFor(slug: string): string {
 
 export function previewProxyIdFor(slug: string): string {
   return `${slug}_preview_proxy`;
+}
+
+/** The Caddy logger a site's requests are written to. */
+export function accessLoggerNameFor(slug: string): string {
+  return `site_${slug}`;
+}
+
+/** The file that logger writes to, given the folder they all live in. */
+export function accessLogPathFor(dir: string, slug: string): string {
+  return path.join(dir, `${slug}.log`);
 }
 
 /**
@@ -265,8 +286,39 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
   const allDomains = new Set<string>();
   const servers: Record<string, unknown> = {};
 
+  /** Logger definitions, and the host-to-logger map the public listener needs. */
+  const accessLogs: Record<string, unknown> = {};
+  const loggerNames: Record<string, string> = {};
+
   for (const site of input.sites) {
     if (!site.enabled) continue;
+
+    const logger = input.accessLogDir ? accessLoggerNameFor(site.slug) : null;
+
+    if (logger && input.accessLogDir) {
+      /*
+       * One rolled file per website.
+       *
+       * Rolling is Caddy's own rather than something the panel has to do: on
+       * Windows a file another process holds open cannot be renamed, so a
+       * rotation scheme run from here would either fail or lose entries. The
+       * panel reads forward from a saved offset and notices the truncation
+       * when a roll happens.
+       */
+      accessLogs[logger] = {
+        writer: {
+          output: 'file',
+          filename: accessLogPathFor(input.accessLogDir, site.slug),
+          roll: true,
+          roll_size_mb: 8,
+          roll_keep: 2,
+          roll_keep_days: 14,
+        },
+        encoder: { format: 'json' },
+        include: [`http.log.access.${logger}`],
+        level: 'INFO',
+      };
+    }
 
     /*
      * The preview listener, on its own port with no host matcher.
@@ -282,12 +334,16 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
         // No automatic HTTPS: the request arrives by IP, so there is nothing
         // to issue a certificate for and Caddy must not try.
         automatic_https: { disable: true },
+        // Every request on this listener belongs to one site, so there is
+        // nothing to match on — the default is the right one.
+        ...(logger ? { logs: { default_logger_name: logger } } : {}),
       };
     }
 
     if (site.domains.length === 0) continue;
 
     for (const domain of site.domains) allDomains.add(domain);
+    if (logger) for (const domain of site.domains) loggerNames[domain] = logger;
 
     routes.push({
       '@id': routeIdFor(site.slug),
@@ -312,11 +368,26 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
     });
   }
 
+  const siteLoggers = Object.keys(accessLogs);
+
   const config: Record<string, unknown> = {
     ...(input.admin != null ? { admin: input.admin } : {}),
     logging: {
       logs: {
-        default: { level: 'INFO' },
+        default: {
+          level: 'INFO',
+          /*
+           * Caddy writes an entry to every log whose filter matches, and the
+           * default log matches everything. Without this exclusion each
+           * request is recorded twice: once in the site's file and once in
+           * Caddy's own, which doubles the disk cost and buries the server's
+           * actual messages under request noise.
+           */
+          ...(siteLoggers.length > 0
+            ? { exclude: siteLoggers.map((name) => `http.log.access.${name}`) }
+            : {}),
+        },
+        ...accessLogs,
       },
     },
     apps: {
@@ -328,6 +399,15 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
             routes,
             // Enables HTTP/3 alongside HTTP/2.
             protocols: ['h1', 'h2', 'h3'],
+            /*
+             * Requests are attributed by Host header, so a request for a
+             * domain no website claims — a scan, or a stale DNS record — is
+             * counted against nobody rather than against whichever site
+             * happens to be first.
+             */
+            ...(Object.keys(loggerNames).length > 0
+              ? { logs: { logger_names: loggerNames, skip_unmapped_hosts: true } }
+              : {}),
           },
         },
       },

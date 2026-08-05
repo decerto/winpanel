@@ -55,7 +55,7 @@ async function listenClearingStrays(
 }
 
 async function main(): Promise<void> {
-  for (const dir of [config.dataDir, config.logDir, config.binDir, config.caddyDir]) {
+  for (const dir of [config.dataDir, config.logDir, config.binDir, config.caddyDir, config.accessLogDir]) {
     await fs.mkdir(dir, { recursive: true });
   }
 
@@ -244,6 +244,14 @@ async function main(): Promise<void> {
   });
   watchdog.start();
   void watchdog.sweep();
+
+  /*
+   * Traffic is counted from the web server's logs on a timer. Reading them is
+   * the only way the panel can report on a static site, which has no process
+   * of its own to ask.
+   */
+  app.traffic.start();
+  void app.traffic.sweep();
 
   const shutdown = async (signal: string): Promise<void> => {
     server.log.info(`Received ${signal}, shutting down.`);

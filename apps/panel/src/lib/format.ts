@@ -20,6 +20,32 @@ export function formatBytes(bytes: number): string {
 }
 
 /**
+ * Large counts, shortened.
+ *
+ * A request count runs into the millions on a site that is doing well, and
+ * "1,482,930" in a box the width of a word is unreadable at a glance. The
+ * exact figure still goes in a `title`.
+ */
+export function formatCount(value: number): string {
+  if (value < 1000) return String(value);
+
+  const units = [
+    [1e9, 'B'],
+    [1e6, 'M'],
+    [1e3, 'k'],
+  ] as const;
+
+  for (const [size, suffix] of units) {
+    if (value >= size) {
+      const scaled = value / size;
+      return `${scaled >= 100 ? Math.round(scaled) : scaled.toFixed(1)}${suffix}`;
+    }
+  }
+
+  return String(value);
+}
+
+/**
  * How long ago something happened, in words.
  *
  * "3 minutes ago" answers "is this happening right now?" at a glance, which a

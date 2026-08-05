@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 import {
+  Activity,
   AtSign,
   Boxes,
   ExternalLink,
@@ -17,7 +18,7 @@ import {
   Terminal,
 } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
-import { formatBytes } from '../lib/format';
+import { formatBytes, formatCount } from '../lib/format';
 import { RUNTIME_LABEL, siteStatus } from '../lib/site-status';
 
 /**
@@ -84,6 +85,9 @@ const runsAProcess = computed(
 const usedBytes = ref<number | null>(null);
 const usageError = ref<string | null>(null);
 
+type Traffic = Awaited<ReturnType<typeof api.sites.traffic.query>>;
+const traffic = ref<Traffic | null>(null);
+
 /*
  * Measured on mount rather than sent with the list.
  *
@@ -98,6 +102,33 @@ onMounted(async () => {
   } catch (error) {
     usageError.value = describeError(error);
   }
+
+  // Cheap by comparison — it is a sum over a few hundred rows — but still its
+  // own request so a slow disk walk does not hold the numbers back.
+  try {
+    traffic.value = await api.sites.traffic.query({ slug: props.site.slug, range: '30d' });
+  } catch {
+    // A card is not the place to explain that a chart is unavailable.
+  }
+});
+
+/** The last thirty days, as the three figures worth a glance. */
+const trafficSummary = computed(() => traffic.value?.summary ?? null);
+
+/**
+ * A sparkline of daily requests.
+ *
+ * Heights only, as percentages: the shape of the last month answers "is this
+ * site being used, and did that change" far faster than any number does.
+ */
+const spark = computed(() => {
+  const points = traffic.value?.points ?? [];
+  const peak = Math.max(1, ...points.map((point) => point.requests));
+
+  return points.map((point) => ({
+    key: new Date(point.at).getTime(),
+    height: point.requests === 0 ? 0 : Math.max(6, Math.round((point.requests / peak) * 100)),
+  }));
 });
 
 interface Tile {
@@ -124,6 +155,13 @@ const fileTiles = computed<Tile[]>(() => [
     icon: KeyRound,
     to: `/sites/${props.site.slug}/settings`,
     tint: 'text-warn',
+  },
+  {
+    label: 'Traffic',
+    detail: 'Visitors and bandwidth',
+    icon: Activity,
+    to: `/sites/${props.site.slug}/traffic`,
+    tint: 'text-ok',
   },
   {
     label: 'Deployments',
@@ -277,32 +315,85 @@ const contentPath = computed(() => (isGit.value ? 'release' : 'public'));
     </header>
 
     <div class="grid gap-5 p-5 lg:grid-cols-[minmax(0,15rem)_1fr]">
-      <!-- Statistics, as a panel of facts rather than a sentence to read. -->
-      <dl
-        class="grid grid-cols-2 gap-x-4 gap-y-3 self-start rounded-xl border border-line
-               bg-sunken/60 p-4 text-sm lg:grid-cols-1"
-      >
-        <div class="min-w-0">
-          <dt class="text-xs uppercase tracking-wide text-ink-faint">Type</dt>
-          <dd class="mt-0.5 truncate text-ink">{{ RUNTIME_LABEL[site.runtime] ?? site.runtime }}</dd>
-        </div>
-        <div class="min-w-0">
-          <dt class="text-xs uppercase tracking-wide text-ink-faint">Disk space</dt>
-          <dd class="mt-0.5 text-ink">
-            {{ usedBytes === null ? 'Measuring\u2026' : formatBytes(usedBytes) }}
-          </dd>
-        </div>
-        <div v-if="runsAProcess" class="min-w-0">
-          <dt class="text-xs uppercase tracking-wide text-ink-faint">Port</dt>
-          <dd class="mt-0.5 font-mono text-ink">{{ site.activePort ?? '\u2014' }}</dd>
-        </div>
-        <div class="min-w-0">
-          <dt class="text-xs uppercase tracking-wide text-ink-faint">Changed</dt>
-          <dd class="mt-0.5 truncate text-ink-muted">
-            {{ new Date(site.updatedAt).toLocaleDateString() }}
-          </dd>
-        </div>
-      </dl>
+      <div class="space-y-3 self-start">
+        <!-- Statistics, as a panel of facts rather than a sentence to read. -->
+        <dl
+          class="grid grid-cols-2 gap-x-4 gap-y-3 rounded-xl border border-line bg-sunken/60 p-4
+                 text-sm lg:grid-cols-1"
+        >
+          <div class="min-w-0">
+            <dt class="text-xs uppercase tracking-wide text-ink-faint">Type</dt>
+            <dd class="mt-0.5 truncate text-ink">
+              {{ RUNTIME_LABEL[site.runtime] ?? site.runtime }}
+            </dd>
+          </div>
+          <div class="min-w-0">
+            <dt class="text-xs uppercase tracking-wide text-ink-faint">Disk space</dt>
+            <dd class="mt-0.5 text-ink">
+              {{ usedBytes === null ? 'Measuring\u2026' : formatBytes(usedBytes) }}
+            </dd>
+          </div>
+          <div v-if="runsAProcess" class="min-w-0">
+            <dt class="text-xs uppercase tracking-wide text-ink-faint">Port</dt>
+            <dd class="mt-0.5 font-mono text-ink">{{ site.activePort ?? '\u2014' }}</dd>
+          </div>
+          <div class="min-w-0">
+            <dt class="text-xs uppercase tracking-wide text-ink-faint">Changed</dt>
+            <dd class="mt-0.5 truncate text-ink-muted">
+              {{ new Date(site.updatedAt).toLocaleDateString() }}
+            </dd>
+          </div>
+        </dl>
+
+        <!--
+          Traffic, in its own box because it is the only thing here that moves.
+          Thirty days is the window a hosting bill is written in, so it is the
+          one worth showing without being asked for.
+        -->
+        <RouterLink
+          :to="`/sites/${site.slug}/traffic`"
+          class="block rounded-xl border border-line bg-sunken/60 p-4 transition-colors
+                 hover:border-brand/40 hover:bg-brand-soft/20"
+        >
+          <div class="flex items-center gap-2">
+            <Activity :size="13" class="text-ok" aria-hidden="true" />
+            <span class="text-xs uppercase tracking-wide text-ink-faint">Traffic</span>
+            <span class="ml-auto text-[0.65rem] uppercase tracking-wide text-ink-faint">
+              30 days
+            </span>
+          </div>
+
+          <div v-if="spark.length > 0" class="mt-2.5 flex h-8 items-end gap-px" aria-hidden="true">
+            <span
+              v-for="bar in spark"
+              :key="bar.key"
+              class="min-w-px flex-1 rounded-t-[1px]"
+              :class="bar.height === 0 ? 'bg-line/50' : 'bg-brand/60'"
+              :style="{ height: `${Math.max(bar.height, 3)}%` }"
+            />
+          </div>
+
+          <dl class="mt-2.5 grid grid-cols-2 gap-x-4 gap-y-2 text-sm lg:grid-cols-1">
+            <div class="min-w-0">
+              <dt class="text-xs text-ink-faint">Requests</dt>
+              <dd class="mt-0.5 text-ink" :title="String(trafficSummary?.requests ?? 0)">
+                {{ trafficSummary === null ? '\u2014' : formatCount(trafficSummary.requests) }}
+              </dd>
+            </div>
+            <div class="min-w-0">
+              <dt class="text-xs text-ink-faint">Out &#183; In</dt>
+              <dd class="mt-0.5 truncate text-ink">
+                <template v-if="trafficSummary === null">&#8212;</template>
+                <template v-else>
+                  {{ formatBytes(trafficSummary.bytesOut) }}
+                  <span class="text-ink-faint">&#183;</span>
+                  {{ formatBytes(trafficSummary.bytesIn) }}
+                </template>
+              </dd>
+            </div>
+          </dl>
+        </RouterLink>
+      </div>
 
       <div class="space-y-4">
         <section v-for="group in groups" :key="group.title">

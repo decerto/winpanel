@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 /**
  * SQLite is the panel's own store. Deliberately local: the control panel has
@@ -332,6 +332,62 @@ export const checkResults = sqliteTable('check_results', {
   reason: text('reason'),
   siteSlug: text('site_slug'),
   checkedAt: integer('checked_at', { mode: 'timestamp_ms' }).notNull(),
+});
+
+/**
+ * Hourly traffic totals per website, rolled up from the web server's logs.
+ *
+ * Hourly rather than per-request because the raw logs are the wrong thing to
+ * query: a busy site produces millions of lines a month, and nobody asks a
+ * question that needs them. An hour is fine enough to draw a day's shape and
+ * coarse enough that a year of history is a few thousand rows.
+ *
+ * `bytesIn` and `bytesOut` are counted from the point of view of the server,
+ * so `bytesOut` is what the panel calls egress — the number a host bills on.
+ */
+export const siteTraffic = sqliteTable(
+  'site_traffic',
+  {
+    siteId: text('site_id')
+      .notNull()
+      .references(() => sites.id, { onDelete: 'cascade' }),
+    /** Start of the hour this row covers, UTC. */
+    bucketStart: integer('bucket_start', { mode: 'timestamp_ms' }).notNull(),
+    requests: integer('requests').notNull().default(0),
+    /** Request bodies received. */
+    bytesIn: integer('bytes_in').notNull().default(0),
+    /** Response bodies sent. */
+    bytesOut: integer('bytes_out').notNull().default(0),
+    /** Status classes, so "is anything broken" is answerable without the logs. */
+    status2xx: integer('status_2xx').notNull().default(0),
+    status3xx: integer('status_3xx').notNull().default(0),
+    status4xx: integer('status_4xx').notNull().default(0),
+    status5xx: integer('status_5xx').notNull().default(0),
+    /** Summed request durations, in milliseconds, for a mean response time. */
+    durationMs: integer('duration_ms').notNull().default(0),
+  },
+  (table) => [
+    primaryKey({ columns: [table.siteId, table.bucketStart] }),
+    index('site_traffic_bucket_idx').on(table.bucketStart),
+  ],
+);
+
+/**
+ * How far through each access log the panel has already counted.
+ *
+ * Without this a restart would either re-count everything it still had on
+ * disk or throw away whatever arrived while it was down. `size` is kept
+ * alongside the offset to notice a roll: the file getting smaller than the
+ * offset means it is a new file wearing the old name.
+ */
+export const trafficCursors = sqliteTable('traffic_cursors', {
+  /** Absolute path of the log file. */
+  path: text('path').primaryKey(),
+  offset: integer('offset').notNull().default(0),
+  size: integer('size').notNull().default(0),
+  readAt: integer('read_at', { mode: 'timestamp_ms' })
+    .notNull()
+    .default(sql`(unixepoch() * 1000)`),
 });
 
 export type UserRow = typeof users.$inferSelect;

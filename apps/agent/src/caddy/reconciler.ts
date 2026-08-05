@@ -65,6 +65,8 @@ export class CaddyReconciler {
     private readonly caddy: CaddyClient,
     private readonly sitesRoot: string,
     private readonly vault: SecretVault,
+    /** Omitted turns access logging off, which is what the tests want. */
+    private readonly accessLogDir?: string,
   ) {}
 
   /** Builds the configuration that matches the current database state. */
@@ -107,6 +109,7 @@ export class CaddyReconciler {
     return buildCaddyConfig({
       sites: siteInputs,
       ...(admin != null ? { admin } : {}),
+      ...(this.accessLogDir ? { accessLogDir: this.accessLogDir } : {}),
       /*
        * Without a token for a domain there is no DNS challenge, and TLS-ALPN
        * cannot work through Cloudflare's proxy. Those domains are left to

@@ -2,6 +2,7 @@
 import { computed, provide, ref, watch } from 'vue';
 import { RouterLink, RouterView, useRoute } from 'vue-router';
 import {
+  Activity,
   ArrowLeft,
   AtSign,
   Boxes,
@@ -92,6 +93,7 @@ const TABS = computed(() => {
       icon: Boxes,
       show: runsAProcess,
     },
+    { name: 'site-traffic', label: 'Traffic', icon: Activity, show: true },
     { name: 'site-dns', label: 'DNS', icon: Globe2, show: true },
     { name: 'site-ssl', label: 'SSL', icon: ShieldCheck, show: true },
     { name: 'site-email', label: 'Email', icon: AtSign, show: true },

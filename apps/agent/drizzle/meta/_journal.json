@@ -43,6 +43,13 @@
       "when": 1785940662238,
       "tag": "0005_add_user_roles",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1785964562953,
+      "tag": "0006_add_site_traffic",
+      "breakpoints": true
     }
   ]
 }

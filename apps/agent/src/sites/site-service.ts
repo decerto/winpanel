@@ -217,14 +217,15 @@ export class SiteService {
    * Leaves a site with exactly one folder that holds its website.
    *
    * Removes the timestamped `releases/` tree and `current` junction sites used
-   * before they had a single `release/` folder, and — for a git site — the
-   * empty `public/` that used to be created whether anything served it or not.
+   * before they had a single `release/` folder, and the folder of the layout
+   * the site does not use — `public/` for a git site, `release/` for one the
+   * user fills in themselves — which earlier versions created regardless.
    * A deploy already did the first part, but only a deploy did, so a server
    * that updated and then sat there still showed two dated folders with
    * nothing to say which was live. The answer was neither.
    *
    * Nothing goes unless it is provably dead: the live folder has to exist,
-   * and `public/` has to be empty.
+   * and the unused one has to be empty.
    *
    * @returns the number of sites that had something removed.
    */
@@ -252,10 +253,10 @@ export class SiteService {
          */
         await fs.rm(path.join(siteDir, SHARED_DIR, '.env'), { force: true });
 
-        if ((site.source as SiteSource).kind === 'git') {
-          const unused = await removeEmptyDirectory(path.join(siteDir, PUBLIC_DIR));
-          removed = removed || unused;
-        }
+        const unusedLayout =
+          (site.source as SiteSource).kind === 'git' ? PUBLIC_DIR : RELEASE_DIR;
+        const unused = await removeEmptyDirectory(path.join(siteDir, unusedLayout));
+        removed = removed || unused;
 
         if (removed) cleaned++;
       } catch {
@@ -324,16 +325,15 @@ export class SiteService {
         .run();
 
       const siteDir = path.join(this.sitesRoot, slug);
-      await fs.mkdir(path.join(siteDir, RELEASE_DIR), { recursive: true });
       await fs.mkdir(path.join(siteDir, SHARED_DIR), { recursive: true });
       await fs.mkdir(path.join(siteDir, 'logs'), { recursive: true });
 
-      // Only for sites the user fills in themselves. A git site is served out
-      // of `release/` alone, and a second folder that looks like it holds the
-      // website but never serves it is the whole of the confusion.
-      if (input.source.kind !== 'git') {
-        await fs.mkdir(path.join(siteDir, PUBLIC_DIR), { recursive: true });
-      }
+      // Exactly one of the two, always. A second folder that looks like it
+      // holds the website but never serves it is the whole of the confusion.
+      await fs.mkdir(
+        path.join(siteDir, input.source.kind === 'git' ? RELEASE_DIR : PUBLIC_DIR),
+        { recursive: true },
+      );
 
       const scaffolded =
         input.source.kind === 'blank'

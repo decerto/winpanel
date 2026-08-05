@@ -44,6 +44,12 @@ export const config = {
   /** Built panel SPA, served by the agent. */
   panelDir: envPath('WINPANEL_PANEL_DIR', path.join(root, 'panel')),
   logDir: envPath('WINPANEL_LOG_DIR', path.join(root, 'logs')),
+  /**
+   * Caddy's per-website access logs, which the traffic figures are counted
+   * from. Separate from the panel's own logs because these are rolled and
+   * consumed by the panel rather than read by a person.
+   */
+  accessLogDir: envPath('WINPANEL_ACCESS_LOG_DIR', path.join(root, 'logs', 'access')),
 
   /**
    * Root of all hosted sites. This is the containment boundary the file

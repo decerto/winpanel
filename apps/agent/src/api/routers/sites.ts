@@ -24,6 +24,13 @@ import { GitClient, validateGitRef, validateRepositoryUrl } from '../../sites/gi
 import { generateDeployKey, isSshUrl } from '../../sites/ssh-keys.js';
 import { serviceIdFor } from '../../sites/deploy-handler.js';
 import { localAddresses } from '../../tls/panel-certificate.js';
+import { accessLogExists } from '../../traffic/collector.js';
+import {
+  TRAFFIC_RANGES,
+  trafficAllTime,
+  trafficSeries,
+  trafficThisMonth,
+} from '../../traffic/queries.js';
 import { siteGitRouter } from './site-git.js';
 import { siteAppRouter } from './site-app.js';
 import { FileManager } from '../../files/file-manager.js';
@@ -202,6 +209,46 @@ export const sitesRouter = router({
       usageCache.set(site.slug, { usedBytes, at: Date.now() });
 
       return { usedBytes, quotaBytes: site.diskQuotaBytes, measuredAt: new Date() };
+    }),
+
+  /**
+   * How much traffic a website has taken.
+   *
+   * Counted from the web server's own logs, so it includes everything a
+   * visitor caused — static files, redirects and errors as well as requests
+   * an application handled.
+   *
+   * Site-scoped like every other endpoint here, which is what lets the person
+   * whose website it is see their own figures: `protectedProcedure` checks the
+   * slug against the sites they own before this runs.
+   */
+  traffic: protectedProcedure
+    .input(
+      z.object({
+        slug: z.string().min(1),
+        range: z.enum(TRAFFIC_RANGES).default('7d'),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
+      const site = service.get(input.slug);
+      if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
+
+      const { points, summary } = trafficSeries(ctx.app.db, site.id, input.range);
+
+      return {
+        range: input.range,
+        points,
+        summary,
+        month: trafficThisMonth(ctx.app.db, site.id),
+        allTime: trafficAllTime(ctx.app.db, site.id),
+        /*
+         * Whether the web server is actually recording anything for this site.
+         * Without it an empty chart is indistinguishable from a site nobody
+         * has visited, and the two need different advice.
+         */
+        collecting: await accessLogExists(ctx.app.config.accessLogDir, site.slug),
+      };
     }),
 
   /**
