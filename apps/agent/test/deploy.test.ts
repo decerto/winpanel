@@ -19,7 +19,7 @@ import {
   restorePrevious,
   runBuildSteps,
   waitForHealthy,
-  withInstallDefaults,
+  withPnpmDefaults,
 } from '../src/sites/deploy-pipeline.js';
 import type { JobContext } from '../src/jobs/queue.js';
 
@@ -475,10 +475,16 @@ describe('the release swap', () => {
   });
 });
 
-describe('withInstallDefaults', () => {
-  it('lets a dependency build itself, which pnpm otherwise refuses to do unattended', async () => {
-    expect(withInstallDefaults('pnpm', ['install'])).toContain('--dangerously-allow-all-builds');
-    expect(withInstallDefaults('pnpm', ['install', '--prod'])).toContain(
+describe('withPnpmDefaults', () => {
+  it('lets a dependency build itself, which pnpm otherwise refuses to do unattended', () => {
+    expect(withPnpmDefaults('pnpm', ['install'])).toContain('--dangerously-allow-all-builds');
+    expect(withPnpmDefaults('pnpm', ['install', '--prod'])).toContain(
+      '--dangerously-allow-all-builds',
+    );
+  });
+
+  it('asks for nothing to be built when the step is not an install', () => {
+    expect(withPnpmDefaults('pnpm', ['run', 'build'])).not.toContain(
       '--dangerously-allow-all-builds',
     );
   });
@@ -487,24 +493,39 @@ describe('withInstallDefaults', () => {
     // pnpm's default layout links packages together with Windows junctions,
     // which hold an absolute path: renaming .staging to release would leave
     // every one of them pointing at a folder that is gone.
-    expect(withInstallDefaults('pnpm', ['install'])).toContain('--config.node-linker=hoisted');
+    expect(withPnpmDefaults('pnpm', ['install'])).toContain('--config.node-linker=hoisted');
   });
 
-  it('leaves a project that has chosen its own linker alone', () => {
-    const args = withInstallDefaults('pnpm', ['install', '--config.node-linker=pnp']);
+  it('gives a build step the same settings, so pnpm cannot undo the install', () => {
+    // Told different settings from the ones node_modules was built with, pnpm
+    // reinstalls before running the script - without any of these options.
+    const args = withPnpmDefaults('pnpm', ['run', 'build']);
+    expect(args).toContain('--config.node-linker=hoisted');
+    expect(args).toContain('--config.verify-deps-before-run=false');
+  });
+
+  it('puts its options before the subcommand, where pnpm reads them', () => {
+    // Anything after `run <script>` is handed to the script instead.
+    const args = withPnpmDefaults('pnpm', ['run', 'build']);
+    expect(args.indexOf('run')).toBeGreaterThan(args.indexOf('--config.node-linker=hoisted'));
+    expect(args.slice(-2)).toEqual(['run', 'build']);
+  });
+
+  it('leaves a project that has chosen its own settings alone', () => {
+    const args = withPnpmDefaults('pnpm', ['install', '--config.node-linker=pnp']);
     expect(args.filter((arg) => arg.startsWith('--config.node-linker='))).toEqual([
       '--config.node-linker=pnp',
     ]);
   });
 
-  it('leaves every other command exactly as it was', () => {
-    expect(withInstallDefaults('pnpm', ['run', 'build'])).toEqual(['run', 'build']);
-    expect(withInstallDefaults('npm', ['install'])).toEqual(['install']);
-    expect(withInstallDefaults('yarn', ['install'])).toEqual(['install']);
+  it('leaves every other package manager exactly as it was', () => {
+    expect(withPnpmDefaults('npm', ['install'])).toEqual(['install']);
+    expect(withPnpmDefaults('yarn', ['install'])).toEqual(['install']);
+    expect(withPnpmDefaults('node', ['-e', ''])).toEqual(['-e', '']);
   });
 
   it('does not add the flag twice', () => {
-    const once = withInstallDefaults('pnpm', ['install', '--dangerously-allow-all-builds']);
+    const once = withPnpmDefaults('pnpm', ['install', '--dangerously-allow-all-builds']);
     expect(once.filter((arg) => arg === '--dangerously-allow-all-builds')).toHaveLength(1);
   });
 });

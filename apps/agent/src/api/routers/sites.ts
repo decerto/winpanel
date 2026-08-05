@@ -533,6 +533,37 @@ export const sitesRouter = router({
     }),
 
   /**
+   * Publishes, or stops publishing, the site's `shared` folder at `/shared`.
+   *
+   * Most sites never need it, and an address the owner did not ask for is one
+   * more thing to reason about — and one more path their own app cannot use.
+   * Switching it off leaves the folder and its contents alone; only the route
+   * goes.
+   */
+  setSharedFolder: protectedProcedure
+    .input(z.object({ slug: z.string().min(1), enabled: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
+      const site = service.get(input.slug);
+      if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
+
+      ctx.app.db.db
+        .update(sites)
+        .set({ sharedFolderEnabled: input.enabled, updatedAt: new Date() })
+        .where(eq(sites.id, site.id))
+        .run();
+
+      const error = await ctx.app.routing.tryApply();
+      return {
+        ok: true,
+        note: input.enabled
+          ? 'The shared folder is now published at /shared.'
+          : 'The shared folder is no longer on the web. Nothing in it was deleted.',
+        ...(error ? { warning: `Saved, but the web server did not accept it: ${error.message}` } : {}),
+      };
+    }),
+
+  /**
    * Pins which Node this website builds and runs on.
    *
    * Only versions already on the server are accepted: the panel does not

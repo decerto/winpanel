@@ -86,6 +86,21 @@ export const PUBLIC_DIR = 'public';
  */
 export const RELEASE_DIR = 'release';
 
+/**
+ * The folder whose contents survive every deploy, relative to the site root.
+ *
+ * A git site's files are the repository's, and `release/` is thrown away and
+ * rebuilt each time — so there has to be somewhere for the things that are
+ * *not* in the repository: uploads, customer PDFs, a verification file some
+ * third party asked for. That is this folder, and it is served at
+ * {@link SHARED_URL_PREFIX} so a file put here has an address without a
+ * deploy, a code change, or any knowledge of where the site lives on disk.
+ */
+export const SHARED_DIR = 'shared';
+
+/** The URL path {@link SHARED_DIR} is published at, on every domain of the site. */
+export const SHARED_URL_PREFIX = '/shared';
+
 /** Where a deploy assembles the next version before it goes live. */
 export const STAGING_DIR = '.staging';
 

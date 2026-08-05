@@ -154,6 +154,10 @@ export const sites = sqliteTable(
     previewPort: integer('preview_port'),
     activeColour: text('active_colour', { enum: ['blue', 'green'] }).notNull().default('blue'),
     enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+    /** Whether `shared/` is published at `/shared`. Off for sites with nothing to put there. */
+    sharedFolderEnabled: integer('shared_folder_enabled', { mode: 'boolean' })
+      .notNull()
+      .default(true),
     diskQuotaBytes: integer('disk_quota_bytes').notNull().default(21474836480),
     ...timestamps,
   },

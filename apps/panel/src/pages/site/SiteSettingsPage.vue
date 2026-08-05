@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Cpu, KeyRound, Plus, Trash2 } from 'lucide-vue-next';
+import { Cpu, FolderOpen, KeyRound, Plus, Trash2 } from 'lucide-vue-next';
+import { SHARED_DIR, SHARED_URL_PREFIX } from '@winpanel/shared';
 import { api, describeError } from '../../lib/api';
 import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
@@ -48,6 +49,25 @@ const SOURCE_LABEL: Record<string, string> = {
 const confirmName = ref('');
 const deleteFiles = ref(false);
 const removing = ref(false);
+
+const sharedBusy = ref(false);
+const sharedEnabled = computed(() => site.value?.sharedFolderEnabled !== false);
+
+async function saveSharedFolder(enabled: boolean): Promise<void> {
+  sharedBusy.value = true;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    const result = await api.sites.setSharedFolder.mutate({ slug: slug(), enabled });
+    notice.value = result.warning ?? result.note;
+    await reload();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    sharedBusy.value = false;
+  }
+}
 
 async function loadEnv(): Promise<void> {
   loading.value = true;
@@ -243,6 +263,29 @@ watch(
           </button>
         </div>
       </div>
+    </section>
+
+    <section class="card p-5">
+      <h3 class="flex items-center gap-2 text-sm font-semibold text-ink">
+        <FolderOpen :size="15" class="text-ink-faint" aria-hidden="true" /> Shared folder
+      </h3>
+      <p class="mt-1 text-sm text-ink-muted">
+        Publishes the <strong>{{ SHARED_DIR }}</strong> folder at
+        <code class="text-ink-faint">{{ SHARED_URL_PREFIX }}</code
+        >, so files you put there by hand have an address and survive every deployment. Turn it off
+        if this site has nothing to put there, or wants that address for itself — the folder and
+        everything in it stays exactly where it is either way.
+      </p>
+
+      <label class="mt-4 flex items-center gap-2 text-sm text-ink-muted">
+        <input
+          type="checkbox"
+          :checked="sharedEnabled"
+          :disabled="sharedBusy"
+          @change="saveSharedFolder(($event.target as HTMLInputElement).checked)"
+        />
+        {{ sharedEnabled ? 'On' : 'Off' }}
+      </label>
     </section>
 
     <section class="card border-danger/30 p-5">

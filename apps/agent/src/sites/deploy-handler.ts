@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { eq } from 'drizzle-orm';
 import crypto from 'node:crypto';
-import { PUBLIC_DIR, SiteManifest, type SiteSource } from '@winpanel/shared';
+import { PUBLIC_DIR, SHARED_DIR, SiteManifest, type SiteSource } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
 import { deployments, sites } from '../db/schema.js';
 import type { JobContext } from '../jobs/queue.js';
@@ -115,7 +115,7 @@ export function createDeployHandler(deps: DeployDependencies) {
 
     const siteDir = path.join(deps.sitesRoot, site.slug);
     const folders = releaseFoldersFor(siteDir);
-    const sharedDir = path.join(siteDir, 'shared');
+    const sharedDir = path.join(siteDir, SHARED_DIR);
     const serviceId = serviceIdFor(site.slug, colour);
     // Not a folder name any more, just a label for the deployment history.
     const releaseId = newReleaseId();
@@ -219,7 +219,7 @@ export function createDeployHandler(deps: DeployDependencies) {
 
       // 3. Make the site's secrets available to the build and the app.
       const env = await deps.loadEnv(site.id);
-      await writeEnvFile(sharedDir, env);
+      await writeEnvFile(siteDir, env);
 
       setStatus('building');
       await runBuildSteps({ manifest, releaseDir: folders.staging, tools: deps.tools, ctx, env });
@@ -453,10 +453,19 @@ async function cleanUpLegacyLayout(siteDir: string, ctx: JobContext): Promise<vo
   }
 }
 
-/** Writes the site's environment file into the shared folder. */
-async function writeEnvFile(sharedDir: string, env: Record<string, string>): Promise<void> {
+/**
+ * Writes the site's environment file at the site root.
+ *
+ * Deliberately NOT in `shared/`, where it used to live: that folder is now
+ * published at `/shared`, and this file holds every secret the site has.
+ * Caddy refuses any dot-segment under that prefix, but a secret that is not
+ * in a web root at all cannot be leaked by a mistake in a matcher. Any copy
+ * left in the old location by an earlier version is deleted.
+ */
+async function writeEnvFile(siteDir: string, env: Record<string, string>): Promise<void> {
   const lines = Object.entries(env).map(([key, value]) => `${key}=${value}`);
-  await fs.writeFile(path.join(sharedDir, '.env'), `${lines.join('\n')}\n`, { mode: 0o600 });
+  await fs.writeFile(path.join(siteDir, '.env'), `${lines.join('\n')}\n`, { mode: 0o600 });
+  await fs.rm(path.join(siteDir, SHARED_DIR, '.env'), { force: true });
 }
 
 type SiteRow = typeof sites.$inferSelect;
@@ -515,8 +524,8 @@ async function publishManagedSite(
       }
 
       const env = await deps.loadEnv(site.id);
-      await fs.mkdir(path.join(siteDir, 'shared'), { recursive: true });
-      await writeEnvFile(path.join(siteDir, 'shared'), env);
+      await fs.mkdir(path.join(siteDir, SHARED_DIR), { recursive: true });
+      await writeEnvFile(siteDir, env);
 
       const serviceId = serviceIdFor(site.slug, site.activeColour);
       const runtimeExe = await resolveRuntimeExecutable(deps, manifest);

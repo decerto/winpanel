@@ -131,10 +131,28 @@ describe('turning the database into a Caddy config', () => {
 
   it('leaves out a site that has been disabled', () => {
     insertSite({ enabled: false });
-
     const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
     expect(config.apps.http.servers.main.routes).toHaveLength(0);
     expect(config.apps.http.servers[previewServerIdFor('example')]).toBeUndefined();
+  });
+
+  it('publishes the shared folder by default', () => {
+    insertSite();
+
+    const [site] = siteInputsFrom(db, sitesRoot());
+    expect(site!.siteDir).toBe(path.join(sitesRoot(), 'example'));
+  });
+
+  it('gives /shared back to the site when the folder is switched off', () => {
+    // Not merely unrouted: the path has to reach the app again, or turning the
+    // setting off would leave a hole where the site's own page used to be.
+    insertSite({ sharedFolderEnabled: false });
+
+    const [site] = siteInputsFrom(db, sitesRoot());
+    expect(site!.siteDir).toBeUndefined();
+
+    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig();
+    expect(JSON.stringify(config)).not.toContain('/shared/*');
   });
 
   it('leaves out the mail route until the mail server is installed', () => {

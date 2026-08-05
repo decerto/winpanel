@@ -362,6 +362,76 @@ describe('single-page app fallback', () => {
   });
 });
 
+describe('the shared folder', () => {
+  const siteDir = 'C:\\Sites\\example';
+
+  function sharedRoutes(config: any): any[] {
+    return findRoute(config, routeIdFor('example')).handle[0].routes;
+  }
+
+  it('publishes it at /shared, from the site folder so no rewrite is needed', () => {
+    const config = buildCaddyConfig({ sites: [site({ siteDir })] }) as any;
+    const serve = sharedRoutes(config)[1];
+
+    expect(serve.match[0].path).toEqual(['/shared/*']);
+    expect(serve.handle[0]).toEqual({ handler: 'file_server', root: siteDir });
+  });
+
+  it('refuses any dot-segment, so .env cannot be fetched', () => {
+    // The site's secrets live in that folder. This is the one route that has
+    // to be right.
+    const config = buildCaddyConfig({ sites: [site({ siteDir })] }) as any;
+    const deny = sharedRoutes(config)[0];
+
+    expect(deny.match[0].path).toEqual(['/shared/*']);
+    expect(new RegExp(deny.match[0].path_regexp.pattern).test('/shared/.env')).toBe(true);
+    expect(new RegExp(deny.match[0].path_regexp.pattern).test('/shared/a/.env')).toBe(true);
+    expect(new RegExp(deny.match[0].path_regexp.pattern).test('/shared/notes.txt')).toBe(false);
+    expect(deny.handle[0]).toEqual({ handler: 'static_response', status_code: 404 });
+  });
+
+  it('denies before it serves', () => {
+    const config = buildCaddyConfig({ sites: [site({ siteDir })] }) as any;
+
+    expect(sharedRoutes(config)[0].handle[0].handler).toBe('static_response');
+  });
+
+  it('only takes the request when the file is really there', () => {
+    // Otherwise /shared would swallow every request beginning with those
+    // characters, and an app with its own page at that path would lose it.
+    const config = buildCaddyConfig({ sites: [site({ siteDir })] }) as any;
+
+    expect(sharedRoutes(config)[1].match[0].file).toEqual({
+      root: siteDir,
+      try_files: ['{http.request.uri.path}'],
+    });
+  });
+
+  it('comes before a single-page app fallback, which would answer for it', () => {
+    const config = buildCaddyConfig({
+      sites: [
+        site({
+          siteDir,
+          manifest: SiteManifest.parse({ runtime: 'static', spaFallback: true }),
+          staticRoot: 'C:\\Sites\\example\\release\\dist',
+        }),
+      ],
+    }) as any;
+
+    const routes = sharedRoutes(config);
+    expect(routes[0].match[0].path).toEqual(['/shared/*']);
+    expect(routes[1].match[0].path).toEqual(['/shared/*']);
+    expect(routes[2].handle[0].handler).toBe('rewrite');
+  });
+
+  it('is reachable on the preview port too', () => {
+    const config = buildCaddyConfig({ sites: [site({ siteDir, previewPort: 7001 })] }) as any;
+    const preview = config.apps.http.servers[previewServerIdFor('example')];
+
+    expect(preview.routes[0].handle[0].routes[1].handle[0].root).toBe(siteDir);
+  });
+});
+
 describe('mail routing', () => {
   it('routes the mail hostname to the mail server web interface', () => {
     const config = buildCaddyConfig({

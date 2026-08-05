@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { eq } from 'drizzle-orm';
 import { STALWART_HTTP_PORT, mailHostnameFor, type SiteManifest } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
@@ -46,6 +47,9 @@ export function siteInputsFrom(db: DatabaseHandle, sitesRoot: string): CaddySite
         ...(manifest.runtime === 'static'
           ? { staticRoot: contentRootFor(sitesRoot, site) }
           : {}),
+        // Omitted, not falsy: a site with the shared folder switched off gets
+        // no `/shared` routes at all, so the path is the app's own again.
+        ...(site.sharedFolderEnabled ? { siteDir: path.join(sitesRoot, site.slug) } : {}),
         activePort,
         manifest,
         previewPort: site.previewPort,

@@ -5,6 +5,7 @@ import { desc, eq, isNull } from 'drizzle-orm';
 import {
   PUBLIC_DIR,
   RELEASE_DIR,
+  SHARED_DIR,
   Slug,
   isReservedDeviceName,
   type SiteManifest,
@@ -222,6 +223,14 @@ export class SiteService {
       try {
         let removed = await removeLegacyLayout(siteDir);
 
+        /*
+         * `shared/` is served at `/shared` now, and older versions wrote the
+         * site's environment file into it. Waiting for the next deploy to
+         * move it would leave the secrets of every site that has not been
+         * redeployed sitting under a web root.
+         */
+        await fs.rm(path.join(siteDir, SHARED_DIR, '.env'), { force: true });
+
         if ((site.source as SiteSource).kind === 'git') {
           const unused = await removeEmptyDirectory(path.join(siteDir, PUBLIC_DIR));
           removed = removed || unused;
@@ -294,7 +303,7 @@ export class SiteService {
 
       const siteDir = path.join(this.sitesRoot, slug);
       await fs.mkdir(path.join(siteDir, RELEASE_DIR), { recursive: true });
-      await fs.mkdir(path.join(siteDir, 'shared'), { recursive: true });
+      await fs.mkdir(path.join(siteDir, SHARED_DIR), { recursive: true });
       await fs.mkdir(path.join(siteDir, 'logs'), { recursive: true });
 
       // Only for sites the user fills in themselves. A git site is served out

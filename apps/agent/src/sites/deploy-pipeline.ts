@@ -38,10 +38,12 @@ export function newReleaseId(now = new Date()): string {
   );
 }
 
-/** Extra arguments a package manager needs to behave the way a deploy expects. */
+/** Options a deploy needs pnpm to be run with, whatever the step is doing. */
 const ALLOW_BUILDS_FLAG = '--dangerously-allow-all-builds';
 const LINKER_OPTION = '--config.node-linker=';
 const HOISTED_LINKER = `${LINKER_OPTION}hoisted`;
+const DEP_CHECK_OPTION = '--config.verify-deps-before-run=';
+const NO_DEP_CHECK = `${DEP_CHECK_OPTION}false`;
 
 /** Whether a step is the one that fills `node_modules`. */
 export function isInstallStep(command: string, args: readonly string[]): boolean {
@@ -51,19 +53,16 @@ export function isInstallStep(command: string, args: readonly string[]): boolean
 }
 
 /**
- * Lets a dependency's install scripts run.
+ * The options every pnpm command in a deploy is given.
  *
  * Since pnpm 10 a dependency that wants to run an install script is ignored
  * unless it has been approved by hand, and since pnpm 11 that ends the install
  * with a non-zero exit code. On a server there is nobody to approve anything,
  * and the packages this hits are the ones that must build to work at all —
- * `sharp`, `bcrypt`, `esbuild`. The result was a deploy that could not
- * succeed and an error naming a command (`pnpm approve-builds`) that only
- * works with a person sitting at a terminal.
- *
- * npm, yarn and bun all run these scripts without asking, and the panel is
- * already running this repository's own build scripts as this same account, so
- * this grants nothing that was not already granted.
+ * `sharp`, `bcrypt`, `esbuild`. npm, yarn and bun all run these scripts
+ * without asking, and the panel is already running this repository's own build
+ * scripts as this same account, so this grants nothing that was not already
+ * granted.
  *
  * The linker matters just as much. pnpm's default layout gives each package
  * its own folder and links the rest in, and on Windows those links are
@@ -73,17 +72,31 @@ export function isInstallStep(command: string, args: readonly string[]): boolean
  * `hoisted` writes the same flat folder npm does: nothing to break when the
  * folder moves, and packages reached indirectly are found too.
  *
+ * That is why these go on EVERY pnpm command and not just the install. Before
+ * running a script, pnpm compares `node_modules` against the settings it has
+ * been given, and quietly reinstalls if they disagree — so a build step
+ * without these options undid the flat layout and failed on the very build
+ * scripts the install had been allowed to run. Turning that check off as well
+ * keeps the decision about when to install here, where the log explains it.
+ * They are passed as arguments because pnpm 11 reads settings from the command
+ * line, the environment or `pnpm-workspace.yaml` only, and the repository
+ * belongs to the user.
+ *
  * Applied here rather than when a project is first inspected, because the
  * steps of a site set up before this are already stored in the database.
  */
-export function withInstallDefaults(command: string, args: readonly string[]): string[] {
-  if (command !== 'pnpm' || !isInstallStep(command, args)) return [...args];
+export function withPnpmDefaults(command: string, args: readonly string[]): string[] {
+  if (command !== 'pnpm') return [...args];
 
-  const next = [...args];
-  if (!next.includes(ALLOW_BUILDS_FLAG)) next.push(ALLOW_BUILDS_FLAG);
-  if (!next.some((arg) => arg.startsWith(LINKER_OPTION))) next.push(HOISTED_LINKER);
+  const has = (option: string) => args.some((arg) => arg.startsWith(option));
+  const options: string[] = [];
 
-  return next;
+  if (!has(LINKER_OPTION)) options.push(HOISTED_LINKER);
+  if (!has(DEP_CHECK_OPTION)) options.push(NO_DEP_CHECK);
+  if (isInstallStep(command, args) && !has(ALLOW_BUILDS_FLAG)) options.push(ALLOW_BUILDS_FLAG);
+
+  // Before the subcommand: anything after `run <script>` belongs to the script.
+  return [...options, ...args];
 }
 
 /**
@@ -263,7 +276,7 @@ export async function runBuildSteps(options: RunBuildOptions): Promise<void> {
 
     const result = await runCommand({
       exe: tool.exe,
-      args: [...tool.args, ...withInstallDefaults(step.command, step.args)],
+      args: [...tool.args, ...withPnpmDefaults(step.command, step.args)],
       cwd,
       env: {
         ...options.env,

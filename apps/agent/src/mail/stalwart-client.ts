@@ -72,6 +72,8 @@ export interface MailPrincipal {
 interface DomainPayload {
   id?: string;
   name?: string;
+  /** A BIND zone file for the domain, only when asked for by name. */
+  dnsZoneFile?: string;
 }
 
 interface AliasPayload {
@@ -120,6 +122,41 @@ function indexed<T>(values: readonly T[]): Record<string, T> {
 export function portOfBindAddress(address: string): number | null {
   const port = Number(address.slice(address.lastIndexOf(':') + 1));
   return Number.isInteger(port) && port > 0 ? port : null;
+}
+
+/**
+ * Pulls the DKIM records out of a BIND zone file.
+ *
+ * Only DKIM is taken. The mail server also offers MX, SPF, autodiscover and
+ * the rest, but it composes those from its own configured hostname, which the
+ * panel does not set — so publishing them would point mail at whatever name
+ * the mail server happens to think it has. DKIM is different: the signing key
+ * exists nowhere else, so it can only come from here.
+ *
+ * A line reads `sel._domainkey.example.com. IN TXT "v=DKIM1; ..."`, and a long
+ * RSA key is split across several quoted strings on one line, which DNS
+ * concatenates back together with nothing in between.
+ */
+export function parseDkimZoneRecords(zoneFile: string): Array<{ name: string; value: string }> {
+  const records: Array<{ name: string; value: string }> = [];
+
+  for (const line of zoneFile.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith(';') || !trimmed.includes('._domainkey.')) continue;
+
+    const match = /^(\S+)\s+(?:\d+\s+)?(?:IN\s+)?TXT\s+(.+)$/i.exec(trimmed);
+    if (!match) continue;
+
+    const segments = [...(match[2] ?? '').matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((quoted) =>
+      (quoted[1] ?? '').replace(/\\(.)/g, '$1'),
+    );
+    const value = segments.length > 0 ? segments.join('') : (match[2] ?? '').trim();
+    if (!value.toLowerCase().startsWith('v=dkim1')) continue;
+
+    records.push({ name: (match[1] ?? '').replace(/\.$/, '').toLowerCase(), value });
+  }
+
+  return records;
 }
 
 /** Turns a failed HTTP response into something worth showing a person. */
@@ -449,6 +486,31 @@ export class StalwartClient {
     if (!record?.id) return;
 
     await this.set('x:Domain', { destroy: [record.id] });
+  }
+
+  /**
+   * The DKIM records to publish for a domain.
+   *
+   * Empty rather than an error when the mail server does not offer them: a
+   * domain can be perfectly deliverable without DKIM, and refusing to set up
+   * MX and SPF because the signing key could not be read would be a worse
+   * outcome than setting them up unsigned.
+   */
+  async dkimRecords(domain: string): Promise<Array<{ name: string; value: string }>> {
+    const record = await this.domainRecord(domain);
+    if (!record?.id) return [];
+
+    try {
+      const result = await this.invoke<{ list?: DomainPayload[] }>('x:Domain/get', {
+        ids: [record.id],
+        properties: ['id', 'name', 'dnsZoneFile'],
+      });
+
+      return parseDkimZoneRecords(result.list?.[0]?.dnsZoneFile ?? '');
+    } catch (error) {
+      if (error instanceof MailServerError) return [];
+      throw error;
+    }
   }
 
   /** Every address an account answers to, given the domains it may use. */

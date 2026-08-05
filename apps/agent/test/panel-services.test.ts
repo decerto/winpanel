@@ -97,11 +97,17 @@ describe('describePanelService', () => {
     });
   });
 
-  it('reads the slug and colour out of a site service, dashes and all', () => {
+  it('reads the slug out of a site service, dashes and all', () => {
     expect(describePanelService('winpanel-site-my-shop-green')).toEqual({
-      label: 'Website: my-shop (green)',
+      label: 'Website: my-shop',
       kind: 'site',
     });
+  });
+
+  it('keeps the deployment slot out of the label', () => {
+    expect(describePanelService('winpanel-site-my-shop-blue').label).toBe(
+      describePanelService('winpanel-site-my-shop-green').label,
+    );
   });
 
   it('falls back to the raw id for something it does not recognise', () => {

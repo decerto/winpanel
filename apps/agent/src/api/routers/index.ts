@@ -7,6 +7,7 @@ import { filesRouter } from './files.js';
 import { dnsRouter } from './dns.js';
 import { sslRouter } from './ssl.js';
 import { mailRouter } from './mail.js';
+import { webmailRouter } from './webmail.js';
 import { systemRouter } from './system.js';
 import { componentsRouter } from './components.js';
 
@@ -62,6 +63,7 @@ export const appRouter = router({
   dns: dnsRouter,
   ssl: sslRouter,
   mail: mailRouter,
+  webmail: webmailRouter,
   system: systemRouter,
   components: componentsRouter,
   jobs: jobsRouter,

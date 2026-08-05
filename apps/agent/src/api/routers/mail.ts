@@ -21,6 +21,10 @@ import {
   loadMailAdminCredentials,
   storeMailAdminCredentials,
 } from '../../mail/credentials.js';
+import { CloudflareClient, CloudflareError, type DnsChange } from '../../dns/cloudflare.js';
+import { planMailRecords, recommendedMailRecords } from '../../dns/mail-records.js';
+import { cloudflareTokenForSite, loadCloudflareToken } from '../../dns/token.js';
+import { SiteService } from '../../sites/site-service.js';
 import { localAddresses } from '../../tls/panel-certificate.js';
 import type { AppContext } from '../../app-context.js';
 
@@ -68,7 +72,116 @@ function toTrpcError(error: unknown): never {
       cause: error,
     });
   }
+  if (error instanceof CloudflareError) {
+    throw new TRPCError({ code: 'BAD_REQUEST', message: error.message, cause: error });
+  }
   throw error;
+}
+
+/**
+ * The Cloudflare token that may edit this domain's DNS, if there is one.
+ *
+ * Null rather than an error, because "we cannot do this for you" is a
+ * perfectly normal answer here — the panel then shows the records to add by
+ * hand instead, which is the only option for anyone not on Cloudflare.
+ */
+function cloudflareFor(app: AppContext, slug?: string): CloudflareClient | null {
+  const site = slug
+    ? new SiteService(app.db, app.vault, app.config.sitesRoot).get(slug)
+    : undefined;
+
+  const resolved = site
+    ? cloudflareTokenForSite(app.db, app.vault, site.id)
+    : (() => {
+        const shared = loadCloudflareToken(app.db, app.vault);
+        return shared ? { token: shared, source: 'shared' as const } : null;
+      })();
+
+  return resolved ? new CloudflareClient(resolved.token) : null;
+}
+
+/** The IPv4 address this server answers on, or a clear reason it is unknown. */
+function requireServerIp(): string {
+  const ip = serverIp();
+
+  if (!ip) {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message:
+        'The panel could not work out this server\u2019s public address, so it cannot publish ' +
+        'the records that point email at it.',
+    });
+  }
+
+  return ip;
+}
+
+/**
+ * The DKIM keys the mail server signs this domain's outgoing email with.
+ *
+ * Empty rather than a failure when the mail server is not connected or does
+ * not know the domain: MX and SPF are what make email arrive at all, and
+ * refusing to publish those because a signing key could not be read would
+ * trade a working mailbox for a slightly better spam score.
+ */
+async function dkimFor(app: AppContext, domain: string): Promise<Array<{ name: string; value: string }>> {
+  try {
+    return await clientFor(app).dkimRecords(domain);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Reads the zone and works out every edit needed to bring email here.
+ *
+ * Shared by the preview and the mutation on purpose: what somebody is shown
+ * before they commit has to be produced by the same code that then runs, or
+ * the preview describes a different operation than the one performed. That
+ * matters more here than for a website, because this plan deletes MX records
+ * — the ones currently delivering somebody's mail somewhere else.
+ */
+async function mailPlanFor(
+  app: AppContext,
+  input: { domain: string; slug?: string },
+): Promise<{
+  client: CloudflareClient;
+  zone: { id: string; name: string };
+  changes: DnsChange[];
+}> {
+  const client = cloudflareFor(app, input.slug);
+
+  if (!client) {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: input.slug
+        ? 'This website has no Cloudflare token yet. Add one on its DNS tab, or publish the ' +
+          'records below by hand at your DNS provider.'
+        : 'Connect a Cloudflare account on the Settings page, or publish the records below by ' +
+          'hand at your DNS provider.',
+    });
+  }
+
+  const zone = await client.findZoneForHostname(input.domain);
+
+  if (!zone) {
+    throw new TRPCError({
+      code: 'NOT_FOUND',
+      message:
+        `${input.domain} is not in your Cloudflare account. Add the domain to Cloudflare ` +
+        'first, then try again.',
+    });
+  }
+
+  const changes = planMailRecords({
+    zoneId: zone.id,
+    domain: input.domain,
+    serverIpv4: requireServerIp(),
+    dkim: await dkimFor(app, input.domain),
+    existing: await client.listRecords(zone.id),
+  });
+
+  return { client, zone, changes };
 }
 
 const MailboxAddress = z
@@ -162,6 +275,134 @@ export const mailRouter = router({
 
   /** Just the outbound test, for the "check again" button. */
   testOutbound: protectedProcedure.mutation(async () => await testOutboundMail()),
+
+  /**
+   * Is this domain's email actually pointed at this server?
+   *
+   * Separate from `readiness` because it has to be cheap. Readiness opens SMTP
+   * connections to other people's servers and takes ten seconds or more, so it
+   * only runs when asked. This is four DNS lookups, which is fast enough to
+   * run every time the page opens — and that is the point: nobody thinks to
+   * press "check" on a mail server they believe is already working, so the
+   * panel has to notice on their behalf that mail is still being delivered
+   * somewhere else entirely.
+   */
+  dnsStatus: protectedProcedure
+    .input(z.object({ domain: Hostname, slug: z.string().min(1).optional() }))
+    .query(async ({ ctx, input }) => {
+      const mailHostname = mailHostnameFor(input.domain);
+      const ip = serverIp();
+
+      const [mx, spf, dkim, dmarc, host] = await Promise.all([
+        checkMx(input.domain, mailHostname),
+        checkSpf(input.domain),
+        checkDkim(input.domain),
+        checkDmarc(input.domain),
+        resolveHostAddress(mailHostname),
+      ]);
+
+      const hostPointsHere = ip !== null && host.includes(ip);
+
+      return {
+        mailHostname,
+        serverIp: ip,
+        /*
+         * Only MX and the address it names decide this. SPF, DKIM and DMARC
+         * change whether mail is *believed*; these two decide whether it
+         * arrives at all, and only the second kind is worth interrupting
+         * somebody about.
+         */
+        pointsHere: mx.ok && hostPointsHere,
+        canFix: cloudflareFor(ctx.app, input.slug) !== null,
+        checks: {
+          mailHost: {
+            ok: hostPointsHere,
+            value: host.join(', ') || null,
+            summary: hostPointsHere
+              ? `${mailHostname} points at this server.`
+              : host.length > 0
+                ? `${mailHostname} points at ${host.join(', ')}, not at this server.`
+                : `${mailHostname} does not exist yet, so nothing can connect to it.`,
+          },
+          mx: { ok: mx.ok, value: mx.value, summary: mx.summary },
+          spf: { ok: spf.ok, value: spf.value, summary: spf.summary },
+          dkim: { ok: dkim.ok, value: dkim.value, summary: dkim.summary },
+          dmarc: { ok: dmarc.ok, value: dmarc.value, summary: dmarc.summary },
+        },
+        /** What to publish by hand when Cloudflare is not managing this zone. */
+        recommended: recommendedMailRecords({
+          zoneId: '',
+          domain: input.domain,
+          serverIpv4: ip ?? 'this server\u2019s public address',
+          dkim: await dkimFor(ctx.app, input.domain),
+        }).map((record) => ({
+          type: record.type,
+          name: record.name,
+          content: record.content,
+          priority: record.priority ?? null,
+        })),
+      };
+    }),
+
+  /**
+   * What "Set up email DNS" would do, without doing it.
+   *
+   * Never skipped. This plan removes the MX records currently delivering the
+   * domain's mail, and doing that to somebody's DNS without showing them the
+   * list first is not a decision the panel should make quietly.
+   */
+  previewDnsSetup: protectedProcedure
+    .input(z.object({ domain: Hostname, slug: z.string().min(1).optional() }))
+    .query(async ({ ctx, input }) => {
+      try {
+        const { zone, changes } = await mailPlanFor(ctx.app, input);
+
+        return {
+          zone: zone.name,
+          changes,
+          upToDate: changes.every((change) => change.action === 'unchanged'),
+          /** Shown as a warning, because it redirects somebody's mail. */
+          removes: changes
+            .filter((change) => change.action === 'delete')
+            .map((change) => `${change.record.type} ${change.record.name}`),
+        };
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        toTrpcError(error);
+      }
+    }),
+
+  /**
+   * Publishes everything a domain needs for its email to arrive here.
+   *
+   * Idempotent, so running it again after adding a mailbox or rotating a
+   * signing key is safe rather than producing duplicates.
+   */
+  setUpDns: protectedProcedure
+    .input(z.object({ domain: Hostname, slug: z.string().min(1).optional() }))
+    .mutation(async ({ ctx, input }) => {
+      try {
+        const { client, zone, changes } = await mailPlanFor(ctx.app, input);
+
+        await client.applyPlan(changes);
+
+        const applied = changes.filter((change) => change.action !== 'unchanged');
+
+        return {
+          zone: zone.name,
+          changes,
+          applied: applied.map((change) => `${change.record.type} ${change.record.name}`),
+          note:
+            applied.length === 0
+              ? 'Everything was already correct \u2014 nothing needed changing.'
+              : 'Email for this domain now comes here. Other servers can take up to a few ' +
+                'hours to notice the change.',
+        };
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        toTrpcError(error);
+      }
+    }),
 
   /**
    * Records that the unblock has been requested.
@@ -500,6 +741,15 @@ export const mailRouter = router({
       }
     }),
 });
+
+/** The addresses a hostname resolves to, or none when it does not exist. */
+async function resolveHostAddress(hostname: string): Promise<string[]> {
+  try {
+    return await dns.resolve4(hostname);
+  } catch {
+    return [];
+  }
+}
 
 /** DKIM lives at a selector-specific name, so the common ones are tried. */
 async function checkDkim(

@@ -1,4 +1,4 @@
-import type { SiteManifest } from '@winpanel/shared';
+import { SHARED_URL_PREFIX, type SiteManifest } from '@winpanel/shared';
 
 /**
  * Generates Caddy's JSON configuration from the panel's own site records.
@@ -23,6 +23,12 @@ export interface CaddySiteInput {
   manifest: SiteManifest;
   /** Absolute path served directly, for static sites. */
   staticRoot?: string;
+  /**
+   * Absolute path to the site's folder, when its `shared` subfolder should be
+   * published at `/shared`. Set for sites the panel rebuilds on every deploy,
+   * which are the only ones that need somewhere permanent to put a file.
+   */
+  siteDir?: string;
   /**
    * Public port this site answers on regardless of Host header, so it can be
    * reached at `http://<server-ip>:<port>` before any domain exists.
@@ -77,6 +83,44 @@ export function previewServerIdFor(slug: string): string {
 
 export function previewProxyIdFor(slug: string): string {
   return `${slug}_preview_proxy`;
+}
+
+/**
+ * The routes that publish a site's `shared` folder at `/shared`.
+ *
+ * Two routes, and the order is the whole point:
+ *
+ *  1. Anything with a dot-segment under `/shared` is a flat 404. The site's
+ *     environment file lives in that folder, so serving it would hand out
+ *     every secret the site has. This is a deny rule, not a `hide` option,
+ *     because it cannot be defeated by a path that reaches the same file by
+ *     an unexpected route.
+ *  2. The file is served only if it is actually there — the `file` matcher
+ *     makes the whole route conditional on existence. Without that, `/shared`
+ *     would swallow every request beginning with those seven characters, and
+ *     an app that already had a page there would lose it.
+ *
+ * The root is the site folder rather than the shared folder, so the `/shared`
+ * prefix in the URL is the folder name on disk and no rewrite is needed.
+ */
+function buildSharedFolderRoutes(siteDir: string): unknown[] {
+  const prefix = `${SHARED_URL_PREFIX}/*`;
+
+  return [
+    {
+      match: [{ path: [prefix], path_regexp: { name: 'dotfile', pattern: '/\\.' } }],
+      handle: [{ handler: 'static_response', status_code: 404 }],
+    },
+    {
+      match: [
+        {
+          path: [prefix],
+          file: { root: siteDir, try_files: ['{http.request.uri.path}'] },
+        },
+      ],
+      handle: [{ handler: 'file_server', root: siteDir }],
+    },
+  ];
 }
 
 /**
@@ -142,6 +186,8 @@ function buildSubroute(site: CaddySiteInput, proxyId: string): unknown {
   const wantsSpaFallback =
     site.manifest.runtime === 'static' && site.manifest.spaFallback && Boolean(site.staticRoot);
 
+  const sharedRoutes = site.siteDir ? buildSharedFolderRoutes(site.siteDir) : [];
+
   if (wantsSpaFallback) {
     /*
      * The classic single-page-app problem: refreshing on /dashboard must serve
@@ -157,6 +203,7 @@ function buildSubroute(site: CaddySiteInput, proxyId: string): unknown {
     return {
       handler: 'subroute',
       routes: [
+        ...sharedRoutes,
         {
           match: [{ file: { try_files: ['{http.request.uri.path}', '/index.html'] } }],
           handle: [{ handler: 'rewrite', uri: '{http.matchers.file.relative}' }],
@@ -168,7 +215,7 @@ function buildSubroute(site: CaddySiteInput, proxyId: string): unknown {
 
   return {
     handler: 'subroute',
-    routes: [{ handle: buildHandlers(site, proxyId) }],
+    routes: [...sharedRoutes, { handle: buildHandlers(site, proxyId) }],
   };
 }
 

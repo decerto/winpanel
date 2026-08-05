@@ -29,6 +29,13 @@
       "when": 1785833843082,
       "tag": "0003_add_preview_port",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1785935950665,
+      "tag": "0004_add_shared_folder_toggle",
+      "breakpoints": true
     }
   ]
 }

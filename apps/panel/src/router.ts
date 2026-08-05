@@ -101,6 +101,12 @@ export const router = createRouter({
       meta: { title: 'Email' },
     },
     {
+      path: '/webmail',
+      name: 'webmail',
+      component: () => import('./pages/WebmailPage.vue'),
+      meta: { title: 'Webmail' },
+    },
+    {
       path: '/security',
       name: 'security',
       component: () => import('./pages/SecurityPage.vue'),

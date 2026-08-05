@@ -4,6 +4,7 @@ import {
   Activity,
   ChevronRight,
   Globe,
+  Inbox,
   LogOut,
   Mail,
   Menu,
@@ -35,6 +36,7 @@ const NAV = [
   { to: '/sites', label: 'Websites', icon: Globe, hint: 'Everything you host' },
   { to: '/health', label: 'Server health', icon: Activity, hint: 'Checks and fixes' },
   { to: '/email', label: 'Email', icon: Mail, hint: 'Mailboxes and delivery' },
+  { to: '/webmail', label: 'Webmail', icon: Inbox, hint: 'Read and send mail' },
   { to: '/security', label: 'Security', icon: ShieldCheck, hint: 'Sign-in protection' },
   { to: '/settings', label: 'Settings', icon: Settings, hint: 'Connected accounts' },
 ] as const;

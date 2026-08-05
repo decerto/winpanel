@@ -157,7 +157,7 @@ function recordPayload(record: Omit<DnsRecord, 'id'>): Record<string, unknown> {
 }
 
 /** Trailing dots and case are Cloudflare's, not the user's. */
-function normaliseName(name: string): string {
+export function normaliseName(name: string): string {
   return name.trim().toLowerCase().replace(/\.$/, '');
 }
 

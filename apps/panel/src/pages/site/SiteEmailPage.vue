@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router';
 import {
   AtSign,
   Copy,
+  ExternalLink,
   Inbox,
   KeyRound,
   Plus,
@@ -38,6 +39,7 @@ const { site } = inject(siteContextKey)!;
 type ServerStatus = Awaited<ReturnType<typeof api.mail.serverStatus.query>>;
 type Mailbox = Awaited<ReturnType<typeof api.mail.mailboxes.query>>[number];
 type Readiness = Awaited<ReturnType<typeof api.mail.readiness.query>>;
+type MailDns = Awaited<ReturnType<typeof api.mail.dnsStatus.query>>;
 
 const status = ref<ServerStatus | null>(null);
 const mailboxes = ref<Mailbox[]>([]);
@@ -64,6 +66,31 @@ const copied = ref(false);
 
 const readiness = ref<Readiness | null>(null);
 const checking = ref(false);
+
+/*
+ * Where this domain's email actually goes today.
+ *
+ * Checked whenever the tab opens, because nobody thinks to press "check" on a
+ * mail server they believe is already working. Mail quietly still being
+ * delivered to a previous host is the failure this catches, and it is
+ * invisible from here otherwise: mailboxes exist, the server is running, and
+ * nothing ever arrives.
+ */
+const mailDns = ref<MailDns | null>(null);
+const fixingDns = ref(false);
+const showRecords = ref(false);
+
+/** True when mail arrives but is not signed or vouched for. */
+const deliverabilityGaps = computed(() => {
+  const checks = mailDns.value?.checks;
+  if (!checks) return [] as string[];
+
+  return [
+    checks.spf.ok ? null : 'SPF',
+    checks.dkim.ok ? null : 'DKIM',
+    checks.dmarc.ok ? null : 'DMARC',
+  ].filter((name): name is string => name !== null);
+});
 
 const DELIVERY_LABELS: Record<string, string> = {
   outbound: 'Sending to the outside world',
@@ -100,6 +127,66 @@ async function loadMailboxes(): Promise<void> {
   }
 }
 
+/**
+ * Reads the domain's live DNS.
+ *
+ * Failures are swallowed on purpose. This runs unprompted, and a DNS lookup
+ * that timed out is not something to interrupt somebody about while they are
+ * creating a mailbox — the banner simply does not appear.
+ */
+async function loadMailDns(): Promise<void> {
+  if (!domain.value || !status.value?.connected) return;
+
+  mailDns.value = null;
+
+  try {
+    mailDns.value = await api.mail.dnsStatus.query({
+      domain: domain.value,
+      ...(site.value?.slug ? { slug: site.value.slug } : {}),
+    });
+  } catch {
+    mailDns.value = null;
+  }
+}
+
+/**
+ * Publishes the records that bring this domain's email here.
+ *
+ * Previewed first, and confirmed when the plan deletes anything, because the
+ * records being deleted are the ones currently delivering the domain's mail
+ * somewhere else. That is a redirection of somebody's post, and it is not a
+ * decision to make on their behalf without showing them.
+ */
+async function fixMailDns(): Promise<void> {
+  fixingDns.value = true;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    const scope = {
+      domain: domain.value,
+      ...(site.value?.slug ? { slug: site.value.slug } : {}),
+    };
+    const preview = await api.mail.previewDnsSetup.query(scope);
+
+    if (preview.removes.length > 0) {
+      const confirmed = window.confirm(
+        `This will remove ${preview.removes.join(', ')} from ${preview.zone}. ` +
+          'Email currently delivered elsewhere will start arriving here instead. Continue?',
+      );
+      if (!confirmed) return;
+    }
+
+    const result = await api.mail.setUpDns.mutate(scope);
+    notice.value = result.note;
+    await loadMailDns();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    fixingDns.value = false;
+  }
+}
+
 async function load(): Promise<void> {
   loading.value = true;
   error.value = null;
@@ -107,6 +194,7 @@ async function load(): Promise<void> {
   try {
     status.value = await api.mail.serverStatus.query();
     await loadMailboxes();
+    void loadMailDns();
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -224,7 +312,11 @@ watch(
   { immediate: true },
 );
 
-watch(domain, loadMailboxes);
+watch(domain, () => {
+  showRecords.value = false;
+  void loadMailboxes();
+  void loadMailDns();
+});
 watch(() => site.value?.slug, load, { immediate: true });
 </script>
 
@@ -265,6 +357,94 @@ watch(() => site.value?.slug, load, { immediate: true });
       </EmptyState>
 
       <template v-else>
+        <!--
+          Email arriving somewhere else is silent from in here: the mailboxes
+          exist, the server runs, and nothing ever turns up. So it is said
+          plainly and at the top, above everything it would otherwise waste
+          somebody's afternoon underneath.
+        -->
+        <AlertMessage
+          v-if="mailDns && !mailDns.pointsHere"
+          tone="warning"
+          title="Email for this domain does not come to this server"
+        >
+          <p>
+            {{ mailDns.checks.mx.summary }}
+            Until that is changed, messages sent to
+            <span class="font-mono">@{{ domain }}</span> will not appear in the mailboxes below.
+          </p>
+
+          <div class="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              v-if="mailDns.canFix"
+              type="button"
+              class="btn btn-primary btn-sm"
+              :disabled="fixingDns"
+              @click="fixMailDns"
+            >
+              {{ fixingDns ? 'Setting up\u2026' : 'Point email at this server' }}
+            </button>
+            <RouterLink
+              v-else-if="site?.slug"
+              :to="`/sites/${site.slug}/dns`"
+              class="btn btn-ghost btn-sm"
+            >
+              Connect Cloudflare
+            </RouterLink>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm"
+              @click="showRecords = !showRecords"
+            >
+              {{ showRecords ? 'Hide the records' : 'Show the records to add by hand' }}
+            </button>
+          </div>
+
+          <!-- The way out for anyone whose DNS the panel cannot reach. -->
+          <table v-if="showRecords" class="mt-3 w-full text-left text-xs">
+            <thead class="text-ink-faint">
+              <tr>
+                <th class="py-1 pr-3 font-medium">Type</th>
+                <th class="py-1 pr-3 font-medium">Name</th>
+                <th class="py-1 font-medium">Value</th>
+              </tr>
+            </thead>
+            <tbody class="font-mono">
+              <tr v-for="record in mailDns.recommended" :key="`${record.type}-${record.name}`">
+                <td class="py-1 pr-3 align-top">{{ record.type }}</td>
+                <td class="py-1 pr-3 align-top">{{ record.name }}</td>
+                <td class="min-w-0 break-all py-1 align-top">
+                  <template v-if="record.priority !== null">{{ record.priority }} </template
+                  >{{ record.content }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </AlertMessage>
+
+        <!--
+          Mail arrives, but unsigned mail lands in junk folders. Worth saying,
+          not worth alarming anybody about.
+        -->
+        <AlertMessage
+          v-else-if="mailDns && mailDns.canFix && deliverabilityGaps.length > 0"
+          tone="info"
+          title="Your email arrives, but it is not fully vouched for"
+        >
+          <p>
+            {{ deliverabilityGaps.join(', ') }} is missing, which makes some providers treat
+            messages from <span class="font-mono">@{{ domain }}</span> as suspicious.
+          </p>
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm mt-3"
+            :disabled="fixingDns"
+            @click="fixMailDns"
+          >
+            {{ fixingDns ? 'Publishing\u2026' : 'Publish the missing records' }}
+          </button>
+        </AlertMessage>
+
         <!-- A password can be read exactly once, so it gets the whole width. -->
         <section v-if="revealed" class="card border-brand/40 p-5">
           <h3 class="flex items-center gap-2 text-sm font-semibold text-brand-bright">
@@ -416,6 +596,19 @@ watch(() => site.value?.slug, load, { immediate: true });
                       {{ preset.label }}
                     </option>
                   </select>
+
+                  <!--
+                    Opening the mailbox asks for its own password. The panel
+                    can reset that password, which is visible; it cannot read
+                    somebody's mail without being given it.
+                  -->
+                  <RouterLink
+                    :to="`/webmail?address=${encodeURIComponent(mailbox.address)}`"
+                    class="rounded-md p-2 text-ink-faint hover:bg-white/5 hover:text-ink"
+                    :aria-label="`Open ${mailbox.address} in webmail`"
+                  >
+                    <ExternalLink :size="15" />
+                  </RouterLink>
 
                   <button
                     type="button"

@@ -18,7 +18,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-vue-next';
-import { LEGACY_RELEASE_DIRS } from '@winpanel/shared';
+import { LEGACY_RELEASE_DIRS, SHARED_DIR, SHARED_URL_PREFIX } from '@winpanel/shared';
 import { api, describeError } from '../../lib/api';
 import { downloadUrl, uploadFile } from '../../lib/file-transfer';
 import { formatBytes } from '../../lib/format';
@@ -26,6 +26,7 @@ import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
 import EmptyState from '../../components/EmptyState.vue';
 import FileEditorDialog from '../../components/FileEditorDialog.vue';
+import SiteStorageDialog from '../../components/SiteStorageDialog.vue';
 
 /**
  * File manager for a website.
@@ -86,6 +87,28 @@ const leftOver = computed(() =>
     (dir) => currentPath.value === dir || currentPath.value.startsWith(`${dir}/`),
   ),
 );
+
+/** True while browsing the folder whose contents outlive every deployment. */
+const inShared = computed(
+  () => currentPath.value === SHARED_DIR || currentPath.value.startsWith(`${SHARED_DIR}/`),
+);
+
+/**
+ * The address the folder on screen answers on, so the page can show the real
+ * URL of a file rather than a pattern to fill in.
+ */
+const siteOrigin = computed(() => {
+  const site_ = site.value;
+  if (!site_) return '';
+  return site_.domains[0] ? `https://${site_.domains[0]}` : (site_.previewUrl ?? '');
+});
+
+const sharedUrl = computed(() => `${siteOrigin.value}/${currentPath.value}`);
+
+/** The folder is only an address when the site has asked for it to be one. */
+const sharedPublished = computed(() => site.value?.sharedFolderEnabled !== false);
+
+const storageHelpOpen = ref(false);
 
 const breadcrumbs = computed(() => {
   const parts = currentPath.value.split('/').filter(Boolean);
@@ -355,7 +378,30 @@ watch(
 
     <AlertMessage v-else-if="listing?.ephemeral" tone="warning">
       Files here are replaced every time you deploy. To change something permanently, edit it in
-      your project and deploy again, or use the <strong>shared</strong> folder.
+      your project and deploy again. For files that are not part of your project &mdash; uploads,
+      or anything you need to put on the site by hand &mdash; use the
+      <strong>{{ SHARED_DIR }}</strong> folder instead: it is kept<template v-if="sharedPublished">, and served at
+      <code>{{ SHARED_URL_PREFIX }}</code></template>.
+      <button type="button" class="ml-1 underline underline-offset-2" @click="storageHelpOpen = true">
+        Show me how
+      </button>
+    </AlertMessage>
+
+    <AlertMessage v-else-if="inShared && sharedPublished" tone="info">
+      Nothing here is ever removed by a deployment, and everything here is on the web:
+      <code>{{ sharedUrl }}/&lt;file&gt;</code>. Files whose name starts with a dot are not served.
+      <button type="button" class="ml-1 underline underline-offset-2" @click="storageHelpOpen = true">
+        More about the folders
+      </button>
+    </AlertMessage>
+
+    <AlertMessage v-else-if="inShared" tone="info">
+      Nothing here is ever removed by a deployment, but this folder is not on the web: publishing
+      it at <code>{{ SHARED_URL_PREFIX }}</code> is switched off for this website. Turn it on under
+      Settings if you want these files to have an address.
+      <button type="button" class="ml-1 underline underline-offset-2" @click="storageHelpOpen = true">
+        More about the folders
+      </button>
     </AlertMessage>
 
     <AlertMessage v-if="error">{{ error }}</AlertMessage>
@@ -655,6 +701,15 @@ watch(
       :path="editing"
       @close="editing = null"
       @saved="load"
+    />
+
+    <SiteStorageDialog
+      :open="storageHelpOpen"
+      :source-kind="site?.sourceKind ?? 'git'"
+      :runtime="site?.runtime ?? 'static'"
+      :origin="siteOrigin"
+      :published="sharedPublished"
+      @close="storageHelpOpen = false"
     />
   </div>
 </template>

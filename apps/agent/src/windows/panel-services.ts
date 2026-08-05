@@ -82,9 +82,11 @@ export function describePanelService(id: string): { label: string; kind: PanelSe
   );
   if (component) return { label: component.name, kind: 'component' };
 
-  const site = /^winpanel-site-(.+)-(blue|green)$/.exec(lower);
-  if (site?.[1] && site[2]) {
-    return { label: `Website: ${site[1]} (${site[2]})`, kind: 'site' };
+  // The trailing colour is the deployment slot. It means nothing to the person
+  // reading this list, and the service id is printed underneath anyway.
+  const site = /^winpanel-site-(.+)-(?:blue|green)$/.exec(lower);
+  if (site?.[1]) {
+    return { label: `Website: ${site[1]}`, kind: 'site' };
   }
 
   return { label: id, kind: 'other' };

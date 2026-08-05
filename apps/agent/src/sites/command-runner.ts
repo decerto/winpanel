@@ -10,7 +10,7 @@ import {
   explainSpawnFailure,
   explainToolFailure,
   isInstallStep,
-  withInstallDefaults,
+  withPnpmDefaults,
   type ToolPaths,
 } from './deploy-pipeline.js';
 
@@ -84,7 +84,7 @@ export function createRunCommandHandler(deps: CommandRunnerDependencies) {
 
     const result = await runCommand({
       exe: tool.exe,
-      args: [...tool.args, ...withInstallDefaults(payload.command, payload.args)],
+      args: [...tool.args, ...withPnpmDefaults(payload.command, payload.args)],
       cwd,
       env: {
         ...env,

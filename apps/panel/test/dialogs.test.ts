@@ -37,26 +37,36 @@ vi.mock('../src/lib/api', () => ({
 const PathPicker = (await import('../src/components/PathPicker.vue')).default;
 const ServerPathPicker = (await import('../src/components/ServerPathPicker.vue')).default;
 const FileEditorDialog = (await import('../src/components/FileEditorDialog.vue')).default;
+const SiteStorageDialog = (await import('../src/components/SiteStorageDialog.vue')).default;
 
 const pickers = [
   {
     name: 'PathPicker',
     component: PathPicker,
     props: { modelValue: '', siteSlug: 'example', base: 'release' },
+    dismissLabel: 'Cancel',
   },
   {
     name: 'ServerPathPicker',
     component: ServerPathPicker,
     props: { modelValue: '' },
+    dismissLabel: 'Cancel',
   },
   {
     name: 'FileEditorDialog',
     component: FileEditorDialog,
     props: { siteSlug: 'example', path: 'public/index.html' },
+    dismissLabel: 'Cancel',
+  },
+  {
+    name: 'SiteStorageDialog',
+    component: SiteStorageDialog,
+    props: { sourceKind: 'git', runtime: 'node', origin: 'https://example.com', published: true },
+    dismissLabel: 'Close',
   },
 ] as const;
 
-describe.each(pickers)('$name', ({ component, props }) => {
+describe.each(pickers)('$name', ({ component, props, dismissLabel }) => {
   it('stays shut until it is asked to open', () => {
     const wrapper = mount(component, { props: { ...props, open: false } });
 
@@ -77,9 +87,9 @@ describe.each(pickers)('$name', ({ component, props }) => {
     expect(wrapper.emitted('close')).toHaveLength(1);
   });
 
-  it('closes from the Cancel button', async () => {
+  it('closes from the button in the footer', async () => {
     const wrapper = mount(component, { props: { ...props, open: true } });
-    const cancel = wrapper.findAll('button').find((button) => button.text() === 'Cancel');
+    const cancel = wrapper.findAll('button').find((button) => button.text() === dismissLabel);
 
     await cancel?.trigger('click');
 
