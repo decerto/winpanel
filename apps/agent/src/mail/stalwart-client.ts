@@ -1,4 +1,4 @@
-import { STALWART_HTTP_PORT } from '@winpanel/shared';
+import { STALWART_HTTP_PORT, WEB_PORTS } from '@winpanel/shared';
 
 /**
  * Client for the mail server's management API.
@@ -33,7 +33,7 @@ const CAPABILITIES = ['urn:ietf:params:jmap:core', 'urn:stalwart:jmap'];
 /** Nothing sensible is ever this large, and it bounds a runaway response. */
 const PAGE_LIMIT = 500;
 
-type ObjectType = 'x:Domain' | 'x:Account';
+type ObjectType = 'x:Domain' | 'x:Account' | 'x:NetworkListener';
 
 /** One entry of a JMAP `methodResponses` array. */
 type MethodResponse = [string, Record<string, unknown>, string];
@@ -80,6 +80,12 @@ interface AliasPayload {
   enabled?: boolean;
 }
 
+interface ListenerPayload {
+  id?: string;
+  name?: string;
+  bind?: Record<string, string> | string[];
+}
+
 interface AccountPayload {
   id?: string;
   '@type'?: string;
@@ -100,6 +106,20 @@ interface AccountPayload {
 function valuesOf<T>(value: Record<string, T> | T[] | undefined): T[] {
   if (!value) return [];
   return Array.isArray(value) ? value : Object.values(value);
+}
+
+/** The counterpart for writing one back. */
+function indexed<T>(values: readonly T[]): Record<string, T> {
+  return Object.fromEntries(values.map((value, index) => [String(index), value]));
+}
+
+/**
+ * The port out of a bind address, which may be `1.2.3.4:80` or `[::]:443`.
+ * The last colon is the separator in both, since IPv6 addresses are bracketed.
+ */
+export function portOfBindAddress(address: string): number | null {
+  const port = Number(address.slice(address.lastIndexOf(':') + 1));
+  return Number.isInteger(port) && port > 0 ? port : null;
 }
 
 /** Turns a failed HTTP response into something worth showing a person. */
@@ -598,5 +618,65 @@ export class StalwartClient {
   async deleteMailbox(address: string): Promise<void> {
     const id = await this.requireAccountId(address);
     await this.set('x:Account', { destroy: [id] });
+  }
+
+  /**
+   * Takes the mail server off ports 80 and 443.
+   *
+   * Stalwart ships with an implicit-TLS listener on `[::]:443` and binds it on
+   * first start, which is correct for a machine where it is the only server
+   * and catastrophic here: whichever of it and Caddy starts first wins the
+   * port, and the loser cannot bind at all. After an update — which stops
+   * everything and starts it again — the winner is decided by a race, and once
+   * the mail server has 443 the web server can never start again, on any
+   * restart or reboot, so every website on the machine stays dark.
+   *
+   * Caddy already fronts the mail server's admin interface and issues its
+   * certificates, so nothing is lost by moving it off the edge. A listener
+   * that binds nothing else is removed rather than left with an empty address
+   * list, which the mail server rejects.
+   *
+   * @returns a description of each listener changed, empty when nothing was.
+   */
+  async releaseWebPorts(): Promise<string[]> {
+    const listeners = await this.fetchByIds<ListenerPayload>(
+      'x:NetworkListener',
+      await this.queryIds('x:NetworkListener'),
+    );
+
+    const changes: string[] = [];
+    const destroy: string[] = [];
+    const update: Record<string, Record<string, unknown>> = {};
+
+    for (const listener of listeners) {
+      if (!listener.id) continue;
+
+      const bound = valuesOf(listener.bind);
+      const taken = bound.filter((address) => {
+        const port = portOfBindAddress(address);
+        return port !== null && (WEB_PORTS as readonly number[]).includes(port);
+      });
+      if (taken.length === 0) continue;
+
+      const name = listener.name ?? listener.id;
+      const kept = bound.filter((address) => !taken.includes(address));
+
+      if (kept.length === 0) {
+        destroy.push(listener.id);
+        changes.push(`Removed the mail server\u2019s "${name}" listener on ${taken.join(', ')}.`);
+      } else {
+        update[listener.id] = { bind: indexed(kept) };
+        changes.push(`Took the mail server\u2019s "${name}" listener off ${taken.join(', ')}.`);
+      }
+    }
+
+    if (changes.length === 0) return [];
+
+    await this.set('x:NetworkListener', {
+      ...(Object.keys(update).length > 0 ? { update } : {}),
+      ...(destroy.length > 0 ? { destroy } : {}),
+    });
+
+    return changes;
   }
 }

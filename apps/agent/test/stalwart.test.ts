@@ -384,6 +384,53 @@ describe('mailboxes', () => {
   });
 });
 
+describe('the web server\u2019s ports', () => {
+  const LISTENERS = {
+    'x:NetworkListener/query': { ids: ['l1', 'l2', 'l3'] },
+    'x:NetworkListener/get': {
+      list: [
+        { id: 'l1', name: 'https', bind: { '0': '[::]:443' } },
+        { id: 'l2', name: 'management', bind: { '0': '127.0.0.1:8080' } },
+        { id: 'l3', name: 'mixed', bind: { '0': '[::]:80', '1': '0.0.0.0:25' } },
+      ],
+    },
+    'x:NetworkListener/set': {},
+  };
+
+  it('removes a mail listener that exists only to hold 80 or 443', async () => {
+    const { mail, seen } = client(LISTENERS);
+
+    const changes = await mail.releaseWebPorts();
+
+    expect(argsOf(seen, 'x:NetworkListener/set')?.['destroy']).toEqual(['l1']);
+    expect(changes.join(' ')).toMatch(/https/);
+  });
+
+  // Destroying it would take the mail server off port 25 as well, which is the
+  // one port it genuinely needs.
+  it('leaves the rest of a listener that also binds something else', async () => {
+    const { mail, seen } = client(LISTENERS);
+
+    await mail.releaseWebPorts();
+
+    expect(argsOf(seen, 'x:NetworkListener/set')?.['update']).toEqual({
+      l3: { bind: { '0': '0.0.0.0:25' } },
+    });
+  });
+
+  it('changes nothing, and says so, when the mail server is already off them', async () => {
+    const { mail, seen } = client({
+      'x:NetworkListener/query': { ids: ['l2'] },
+      'x:NetworkListener/get': {
+        list: [{ id: 'l2', name: 'management', bind: { '0': '127.0.0.1:8080' } }],
+      },
+    });
+
+    expect(await mail.releaseWebPorts()).toEqual([]);
+    expect(argsOf(seen, 'x:NetworkListener/set')).toBeUndefined();
+  });
+});
+
 describe('failures', () => {
   it('passes on the reason the mail server gave for refusing an object', async () => {
     const { mail } = client({

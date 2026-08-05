@@ -16,6 +16,8 @@ import { localAddresses } from '../tls/panel-certificate.js';
 import {
   AGENT_SERVICE_ID,
   listPanelServices,
+  sortForStartup,
+  startPanelService,
   stopPanelService,
 } from '../windows/panel-services.js';
 
@@ -40,6 +42,22 @@ export interface InstallResult {
   setupToken: string | null;
   buildAccountPassword: string;
   warnings: string[];
+}
+
+/**
+ * Where `stop-all` leaves the list of what it stopped, for `install` to undo.
+ *
+ * An upgrade has to stop the web server, the mail server and every website
+ * before it can replace files any of them hold open. Nothing else knows they
+ * were running: they are all set to start automatically, so on a reboot
+ * Windows brings them back, but an in-place update never reboots. Without
+ * this the panel comes back alone and every site on the server stays dark
+ * until somebody notices and presses Start.
+ */
+const SUSPENDED_SERVICES_FILE = 'services-stopped-for-update.json';
+
+function suspendedServicesPath(): string {
+  return path.join(config.dataDir, SUSPENDED_SERVICES_FILE);
 }
 
 /** Generates a password nobody ever needs to type. */
@@ -157,6 +175,10 @@ export async function install(options: { skipService?: boolean } = {}): Promise<
       path.join(config.dataDir, 'services'),
     );
 
+    // Before the panel, so that by the time the agent boots and pushes the
+    // site configuration, the web server is there to receive it.
+    warnings.push(...(await resumeSuspendedServices()));
+
     try {
       if (await services.isInstalled(AGENT_SERVICE_ID)) {
         await services.uninstall(AGENT_SERVICE_ID);
@@ -268,15 +290,67 @@ export async function uninstall(options: { keepSites: boolean }): Promise<string
  */
 export async function stopAll(): Promise<string[]> {
   const messages: string[] = [];
+  const suspended: string[] = [];
 
   for (const service of await listPanelServices()) {
     if (service.state === 'stopped') continue;
 
     const ok = await stopPanelService(service.id).catch(() => false);
     messages.push(ok ? `Stopped ${service.label}.` : `Could not stop ${service.label}.`);
+
+    // The panel is excluded because `install` starts it itself, and a service
+    // that would not stop is excluded because it never stopped running.
+    if (ok && service.id.toLowerCase() !== AGENT_SERVICE_ID) suspended.push(service.id);
   }
 
+  await fs
+    .mkdir(config.dataDir, { recursive: true })
+    .then(() => fs.writeFile(suspendedServicesPath(), JSON.stringify(suspended), 'utf8'))
+    .catch(() => undefined);
+
   return messages;
+}
+
+/**
+ * Starts everything `stopAll` stopped, and forgets the list.
+ *
+ * Only what was actually running is started: a mail server the administrator
+ * had deliberately stopped must not come back because they installed an
+ * update. The list is deleted whether or not each service came up, so a
+ * component that is broken for its own reasons is not retried on every
+ * subsequent install.
+ *
+ * @returns a warning per service that did not come back, for the wizard's
+ * final page — which otherwise claims everything is running again.
+ */
+export async function resumeSuspendedServices(): Promise<string[]> {
+  const listed = await fs
+    .readFile(suspendedServicesPath(), 'utf8')
+    .then((text) => JSON.parse(text) as unknown)
+    .catch(() => null);
+
+  await fs.rm(suspendedServicesPath(), { force: true }).catch(() => undefined);
+
+  if (!Array.isArray(listed) || listed.length === 0) return [];
+
+  const wanted = new Set(listed.filter((id): id is string => typeof id === 'string'));
+  const warnings: string[] = [];
+
+  // Windows' own view, in dependency order: the web server has to be up
+  // before the websites that are proxied through it.
+  for (const service of sortForStartup(await listPanelServices())) {
+    if (!wanted.has(service.id) || service.state === 'running') continue;
+
+    const ok = await startPanelService(service.id).catch(() => false);
+    if (!ok) {
+      warnings.push(
+        `${service.label} did not start again after the update. ` +
+          `Its log in ${config.logDir} says why.`,
+      );
+    }
+  }
+
+  return warnings;
 }
 
 /** Entry point when run as `node bootstrap.js <command>`. */

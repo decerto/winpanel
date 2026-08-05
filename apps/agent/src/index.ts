@@ -1,16 +1,59 @@
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import { createAppContext } from './app-context.js';
 import { config, paths } from './config.js';
 import { createServer } from './server.js';
-import { syncCaddyEnvironment } from './caddy/service.js';
-import { syncMailEnvironment } from './mail/service.js';
+import { CADDY_SERVICE_ID, syncCaddyEnvironment } from './caddy/service.js';
+import { releaseWebPortsFromMail, syncMailEnvironment } from './mail/service.js';
 import { cleanUpAfterUpdate } from './components/panel-update.js';
 import { localAddresses } from './tls/panel-certificate.js';
 import { ServiceWatchdog } from './windows/service-watchdog.js';
+import { findStrayListeners, killProcessTree } from './windows/stray-processes.js';
 
 /**
  * Agent entry point. Runs as a Windows Service under WinSW in production.
  */
+
+/**
+ * Binds the panel's port, clearing a previous copy of itself that is still on it.
+ *
+ * The panel is supervised, so a failure to bind is not a one-off: Windows
+ * restarts it, it fails again, and the service flaps on the failure-action
+ * interval for as long as the squatter lives. Observed on this build as ten
+ * minutes of a control panel that could not be reached, once a minute, with
+ * `EADDRINUSE` as the only clue.
+ *
+ * The panel cannot be rescued by the watchdog the way Caddy and the mail
+ * server are, because the watchdog runs inside the panel — so the one moment
+ * it can act is here, before it gives up. Only a process running this same
+ * runtime and holding this same port is ended, which is the panel's own
+ * orphan and nothing else.
+ */
+async function listenClearingStrays(
+  server: Awaited<ReturnType<typeof createServer>>,
+  port: number,
+  host: string,
+): Promise<void> {
+  try {
+    await server.listen({ port, host });
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+
+    const strays = await findStrayListeners([port], [path.basename(process.execPath)]);
+    if (strays.length === 0) throw error;
+
+    server.log.warn(
+      { strays },
+      `Port ${port} was still held by a previous copy of the panel. Ending it and retrying.`,
+    );
+
+    for (const pid of new Set(strays.map((stray) => stray.pid))) await killProcessTree(pid);
+  }
+
+  await server.listen({ port, host });
+}
+
 async function main(): Promise<void> {
   for (const dir of [config.dataDir, config.logDir, config.binDir, config.caddyDir]) {
     await fs.mkdir(dir, { recursive: true });
@@ -74,6 +117,29 @@ async function main(): Promise<void> {
     }
 
     /*
+     * The mail server binds :443 by default, and after an update — which stops
+     * everything and starts it again — it can win that port from the web
+     * server permanently. Repairing it here also starts the web server, since
+     * the panel has just removed the only reason it could not run.
+     */
+    try {
+      const release = await releaseWebPortsFromMail({
+        db: app.db,
+        vault: app.vault,
+        services: app.services,
+      });
+
+      for (const change of release.changes) server.log.warn(change);
+
+      if (release.restarted && (await app.services.getState(CADDY_SERVICE_ID)) === 'stopped') {
+        await app.services.start(CADDY_SERVICE_ID);
+        server.log.info('Started the web server now that its ports are free.');
+      }
+    } catch (error) {
+      server.log.warn({ err: error }, 'Could not check which ports the mail server is using.');
+    }
+
+    /*
      * Repairs sites created before preview ports existed. Without a port they
      * have no address at all until a domain is bought and DNS propagates.
      */
@@ -114,7 +180,7 @@ async function main(): Promise<void> {
     );
   }
 
-  await server.listen({ port: config.port, host: config.host });
+  await listenClearingStrays(server, config.port, config.host);
 
   /*
    * Nothing else on the machine can rescue a component whose own orphaned

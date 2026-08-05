@@ -376,10 +376,45 @@ export class ServiceManager {
 
     const state = await this.getState(id);
     if (state !== 'running' && state !== 'starting') {
+      const reason = await this.lastLogError(id);
       throw new Error(
         `The "${id}" service was registered but stopped immediately after starting. ` +
-          'Its log in the logs folder says why.',
+          (reason ? `It reported: ${reason}` : 'Its log in the logs folder says why.'),
       );
+    }
+  }
+
+  /**
+   * The last plain-text line the service printed before it gave up.
+   *
+   * Worth the trouble because the alternative is telling somebody their web
+   * server "stopped immediately" and leaving them to find a log folder they
+   * have never opened. Structured lines are skipped: a program that dies says
+   * why in a sentence, and the JSON around it is the healthy part of the run.
+   */
+  private async lastLogError(id: string): Promise<string | null> {
+    const xml = await fs.readFile(this.configPathFor(id), 'utf8').catch(() => '');
+    const logPath = /<logpath>([^<]*)<\/logpath>/.exec(xml)?.[1];
+    if (!logPath) return null;
+
+    const handle = await fs.open(path.join(logPath, `${id}.err.log`), 'r').catch(() => null);
+    if (!handle) return null;
+
+    try {
+      const { size } = await handle.stat();
+      const length = Math.min(size, 8_192);
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, size - length);
+
+      const lines = buffer
+        .toString('utf8')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0 && !line.startsWith('{'));
+
+      return lines.at(-1) ?? null;
+    } finally {
+      await handle.close();
     }
   }
 

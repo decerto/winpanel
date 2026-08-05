@@ -1,11 +1,13 @@
 import net from 'node:net';
 import os from 'node:os';
 import fs from 'node:fs/promises';
-import { PANEL_PORT } from '@winpanel/shared';
+import path from 'node:path';
+import { PANEL_PORT, WEB_PORTS } from '@winpanel/shared';
 import { FirewallManager, requiredFirewallRules } from '../bootstrap/windows-setup.js';
 import { runCommand } from '../process/run-command.js';
 import { listPanelServices } from '../windows/panel-services.js';
 import { readServiceState } from '../windows/service-manager.js';
+import { listPortHolders } from '../windows/stray-processes.js';
 import type { CheckDefinition, CheckOutcome } from './engine.js';
 
 /**
@@ -239,7 +241,34 @@ export function buildServerChecks(): CheckDefinition[] {
             detail: 'The built-in Windows web server is installed but not running.',
           };
         }
-        return { state: 'ok', detail: 'Ports 80 and 443 are available.' };
+
+        const holders = await listPortHolders([...WEB_PORTS]);
+        const intruders = holders.filter(
+          (holder) => path.basename(holder.image).toLowerCase() !== 'caddy.exe',
+        );
+
+        if (intruders.length > 0) {
+          const named = [
+            ...new Set(intruders.map((holder) => `${holder.image} on port ${holder.port}`)),
+          ];
+
+          return {
+            state: 'blocked',
+            detail: `Another program is using the web ports: ${named.join(', ')}.`,
+            reason:
+              'The web server cannot start while something else holds port 80 or 443, so no ' +
+              'website on this server can be reached. Stop that program, then start the web ' +
+              'server on the Components page.',
+          };
+        }
+
+        return {
+          state: 'ok',
+          detail:
+            holders.length > 0
+              ? 'The web server has ports 80 and 443.'
+              : 'Ports 80 and 443 are available.',
+        };
       },
     },
 

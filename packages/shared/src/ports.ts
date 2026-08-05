@@ -13,6 +13,13 @@ export const CADDY_ADMIN_PORT = 2019;
 /** Stalwart's HTTP surface (admin UI, JMAP, autoconfig). Bound to loopback only. */
 export const STALWART_HTTP_PORT = 8080;
 
+/**
+ * The edge. Caddy owns these and everything else is proxied through it, so any
+ * other program that binds one of them takes the whole server's web traffic
+ * down with it.
+ */
+export const WEB_PORTS = [80, 443] as const;
+
 export const MAIL_PORTS = [25, 465, 587, 993, 4190] as const;
 
 /**
@@ -29,7 +36,7 @@ export const RESERVED_PORTS: ReadonlySet<number> = new Set<number>([
   20, 21, // FTP
   22, // SSH
   53, // DNS
-  80, 443, // Caddy edge
+  ...WEB_PORTS, // Caddy edge
   PANEL_PORT,
   CADDY_ADMIN_PORT,
   STALWART_HTTP_PORT,

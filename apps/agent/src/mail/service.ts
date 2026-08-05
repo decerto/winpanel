@@ -7,6 +7,7 @@ import {
   storeMailAdminCredentials,
   type MailAdminCredentials,
 } from './credentials.js';
+import { StalwartClient } from './stalwart-client.js';
 
 /**
  * How the panel gets an administrator account on the mail server.
@@ -90,4 +91,27 @@ export async function syncMailEnvironment(deps: MailEnvDependencies): Promise<Ma
   if (!existing) storeMailAdminCredentials(deps.db, deps.vault, credentials);
 
   return result;
+}
+
+/**
+ * Keeps the mail server off ports 80 and 443, which belong to the web server.
+ *
+ * Restarting is the point: a listener is only given up when the process
+ * holding it exits, so changing the setting alone leaves the web server just
+ * as locked out as before. Nothing happens on a machine where the mail server
+ * was never connected, or where it is already off those ports.
+ */
+export async function releaseWebPortsFromMail(
+  deps: MailEnvDependencies,
+): Promise<{ changes: string[]; restarted: boolean }> {
+  const credentials = loadMailAdminCredentials(deps.db, deps.vault);
+  if (!credentials) return { changes: [], restarted: false };
+
+  const client = new StalwartClient(credentials.username, credentials.password);
+  const changes = await client.releaseWebPorts();
+  if (changes.length === 0) return { changes, restarted: false };
+
+  await deps.services.restart(STALWART_SERVICE_ID);
+
+  return { changes, restarted: true };
 }

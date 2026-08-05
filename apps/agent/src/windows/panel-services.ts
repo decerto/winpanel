@@ -1,3 +1,4 @@
+import { CADDY_SERVICE_ID } from '../caddy/service.js';
 import { COMPONENT_CATALOGUE } from '../components/catalogue.js';
 import { runCommand, runDetached } from '../process/run-command.js';
 
@@ -132,7 +133,15 @@ export function sortForShutdown(services: readonly PanelService[]): PanelService
 
 /** Starting is the reverse: what a site depends on comes up before the site. */
 export function sortForStartup(services: readonly PanelService[]): PanelService[] {
-  return sortForShutdown(services).reverse();
+  // Within components the web server goes first: it owns :80 and :443, and a
+  // mail server that reaches them before it does keeps them for good.
+  const rank = (service: PanelService): number =>
+    service.id.toLowerCase() === CADDY_SERVICE_ID ? 0 : 1;
+
+  return [...services].sort(
+    (a, b) =>
+      STOP_ORDER[b.kind] - STOP_ORDER[a.kind] || rank(a) - rank(b) || a.id.localeCompare(b.id),
+  );
 }
 
 /** Every WinPanel service Windows knows about, in the order it should be stopped. */

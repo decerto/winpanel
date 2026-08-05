@@ -83,6 +83,36 @@ async function imageNameFor(pid: number): Promise<string | null> {
 }
 
 /**
+ * Everything listening on `ports`, whatever it is.
+ *
+ * Nothing here decides anything; it is the raw answer to "who has this port",
+ * which is the question an operator asks first and the one the panel could
+ * not previously answer.
+ */
+export async function listPortHolders(ports: readonly number[]): Promise<StrayProcess[]> {
+  if (process.platform !== 'win32' || ports.length === 0) return [];
+
+  const result = await runCommand({
+    exe: 'netstat.exe',
+    args: ['-ano', '-p', 'TCP'],
+    timeoutMs: 30_000,
+  });
+
+  if (result.exitCode !== 0) return [];
+
+  const holders: StrayProcess[] = [];
+
+  for (const { port, pid } of parseListeningPids(result.stdout, ports)) {
+    if (pid === process.pid) continue;
+
+    const image = await imageNameFor(pid);
+    if (image) holders.push({ pid, port, image });
+  }
+
+  return holders;
+}
+
+/**
  * Processes listening on any of `ports` whose executable is one of `images`.
  *
  * Names are compared as bare file names, case-insensitively, because that is
@@ -93,29 +123,13 @@ export async function findStrayListeners(
   ports: readonly number[],
   images: readonly string[],
 ): Promise<StrayProcess[]> {
-  if (process.platform !== 'win32' || ports.length === 0 || images.length === 0) return [];
-
-  const result = await runCommand({
-    exe: 'netstat.exe',
-    args: ['-ano', '-p', 'TCP'],
-    timeoutMs: 30_000,
-  });
-
-  if (result.exitCode !== 0) return [];
+  if (images.length === 0) return [];
 
   const wanted = new Set(images.map((image) => path.basename(image).toLowerCase()));
-  const strays: StrayProcess[] = [];
 
-  for (const { port, pid } of parseListeningPids(result.stdout, ports)) {
-    if (pid === process.pid) continue;
-
-    const name = await imageNameFor(pid);
-    if (name && wanted.has(path.basename(name).toLowerCase())) {
-      strays.push({ pid, port, image: name });
-    }
-  }
-
-  return strays;
+  return (await listPortHolders(ports)).filter((holder) =>
+    wanted.has(path.basename(holder.image).toLowerCase()),
+  );
 }
 
 /** Ends a process and anything it started. */

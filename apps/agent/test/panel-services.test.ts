@@ -146,4 +146,18 @@ describe('sortForStartup', () => {
       'site',
     ]);
   });
+
+  // Whichever of the two starts first keeps port 443, and the mail server ships
+  // configured to take it. Alphabetical order alone put it first.
+  it('brings the web server up before the mail server', () => {
+    const services: PanelService[] = [
+      { id: 'winpanel-stalwart', label: 'Mail server', kind: 'component', state: 'stopped' },
+      { id: 'winpanel-caddy', label: 'Web server', kind: 'component', state: 'stopped' },
+    ];
+
+    expect(sortForStartup(services).map((service) => service.id)).toEqual([
+      'winpanel-caddy',
+      'winpanel-stalwart',
+    ]);
+  });
 });
