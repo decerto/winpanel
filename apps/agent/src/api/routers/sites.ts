@@ -129,7 +129,10 @@ export const sitesRouter = router({
 
   list: protectedProcedure.query(({ ctx }) => {
     const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
-    return service.list().map((site) => {
+    // A customer sees their own hosting; an admin sees the server.
+    const scope = ctx.user?.role === 'user' ? ctx.user.id : undefined;
+
+    return service.list(scope).map((site) => {
       // Ports are allocated when a site is created, so a port on its own says
       // nothing about whether anything is being served. The list is the front
       // door of the panel and must not claim a site is live before it is.
@@ -358,6 +361,22 @@ export const sitesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
 
+      // A customer's websites belong to them, and their allowance is checked
+      // here rather than in the UI, which is only ever a hint.
+      const owner = ctx.user?.role === 'user' ? ctx.app.auth.getUser(ctx.user.id) : null;
+
+      if (owner && owner.siteLimit !== null && owner.siteCount >= owner.siteLimit) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message:
+            owner.siteLimit === 0
+              ? 'Your account cannot host websites yet. Ask your hosting provider to enable it.'
+              : `Your account is limited to ${owner.siteLimit} ` +
+                `${owner.siteLimit === 1 ? 'website' : 'websites'}. Remove one, or ask your ` +
+                'hosting provider to raise the limit.',
+        });
+      }
+
       if (input.source.kind === 'git' && !input.manifest) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
@@ -395,6 +414,10 @@ export const sitesRouter = router({
           source,
           manifest,
           envVars: input.envVars,
+          ownerUserId: ctx.user?.role === 'user' ? ctx.user.id : null,
+          ...(owner?.siteDiskQuotaBytes != null
+            ? { diskQuotaBytes: owner.siteDiskQuotaBytes }
+            : {}),
           ...(input.source.kind === 'git' && input.source.token
             ? { gitToken: input.source.token }
             : {}),

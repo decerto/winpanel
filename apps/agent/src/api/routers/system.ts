@@ -4,7 +4,7 @@ import path from 'node:path';
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { CADDY_ADMIN_PORT, PANEL_PORT, STALWART_HTTP_PORT } from '@winpanel/shared';
-import { protectedProcedure, router } from '../trpc.js';
+import { adminProcedure, router, superadminProcedure } from '../trpc.js';
 import { localAddresses } from '../../tls/panel-certificate.js';
 import { discoverNodeVersions } from '../../sites/node-versions.js';
 import {
@@ -42,7 +42,7 @@ function readVersion(): string {
 const version = readVersion();
 
 export const systemRouter = router({
-  info: protectedProcedure.query(({ ctx }) => {
+  info: adminProcedure.query(({ ctx }) => {
     const addresses = localAddresses();
 
     return {
@@ -79,7 +79,7 @@ export const systemRouter = router({
    * Read-only on purpose: the panel does not install runtimes, so this is a
    * list of what the server was given, not a menu of what it could fetch.
    */
-  nodeVersions: protectedProcedure.query(async ({ ctx }) => {
+  nodeVersions: adminProcedure.query(async ({ ctx }) => {
     return await discoverNodeVersions(ctx.app.config.binDir);
   }),
 
@@ -91,7 +91,7 @@ export const systemRouter = router({
    * answer to "why will this not uninstall": whatever is listed as running
    * here is what holds the program folder open.
    */
-  backgroundServices: protectedProcedure.query(async () => await listPanelServices()),
+  backgroundServices: adminProcedure.query(async () => await listPanelServices()),
 
   /**
    * Lists a folder on the server, so a path can be pointed at rather than
@@ -102,7 +102,7 @@ export const systemRouter = router({
    * contained inside one website; this is not contained, which is why it lists
    * and nothing more.
    */
-  browse: protectedProcedure
+  browse: adminProcedure
     .input(
       z.object({
         /** Omitted lists the machine's drives. A file lists the folder it is in. */
@@ -138,7 +138,7 @@ export const systemRouter = router({
    * knows to reply first, and it cannot start something that has to be running
    * to receive the request.
    */
-  serviceAction: protectedProcedure
+  serviceAction: adminProcedure
     .input(
       z.object({
         id: z.string().min(1),
@@ -193,7 +193,7 @@ export const systemRouter = router({
    * panel that can only be restarted by signing in to the server is a panel
    * that will be left broken until someone can.
    */
-  restartPanel: protectedProcedure.mutation(async ({ ctx }) => {
+  restartPanel: superadminProcedure.mutation(async ({ ctx }) => {
     const state = await panelServiceState(AGENT_SERVICE_ID);
 
     if (state === 'not-installed') {
@@ -224,12 +224,16 @@ export const systemRouter = router({
   /**
    * Installs a newer WinPanel over this one.
    *
+   * Owner only. An administrator runs the server; replacing the thing that
+   * runs the server is a different decision, and a bad build here takes every
+   * website with it.
+   *
    * Deliberately not an uninstall-then-install: the installer replaces the
    * program files and leaves the database, certificates, secrets and websites
    * exactly where they are. Doing it from here is the difference between a fix
    * being applied and a fix being postponed.
    */
-  update: protectedProcedure
+  update: superadminProcedure
     .input(
       z
         .object({
@@ -271,19 +275,22 @@ export const systemRouter = router({
    * The counterpart to `shutdown`, so stopping the server from here is not a
    * one-way door that needs a command prompt to reverse.
    */
-  startAll: protectedProcedure.mutation(async () => {
+  startAll: adminProcedure.mutation(async () => {
     return await startSupportingServices(await listPanelServices());
   }),
 
   /**
    * Stops everything WinPanel runs, the panel last.
    *
+   * Owner only, for the same reason as `update`: this is the button that ends
+   * hosting for everyone on the machine.
+   *
    * Exists so that upgrading or removing WinPanel does not require the user to
    * find and end processes by hand. Nothing is uninstalled and no data is
    * touched; the services are set to start automatically, so a restart of the
    * machine brings it all back.
    */
-  shutdown: protectedProcedure
+  shutdown: superadminProcedure
     .input(z.object({ includePanel: z.boolean().default(true) }).optional())
     .mutation(async ({ input }) => {
       const services = await listPanelServices();

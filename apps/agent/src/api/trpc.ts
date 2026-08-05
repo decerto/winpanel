@@ -1,10 +1,12 @@
 import { TRPCError, initTRPC } from '@trpc/server';
 import type { CreateFastifyContextOptions } from '@trpc/server/adapters/fastify';
+import { eq } from 'drizzle-orm';
 import superjson from 'superjson';
 import crypto from 'node:crypto';
 // Loads the declaration merging that adds `cookies`, `setCookie` and
 // `clearCookie` to Fastify's request and reply types.
 import type {} from '@fastify/cookie';
+import { roleAtLeast, type UserRole } from '@winpanel/shared';
 import type { AppContext } from '../app-context.js';
 import type { SessionUser } from '../services/auth-service.js';
 
@@ -113,36 +115,140 @@ const requireAuth = t.middleware(async ({ ctx, next }) => {
   return await next({ ctx: { ...ctx, user: ctx.user } });
 });
 
+/** Requires at least the given role. */
+function requireRole(minimum: UserRole) {
+  return t.middleware(async ({ ctx, next }) => {
+    if (!ctx.user || !roleAtLeast(ctx.user.role, minimum)) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message:
+          minimum === 'superadmin'
+            ? 'Only the owner of this server can do that.'
+            : 'Only an administrator can do that.',
+      });
+    }
+    return await next({ ctx: { ...ctx, user: ctx.user } });
+  });
+}
+
 /**
- * Requires a valid session.
+ * The website or domain an input is talking about, if any.
+ *
+ * Every site-scoped endpoint in the panel names its subject the same handful
+ * of ways, which is what makes a single check possible. Reading the raw input
+ * here rather than trusting each handler is the whole point: a guard that has
+ * to be remembered on every new endpoint is a guard that will eventually be
+ * forgotten.
+ */
+export function scopeOf(input: unknown): { slug?: string; domain?: string } {
+  if (typeof input !== 'object' || input === null) return {};
+  const record = input as Record<string, unknown>;
+  const scope: { slug?: string; domain?: string } = {};
+
+  for (const key of ['slug', 'siteSlug']) {
+    const value = record[key];
+    if (typeof value === 'string' && value !== '') scope.slug = value;
+  }
+
+  const domain = record['domain'];
+  if (typeof domain === 'string' && domain !== '') scope.domain = domain.toLowerCase();
+
+  // Mailboxes are named by address rather than by domain. The part after the
+  // @ is the thing ownership is actually decided on.
+  const address = record['address'];
+  if (scope.domain === undefined && typeof address === 'string' && address.includes('@')) {
+    scope.domain = address.split('@')[1]?.toLowerCase();
+  }
+
+  return scope;
+}
+
+/**
+ * Whether `domain` sits under `owned`.
+ *
+ * Deliberately one-directional. Owning `example.com` covers `mail.example.com`
+ * because the same person controls the zone; owning `shop.example.com` does
+ * not give anyone `example.com`, or every customer on a shared parent domain
+ * would inherit the lot.
+ */
+export function domainCovers(owned: string, domain: string): boolean {
+  const parent = owned.toLowerCase();
+  return domain === parent || domain.endsWith(`.${parent}`);
+}
+
+/**
+ * Stops a customer reaching a website that is not theirs.
+ *
+ * Answers "not found" rather than "not allowed", so that the panel cannot be
+ * used to discover which slugs and domains exist on the server.
+ */
+const enforceSiteScope = t.middleware(async ({ ctx, getRawInput, next }) => {
+  if (ctx.user?.role !== 'user') return await next();
+
+  const { slug, domain } = scopeOf(await getRawInput());
+  if (slug === undefined && domain === undefined) return await next();
+
+  const owned = ctx.app.db.db
+    .select()
+    .from(ctx.app.schema.sites)
+    .where(eq(ctx.app.schema.sites.ownerUserId, ctx.user.id))
+    .all();
+
+  const missing =
+    (slug !== undefined && !owned.some((site) => site.slug === slug)) ||
+    (domain !== undefined &&
+      !owned.some((site) =>
+        (site.domains as string[]).some((name) => domainCovers(name, domain)),
+      ));
+
+  if (missing) {
+    throw new TRPCError({
+      code: 'NOT_FOUND',
+      message: 'That website is not on your account.',
+    });
+  }
+
+  return await next();
+});
+
+/**
+ * Requires a valid session, and — for a customer — a website they own.
  *
  * There is deliberately no second tier gated on two-factor enrolment. Two
  * factors are optional, so an account without them is a supported state
  * rather than a half-finished one, and a middleware that refused those
  * accounts would simply lock them out of the panel entirely.
  */
-export const protectedProcedure = t.procedure.use(requireAuth).use(auditMiddleware);
+export const protectedProcedure = t.procedure
+  .use(requireAuth)
+  .use(enforceSiteScope)
+  .use(auditMiddleware);
+
+/**
+ * Requires an administrator or the owner.
+ *
+ * Anything that describes or changes the machine itself lives here: runtimes,
+ * services, health checks, browsing the disk. A customer account has no
+ * business seeing any of it, and hiding it in the UI is not a control.
+ */
+export const adminProcedure = t.procedure
+  .use(requireAuth)
+  .use(requireRole('admin'))
+  .use(auditMiddleware);
 
 /**
  * Requires the owner account.
  *
- * The panel is growing a second kind of user: someone who manages their own
- * website and nothing else. Anything that describes the machine as a whole —
- * who is signed in, who has been trying to sign in, which addresses are
- * blocked — is the owner's business alone, and telling a tenant that an
- * account exists and is under attack helps nobody but an attacker.
+ * Reserved for the things an administrator must not be able to do even by
+ * accident: updating or removing the panel, reading the security trail, and
+ * creating or changing other administrators. Also covers anything that would
+ * tell one person about another's sign-ins — saying that an account exists and
+ * is under attack helps nobody but an attacker.
  */
-const requireOwner = t.middleware(async ({ ctx, next }) => {
-  if (ctx.user?.role !== 'owner') {
-    throw new TRPCError({
-      code: 'FORBIDDEN',
-      message: 'Only the owner of this server can do that.',
-    });
-  }
-  return await next({ ctx: { ...ctx, user: ctx.user } });
-});
-
-export const ownerProcedure = t.procedure.use(requireAuth).use(requireOwner).use(auditMiddleware);
+export const superadminProcedure = t.procedure
+  .use(requireAuth)
+  .use(requireRole('superadmin'))
+  .use(auditMiddleware);
 
 /**
  * Unauthenticated, but still audited.

@@ -36,6 +36,13 @@
       "when": 1785935950665,
       "tag": "0004_add_shared_folder_toggle",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1785940662238,
+      "tag": "0005_add_user_roles",
+      "breakpoints": true
     }
   ]
 }

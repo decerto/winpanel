@@ -2,7 +2,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { protectedProcedure, router } from '../trpc.js';
+import { adminProcedure, router, superadminProcedure } from '../trpc.js';
 import { COMPONENT_CATALOGUE, findComponent } from '../../components/catalogue.js';
 import { findExecutable } from '../../components/archive.js';
 import { discoverNodeVersions } from '../../sites/node-versions.js';
@@ -41,7 +41,7 @@ async function locate(binDir: string, component: ComponentDefinition): Promise<s
 }
 
 export const componentsRouter = router({
-  list: protectedProcedure.query(async ({ ctx }) => {
+  list: adminProcedure.query(async ({ ctx }) => {
     // Node is not installed by the panel, so "is it there" means "did we find
     // one", not "did we put one there".
     const nodeVersions = await discoverNodeVersions(ctx.app.config.binDir);
@@ -74,7 +74,7 @@ export const componentsRouter = router({
     );
   }),
 
-  install: protectedProcedure
+  install: adminProcedure
     .input(z.object({ componentId: z.string().min(1) }))
     .mutation(({ ctx, input }) => {
       const component = findComponent(input.componentId);
@@ -95,7 +95,14 @@ export const componentsRouter = router({
       return { jobId };
     }),
 
-  uninstall: protectedProcedure
+  /**
+   * Removes a program the panel installed.
+   *
+   * Owner only. Taking away Caddy or the mail server stops every website and
+   * every mailbox on the machine at once, which is not something an
+   * administrator should be able to do while troubleshooting one site.
+   */
+  uninstall: superadminProcedure
     .input(z.object({ componentId: z.string().min(1) }))
     .mutation(({ ctx, input }) => {
       const component = findComponent(input.componentId);
@@ -117,7 +124,7 @@ export const componentsRouter = router({
     }),
 
   /** Start, stop or restart the Windows service a component runs as. */
-  service: protectedProcedure
+  service: adminProcedure
     .input(z.object({ componentId: z.string().min(1), action: z.enum(['start', 'stop', 'restart']) }))
     .mutation(async ({ ctx, input }) => {
       const component = findComponent(input.componentId);

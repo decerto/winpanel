@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { CheckEngine } from '../../checks/engine.js';
 import { buildServerChecks } from '../../checks/server-checks.js';
 import { FixError, FixRunner } from '../../checks/fixes.js';
-import { protectedProcedure, router } from '../trpc.js';
+import { adminProcedure, router } from '../trpc.js';
 
 /**
  * Server health and the fixes that go with it.
@@ -19,15 +19,15 @@ engine.registerAll(buildServerChecks());
 const FIX_ALL_SAFE = '__all_safe__';
 
 export const checksRouter = router({
-  run: protectedProcedure
+  run: adminProcedure
     .input(z.object({ useCache: z.boolean().default(false) }).optional())
     .query(async ({ input }) => await engine.runAll({ useCache: input?.useCache ?? false })),
 
-  runOne: protectedProcedure
+  runOne: adminProcedure
     .input(z.object({ id: z.string().min(1) }))
     .query(async ({ input }) => await engine.runOne(input.id)),
 
-  applyFix: protectedProcedure
+  applyFix: adminProcedure
     .input(z.object({ action: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
       const runner = new FixRunner(ctx.app.db);
@@ -86,11 +86,11 @@ export const checksRouter = router({
     }),
 
   /** Changes still in effect, so the user can reverse any of them. */
-  appliedChanges: protectedProcedure.query(({ ctx }) =>
+  appliedChanges: adminProcedure.query(({ ctx }) =>
     new FixRunner(ctx.app.db).listApplied(),
   ),
 
-  undoChange: protectedProcedure
+  undoChange: adminProcedure
     .input(z.object({ changeId: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
       try {

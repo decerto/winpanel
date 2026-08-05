@@ -23,9 +23,13 @@ export const users = sqliteTable(
     id: text('id').primaryKey(),
     username: text('username').notNull(),
     passwordHash: text('password_hash').notNull(),
-    role: text('role', { enum: ['owner', 'admin'] })
+    /**
+     * superadmin owns the machine, admin runs it, user is a customer with
+     * their own websites and nothing else.
+     */
+    role: text('role', { enum: ['superadmin', 'admin', 'user'] })
       .notNull()
-      .default('admin'),
+      .default('user'),
     /** Encrypted with the vault. Null until enrolment completes. */
     totpSecret: text('totp_secret'),
     /*
@@ -38,6 +42,15 @@ export const users = sqliteTable(
     totpPendingSecret: text('totp_pending_secret'),
     totpEnrolled: integer('totp_enrolled', { mode: 'boolean' }).notNull().default(false),
     disabled: integer('disabled', { mode: 'boolean' }).notNull().default(false),
+    /*
+     * Null means no limit, which is what an admin and the owner always have.
+     * Zero is a real answer: an account that may not create a website yet.
+     */
+    siteLimit: integer('site_limit'),
+    mailQuotaBytes: integer('mail_quota_bytes'),
+    siteDiskQuotaBytes: integer('site_disk_quota_bytes'),
+    /** Who made this account. Null for the first one, which made itself. */
+    createdBy: text('created_by'),
     lastLoginAt: integer('last_login_at', { mode: 'timestamp_ms' }),
     ...timestamps,
   },
@@ -141,6 +154,12 @@ export const sites = sqliteTable(
     id: text('id').primaryKey(),
     slug: text('slug').notNull(),
     displayName: text('display_name').notNull(),
+    /**
+     * Whose website this is. Null means it belongs to the server rather than
+     * to a customer, which is what every site created before accounts existed
+     * is treated as; only admins and the owner ever see those.
+     */
+    ownerUserId: text('owner_user_id').references(() => users.id, { onDelete: 'set null' }),
     runtime: text('runtime', { enum: ['node', 'static', 'dotnet', 'proxy'] }).notNull(),
     /** JSON array of hostnames. */
     domains: text('domains', { mode: 'json' }).notNull().default(sql`'[]'`),
@@ -161,7 +180,7 @@ export const sites = sqliteTable(
     diskQuotaBytes: integer('disk_quota_bytes').notNull().default(21474836480),
     ...timestamps,
   },
-  (table) => [uniqueIndex('sites_slug_idx').on(table.slug)],
+  (table) => [uniqueIndex('sites_slug_idx').on(table.slug), index('sites_owner_idx').on(table.ownerUserId)],
 );
 
 export const portAllocations = sqliteTable(

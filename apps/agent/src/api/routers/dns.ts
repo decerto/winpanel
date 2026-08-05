@@ -2,6 +2,7 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { DnsRecordType, Hostname } from '@winpanel/shared';
 import { protectedProcedure, router } from '../trpc.js';
+import type { RequestContext } from '../trpc.js';
 import {
   CloudflareClient,
   CloudflareError,
@@ -154,6 +155,25 @@ async function applyTokens(app: AppContext): Promise<string | null> {
   return routingError ? `The web server did not accept the change: ${routingError.message}` : null;
 }
 
+/**
+ * Refuses a request that would fall back to the server's own Cloudflare
+ * account.
+ *
+ * Several of these endpoints take the website as optional, and answer for the
+ * shared token when it is left out. That shared token belongs to whoever runs
+ * the server: without this, a customer could list every zone in it. Site-scoped
+ * requests are already checked centrally, so all that is needed here is to
+ * insist a customer names a website at all.
+ */
+function requireOwnSite(ctx: RequestContext, slug: string | undefined): void {
+  if (ctx.user?.role === 'user' && !slug) {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'Choose one of your websites first.',
+    });
+  }
+}
+
 export const dnsRouter = router({
   /**
    * Whether Cloudflare can be used, and with whose token.
@@ -163,6 +183,7 @@ export const dnsRouter = router({
    * token alone.
    */
   status: protectedProcedure.input(SiteScope.optional()).query(async ({ ctx, input }) => {
+    requireOwnSite(ctx, input?.slug);
     const resolved = resolveToken(ctx.app, input?.slug);
 
     if (!resolved) {
@@ -193,6 +214,8 @@ export const dnsRouter = router({
   connect: protectedProcedure
     .input(z.object({ token: z.string().min(10).max(512), slug: z.string().min(1).optional() }))
     .mutation(async ({ ctx, input }) => {
+      requireOwnSite(ctx, input.slug);
+
       const result = await new CloudflareClient(input.token).verifyToken();
       if (!result.valid) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: result.message });
@@ -217,6 +240,8 @@ export const dnsRouter = router({
   disconnect: protectedProcedure
     .input(SiteScope.optional())
     .mutation(async ({ ctx, input }) => {
+      requireOwnSite(ctx, input?.slug);
+
       if (input?.slug) {
         clearSiteCloudflareToken(ctx.app.db, siteFor(ctx.app, input.slug).id);
       } else {
@@ -231,6 +256,8 @@ export const dnsRouter = router({
     }),
 
   zones: protectedProcedure.input(SiteScope.optional()).query(async ({ ctx, input }) => {
+    requireOwnSite(ctx, input?.slug);
+
     try {
       return await clientFor(ctx.app, input?.slug).listZones();
     } catch (error) {

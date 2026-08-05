@@ -65,7 +65,7 @@ const TOOLS = [
 
 // Cards are much taller than rows, so each view gets a page size that fills a
 // screen rather than one number that suits neither.
-const pageSize = computed(() => (view.value === 'cards' ? 5 : 15));
+const pageSize = computed(() => (view.value === 'cards' ? 5 : 25));
 
 const matching = computed(() => {
   const needle = query.value.trim().toLowerCase();
@@ -122,7 +122,7 @@ onMounted(load);
                    mailboxes."
     >
       <template #actions>
-        <label v-if="sites.length > 3" class="relative">
+        <label v-if="sites.length > 1" class="relative">
           <Search
             :size="15"
             class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint"
@@ -136,7 +136,7 @@ onMounted(load);
           />
         </label>
 
-        <ViewToggle v-if="sites.length > 1" v-model="view" :options="VIEWS" />
+        <ViewToggle v-if="sites.length > 0" v-model="view" :options="VIEWS" />
 
         <button
           v-if="sites.length > 0"
@@ -183,11 +183,11 @@ onMounted(load);
         <table class="w-full text-sm">
           <thead>
             <tr class="border-b border-line text-left text-xs uppercase tracking-wide text-ink-faint">
-              <th scope="col" class="px-5 py-3 font-medium">Website</th>
-              <th scope="col" class="hidden px-5 py-3 font-medium md:table-cell">Type</th>
-              <th scope="col" class="hidden px-5 py-3 font-medium lg:table-cell">Port</th>
-              <th scope="col" class="px-5 py-3 font-medium">Status</th>
-              <th scope="col" class="w-px whitespace-nowrap px-5 py-3 text-right font-medium">
+              <th scope="col" class="px-4 py-2.5 font-medium">Website</th>
+              <th scope="col" class="hidden px-4 py-2.5 font-medium md:table-cell">Type</th>
+              <th scope="col" class="hidden px-4 py-2.5 font-medium lg:table-cell">Port</th>
+              <th scope="col" class="px-4 py-2.5 font-medium">Status</th>
+              <th scope="col" class="w-px whitespace-nowrap px-4 py-2.5 text-right font-medium">
                 Open
               </th>
             </tr>
@@ -199,7 +199,7 @@ onMounted(load);
               :key="site.id"
               class="transition-colors hover:bg-white/[0.03]"
             >
-              <td class="max-w-0 px-5 py-3">
+              <td class="max-w-0 px-4 py-2">
                 <RouterLink
                   :to="`/sites/${site.slug}`"
                   class="block truncate font-medium text-ink hover:text-brand-bright"
@@ -224,15 +224,15 @@ onMounted(load);
                 </span>
               </td>
 
-              <td class="hidden whitespace-nowrap px-5 py-3 text-ink-muted md:table-cell">
+              <td class="hidden whitespace-nowrap px-4 py-2 text-ink-muted md:table-cell">
                 {{ RUNTIME_LABEL[site.runtime] ?? site.runtime }}
               </td>
 
-              <td class="hidden whitespace-nowrap px-5 py-3 font-mono text-ink-muted lg:table-cell">
+              <td class="hidden whitespace-nowrap px-4 py-2 font-mono text-ink-muted lg:table-cell">
                 {{ site.activePort ?? '\u2014' }}
               </td>
 
-              <td class="whitespace-nowrap px-5 py-3">
+              <td class="whitespace-nowrap px-4 py-2">
                 <span class="flex items-center gap-2 text-xs">
                   <span
                     class="h-1.5 w-1.5 rounded-full"
@@ -243,7 +243,7 @@ onMounted(load);
                 </span>
               </td>
 
-              <td class="w-px px-5 py-3">
+              <td class="w-px px-4 py-2">
                 <div class="flex items-center justify-end gap-1">
                   <RouterLink
                     v-for="tool in TOOLS"

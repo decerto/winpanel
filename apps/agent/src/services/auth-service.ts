@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
-import { and, desc, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, isNull, sql } from 'drizzle-orm';
+import type { UserRole } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
-import { ipAllowlist, recoveryCodes, sessions, settings, users } from '../db/schema.js';
+import { ipAllowlist, recoveryCodes, sessions, settings, sites, users } from '../db/schema.js';
 import {
   generateSetupToken,
   generateToken,
@@ -46,7 +47,10 @@ export class AuthError extends Error {
       | 'setup-required'
       | 'already-setup'
       | 'ip-blocked'
-      | 'invalid-token',
+      | 'invalid-token'
+      | 'username-taken'
+      | 'not-found'
+      | 'last-owner',
     readonly retryAfterSeconds = 0,
   ) {
     super(message);
@@ -57,8 +61,24 @@ export class AuthError extends Error {
 export interface SessionUser {
   id: string;
   username: string;
-  role: 'owner' | 'admin';
+  role: UserRole;
   totpEnrolled: boolean;
+}
+
+/** An account, as shown on the people page. */
+export interface ManagedUser {
+  id: string;
+  username: string;
+  role: UserRole;
+  disabled: boolean;
+  totpEnrolled: boolean;
+  siteLimit: number | null;
+  mailQuotaBytes: number | null;
+  siteDiskQuotaBytes: number | null;
+  lastLoginAt: Date | null;
+  createdAt: Date;
+  /** How many websites they currently own, so limits mean something. */
+  siteCount: number;
 }
 
 /** A live sign-in, as shown to the owner. */
@@ -67,7 +87,7 @@ export interface ActiveSession {
   id: string;
   userId: string;
   username: string;
-  role: 'owner' | 'admin';
+  role: UserRole;
   ip: string | null;
   userAgent: string | null;
   createdAt: Date;
@@ -93,6 +113,23 @@ export interface AccessSummary {
  */
 function publicSessionId(tokenHash: string): string {
   return crypto.createHash('sha256').update(`session-id:${tokenHash}`).digest('hex').slice(0, 32);
+}
+
+/** Drops the password hash and the two-factor secrets on the way out. */
+function toManagedUser(row: typeof users.$inferSelect, siteCount: number): ManagedUser {
+  return {
+    id: row.id,
+    username: row.username,
+    role: row.role,
+    disabled: row.disabled,
+    totpEnrolled: row.totpEnrolled,
+    siteLimit: row.siteLimit,
+    mailQuotaBytes: row.mailQuotaBytes,
+    siteDiskQuotaBytes: row.siteDiskQuotaBytes,
+    lastLoginAt: row.lastLoginAt,
+    createdAt: row.createdAt,
+    siteCount,
+  };
 }
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -167,7 +204,9 @@ export class AuthService {
         id,
         username: input.username,
         passwordHash,
-        role: 'owner',
+        // Whoever completes setup has console access to the machine already,
+        // so they get the strongest role there is.
+        role: 'superadmin',
         totpEnrolled: false,
       })
       .run();
@@ -180,8 +219,221 @@ export class AuthService {
     await this.destroySetupToken();
 
     return {
-      user: { id, username: input.username, role: 'owner', totpEnrolled: false },
+      user: { id, username: input.username, role: 'superadmin', totpEnrolled: false },
     };
+  }
+
+  /**
+   * Every account, with the number of websites each one holds.
+   *
+   * One query rather than one per person: a hosting panel with a hundred
+   * customers should not make a hundred round trips to draw a list.
+   */
+  listUsers(): ManagedUser[] {
+    const rows = this.handle.db
+      .select({
+        user: users,
+        siteCount: count(sites.id),
+      })
+      .from(users)
+      .leftJoin(sites, eq(sites.ownerUserId, users.id))
+      .groupBy(users.id)
+      .orderBy(users.username)
+      .all();
+
+    return rows.map((row) => toManagedUser(row.user, row.siteCount));
+  }
+
+  getUser(userId: string): ManagedUser | undefined {
+    const row = this.handle.db.select().from(users).where(eq(users.id, userId)).get();
+    if (!row) return undefined;
+    return toManagedUser(row, this.siteCountFor(userId));
+  }
+
+  siteCountFor(userId: string): number {
+    const row = this.handle.db
+      .select({ total: count() })
+      .from(sites)
+      .where(eq(sites.ownerUserId, userId))
+      .get();
+    return row?.total ?? 0;
+  }
+
+  /**
+   * Creates an account.
+   *
+   * Nothing here issues a session or a setup token: the person who made the
+   * account tells the new user their password, and the new user changes it.
+   */
+  async createUser(input: {
+    username: string;
+    password: string;
+    role: UserRole;
+    siteLimit?: number | null;
+    mailQuotaBytes?: number | null;
+    siteDiskQuotaBytes?: number | null;
+    createdBy?: string | null;
+  }): Promise<ManagedUser> {
+    const username = input.username.trim();
+
+    if (this.findByUsername(username)) {
+      throw new AuthError('That username is already taken.', 'username-taken');
+    }
+
+    const id = crypto.randomUUID();
+
+    this.handle.db
+      .insert(users)
+      .values({
+        id,
+        username,
+        passwordHash: await hashPassword(input.password),
+        role: input.role,
+        // Limits only mean anything for a customer; an admin who could be
+        // capped at two websites would be an admin in name only.
+        siteLimit: input.role === 'user' ? (input.siteLimit ?? null) : null,
+        mailQuotaBytes: input.role === 'user' ? (input.mailQuotaBytes ?? null) : null,
+        siteDiskQuotaBytes: input.role === 'user' ? (input.siteDiskQuotaBytes ?? null) : null,
+        createdBy: input.createdBy ?? null,
+        totpEnrolled: false,
+      })
+      .run();
+
+    const created = this.getUser(id);
+    if (!created) throw new AuthError('The account could not be created.', 'not-found');
+    return created;
+  }
+
+  /**
+   * Changes an account's role, limits or availability.
+   *
+   * Refuses to leave the server with no owner, and disabling somebody ends
+   * their sessions straight away — an account you have just switched off
+   * should not keep working until its cookie expires.
+   */
+  updateUser(
+    userId: string,
+    changes: {
+      role?: UserRole;
+      disabled?: boolean;
+      siteLimit?: number | null;
+      mailQuotaBytes?: number | null;
+      siteDiskQuotaBytes?: number | null;
+    },
+  ): ManagedUser {
+    const existing = this.handle.db.select().from(users).where(eq(users.id, userId)).get();
+    if (!existing) throw new AuthError('No such account.', 'not-found');
+
+    const role = changes.role ?? existing.role;
+
+    if (existing.role === 'superadmin' && (role !== 'superadmin' || changes.disabled === true)) {
+      this.assertNotLastOwner(userId);
+    }
+
+    const limits =
+      role === 'user'
+        ? {
+            siteLimit: changes.siteLimit === undefined ? existing.siteLimit : changes.siteLimit,
+            mailQuotaBytes:
+              changes.mailQuotaBytes === undefined
+                ? existing.mailQuotaBytes
+                : changes.mailQuotaBytes,
+            siteDiskQuotaBytes:
+              changes.siteDiskQuotaBytes === undefined
+                ? existing.siteDiskQuotaBytes
+                : changes.siteDiskQuotaBytes,
+          }
+        : { siteLimit: null, mailQuotaBytes: null, siteDiskQuotaBytes: null };
+
+    this.handle.db
+      .update(users)
+      .set({
+        role,
+        ...limits,
+        ...(changes.disabled === undefined ? {} : { disabled: changes.disabled }),
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, userId))
+      .run();
+
+    if (changes.disabled === true) {
+      this.handle.db.delete(sessions).where(eq(sessions.userId, userId)).run();
+    }
+
+    const updated = this.getUser(userId);
+    if (!updated) throw new AuthError('No such account.', 'not-found');
+    return updated;
+  }
+
+  /**
+   * Sets somebody else's password and signs them out everywhere.
+   *
+   * Used when a customer has lost theirs. Ending their sessions is the point:
+   * if the reason for the reset is that somebody else had the old password,
+   * leaving live cookies alone would achieve nothing.
+   */
+  async setPassword(userId: string, password: string): Promise<void> {
+    const existing = this.handle.db.select({ id: users.id }).from(users).where(eq(users.id, userId)).get();
+    if (!existing) throw new AuthError('No such account.', 'not-found');
+
+    this.handle.db
+      .update(users)
+      .set({ passwordHash: await hashPassword(password), updatedAt: new Date() })
+      .where(eq(users.id, userId))
+      .run();
+
+    this.handle.db.delete(sessions).where(eq(sessions.userId, userId)).run();
+  }
+
+  /**
+   * Removes an account.
+   *
+   * Their websites are not deleted with them — files and live domains are far
+   * too costly to lose to a mistyped click. They fall back to the server,
+   * where an admin can hand them to somebody else or remove them properly.
+   */
+  deleteUser(userId: string): void {
+    const existing = this.handle.db.select().from(users).where(eq(users.id, userId)).get();
+    if (!existing) throw new AuthError('No such account.', 'not-found');
+
+    if (existing.role === 'superadmin') this.assertNotLastOwner(userId);
+
+    this.handle.db.delete(users).where(eq(users.id, userId)).run();
+  }
+
+  /** How many owner accounts there are. */
+  countOwners(): number {
+    const row = this.handle.db
+      .select({ total: count() })
+      .from(users)
+      .where(and(eq(users.role, 'superadmin'), eq(users.disabled, false)))
+      .get();
+    return row?.total ?? 0;
+  }
+
+  private assertNotLastOwner(userId: string): void {
+    const others = this.handle.db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.role, 'superadmin'), eq(users.disabled, false)))
+      .all()
+      .filter((row) => row.id !== userId);
+
+    if (others.length === 0) {
+      throw new AuthError(
+        'This is the only owner account. Make somebody else an owner first, or this server ' +
+          'would be left with nobody who can manage it.',
+        'last-owner',
+      );
+    }
+  }
+
+  private findByUsername(username: string) {
+    return this.handle.db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.username, username))
+      .get();
   }
 
   /**

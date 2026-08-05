@@ -122,7 +122,7 @@ export const sslRouter = router({
    * of certificates off disk is cheap, and forty parallel requests are not.
    */
   overview: protectedProcedure.query(async ({ ctx }) => {
-    const sites = ctx.app.sites.list();
+    const sites = ctx.app.sites.list(ctx.user?.role === 'user' ? ctx.user.id : undefined);
     const result: Array<{
       slug: string;
       state: DomainCertificate['state'] | 'no-domain';

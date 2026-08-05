@@ -4,6 +4,7 @@ import {
   Activity,
   ChevronRight,
   Globe,
+  History,
   Inbox,
   LogOut,
   Mail,
@@ -15,6 +16,7 @@ import {
   X,
 } from 'lucide-vue-next';
 import { computed, ref, watch } from 'vue';
+import { roleAtLeast, type UserRole } from '@winpanel/shared';
 import { api } from './lib/api';
 import ServerReadyBanner from './components/ServerReadyBanner.vue';
 
@@ -35,23 +37,36 @@ const router = useRouter();
 
 const NAV = [
   { to: '/sites', label: 'Websites', icon: Globe, hint: 'Everything you host' },
-  { to: '/health', label: 'Server health', icon: Activity, hint: 'Checks and fixes' },
-  { to: '/email', label: 'Email', icon: Mail, hint: 'Mailboxes and delivery' },
+  { to: '/health', label: 'Server health', icon: Activity, hint: 'Checks and fixes', minRole: 'admin' },
+  { to: '/email', label: 'Email', icon: Mail, hint: 'Mailboxes and delivery', minRole: 'admin' },
   { to: '/webmail', label: 'Webmail', icon: Inbox, hint: 'Read and send mail' },
   { to: '/security', label: 'Security', icon: ShieldCheck, hint: 'Sign-in protection' },
+  { to: '/people', label: 'People', icon: UsersRound, hint: 'Accounts and limits', minRole: 'admin' },
   {
     to: '/sign-ins',
     label: 'Sign-in activity',
-    icon: UsersRound,
+    icon: History,
     hint: 'Sessions and attempts',
-    owner: true,
+    minRole: 'superadmin',
   },
-  { to: '/settings', label: 'Settings', icon: Settings, hint: 'Connected accounts' },
-] as const;
+  { to: '/settings', label: 'Settings', icon: Settings, hint: 'Connected accounts', minRole: 'admin' },
+] as const satisfies ReadonlyArray<{
+  to: string;
+  label: string;
+  icon: unknown;
+  hint: string;
+  minRole?: UserRole;
+}>;
 
-// Owner-only entries are hidden rather than shown-and-refused: a tenant who
-// only manages their own website has no use for a door they cannot open.
-const nav = computed(() => NAV.filter((item) => !('owner' in item) || role.value === 'owner'));
+// Entries above someone's level are hidden rather than shown-and-refused: a
+// customer who only manages their own website has no use for a door they
+// cannot open.
+const nav = computed(() =>
+  NAV.filter(
+    (item) =>
+      !('minRole' in item) || (role.value !== null && roleAtLeast(role.value, item.minRole)),
+  ),
+);
 
 const title = computed(() => (route.meta['title'] as string | undefined) ?? 'WinPanel');
 
@@ -80,7 +95,7 @@ const crumbs = computed<Array<{ label: string; to?: string }>>(() => {
 const bare = computed(() => route.meta['bare'] === true);
 
 const username = ref('');
-const role = ref<'owner' | 'admin' | null>(null);
+const role = ref<UserRole | null>(null);
 void api.auth.me
   .query()
   .then((user) => {

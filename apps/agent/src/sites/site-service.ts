@@ -66,6 +66,8 @@ export interface CreateSiteInput {
   /** OpenSSH private key of a deploy key, for a private repository. */
   gitSshKey?: { privateKey: string; publicKey: string };
   diskQuotaBytes?: number;
+  /** Whose website this is. Null leaves it belonging to the server. */
+  ownerUserId?: string | null;
 }
 
 export interface CreatedSite {
@@ -142,8 +144,27 @@ export class SiteService {
     this.ports = new PortAllocator(db);
   }
 
-  list() {
-    return this.db.db.select().from(sites).orderBy(sites.displayName).all();
+  /**
+   * Every website, or only one person's.
+   *
+   * `ownerUserId` is what a customer sees the panel through. Filtering here
+   * rather than in the router means a new page cannot accidentally show one
+   * customer another's hosting.
+   */
+  list(ownerUserId?: string) {
+    const query = this.db.db.select().from(sites);
+    return (ownerUserId === undefined ? query : query.where(eq(sites.ownerUserId, ownerUserId)))
+      .orderBy(sites.displayName)
+      .all();
+  }
+
+  /** Hands a website to somebody else, or back to the server. */
+  setOwner(siteId: string, ownerUserId: string | null): void {
+    this.db.db
+      .update(sites)
+      .set({ ownerUserId, updatedAt: new Date() })
+      .where(eq(sites.id, siteId))
+      .run();
   }
 
   get(slug: string) {
@@ -276,6 +297,7 @@ export class SiteService {
         domains: input.domains,
         source: input.source,
         manifest: input.manifest,
+        ownerUserId: input.ownerUserId ?? null,
         ...(input.diskQuotaBytes !== undefined
           ? { diskQuotaBytes: input.diskQuotaBytes }
           : {}),

@@ -24,6 +24,17 @@ type ShutdownResult = Awaited<ReturnType<typeof api.system.shutdown.mutate>>;
 
 const info = ref<SystemInfo | null>(null);
 
+/*
+ * Replacing or stopping the panel is the owner's alone, so an administrator
+ * is not shown a button that will only ever refuse them. The server enforces
+ * it either way.
+ */
+const isOwner = ref(false);
+void api.auth.me
+  .query()
+  .then((user) => (isOwner.value = user?.role === 'superadmin'))
+  .catch(() => undefined);
+
 const cloudflare = ref<{ connected: boolean; message: string } | null>(null);
 const cloudflareToken = ref('');
 const cloudflareBusy = ref(false);
@@ -781,7 +792,7 @@ async function installUpdate(): Promise<void> {
       </AlertMessage>
     </section>
 
-    <section class="card mt-4 p-6">
+    <section v-if="isOwner" class="card mt-4 p-6">
       <div class="flex items-start gap-3">
         <span
           class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border
@@ -1084,6 +1095,7 @@ async function installUpdate(): Promise<void> {
           {{ startAllBusy ? 'Starting\u2026' : `Start everything (${startableCount})` }}
         </button>
         <button
+          v-if="isOwner"
           type="button"
           class="btn btn-danger"
           :disabled="servicesBusy || stoppableCount === 0"

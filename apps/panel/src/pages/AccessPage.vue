@@ -11,6 +11,7 @@ import {
   Users,
 } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
+import { ROLE_LABELS } from '@winpanel/shared';
 import { describeUserAgent, timeAgo } from '../lib/format';
 import AlertMessage from '../components/AlertMessage.vue';
 import EmptyState from '../components/EmptyState.vue';
@@ -260,8 +261,8 @@ function exactly(value: Date): string {
                 >
                   This browser
                 </span>
-                <span v-if="session.role === 'owner'" class="ml-2 text-xs text-ink-faint">
-                  Owner
+                <span class="ml-2 text-xs text-ink-faint">
+                  {{ ROLE_LABELS[session.role].label }}
                 </span>
               </td>
 

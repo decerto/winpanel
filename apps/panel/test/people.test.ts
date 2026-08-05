@@ -1,0 +1,206 @@
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { mount } from '@vue/test-utils';
+import { flushPromises } from '@vue/test-utils';
+
+/**
+ * The People page, which is the one screen where a mistake hands somebody
+ * more of the server than they were meant to have.
+ *
+ * The server refuses anything it should not do, so these tests are about the
+ * other half of the problem: an administrator should not be shown a button
+ * that will only ever be refused, because a button that fails silently looks
+ * like a broken panel rather than a boundary.
+ */
+
+const state = vi.hoisted(() => ({
+  me: { id: 'me', role: 'superadmin' as string },
+  people: [] as any[],
+  created: [] as any[],
+  updated: [] as any[],
+}));
+
+vi.mock('../src/lib/api', () => ({
+  api: {
+    users: {
+      list: { query: vi.fn(async () => state.people) },
+      create: {
+        mutate: vi.fn(async (input: unknown) => {
+          state.created.push(input);
+          return {};
+        }),
+      },
+      update: {
+        mutate: vi.fn(async (input: unknown) => {
+          state.updated.push(input);
+          return {};
+        }),
+      },
+      setPassword: { mutate: vi.fn(async () => ({ ok: true })) },
+      remove: { mutate: vi.fn(async () => ({ ok: true })) },
+    },
+    auth: { me: { query: vi.fn(async () => state.me) } },
+  },
+  describeError: (error: unknown) => String(error),
+}));
+
+const PeoplePage = (await import('../src/pages/PeoplePage.vue')).default;
+
+const person = (over: Record<string, unknown>) => ({
+  id: 'x',
+  username: 'x',
+  role: 'user',
+  disabled: false,
+  totpEnrolled: false,
+  siteLimit: null,
+  mailQuotaBytes: null,
+  siteDiskQuotaBytes: null,
+  lastLoginAt: null,
+  createdAt: new Date(0),
+  siteCount: 0,
+  ...over,
+});
+
+async function render() {
+  const wrapper = mount(PeoplePage);
+  await flushPromises();
+  return wrapper;
+}
+
+/** The four per-row buttons, in the order they appear. */
+function rowButtons(wrapper: any, index: number) {
+  return wrapper.findAll('tbody tr')[index]!.findAll('button');
+}
+
+beforeEach(() => {
+  state.me = { id: 'me', role: 'superadmin' };
+  state.people = [
+    person({ id: 'me', username: 'owner', role: 'superadmin' }),
+    person({ id: 'a', username: 'admin', role: 'admin' }),
+    person({ id: 'f', username: 'freya', role: 'user', siteLimit: 2, siteCount: 1 }),
+  ];
+  state.created = [];
+  state.updated = [];
+});
+
+describe('who the People page lets you manage', () => {
+  it('never lets anybody manage their own account from here', async () => {
+    /*
+     * Changing your own role or switching yourself off is the one way to lock
+     * a server out of its only owner, so the row for whoever is looking is
+     * inert.
+     */
+    const wrapper = await render();
+
+    for (const button of rowButtons(wrapper, 0)) {
+      expect(button.attributes('disabled')).toBeDefined();
+    }
+  });
+
+  it('lets the owner manage everybody else', async () => {
+    const wrapper = await render();
+
+    for (const index of [1, 2]) {
+      for (const button of rowButtons(wrapper, index)) {
+        expect(button.attributes('disabled')).toBeUndefined();
+      }
+    }
+  });
+
+  it('stops an administrator touching another administrator or the owner', async () => {
+    state.me = { id: 'a', role: 'admin' };
+    const wrapper = await render();
+
+    // Rows 0 and 1 are the owner and the admin themselves; only the customer
+    // is theirs to manage.
+    for (const button of rowButtons(wrapper, 0)) {
+      expect(button.attributes('disabled')).toBeDefined();
+    }
+    for (const button of rowButtons(wrapper, 1)) {
+      expect(button.attributes('disabled')).toBeDefined();
+    }
+    for (const button of rowButtons(wrapper, 2)) {
+      expect(button.attributes('disabled')).toBeUndefined();
+    }
+  });
+
+  it('only offers an administrator the customer role', async () => {
+    // Otherwise the page invites them to make another owner and then refuses.
+    state.me = { id: 'a', role: 'admin' };
+    const wrapper = await render();
+
+    await wrapper.findAll('button').find((b: any) => b.text().includes('Add someone'))!.trigger('click');
+
+    const options = wrapper.findAll('select option').map((option: any) => option.text());
+    expect(options).toEqual(['Customer']);
+  });
+
+  it('offers the owner every role', async () => {
+    const wrapper = await render();
+    await wrapper.findAll('button').find((b: any) => b.text().includes('Add someone'))!.trigger('click');
+
+    const options = wrapper.findAll('select option').map((option: any) => option.text());
+    expect(options).toEqual(['Owner', 'Administrator', 'Customer']);
+  });
+});
+
+describe('the limits on the People page', () => {
+  it('shows what a customer has used against what they are allowed', async () => {
+    const wrapper = await render();
+    expect(wrapper.text()).toContain('1 of 2');
+  });
+
+  it('describes a staff account as reaching everything', async () => {
+    const wrapper = await render();
+    expect(wrapper.text()).toContain('All websites');
+  });
+
+  it('sends no limits at all when the account is not a customer', async () => {
+    /*
+     * A capped administrator would be an administrator in name only, and the
+     * number would sit in the database waiting to surprise somebody. The
+     * server drops them too; the page must not disagree with it.
+     */
+    const wrapper = await render();
+    await wrapper.findAll('button').find((b: any) => b.text().includes('Add someone'))!.trigger('click');
+
+    await wrapper.find('#person-username').setValue('sam');
+    await wrapper.find('#person-password').setValue('a-password-long-enough');
+    await wrapper.find('select').setValue('admin');
+
+    // The gigabyte fields are gone, not merely ignored.
+    expect(wrapper.find('#person-sites').exists()).toBe(false);
+
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(state.created).toHaveLength(1);
+    expect(state.created[0]).toMatchObject({
+      username: 'sam',
+      role: 'admin',
+      siteLimit: null,
+      mailQuotaBytes: null,
+      siteDiskQuotaBytes: null,
+    });
+  });
+
+  it('reads a blank limit as no limit rather than as none', async () => {
+    // An empty box says "unlimited" to a person far more naturally than a
+    // zero does, and zero has to stay available to mean "none yet".
+    const wrapper = await render();
+    await wrapper.findAll('button').find((b: any) => b.text().includes('Add someone'))!.trigger('click');
+
+    await wrapper.find('#person-username').setValue('freya2');
+    await wrapper.find('#person-password').setValue('a-password-long-enough');
+    await wrapper.find('#person-sites').setValue('');
+    await wrapper.find('#person-mail').setValue('5');
+
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(state.created[0]).toMatchObject({
+      role: 'user',
+      siteLimit: null,
+      mailQuotaBytes: 5 * 1024 ** 3,
+    });
+  });
+});

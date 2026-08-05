@@ -46,7 +46,7 @@ async function routerSources(): Promise<Array<{ file: string; source: string }>>
 /** Finds `name: someProcedure` declarations. */
 function findProcedures(source: string): Array<{ name: string; procedure: string }> {
   const matches = source.matchAll(
-    /^\s{2}(\w+):\s*(publicProcedure|publicAuditedProcedure|protectedProcedure|ownerProcedure)/gm,
+    /^\s{2}(\w+):\s*(publicProcedure|publicAuditedProcedure|protectedProcedure|adminProcedure|superadminProcedure)/gm,
   );
 
   return [...matches].map((match) => ({
@@ -54,6 +54,68 @@ function findProcedures(source: string): Array<{ name: string; procedure: string
     procedure: match[2]!,
   }));
 }
+
+/**
+ * Endpoints a customer may reach that do not name a website.
+ *
+ * The site-scope middleware can only check a request that says which website
+ * it is about. Anything else on `protectedProcedure` is reachable by every
+ * signed-in account, so each one is listed here deliberately — either it is
+ * about the caller's own account, or it is harmless on its own.
+ *
+ * A new unscoped `protectedProcedure` fails this test until somebody decides
+ * which of those two it is, or moves it to `adminProcedure`.
+ */
+const UNSCOPED_FOR_CUSTOMERS = new Set([
+  // The caller's own account and its two-factor settings.
+  'me',
+  'logout',
+  'changePassword',
+  'beginTotp',
+  'confirmTotp',
+  'cancelTotp',
+  'disableTotp',
+  'recoveryCodeStatus',
+  'regenerateRecoveryCodes',
+  // Their own websites; each of these filters or checks ownership itself.
+  'list',
+  'get',
+  'logs',
+  'cancel',
+  'create',
+  'overview',
+  'ping',
+  // Making a website: a keypair and a repository probe, neither of which
+  // touches anything that already exists.
+  'deployKey',
+  'testRepository',
+  'inspect',
+  // Webmail, which authenticates against the mail server with its own
+  // password and hands back a token that scopes everything after it.
+  'signOut',
+  'folders',
+  'messages',
+  'message',
+  'setSeen',
+  'setFlagged',
+  'move',
+  'destroy',
+  'attachment',
+  'send',
+  // Reads a mailbox address back as IMAP/SMTP settings. No lookup involved.
+  'clientSettings',
+]);
+
+/**
+ * How a handler names the website it is about.
+ *
+ * Matched on the handler because most inputs are named zod schemas defined
+ * elsewhere; if the body reads `input.slug`, the request carried a slug,
+ * which is exactly what the middleware checks. An inline schema declaring one
+ * of the keys counts too, for the handlers that pass `input` along whole.
+ */
+const SCOPE_KEYS = /\binput\??\.(slug|siteSlug|domain|address)\b/;
+const SCOPE_FIELDS = /\b(slug|siteSlug|domain|address)\s*:/;
 
 describe('API authorisation', () => {
   it('exposes nothing publicly beyond the documented list', async () => {
@@ -127,22 +189,77 @@ describe('API authorisation', () => {
       expect(procedures.length, `${file} has no procedures`).toBeGreaterThan(0);
 
       for (const { name, procedure } of procedures) {
-        expect(procedure, `${file}: ${name}`).toBe('protectedProcedure');
+        expect(
+          ['protectedProcedure', 'adminProcedure', 'superadminProcedure'],
+          `${file}: ${name}`,
+        ).toContain(procedure);
       }
     }
   });
 
+  it('keeps the whole machine away from customers', async () => {
+    // Nothing that describes or changes the server may sit on the tier every
+    // signed-in account can reach.
+    for (const file of ['checks.ts', 'components.ts', 'system.ts']) {
+      const source = await fs.readFile(path.join(ROUTERS_DIR, file), 'utf8');
+      const procedures = findProcedures(source);
+
+      expect(procedures.length, `${file} has no procedures`).toBeGreaterThan(0);
+
+      for (const { name, procedure } of procedures) {
+        expect(['adminProcedure', 'superadminProcedure'], `${file}: ${name}`).toContain(procedure);
+      }
+    }
+  });
+
+  it('leaves nothing a customer can reach without naming their own website', async () => {
+    /*
+     * The single check that makes the customer role safe. Ownership is
+     * enforced centrally by reading the slug or domain out of the request, so
+     * an endpoint that takes neither is reachable by anybody signed in.
+     */
+    const offenders: string[] = [];
+
+    for (const { file, source } of await routerSources()) {
+      const starts = [...source.matchAll(/^ {2}(\w+):\s*\w+Procedure/gm)];
+
+      for (const [index, match] of starts.entries()) {
+        const name = match[1]!;
+        const body = source.slice(match.index, starts[index + 1]?.index ?? source.length);
+
+        if (!/^ {2}\w+:\s*protectedProcedure/.test(body)) continue;
+        if (UNSCOPED_FOR_CUSTOMERS.has(name)) continue;
+        if (SCOPE_KEYS.test(body)) continue;
+
+        const input = /\.input\(([\s\S]*?)\)\s*\.(query|mutation)/.exec(body);
+        if (!input || !SCOPE_FIELDS.test(input[1]!)) offenders.push(`${file}: ${name}`);
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
   it('keeps sign-in activity to the owner alone', async () => {
     // Sessions, attempts and blocked addresses describe the whole machine and
-    // every account on it. A tenant who only manages their own website must
-    // not be able to enumerate them.
+    // every account on it. Not even an administrator sees these: the trail is
+    // how the owner checks up on their administrators.
     const source = await fs.readFile(path.join(ROUTERS_DIR, 'access.ts'), 'utf8');
     const procedures = findProcedures(source);
 
     expect(procedures.length).toBeGreaterThan(0);
 
     for (const { name, procedure } of procedures) {
-      expect(procedure, `access.ts: ${name}`).toBe('ownerProcedure');
+      expect(procedure, `access.ts: ${name}`).toBe('superadminProcedure');
+    }
+  });
+
+  it('keeps removing the panel away from administrators', async () => {
+    // "Admins are like owners but cannot delete the panel."
+    const source = await fs.readFile(path.join(ROUTERS_DIR, 'system.ts'), 'utf8');
+    const byName = new Map(findProcedures(source).map((entry) => [entry.name, entry.procedure]));
+
+    for (const name of ['update', 'restartPanel', 'shutdown']) {
+      expect(byName.get(name), `system.${name}`).toBe('superadminProcedure');
     }
   });
 });

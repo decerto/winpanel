@@ -1,6 +1,6 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { ownerProcedure, router } from '../trpc.js';
+import { superadminProcedure, router } from '../trpc.js';
 
 /**
  * Who is signed in, and who has been trying to.
@@ -11,12 +11,12 @@ import { ownerProcedure, router } from '../trpc.js';
  * moment it is only answerable over RDP nobody ever looks.
  */
 export const accessRouter = router({
-  summary: ownerProcedure.query(({ ctx }) => ctx.app.auth.accessSummary()),
+  summary: superadminProcedure.query(({ ctx }) => ctx.app.auth.accessSummary()),
 
-  sessions: ownerProcedure.query(({ ctx }) => ctx.app.auth.listSessions(ctx.sessionToken)),
+  sessions: superadminProcedure.query(({ ctx }) => ctx.app.auth.listSessions(ctx.sessionToken)),
 
   /** Ends one sign-in. The owner may end their own, including this one. */
-  revokeSession: ownerProcedure
+  revokeSession: superadminProcedure
     .input(z.object({ sessionId: z.string().regex(/^[0-9a-f]{32}$/) }))
     .mutation(({ ctx, input }) => {
       if (!ctx.app.auth.revokeSessionById(input.sessionId)) {
@@ -29,11 +29,11 @@ export const accessRouter = router({
     }),
 
   /** The "I think someone else is in here" button. */
-  revokeOtherSessions: ownerProcedure.mutation(({ ctx }) => ({
+  revokeOtherSessions: superadminProcedure.mutation(({ ctx }) => ({
     revoked: ctx.app.auth.revokeAllSessionsExcept(ctx.sessionToken),
   })),
 
-  attempts: ownerProcedure
+  attempts: superadminProcedure
     .input(
       z
         .object({
@@ -46,7 +46,7 @@ export const accessRouter = router({
       ctx.app.auth.recentLoginAttempts(input?.limit ?? 200, input?.onlyFailures ?? false),
     ),
 
-  blockedAddresses: ownerProcedure.query(({ ctx }) => ctx.app.auth.activeIpBans()),
+  blockedAddresses: superadminProcedure.query(({ ctx }) => ctx.app.auth.activeIpBans()),
 
   /**
    * Lets a blocked address back in.
@@ -55,7 +55,7 @@ export const accessRouter = router({
    * own: a whole office shares one public IP, so a colleague's three bad
    * guesses lock out everybody behind it.
    */
-  unblockAddress: ownerProcedure
+  unblockAddress: superadminProcedure
     .input(z.object({ ip: z.string().min(1).max(64) }))
     .mutation(({ ctx, input }) => {
       if (!ctx.app.auth.liftIpBan(input.ip)) {

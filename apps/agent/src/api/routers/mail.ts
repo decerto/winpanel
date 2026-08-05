@@ -4,7 +4,8 @@ import crypto from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
 import { DEFAULT_MAILBOX_QUOTA_BYTES, Hostname, mailHostnameFor } from '@winpanel/shared';
-import { protectedProcedure, router } from '../trpc.js';
+import { adminProcedure, protectedProcedure, router } from '../trpc.js';
+import type { RequestContext } from '../trpc.js';
 import { settings } from '../../db/schema.js';
 import {
   checkDmarc,
@@ -190,6 +191,99 @@ const MailboxAddress = z
   .max(254)
   .transform((value) => value.toLowerCase());
 
+/**
+ * Keeps a customer inside the mail storage they were sold.
+ *
+ * Counts what is already allocated across every domain they hold rather than
+ * trusting a per-mailbox number, because ten mailboxes of a gigabyte each is
+ * the same ten gigabytes as one of ten. Admins and the owner have no
+ * allowance and are not checked.
+ *
+ * @param replacing the mailbox whose size is being changed, so its current
+ *   allocation is not counted twice.
+ */
+/**
+ * How much of an allowance a set of mailboxes has already taken.
+ *
+ * Separate from the check around it because it is the part that decides
+ * whether somebody can have another mailbox, and it has two awkward cases
+ * worth pinning down: a mailbox being resized must not be counted at its old
+ * size, and a mailbox the mail server considers unlimited has to be read as
+ * using the whole allowance, since there is no safe smaller answer.
+ */
+export function allocatedMailBytes(
+  mailboxes: ReadonlyArray<{ name: string; emails: string[]; quota: number }>,
+  allowance: number,
+  replacing: string | null,
+): number {
+  let allocated = 0;
+
+  for (const mailbox of mailboxes) {
+    const address = (mailbox.emails[0] ?? mailbox.name).toLowerCase();
+    if (replacing !== null && address === replacing.toLowerCase()) continue;
+    allocated += mailbox.quota === 0 ? allowance : mailbox.quota;
+  }
+
+  return allocated;
+}
+
+async function assertWithinMailAllowance(
+  ctx: RequestContext,
+  quotaBytes: number,
+  replacing: string | null,
+): Promise<void> {
+  if (ctx.user?.role !== 'user') return;
+
+  const account = ctx.app.auth.getUser(ctx.user.id);
+  if (!account || account.mailQuotaBytes === null) return;
+
+  // Zero is the mail server's word for "no limit", which is not something an
+  // account with an allowance can be given.
+  if (quotaBytes === 0) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message:
+        'Give this mailbox a size. Your account has a mail allowance, so a mailbox cannot ' +
+        'be left to grow without limit.',
+    });
+  }
+
+  const client = clientFor(ctx.app);
+  const domains = new Set(
+    ctx.app.sites.list(ctx.user.id).flatMap((site) => (site.domains as string[]).map((name) => name.toLowerCase())),
+  );
+
+  let allocated = 0;
+  for (const domain of domains) {
+    try {
+      allocated += allocatedMailBytes(
+        await client.listMailboxes(domain),
+        account.mailQuotaBytes,
+        replacing,
+      );
+    } catch {
+      // A domain the mail server has never heard of has no mailboxes, which
+      // is not a reason to refuse the one being created.
+      continue;
+    }
+  }
+
+  if (allocated + quotaBytes > account.mailQuotaBytes) {
+    const remaining = Math.max(0, account.mailQuotaBytes - allocated);
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message:
+        `That would go over your mail allowance. You have ${formatGigabytes(remaining)} left ` +
+        `of ${formatGigabytes(account.mailQuotaBytes)}.`,
+    });
+  }
+}
+
+function formatGigabytes(bytes: number): string {
+  const gigabytes = bytes / 1024 ** 3;
+  return `${gigabytes >= 10 ? Math.round(gigabytes) : Math.round(gigabytes * 10) / 10} GB`;
+}
+
 export const mailRouter = router({
   /**
    * The full checklist.
@@ -274,7 +368,7 @@ export const mailRouter = router({
     }),
 
   /** Just the outbound test, for the "check again" button. */
-  testOutbound: protectedProcedure.mutation(async () => await testOutboundMail()),
+  testOutbound: adminProcedure.mutation(async () => await testOutboundMail()),
 
   /**
    * Is this domain's email actually pointed at this server?
@@ -410,7 +504,7 @@ export const mailRouter = router({
    * Providers can take days, so the panel remembers when it was asked and
    * keeps checking rather than making the user come back to look.
    */
-  recordUnblockRequested: protectedProcedure.mutation(({ ctx }) => {
+  recordUnblockRequested: adminProcedure.mutation(({ ctx }) => {
     const value = new Date().toISOString();
 
     ctx.app.db.db
@@ -453,7 +547,7 @@ export const mailRouter = router({
    * completely different answers and a single "mail is broken" would send
    * people to the wrong place.
    */
-  serverStatus: protectedProcedure.query(async ({ ctx }) => {
+  serverStatus: adminProcedure.query(async ({ ctx }) => {
     const credentials = loadMailAdminCredentials(ctx.app.db, ctx.app.vault);
 
     if (!credentials) {
@@ -495,7 +589,7 @@ export const mailRouter = router({
    * configuration, which means a restart, which means waiting for it to answer
    * again before claiming success.
    */
-  provisionServer: protectedProcedure.mutation(async ({ ctx }) => {
+  provisionServer: adminProcedure.mutation(async ({ ctx }) => {
     const applied = await syncMailEnvironment({
       db: ctx.app.db,
       vault: ctx.app.vault,
@@ -542,7 +636,7 @@ export const mailRouter = router({
    * Verified before they are saved, so a wrong password fails while the user
    * is still looking at the field they typed it into.
    */
-  connectServer: protectedProcedure
+  connectServer: adminProcedure
     .input(
       z.object({
         username: z.string().min(1).max(120).default('admin'),
@@ -563,13 +657,13 @@ export const mailRouter = router({
 
       return { ok: true, message: result.message };
     }),
-  disconnectServer: protectedProcedure.mutation(({ ctx }) => {
+  disconnectServer: adminProcedure.mutation(({ ctx }) => {
     forgetMailAdminCredentials(ctx.app.db);
     return { ok: true };
   }),
 
   /** Domains the mail server will accept mail for. */
-  domains: protectedProcedure.query(async ({ ctx }) => {
+  domains: adminProcedure.query(async ({ ctx }) => {
     try {
       return await clientFor(ctx.app).listDomains();
     } catch (error) {
@@ -648,6 +742,8 @@ export const mailRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'That is not an email address.' });
       }
 
+      await assertWithinMailAllowance(ctx, input.quotaBytes, null);
+
       const password = input.password ?? generatePassword();
 
       try {
@@ -690,6 +786,8 @@ export const mailRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await assertWithinMailAllowance(ctx, input.quotaBytes, input.address);
+
       try {
         await clientFor(ctx.app).setQuota(input.address, input.quotaBytes);
         return {
