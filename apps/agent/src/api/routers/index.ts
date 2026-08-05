@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { protectedProcedure, router } from '../trpc.js';
+import { accessRouter } from './access.js';
 import { authRouter } from './auth.js';
 import { checksRouter } from './checks.js';
 import { sitesRouter } from './sites.js';
@@ -57,6 +58,7 @@ const auditRouter = router({
 
 export const appRouter = router({
   auth: authRouter,
+  access: accessRouter,
   checks: checksRouter,
   sites: sitesRouter,
   files: filesRouter,

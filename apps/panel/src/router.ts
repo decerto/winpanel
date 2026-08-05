@@ -113,6 +113,12 @@ export const router = createRouter({
       meta: { title: 'Security' },
     },
     {
+      path: '/sign-ins',
+      name: 'access',
+      component: () => import('./pages/AccessPage.vue'),
+      meta: { title: 'Sign-in activity', owner: true },
+    },
+    {
       path: '/settings',
       name: 'settings',
       component: () => import('./pages/SettingsPage.vue'),
@@ -149,6 +155,12 @@ router.beforeEach(async (to) => {
 
   // Already signed in: no reason to sit on the sign-in screen.
   if (to.name === 'login' || to.name === 'setup') {
+    return { name: 'sites' };
+  }
+
+  // Owner-only pages. The server refuses these calls regardless; this just
+  // avoids showing a screen made entirely of errors.
+  if (to.meta['owner'] === true && state.user?.role !== 'owner') {
     return { name: 'sites' };
   }
 

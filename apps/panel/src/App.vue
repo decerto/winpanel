@@ -11,6 +11,7 @@ import {
   ServerCog,
   Settings,
   ShieldCheck,
+  UsersRound,
   X,
 } from 'lucide-vue-next';
 import { computed, ref, watch } from 'vue';
@@ -38,8 +39,19 @@ const NAV = [
   { to: '/email', label: 'Email', icon: Mail, hint: 'Mailboxes and delivery' },
   { to: '/webmail', label: 'Webmail', icon: Inbox, hint: 'Read and send mail' },
   { to: '/security', label: 'Security', icon: ShieldCheck, hint: 'Sign-in protection' },
+  {
+    to: '/sign-ins',
+    label: 'Sign-in activity',
+    icon: UsersRound,
+    hint: 'Sessions and attempts',
+    owner: true,
+  },
   { to: '/settings', label: 'Settings', icon: Settings, hint: 'Connected accounts' },
 ] as const;
+
+// Owner-only entries are hidden rather than shown-and-refused: a tenant who
+// only manages their own website has no use for a door they cannot open.
+const nav = computed(() => NAV.filter((item) => !('owner' in item) || role.value === 'owner'));
 
 const title = computed(() => (route.meta['title'] as string | undefined) ?? 'WinPanel');
 
@@ -68,10 +80,12 @@ const crumbs = computed<Array<{ label: string; to?: string }>>(() => {
 const bare = computed(() => route.meta['bare'] === true);
 
 const username = ref('');
+const role = ref<'owner' | 'admin' | null>(null);
 void api.auth.me
   .query()
   .then((user) => {
     username.value = user?.username ?? '';
+    role.value = user?.role ?? null;
   })
   .catch(() => undefined);
 
@@ -128,7 +142,7 @@ function isCurrent(to: string): boolean {
 
       <nav class="flex-1 overflow-y-auto px-3 py-2" aria-label="Main">
         <RouterLink
-          v-for="item in NAV"
+          v-for="item in nav"
           :key="item.to"
           :to="item.to"
           class="group relative mb-1 flex items-start gap-3 rounded-lg px-3 py-2.5 transition-colors"

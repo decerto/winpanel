@@ -18,6 +18,8 @@ import {
   verifyTotp,
 } from '../src/security/totp.js';
 import { LoginThrottle, ipMatchesAllowlist } from '../src/security/throttle.js';
+import { SecretVault } from '../src/security/vault.js';
+import { AuthService } from '../src/services/auth-service.js';
 
 const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
 
@@ -200,6 +202,70 @@ describe('LoginThrottle', () => {
   });
 });
 
+describe('sign-in activity', () => {
+  it('lists attempts newest first, and only failures when asked', () => {
+    const throttle = new LoginThrottle(handle, 8, 15);
+    const base = Date.now();
+
+    throttle.recordFailure('203.0.113.1', 'owner', new Date(base));
+    throttle.recordFailure('203.0.113.2', 'admin', new Date(base + 1000));
+    throttle.recordSuccess('198.51.100.4', 'owner', new Date(base + 2000));
+
+    const all = throttle.recentAttempts(10);
+    expect(all[0]?.ip).toBe('198.51.100.4');
+    expect(all).toHaveLength(3);
+
+    const failures = throttle.recentAttempts(10, true);
+    expect(failures.map((row) => row.ip)).toEqual(['203.0.113.2', '203.0.113.1']);
+  });
+
+  it('counts failures and the addresses they came from', () => {
+    const throttle = new LoginThrottle(handle, 20, 15);
+    const base = Date.now();
+
+    for (let i = 0; i < 5; i++) {
+      throttle.recordFailure('203.0.113.1', 'owner', new Date(base + i * 1000));
+    }
+    throttle.recordFailure('203.0.113.2', 'owner', new Date(base + 6000));
+
+    const stats = throttle.failureStats(new Date(base - 60_000));
+    expect(stats.failures).toBe(6);
+    expect(stats.addresses).toBe(2);
+  });
+
+  it('lists only bans that are still in force', () => {
+    const throttle = new LoginThrottle(handle, 2, 15);
+    const base = Date.now();
+
+    throttle.recordFailure('203.0.113.30', 'owner', new Date(base));
+    throttle.recordFailure('203.0.113.30', 'owner', new Date(base + 60_000));
+
+    expect(throttle.activeBans(new Date(base + 61_000)).map((ban) => ban.ip)).toEqual([
+      '203.0.113.30',
+    ]);
+    // The row is still there, but the ban has lapsed.
+    expect(throttle.activeBans(new Date(base + 60 * 60_000))).toEqual([]);
+  });
+
+  it('unblocking clears the failure history so the address is not re-banned at once', () => {
+    const throttle = new LoginThrottle(handle, 2, 15);
+    const ip = '203.0.113.40';
+    const base = Date.now();
+
+    throttle.recordFailure(ip, 'owner', new Date(base));
+    throttle.recordFailure(ip, 'owner', new Date(base + 60_000));
+    expect(throttle.check(ip, new Date(base + 61_000)).allowed).toBe(false);
+
+    expect(throttle.liftBan(ip)).toBe(true);
+    expect(throttle.check(ip, new Date(base + 62_000)).allowed).toBe(true);
+    expect(throttle.recentAttempts(10, true)).toEqual([]);
+  });
+
+  it('reports an address that was never blocked', () => {
+    expect(new LoginThrottle(handle, 8, 15).liftBan('203.0.113.99')).toBe(false);
+  });
+});
+
 describe('ipMatchesAllowlist', () => {
   it('allows everything when the list is empty', () => {
     expect(ipMatchesAllowlist('203.0.113.1', [])).toBe(true);
@@ -225,5 +291,93 @@ describe('ipMatchesAllowlist', () => {
 
   it('ignores malformed entries rather than crashing', () => {
     expect(ipMatchesAllowlist('203.0.113.1', ['garbage', '', '1.2.3.4/999'])).toBe(false);
+  });
+});
+
+describe('AuthService sessions', () => {
+  const PASSWORD = 'a-password-long-enough';
+
+  async function signedInService(): Promise<{ auth: AuthService; token: string }> {
+    const vault = new SecretVault(path.join(tmpDir, 'vault.key'));
+    await vault.initialise();
+
+    const auth = new AuthService(handle, vault, path.join(tmpDir, 'setup-token.txt'));
+    const setupToken = await auth.ensureSetupToken();
+    await auth.completeSetup({ setupToken, username: 'owner', password: PASSWORD });
+
+    const login = await auth.login({
+      username: 'owner',
+      password: PASSWORD,
+      ip: '203.0.113.1',
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0) Chrome/120',
+    });
+
+    return { auth, token: login.token };
+  }
+
+  it('lists live sessions and marks the one asking', async () => {
+    const { auth, token } = await signedInService();
+    await auth.login({
+      username: 'owner',
+      password: PASSWORD,
+      ip: '198.51.100.2',
+      userAgent: 'iPhone',
+    });
+
+    const list = auth.listSessions(token);
+    expect(list).toHaveLength(2);
+    expect(list.filter((session) => session.current)).toHaveLength(1);
+    expect(list.find((session) => session.current)?.ip).toBe('203.0.113.1');
+  });
+
+  it('never hands the stored token hash to the browser', async () => {
+    const { auth, token } = await signedInService();
+    const [session] = auth.listSessions(token);
+
+    expect(session?.id).toMatch(/^[0-9a-f]{32}$/);
+    expect(session?.id).not.toBe(hashToken(token));
+    expect(JSON.stringify(session)).not.toContain(token);
+  });
+
+  it('ends exactly the session that was asked for', async () => {
+    const { auth, token } = await signedInService();
+    const other = await auth.login({
+      username: 'owner',
+      password: PASSWORD,
+      ip: '198.51.100.2',
+    });
+
+    const target = auth.listSessions(token).find((session) => !session.current)!;
+    expect(auth.revokeSessionById(target.id)).toBe(true);
+
+    expect(auth.resolveSession(other.token)).toBeNull();
+    expect(auth.resolveSession(token)).not.toBeNull();
+    expect(auth.revokeSessionById(target.id)).toBe(false);
+  });
+
+  it('signs out every other browser but keeps the one asking', async () => {
+    const { auth, token } = await signedInService();
+    const a = await auth.login({ username: 'owner', password: PASSWORD, ip: '198.51.100.2' });
+    const b = await auth.login({ username: 'owner', password: PASSWORD, ip: '198.51.100.3' });
+
+    expect(auth.revokeAllSessionsExcept(token)).toBe(2);
+    expect(auth.resolveSession(a.token)).toBeNull();
+    expect(auth.resolveSession(b.token)).toBeNull();
+    expect(auth.resolveSession(token)?.username).toBe('owner');
+  });
+
+  it('summarises what has been happening', async () => {
+    const { auth } = await signedInService();
+
+    await auth
+      .login({ username: 'owner', password: 'wrong', ip: '203.0.113.50' })
+      .catch(() => undefined);
+
+    const summary = auth.accessSummary();
+    expect(summary.activeSessions).toBe(1);
+    expect(summary.failuresLastDay).toBe(1);
+    expect(summary.addressesLastDay).toBe(1);
+    expect(summary.blockedAddresses).toBe(0);
+    expect(summary.lastSuccessfulSignInAt).toBeInstanceOf(Date);
   });
 });

@@ -46,7 +46,7 @@ async function routerSources(): Promise<Array<{ file: string; source: string }>>
 /** Finds `name: someProcedure` declarations. */
 function findProcedures(source: string): Array<{ name: string; procedure: string }> {
   const matches = source.matchAll(
-    /^\s{2}(\w+):\s*(publicProcedure|publicAuditedProcedure|protectedProcedure)/gm,
+    /^\s{2}(\w+):\s*(publicProcedure|publicAuditedProcedure|protectedProcedure|ownerProcedure)/gm,
   );
 
   return [...matches].map((match) => ({
@@ -129,6 +129,20 @@ describe('API authorisation', () => {
       for (const { name, procedure } of procedures) {
         expect(procedure, `${file}: ${name}`).toBe('protectedProcedure');
       }
+    }
+  });
+
+  it('keeps sign-in activity to the owner alone', async () => {
+    // Sessions, attempts and blocked addresses describe the whole machine and
+    // every account on it. A tenant who only manages their own website must
+    // not be able to enumerate them.
+    const source = await fs.readFile(path.join(ROUTERS_DIR, 'access.ts'), 'utf8');
+    const procedures = findProcedures(source);
+
+    expect(procedures.length).toBeGreaterThan(0);
+
+    for (const { name, procedure } of procedures) {
+      expect(procedure, `access.ts: ${name}`).toBe('ownerProcedure');
     }
   });
 });

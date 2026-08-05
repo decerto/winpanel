@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
-import { and, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, isNull, sql } from 'drizzle-orm';
 import type { DatabaseHandle } from '../db/index.js';
 import { ipAllowlist, recoveryCodes, sessions, settings, users } from '../db/schema.js';
 import {
@@ -18,6 +18,7 @@ import {
   verifyTotp,
 } from '../security/totp.js';
 import { LoginThrottle, ipMatchesAllowlist } from '../security/throttle.js';
+import type { IpBanRow, LoginAttemptRow } from '../security/throttle.js';
 import type { SecretVault } from '../security/vault.js';
 
 /**
@@ -58,6 +59,40 @@ export interface SessionUser {
   username: string;
   role: 'owner' | 'admin';
   totpEnrolled: boolean;
+}
+
+/** A live sign-in, as shown to the owner. */
+export interface ActiveSession {
+  /** Opaque handle. Never the stored token hash — see `publicSessionId`. */
+  id: string;
+  userId: string;
+  username: string;
+  role: 'owner' | 'admin';
+  ip: string | null;
+  userAgent: string | null;
+  createdAt: Date;
+  expiresAt: Date;
+  /** True for the session making the request, so the UI can say "this one". */
+  current: boolean;
+}
+
+export interface AccessSummary {
+  activeSessions: number;
+  failuresLastDay: number;
+  addressesLastDay: number;
+  blockedAddresses: number;
+  lastSuccessfulSignInAt: Date | null;
+}
+
+/**
+ * A stable handle for a session that is safe to put in a page.
+ *
+ * Hashing again rather than reusing the stored hash: the database column is
+ * the only thing standing between a leaked backup and a live cookie, so it
+ * does not travel to a browser, into a URL, or through a log.
+ */
+function publicSessionId(tokenHash: string): string {
+  return crypto.createHash('sha256').update(`session-id:${tokenHash}`).digest('hex').slice(0, 32);
 }
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -333,6 +368,93 @@ export class AuthService {
   /** Consumes the setup token so it cannot be reused. */
   async destroySetupToken(): Promise<void> {
     await fs.rm(this.setupTokenPath, { force: true });
+  }
+
+  /**
+   * Every sign-in that is still live, newest first.
+   *
+   * Owner-facing: a control panel on the open internet should be able to
+   * answer "who is signed in right now, and from where" without reading the
+   * database by hand.
+   */
+  listSessions(currentToken?: string): ActiveSession[] {
+    const currentHash = currentToken ? hashToken(currentToken) : null;
+
+    return this.handle.db
+      .select({
+        tokenHash: sessions.tokenHash,
+        userId: sessions.userId,
+        username: users.username,
+        role: users.role,
+        ip: sessions.ip,
+        userAgent: sessions.userAgent,
+        createdAt: sessions.createdAt,
+        expiresAt: sessions.expiresAt,
+      })
+      .from(sessions)
+      .innerJoin(users, eq(users.id, sessions.userId))
+      .where(gt(sessions.expiresAt, new Date()))
+      .orderBy(desc(sessions.createdAt))
+      .all()
+      .map(({ tokenHash, ...rest }) => ({
+        ...rest,
+        id: publicSessionId(tokenHash),
+        current: currentHash !== null && tokenHash === currentHash,
+      }));
+  }
+
+  /** Ends one session. False when it had already expired or been signed out. */
+  revokeSessionById(id: string): boolean {
+    const match = this.handle.db
+      .select({ tokenHash: sessions.tokenHash })
+      .from(sessions)
+      .all()
+      .find((row) => publicSessionId(row.tokenHash) === id);
+
+    if (!match) return false;
+
+    return (
+      this.handle.db.delete(sessions).where(eq(sessions.tokenHash, match.tokenHash)).run()
+        .changes > 0
+    );
+  }
+
+  /** Signs out every browser except the one asking. Returns how many ended. */
+  revokeAllSessionsExcept(keepToken: string | undefined): number {
+    return this.handle.db
+      .delete(sessions)
+      .where(keepToken ? sql`${sessions.tokenHash} <> ${hashToken(keepToken)}` : undefined)
+      .run().changes;
+  }
+
+  recentLoginAttempts(limit: number, onlyFailures = false): LoginAttemptRow[] {
+    return this.throttle.recentAttempts(limit, onlyFailures);
+  }
+
+  activeIpBans(): IpBanRow[] {
+    return this.throttle.activeBans();
+  }
+
+  liftIpBan(ip: string): boolean {
+    return this.throttle.liftBan(ip);
+  }
+
+  accessSummary(now = new Date()): AccessSummary {
+    const active = this.handle.db
+      .select({ count: sql<number>`count(*)` })
+      .from(sessions)
+      .where(gt(sessions.expiresAt, now))
+      .get();
+
+    const day = this.throttle.failureStats(new Date(now.getTime() - 24 * 60 * 60 * 1000));
+
+    return {
+      activeSessions: active?.count ?? 0,
+      failuresLastDay: day.failures,
+      addressesLastDay: day.addresses,
+      blockedAddresses: this.throttle.activeBans(now).length,
+      lastSuccessfulSignInAt: this.throttle.lastSuccess()?.at ?? null,
+    };
   }
 
   isIpAllowed(ip: string): boolean {

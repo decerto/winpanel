@@ -1,6 +1,9 @@
-import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, sql } from 'drizzle-orm';
 import type { DatabaseHandle } from '../db/index.js';
 import { ipBans, loginAttempts } from '../db/schema.js';
+
+export type LoginAttemptRow = typeof loginAttempts.$inferSelect;
+export type IpBanRow = typeof ipBans.$inferSelect;
 
 /**
  * Login throttling for an internet-exposed panel.
@@ -123,6 +126,65 @@ export class LoginThrottle {
       )
       .get();
     return row?.count ?? 0;
+  }
+
+  /** Recent attempts, newest first. Read-only view for the owner. */
+  recentAttempts(limit: number, onlyFailures = false): LoginAttemptRow[] {
+    return this.handle.db
+      .select()
+      .from(loginAttempts)
+      .where(onlyFailures ? eq(loginAttempts.succeeded, false) : undefined)
+      .orderBy(desc(loginAttempts.at))
+      .limit(limit)
+      .all();
+  }
+
+  /** Failed attempts and how many distinct addresses they came from. */
+  failureStats(since: Date): { failures: number; addresses: number } {
+    const row = this.handle.db
+      .select({
+        failures: sql<number>`count(*)`,
+        addresses: sql<number>`count(distinct ${loginAttempts.ip})`,
+      })
+      .from(loginAttempts)
+      .where(and(eq(loginAttempts.succeeded, false), gte(loginAttempts.at, since)))
+      .get();
+
+    return { failures: row?.failures ?? 0, addresses: row?.addresses ?? 0 };
+  }
+
+  lastSuccess(): LoginAttemptRow | undefined {
+    return this.handle.db
+      .select()
+      .from(loginAttempts)
+      .where(eq(loginAttempts.succeeded, true))
+      .orderBy(desc(loginAttempts.at))
+      .limit(1)
+      .get();
+  }
+
+  activeBans(now = new Date()): IpBanRow[] {
+    return this.handle.db
+      .select()
+      .from(ipBans)
+      .where(gt(ipBans.until, now))
+      .orderBy(desc(ipBans.until))
+      .all();
+  }
+
+  /** Lets a blocked address back in. Returns false if it was not blocked. */
+  liftBan(ip: string): boolean {
+    const result = this.handle.db.delete(ipBans).where(eq(ipBans.ip, ip)).run();
+
+    // The failure counter has to go too. Leaving it behind would drop the
+    // address straight back into the escalating delay, and then re-ban it on
+    // the next mistake, so "unblock" would not visibly do anything.
+    this.handle.db
+      .delete(loginAttempts)
+      .where(and(eq(loginAttempts.ip, ip), eq(loginAttempts.succeeded, false)))
+      .run();
+
+    return result.changes > 0;
   }
 
   /** Housekeeping so the table does not grow without bound. */

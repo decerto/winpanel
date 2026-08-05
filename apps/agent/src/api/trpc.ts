@@ -124,6 +124,27 @@ const requireAuth = t.middleware(async ({ ctx, next }) => {
 export const protectedProcedure = t.procedure.use(requireAuth).use(auditMiddleware);
 
 /**
+ * Requires the owner account.
+ *
+ * The panel is growing a second kind of user: someone who manages their own
+ * website and nothing else. Anything that describes the machine as a whole —
+ * who is signed in, who has been trying to sign in, which addresses are
+ * blocked — is the owner's business alone, and telling a tenant that an
+ * account exists and is under attack helps nobody but an attacker.
+ */
+const requireOwner = t.middleware(async ({ ctx, next }) => {
+  if (ctx.user?.role !== 'owner') {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'Only the owner of this server can do that.',
+    });
+  }
+  return await next({ ctx: { ...ctx, user: ctx.user } });
+});
+
+export const ownerProcedure = t.procedure.use(requireAuth).use(requireOwner).use(auditMiddleware);
+
+/**
  * Unauthenticated, but still audited.
  *
  * Sign-in and first-run setup are the most security-relevant events the panel

@@ -8,6 +8,7 @@ import TotpEnrolment from '../src/components/TotpEnrolment.vue';
 import RecoveryCodes from '../src/components/RecoveryCodes.vue';
 import PaginationBar from '../src/components/PaginationBar.vue';
 import { siteStatus } from '../src/lib/site-status';
+import { describeUserAgent, timeAgo } from '../src/lib/format';
 
 /**
  * The design rule these tests defend: a status must never be conveyed by
@@ -379,5 +380,55 @@ describe('what a website is said to be doing', () => {
       expect(result.label.length, String(status)).toBeGreaterThan(0);
       expect(result.dot, String(status)).toMatch(/^bg-/);
     }
+  });
+});
+
+describe('timeAgo', () => {
+  const now = new Date('2026-08-05T12:00:00Z').getTime();
+  const ago = (ms: number): string => timeAgo(new Date(now - ms), now);
+
+  it('says just now for anything very recent', () => {
+    expect(ago(0)).toBe('just now');
+    expect(ago(30_000)).toBe('just now');
+  });
+
+  it('picks the largest unit that fits', () => {
+    expect(ago(5 * 60_000)).toBe('5 minutes ago');
+    expect(ago(60 * 60_000)).toBe('1 hour ago');
+    expect(ago(3 * 24 * 60 * 60_000)).toBe('3 days ago');
+  });
+
+  it('reads forwards for a time yet to come', () => {
+    // Session expiry is in the future, and "in 8 hours ago" is nonsense.
+    expect(timeAgo(new Date(now + 8 * 60 * 60_000), now)).toBe('in 8 hours');
+  });
+});
+
+describe('describeUserAgent', () => {
+  it('names the browser and the machine', () => {
+    expect(
+      describeUserAgent(
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) '
+        + 'Chrome/120.0.0.0 Safari/537.36',
+      ),
+    ).toBe('Chrome on Windows');
+  });
+
+  it('is not fooled by browsers that claim to be Chrome', () => {
+    // Every one of these carries "Chrome/" and "Safari/" in its user agent.
+    expect(
+      describeUserAgent('Mozilla/5.0 (Windows NT 10.0) Chrome/120.0.0.0 Safari/537.36 Edg/120.0'),
+    ).toBe('Edge on Windows');
+    expect(
+      describeUserAgent('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120 Safari/537.36'),
+    ).toBe('Chrome on macOS');
+    expect(
+      describeUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Safari/604.1'),
+    ).toBe('Safari on iPhone');
+  });
+
+  it('says so rather than showing nothing', () => {
+    expect(describeUserAgent(null)).toBe('Unknown device');
+    expect(describeUserAgent('')).toBe('Unknown device');
   });
 });
