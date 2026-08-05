@@ -655,7 +655,7 @@ watch(() => site.value?.slug, load, { immediate: true });
             <AlertMessage
               v-if="!clientSetup.certificate.trusted"
               tone="warning"
-              title="Outlook will refuse this server&rsquo;s certificate"
+              :title="clientSetup.certificate.title"
             >
               <p>{{ clientSetup.certificate.summary }}</p>
               <div class="mt-3 flex flex-wrap items-center gap-2">
@@ -757,6 +757,13 @@ watch(() => site.value?.slug, load, { immediate: true });
               </button>
               <p class="text-xs text-ink-faint">{{ clientSetup.note }}</p>
             </div>
+            <p
+              v-if="clientSetup.certificate.trusted && clientSetup.certificate.expiresInDays !== null"
+              class="flex items-center gap-1.5 text-xs text-ink-faint"
+            >
+              <ShieldCheck :size="13" aria-hidden="true" />
+              {{ clientSetup.certificate.summary }}
+            </p>
           </div>
         </section>
 

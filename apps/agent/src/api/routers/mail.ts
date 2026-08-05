@@ -19,11 +19,13 @@ import {
   checkMx,
   checkReverseDns,
   checkSpf,
+  EXPIRY_WARNING_DAYS,
   probeMailPort,
   testOutboundMail,
 } from '../../mail/readiness.js';
 import { MailServerError, StalwartClient, probeMailServer } from '../../mail/stalwart-client.js';
 import { findIssuedCertificate, waitForIssuedCertificate } from '../../mail/certificate.js';
+import { storeMailDomains } from '../../mail/domains.js';
 import { syncMailCertificates, syncMailEnvironment } from '../../mail/service.js';
 import {
   forgetMailAdminCredentials,
@@ -100,6 +102,12 @@ function toTrpcError(error: unknown): never {
     throw new TRPCError({ code: 'BAD_REQUEST', message: error.message, cause: error });
   }
   throw error;
+}
+
+/** True when the panel should have renewed this certificate by now, and has not. */
+function nearExpiry(probe: { certificateDaysRemaining: number | null }): boolean {
+  return probe.certificateDaysRemaining !== null &&
+    probe.certificateDaysRemaining <= EXPIRY_WARNING_DAYS;
 }
 
 /**
@@ -352,6 +360,15 @@ export const mailRouter = router({
       const encryptedPorts = [submissionTls, imapTls].filter((probe) => probe.reachable);
       const untrusted = encryptedPorts.filter((probe) => !probe.certificateTrusted);
 
+      // A certificate the panel renews automatically should never get near its
+      // expiry, so one that has means the copy on the mail ports stopped being
+      // refreshed — worth saying while there is still time to act.
+      const daysRemaining = encryptedPorts
+        .map((probe) => probe.certificateDaysRemaining)
+        .filter((days): days is number => days !== null);
+      const soonestExpiry = daysRemaining.length > 0 ? Math.min(...daysRemaining) : null;
+      const expiring = soonestExpiry !== null && soonestExpiry <= EXPIRY_WARNING_DAYS;
+
       // Only the things that genuinely stop mail working gate mailbox
       // creation. SPF and DMARC affect deliverability, not delivery.
       const blockers = [!outbound.canSend, !mx.ok].filter(Boolean).length;
@@ -405,15 +422,22 @@ export const mailRouter = router({
            * still refuses, saying only that something went wrong.
            */
           clientCertificate: {
-            state: untrusted.length === 0 ? 'ok' : 'warning',
+            state: untrusted.length === 0 && !expiring ? 'ok' : 'warning',
             summary:
-              untrusted.length === 0
-                ? encryptedPorts.length > 0
-                  ? 'Mail programs trust this server\u2019s certificate.'
-                  : 'No encrypted mail port answered, so the certificate could not be checked.'
-                : 'The mail ports use a certificate this server made for itself. Webmail works, ' +
-                  'but Outlook and phone mail apps will refuse to sign in.',
-            detail: untrusted[0]?.certificateName ?? null,
+              untrusted.length > 0
+                ? 'The mail ports use a certificate this server made for itself. Webmail works, ' +
+                  'but Outlook and phone mail apps will refuse to sign in.'
+                : expiring
+                  ? `The certificate on the mail ports ${
+                      soonestExpiry! < 0 ? 'has expired' : `expires in ${soonestExpiry} day(s)`
+                    } and is not being renewed. Mail programs stop signing in the moment it ` +
+                    'runs out.'
+                  : encryptedPorts.length > 0
+                    ? 'Mail programs trust this server\u2019s certificate.'
+                    : 'No encrypted mail port answered, so the certificate could not be checked.',
+            detail:
+              untrusted[0]?.certificateName ??
+              (soonestExpiry !== null ? `Renews automatically; ${soonestExpiry} day(s) left.` : null),
           },
         },
       };
@@ -606,7 +630,7 @@ export const mailRouter = router({
           // from a port a firewall is swallowing, and only one of them is
           // worth telling somebody to phone their host about.
           configured: listening === null ? null : listening.includes(entry.port),
-          state: (probe.reachable && probe.certificateTrusted
+          state: (probe.reachable && probe.certificateTrusted && !nearExpiry(probe)
             ? 'ok'
             : probe.reachable
               ? 'warning'
@@ -617,6 +641,12 @@ export const mailRouter = router({
 
       const hostPointsHere = ip !== null && addresses.includes(ip);
       const untrusted = ports.some((port) => port.reachable && !port.certificateTrusted);
+
+      const daysRemaining = probes
+        .map((probe) => probe.certificateDaysRemaining)
+        .filter((days): days is number => days !== null);
+      const expiresInDays = daysRemaining.length > 0 ? Math.min(...daysRemaining) : null;
+      const expiring = expiresInDays !== null && expiresInDays <= EXPIRY_WARNING_DAYS;
 
       // Installing it restarts the mail server for every tenant on the machine,
       // so it is an administrator's to do. Offering the button to somebody who
@@ -649,7 +679,12 @@ export const mailRouter = router({
          * all, so it has to be named here or nobody will ever find it.
          */
         certificate: {
-          trusted: !untrusted,
+          trusted: !untrusted && !expiring,
+          /** Null when nothing answered. The panel refreshes this well before zero. */
+          expiresInDays,
+          title: untrusted
+            ? 'Outlook will refuse this server\u2019s certificate'
+            : 'The mail certificate is running out',
           canFix: mayInstall,
           /** Whether the fix is a copy, or has to obtain one first. */
           issued: haveCertificate,
@@ -668,7 +703,15 @@ export const mailRouter = router({
             ? 'The mail server is using a certificate it made for itself. Webmail still works, ' +
               'but Outlook, Apple Mail and phone mail apps refuse to sign in to a mailbox ' +
               'behind one.'
-            : 'The mail ports present a certificate mail programs trust.',
+            : expiring
+              ? `The certificate on the mail ports ${
+                  expiresInDays! < 0 ? 'has expired' : `expires in ${expiresInDays} day(s)`
+                }, and the panel has not managed to renew it. Mail programs stop signing in ` +
+                'the moment it runs out.'
+              : expiresInDays !== null
+                ? 'The mail ports present a certificate mail programs trust. It renews ' +
+                  `automatically, with ${expiresInDays} day(s) left on the current one.`
+                : 'The mail ports present a certificate mail programs trust.',
         },
         ports,
         note: 'Use the mailbox password, and the full email address as the username.',
@@ -712,6 +755,20 @@ export const mailRouter = router({
               `${mailHostname} points at ${addresses.join(', ')} rather than at this server ` +
               `(${ip}), so the certificate authority cannot reach it. Fix that record on the ` +
               'DNS tab first.',
+          });
+        }
+
+        // The reload only asks for names the web server has been told to
+        // serve, and it takes those from the mail server's own domain list.
+        const known = await clientFor(ctx.app).listDomains();
+        storeMailDomains(ctx.app.db, known);
+
+        if (!known.some((name) => name.toLowerCase() === input.domain.toLowerCase())) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              `The mail server does not handle email for ${input.domain} yet, so there is ` +
+              'nothing to put a certificate on. Create a mailbox for it first.',
           });
         }
 
@@ -890,7 +947,9 @@ export const mailRouter = router({
   /** Domains the mail server will accept mail for. */
   domains: adminProcedure.query(async ({ ctx }) => {
     try {
-      return await clientFor(ctx.app).listDomains();
+      const domains = await clientFor(ctx.app).listDomains();
+      storeMailDomains(ctx.app.db, domains);
+      return domains;
     } catch (error) {
       toTrpcError(error);
     }
@@ -915,6 +974,14 @@ export const mailRouter = router({
         }
 
         await client.createDomain(input.domain);
+
+        // Reloading is what starts the web server obtaining a certificate for
+        // this domain's mail hostname, which is the only way mail clients will
+        // ever sign in to it.
+        if (storeMailDomains(ctx.app.db, [...existing, input.domain])) {
+          await ctx.app.routing.tryApply();
+        }
+
         return { ok: true, created: true };
       } catch (error) {
         toTrpcError(error);

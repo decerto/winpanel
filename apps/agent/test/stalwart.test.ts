@@ -519,6 +519,46 @@ describe('the certificate mail clients see', () => {
 
     expect(await mail.installCertificate(CERTIFICATE)).toBe('created');
   });
+
+  it('installs the replacement when the web server has renewed', async () => {
+    const { mail, seen } = client({
+      'x:Certificate/query': { ids: ['c1'] },
+      'x:Certificate/get': {
+        list: [
+          {
+            id: 'c1',
+            subjectAlternativeNames: ['mail.example.com'],
+            notValidAfter: '2025-10-01T00:00:00Z',
+          },
+        ],
+      },
+      'x:Certificate/set': {},
+    });
+
+    expect(await mail.installCertificate(CERTIFICATE)).toBe('updated');
+    expect(argsOf(seen, 'x:Certificate/set')?.['update']).toHaveProperty('c1');
+  });
+
+  // Otherwise a difference of a second or two would restart the mail server,
+  // dropping every open connection, on every run of the renewal timer.
+  it('does not mistake a rounded expiry for a renewal', async () => {
+    const { mail, seen } = client({
+      'x:Certificate/query': { ids: ['c1'] },
+      'x:Certificate/get': {
+        list: [
+          {
+            id: 'c1',
+            subjectAlternativeNames: ['mail.example.com'],
+            notValidAfter: '2026-01-01T00:00:30Z',
+          },
+        ],
+      },
+      'x:Certificate/set': {},
+    });
+
+    expect(await mail.installCertificate(CERTIFICATE)).toBe('unchanged');
+    expect(argsOf(seen, 'x:Certificate/set')).toBeUndefined();
+  });
 });
 
 describe('failures', () => {

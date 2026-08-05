@@ -371,6 +371,8 @@ export interface MailPortProbe {
   certificateTrusted: boolean;
   certificateName: string | null;
   certificateIssuer: string | null;
+  /** Null when no certificate was seen. Negative once it has expired. */
+  certificateDaysRemaining: number | null;
   summary: string;
 }
 
@@ -380,7 +382,19 @@ const UNREACHABLE = {
   certificateTrusted: false,
   certificateName: null,
   certificateIssuer: null,
+  certificateDaysRemaining: null,
 } as const;
+
+/**
+ * When a certificate stops being something to ignore.
+ *
+ * Caddy renews at a third of the lifetime remaining — thirty days for a
+ * ninety-day certificate — and the panel copies the new one to the mail server
+ * within twelve hours. Anything under a fortnight means that chain has broken
+ * somewhere, and saying so while there is still time to fix it is the whole
+ * point of measuring it.
+ */
+export const EXPIRY_WARNING_DAYS = 14;
 
 /** Opens the port the way a mail client would, and reports what came back. */
 export async function probeMailPort(
@@ -430,6 +444,14 @@ export async function probeMailPort(
         const name = first(certificate.subject?.CN);
         const issuer = first(certificate.issuer?.O) ?? first(certificate.issuer?.CN);
 
+        // Measured at the port rather than read off disk: this is the copy
+        // mail clients are actually given, and the only thing that proves the
+        // renewal reached it.
+        const expiry = certificate.valid_to ? Date.parse(certificate.valid_to) : NaN;
+        const daysRemaining = Number.isNaN(expiry)
+          ? null
+          : Math.floor((expiry - Date.now()) / 86_400_000);
+
         finish({
           port,
           reachable: true,
@@ -437,8 +459,13 @@ export async function probeMailPort(
           certificateTrusted: trusted,
           certificateName: name,
           certificateIssuer: issuer,
+          certificateDaysRemaining: daysRemaining,
           summary: trusted
-            ? `Port ${port} is encrypted with a certificate mail clients trust.`
+            ? daysRemaining !== null && daysRemaining <= EXPIRY_WARNING_DAYS
+              ? `Port ${port} is encrypted, but its certificate ` +
+                `${daysRemaining < 0 ? 'expired' : `expires in ${daysRemaining} day(s)`}. ` +
+                'Mail programs stop signing in the moment it does.'
+              : `Port ${port} is encrypted with a certificate mail clients trust.`
             : `Port ${port} is encrypted, but the certificate is not trusted ` +
               `(${name ?? 'unknown'}). Outlook and Apple Mail refuse to sign in to a ` +
               'mailbox behind an untrusted certificate.',

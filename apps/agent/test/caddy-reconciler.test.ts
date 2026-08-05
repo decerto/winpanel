@@ -6,6 +6,7 @@ import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/
 import { components, sites } from '../src/db/schema.js';
 import { SecretVault } from '../src/security/vault.js';
 import { storeCloudflareToken } from '../src/dns/token.js';
+import { storeMailDomains } from '../src/mail/domains.js';
 import { CaddyReconciler, siteInputsFrom } from '../src/caddy/reconciler.js';
 import { previewServerIdFor, routeIdFor } from '../src/caddy/config-builder.js';
 import { CaddyClient } from '../src/caddy/client.js';
@@ -157,18 +158,19 @@ describe('turning the database into a Caddy config', () => {
 
   it('leaves out the mail route until the mail server is installed', () => {
     insertSite();
+    storeMailDomains(db, ['example.com']);
 
     const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
     const ids = config.apps.http.servers.main.routes.map((r: any) => r['@id']);
     expect(ids).not.toContain('mail_route');
   });
 
-  it('asks for a mail certificate for every domain, not just the first', () => {
+  it('asks for a certificate for every domain mail is set up for', () => {
     // Covering only the first site left every other domain's mail ports on the
     // mail server's self-signed certificate, which no mail client accepts.
     insertSite();
-    insertSite({ slug: 'second', domains: ['second.com', 'www.second.com'], previewPort: 7002 });
     db.db.insert(components).values({ id: 'stalwart', state: 'installed' }).run();
+    storeMailDomains(db, ['example.com', 'second.com']);
 
     const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
     const route = config.apps.http.servers.main.routes.find((r: any) => r['@id'] === 'mail_route');
@@ -176,9 +178,23 @@ describe('turning the database into a Caddy config', () => {
     expect(route.match[0].host).toEqual(['mail.example.com', 'mail.second.com']);
   });
 
+  it('asks for nothing for a domain that only hosts a website', () => {
+    // `mail.<every subdomain>` is a name nobody set up, and asking a
+    // certificate authority for it fails on repeat rather than harmlessly.
+    insertSite({ domains: ['example.com', 'app.example.com'] });
+    db.db.insert(components).values({ id: 'stalwart', state: 'installed' }).run();
+    storeMailDomains(db, ['example.com']);
+
+    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
+    const route = config.apps.http.servers.main.routes.find((r: any) => r['@id'] === 'mail_route');
+
+    expect(route.match[0].host).toEqual(['mail.example.com']);
+  });
+
   it('puts a mail hostname under the token that can see its domain', () => {
     insertSite();
     db.db.insert(components).values({ id: 'stalwart', state: 'installed' }).run();
+    storeMailDomains(db, ['example.com']);
     storeCloudflareToken(db, vault, 'cf-secret-token');
 
     const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;

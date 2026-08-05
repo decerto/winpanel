@@ -4,6 +4,7 @@ import { STALWART_HTTP_PORT, mailHostnameFor, type SiteManifest } from '@winpane
 import type { DatabaseHandle } from '../db/index.js';
 import { components, sites } from '../db/schema.js';
 import { cloudflareTokenGroups } from '../dns/token.js';
+import { mailHostnames } from '../mail/domains.js';
 import type { SecretVault } from '../security/vault.js';
 import { contentRootFor } from '../sites/site-service.js';
 import type { CaddyClient } from './client.js';
@@ -78,27 +79,20 @@ export class CaddyReconciler {
     ).map((group) => ({ envVar: group.envVar, domains: group.domains }));
 
     /*
-     * Every domain gets a mail hostname, not just the first one.
+     * Every domain mail is actually configured for, not one guessed per site.
      *
-     * The mail server accepts mailboxes on any domain the panel adds to it, so
-     * covering only the first site left every other domain's mail ports on the
-     * self-signed certificate for good — the panel had nothing trusted to copy
-     * across, and no way to say why. `www.` is skipped: nobody runs mail there.
+     * Covering only the first site left every other domain's mail ports on the
+     * self-signed certificate for good. Deriving one per website domain was no
+     * better: it asked for `mail.<every subdomain>`, names nobody had set up,
+     * and still missed a mail domain belonging to no website. This is the list
+     * the mail server itself gave, mirrored into the database.
      */
-    const mailHostnames = [
-      ...new Set(
-        siteInputs.flatMap((site) =>
-          site.domains
-            .filter((domain) => !domain.toLowerCase().startsWith('www.'))
-            .map((domain) => mailHostnameFor(domain)),
-        ),
-      ),
-    ];
+    const mailNames = mailHostnames(this.db);
 
     // The only token that can obtain a certificate for a mail hostname is
     // whichever one covers the domain it sits under.
     for (const group of dnsChallenges) {
-      const owned = mailHostnames.filter((mailHostname) =>
+      const owned = mailNames.filter((mailHostname) =>
         group.domains.some((domain) => mailHostname === mailHostnameFor(domain)),
       );
       if (owned.length > 0) group.domains = [...group.domains, ...owned];
@@ -121,8 +115,8 @@ export class CaddyReconciler {
        */
       ...(dnsChallenges.length > 0 ? { dnsChallenges } : {}),
       ...(options.acmeEmail ? { acmeEmail: options.acmeEmail } : {}),
-      ...(mailInstalled && mailHostnames.length > 0
-        ? { mailHost: { hostnames: mailHostnames, port: STALWART_HTTP_PORT } }
+      ...(mailInstalled && mailNames.length > 0
+        ? { mailHost: { hostnames: mailNames, port: STALWART_HTTP_PORT } }
         : {}),
     });
   }

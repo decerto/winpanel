@@ -160,13 +160,20 @@ async function main(): Promise<void> {
             `Gave the mail server the certificate for ${result.installed.join(', ')}.`,
           );
         }
+
+        for (const failure of result.failed) {
+          server.log.warn(
+            `The mail server would not take the certificate for ${failure.hostname}: ` +
+              `${failure.message}. Mail programs will stop signing in when it expires.`,
+          );
+        }
       } catch (error) {
         server.log.warn({ err: error }, 'Could not update the mail server\u2019s certificate.');
       }
     };
 
     await syncCertificates();
-    setInterval(() => void syncCertificates(), 12 * 60 * 60 * 1000).unref();
+    setInterval(() => void syncCertificates(), 6 * 60 * 60 * 1000).unref();
 
     /*
      * Repairs sites created before preview ports existed. Without a port they

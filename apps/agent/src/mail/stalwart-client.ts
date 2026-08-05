@@ -806,7 +806,12 @@ export class StalwartClient {
 
     if (match?.id) {
       const installed = match.notValidAfter ? Date.parse(match.notValidAfter) : NaN;
-      if (installed === input.expiresAt.getTime()) return 'unchanged';
+
+      // Compared to the minute, not the millisecond. X.509 expiry has second
+      // precision and the server formats it back in its own way, so an exact
+      // match would eventually stop matching and restart the mail server twice
+      // a day forever. A renewal moves the date by weeks.
+      if (Math.abs(installed - input.expiresAt.getTime()) < 60_000) return 'unchanged';
 
       await this.set('x:Certificate', {
         update: {

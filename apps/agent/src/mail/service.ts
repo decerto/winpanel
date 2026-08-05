@@ -1,10 +1,9 @@
 import crypto from 'node:crypto';
-import { mailHostnameFor } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
-import { sites } from '../db/schema.js';
 import type { SecretVault } from '../security/vault.js';
 import type { ServiceManager } from '../windows/service-manager.js';
 import { findIssuedCertificate } from './certificate.js';
+import { mailHostnames, storeMailDomains } from './domains.js';
 import {
   loadMailAdminCredentials,
   storeMailAdminCredentials,
@@ -119,25 +118,13 @@ export async function releaseWebPortsFromMail(
   return { changes, restarted: true };
 }
 
-/** Every mail hostname this server is expected to answer for. */
-export function mailHostnames(db: DatabaseHandle): string[] {
-  const rows = db.db.select({ domains: sites.domains }).from(sites).all();
-
-  const names = new Set<string>();
-  for (const row of rows) {
-    for (const domain of row.domains as string[]) {
-      if (!domain.toLowerCase().startsWith('www.')) names.add(mailHostnameFor(domain));
-    }
-  }
-
-  return [...names];
-}
-
 export interface MailCertificateSync {
   /** Hostnames whose certificate was installed or refreshed. */
   installed: string[];
   /** Hostnames with no publicly-trusted certificate on disk to install. */
   missing: string[];
+  /** Hostnames the mail server refused, with the reason it gave. */
+  failed: Array<{ hostname: string; message: string }>;
   restarted: boolean;
 }
 
@@ -151,10 +138,13 @@ export interface MailCertificateSync {
  * fault so hard to place from inside the panel, so it is repaired rather than
  * reported.
  *
- * Restarting is what makes the new certificate take effect, and it is done
- * once for the whole batch rather than per hostname. Nothing is written or
+ * This is the renewal path too, not just the first install. Caddy renews with
+ * about a third of the lifetime left and writes the replacement to disk;
+ * nothing tells the mail server, so the copy it holds is refreshed here.
+ * Restarting is what makes a new certificate take effect, and it is done once
+ * for the whole batch rather than per hostname. Nothing is written or
  * restarted when every certificate is already current, so this is safe to run
- * on a timer.
+ * as often as it needs to be.
  */
 export async function syncMailCertificates(deps: {
   db: DatabaseHandle;
@@ -164,13 +154,26 @@ export async function syncMailCertificates(deps: {
   hostnames?: readonly string[];
 }): Promise<MailCertificateSync> {
   const credentials = loadMailAdminCredentials(deps.db, deps.vault);
-  if (!credentials) return { installed: [], missing: [], restarted: false };
+  if (!credentials) return { installed: [], missing: [], failed: [], restarted: false };
 
   const client = new StalwartClient(credentials.username, credentials.password);
   const installed: string[] = [];
   const missing: string[] = [];
+  const failed: Array<{ hostname: string; message: string }> = [];
 
-  for (const hostname of deps.hostnames ?? mailHostnames(deps.db)) {
+  // Refreshed here because this is the one thing that talks to the mail server
+  // on a timer, and the web server builds its certificate list from the copy.
+  let hostnames = deps.hostnames;
+  if (!hostnames) {
+    try {
+      storeMailDomains(deps.db, await client.listDomains());
+    } catch {
+      // A mail server that is down does not invalidate what it last told us.
+    }
+    hostnames = mailHostnames(deps.db);
+  }
+
+  for (const hostname of hostnames) {
     const issued = await findIssuedCertificate(deps.caddyDir, hostname);
 
     if (!issued) {
@@ -178,19 +181,25 @@ export async function syncMailCertificates(deps: {
       continue;
     }
 
-    const result = await client.installCertificate({
-      hostname,
-      certificate: issued.certificate,
-      privateKey: issued.privateKey,
-      expiresAt: issued.expiresAt,
-    });
+    // Each hostname stands alone: one the mail server rejects used to abort
+    // the loop, so every domain after it silently stopped renewing too.
+    try {
+      const result = await client.installCertificate({
+        hostname,
+        certificate: issued.certificate,
+        privateKey: issued.privateKey,
+        expiresAt: issued.expiresAt,
+      });
 
-    if (result !== 'unchanged') installed.push(hostname);
+      if (result !== 'unchanged') installed.push(hostname);
+    } catch (error) {
+      failed.push({ hostname, message: error instanceof Error ? error.message : String(error) });
+    }
   }
 
-  if (installed.length === 0) return { installed, missing, restarted: false };
+  if (installed.length === 0) return { installed, missing, failed, restarted: false };
 
   await deps.services.restart(STALWART_SERVICE_ID);
 
-  return { installed, missing, restarted: true };
+  return { installed, missing, failed, restarted: true };
 }
