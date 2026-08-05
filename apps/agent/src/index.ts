@@ -6,6 +6,7 @@ import { syncCaddyEnvironment } from './caddy/service.js';
 import { syncMailEnvironment } from './mail/service.js';
 import { cleanUpAfterUpdate } from './components/panel-update.js';
 import { localAddresses } from './tls/panel-certificate.js';
+import { ServiceWatchdog } from './windows/service-watchdog.js';
 
 /**
  * Agent entry point. Runs as a Windows Service under WinSW in production.
@@ -72,9 +73,22 @@ async function main(): Promise<void> {
       server.log.warn({ err: error }, 'Could not update the mail server environment.');
     }
 
-    const error = await app.routing.tryApply();
+    /*
+     * Repairs sites created before preview ports existed. Without a port they
+     * have no address at all until a domain is bought and DNS propagates.
+     */
+    try {
+      const repaired = await app.sites.ensurePreviewPorts();
+      if (repaired > 0) {
+        server.log.info(`Gave ${repaired} website(s) a preview address.`);
+      }
+    } catch (error) {
+      server.log.warn({ err: error }, 'Could not assign missing preview addresses.');
+    }
+
+    const error = await app.routing.applyWhenReady();
     if (error) {
-      server.log.warn({ err: error }, 'Could not apply the website configuration yet.');
+      server.log.warn({ err: error }, 'Could not apply the website configuration.');
     } else {
       server.log.info('Website configuration applied.');
     }
@@ -102,11 +116,25 @@ async function main(): Promise<void> {
 
   await server.listen({ port: config.port, host: config.host });
 
+  /*
+   * Nothing else on the machine can rescue a component whose own orphaned
+   * process is blocking its restart, because everything else on the machine
+   * is that component.
+   */
+  const watchdog = new ServiceWatchdog({
+    getState: (id) => app.services.getState(id),
+    start: (id) => app.services.start(id),
+    log: (message, detail) => server.log.warn({ detail }, message),
+  });
+  watchdog.start();
+  void watchdog.sweep();
+
   const shutdown = async (signal: string): Promise<void> => {
     server.log.info(`Received ${signal}, shutting down.`);
     // Order matters: stop accepting requests, let in-flight jobs finish, then
     // release the database. Closing the database first would fail any job
     // mid-write.
+    watchdog.stop();
     await server.close();
     await app.shutdown();
     process.exit(0);

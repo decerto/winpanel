@@ -187,3 +187,32 @@ describe('SiteService.remove', () => {
     ).resolves.toBeUndefined();
   });
 });
+
+describe('SiteService.ensurePreviewPorts', () => {
+  const baseInput = {
+    displayName: 'Kitora',
+    domains: ['kitora.io'],
+    source: { kind: 'upload' as const },
+    manifest: SiteManifest.parse({}),
+  };
+
+  it('gives a preview address to a site created before they existed', async () => {
+    const { id } = await service.create(baseInput);
+
+    // What every site looks like on a server installed before migration 0003:
+    // reachable only through a domain that may not exist yet.
+    handle.sqlite.prepare('UPDATE sites SET preview_port = NULL WHERE id = ?').run(id);
+    handle.sqlite.prepare('DELETE FROM port_allocations WHERE colour = ?').run('preview');
+
+    expect(await service.ensurePreviewPorts()).toBe(1);
+
+    const port = service.getById(id)?.previewPort;
+    expect(port).toBeGreaterThanOrEqual(7000);
+    expect(port).toBeLessThanOrEqual(7999);
+  }, 30_000);
+
+  it('leaves sites that already have one alone', async () => {
+    await service.create(baseInput);
+    expect(await service.ensurePreviewPorts()).toBe(0);
+  }, 30_000);
+});

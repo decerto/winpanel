@@ -5,7 +5,9 @@ import {
   buildServerChecks,
   isPortExcluded,
   isPortFree,
+  missingFirewallRuleNames,
 } from '../src/checks/server-checks.js';
+import { requiredFirewallRules } from '../src/bootstrap/windows-setup.js';
 
 function makeCheck(id: string, outcome: CheckOutcome): CheckDefinition {
   return {
@@ -220,6 +222,7 @@ describe('server check definitions', () => {
     expect(ids).toContain('server.disk-space');
     expect(ids).toContain('server.internet');
     expect(ids).toContain('server.background-services');
+    expect(ids).toContain('server.firewall-rules');
   });
 
   it('runs every check without throwing on this machine', async () => {
@@ -232,4 +235,25 @@ describe('server check definitions', () => {
       expect(['ok', 'warning', 'blocked', 'absent', 'unknown']).toContain(result.state);
     }
   }, 30_000);
+});
+
+describe('firewall rules', () => {
+  const names = requiredFirewallRules().map((rule) => rule.name);
+
+  it('opens the preview port band so a site is reachable by IP', () => {
+    const previews = requiredFirewallRules().find((rule) => rule.port === '7000-7999');
+    expect(previews?.action).toBe('allow');
+    expect(previews?.protocol).toBe('TCP');
+  });
+
+  it('reports nothing missing when every rule is present', () => {
+    expect(missingFirewallRuleNames([...names, 'Some unrelated rule'])).toEqual([]);
+  });
+
+  it('names the rules Windows does not have', () => {
+    const withoutPreviews = names.filter((name) => !name.includes('previews'));
+    expect(missingFirewallRuleNames(withoutPreviews)).toEqual([
+      'WinPanel - Website previews',
+    ]);
+  });
 });

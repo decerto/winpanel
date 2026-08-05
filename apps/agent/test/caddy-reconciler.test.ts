@@ -251,3 +251,63 @@ describe('applying the configuration', () => {
     expect(loaded).not.toHaveProperty('admin');
   });
 });
+
+describe('waiting for the web server to come up', () => {
+  /**
+   * The panel and Caddy are separate Windows services, so at boot the first
+   * attempt regularly lands before Caddy is listening. A single swallowed
+   * failure there left every route — including preview addresses — unbuilt
+   * until some later edit happened to trigger another apply.
+   */
+  it('retries while Caddy is still starting, then applies', async () => {
+    insertSite({ domains: [] });
+
+    const original = globalThis.fetch;
+    let calls = 0;
+    let loaded: any = null;
+
+    globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+      calls++;
+      if (calls <= 2) throw new Error('connect ECONNREFUSED 127.0.0.1:2019');
+      if (init.method === 'GET') return new Response('null', { status: 200 });
+      loaded = JSON.parse(String(init.body));
+      return new Response('', { status: 200 });
+    }) as unknown as typeof fetch;
+
+    try {
+      const error = await new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault)
+        .applyWhenReady({ attempts: 5, delayMs: 1 });
+      expect(error).toBeNull();
+    } finally {
+      globalThis.fetch = original;
+    }
+
+    expect(loaded.apps.http.servers[previewServerIdFor('example')].listen).toEqual([':7001']);
+  });
+
+  it('gives up immediately when Caddy answers but refuses the config', async () => {
+    insertSite();
+
+    const original = globalThis.fetch;
+    let calls = 0;
+
+    globalThis.fetch = (async (_url: unknown, init: RequestInit) => {
+      calls++;
+      if (init.method === 'GET') return new Response('null', { status: 200 });
+      return new Response(JSON.stringify({ error: 'listen tcp :80: bind: in use' }), {
+        status: 400,
+      });
+    }) as unknown as typeof fetch;
+
+    try {
+      const error = await new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault)
+        .applyWhenReady({ attempts: 5, delayMs: 1 });
+      expect(error?.message).toContain('bind: in use');
+    } finally {
+      globalThis.fetch = original;
+    }
+
+    // One GET plus one POST: a rejection is not retried.
+    expect(calls).toBe(2);
+  });
+});

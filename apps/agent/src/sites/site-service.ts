@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { desc, eq } from 'drizzle-orm';
+import { desc, eq, isNull } from 'drizzle-orm';
 import {
   PUBLIC_DIR,
   RELEASE_DIR,
@@ -148,6 +148,34 @@ export class SiteService {
       .orderBy(desc(deployments.startedAt))
       .limit(limit)
       .all();
+  }
+
+  /**
+   * Gives a preview port to any site that has none.
+   *
+   * Preview ports arrived after the first release, so every site created
+   * before then has `previewPort` null and no way in without a working domain.
+   * Run at startup, this repairs them; for a server where they all have one it
+   * is a single query and does nothing.
+   *
+   * @returns the number of sites that were given a port.
+   */
+  async ensurePreviewPorts(): Promise<number> {
+    const missing = this.db.db.select().from(sites).where(isNull(sites.previewPort)).all();
+
+    let assigned = 0;
+    for (const site of missing) {
+      try {
+        const port = await this.ports.allocatePreviewPort(site.id);
+        this.db.db.update(sites).set({ previewPort: port }).where(eq(sites.id, site.id)).run();
+        assigned++;
+      } catch {
+        // Out of ports, or one is unexpectedly busy. The other sites should
+        // still be repaired, and this one is no worse off than before.
+      }
+    }
+
+    return assigned;
   }
 
   private uniqueSlug(preferred: string): string {

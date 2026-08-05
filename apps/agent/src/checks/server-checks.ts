@@ -2,6 +2,7 @@ import net from 'node:net';
 import os from 'node:os';
 import fs from 'node:fs/promises';
 import { PANEL_PORT } from '@winpanel/shared';
+import { FirewallManager, requiredFirewallRules } from '../bootstrap/windows-setup.js';
 import { runCommand } from '../process/run-command.js';
 import { listPanelServices } from '../windows/panel-services.js';
 import { readServiceState } from '../windows/service-manager.js';
@@ -94,6 +95,21 @@ export async function detectIis(): Promise<{ present: boolean; running: boolean 
 
   if (result.exitCode !== 0) return { present: false, running: false };
   return { present: true, running: readServiceState(result.stdout) === 'running' };
+}
+
+/**
+ * The panel's firewall rules that Windows does not currently have.
+ *
+ * Rules are created once, during first-run setup. A server set up before a
+ * rule existed never gets it, and a rule someone deleted by hand never comes
+ * back — in both cases the symptom is a port that simply times out from
+ * outside while working perfectly on the server's own desktop.
+ */
+export function missingFirewallRuleNames(installed: readonly string[]): string[] {
+  const present = new Set(installed);
+  return requiredFirewallRules()
+    .map((rule) => rule.name)
+    .filter((name) => !present.has(name));
 }
 
 /** Reads the registry flag that lets Windows handle paths beyond 260 chars. */
@@ -318,6 +334,47 @@ export function buildServerChecks(): CheckDefinition[] {
         }
 
         return { state: 'ok', detail: `Port ${PANEL_PORT} is in use by this panel.` };
+      },
+    },
+
+    {
+      id: 'server.firewall-rules',
+      category: 'network',
+      name: 'Firewall openings',
+      plainDescription:
+        'Windows Firewall has to be told which ports may be reached from the internet: ' +
+        'the panel, your websites, and the preview addresses that let you open a site by ' +
+        'IP address before its domain works.',
+      ttlSeconds: 300,
+      run: async (): Promise<CheckOutcome> => {
+        if (process.platform !== 'win32') {
+          return { state: 'ok', detail: 'Not applicable on this platform.' };
+        }
+
+        const installed = await new FirewallManager().listInstalled();
+        const missing = missingFirewallRuleNames(installed);
+
+        if (missing.length === 0) {
+          return { state: 'ok', detail: `${installed.length} firewall rules in place.` };
+        }
+
+        return {
+          state: 'blocked',
+          detail: `Missing: ${missing.join(', ')}.`,
+          reason:
+            'Anything these rules cover is unreachable from outside this server — the ' +
+            'connection times out rather than failing, so the website looks broken.',
+          fix: {
+            kind: 'automatic',
+            action: 'server.restore-firewall',
+            label: 'Recreate the firewall rules',
+            describesChange:
+              'Adds back the panel\u2019s own Windows Firewall rules. Rules for anything ' +
+              'else on this server are left untouched.',
+            safeToBatch: true,
+            reversible: true,
+          },
+        };
       },
     },
 

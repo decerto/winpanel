@@ -6,6 +6,7 @@ import { cloudflareTokenGroups } from '../dns/token.js';
 import type { SecretVault } from '../security/vault.js';
 import { contentRootFor } from '../sites/site-service.js';
 import type { CaddyClient } from './client.js';
+import { CaddyError } from './client.js';
 import { buildCaddyConfig, type CaddySiteInput, type DnsChallengeGroup } from './config-builder.js';
 
 /**
@@ -132,5 +133,36 @@ export class CaddyReconciler {
     } catch (error) {
       return error instanceof Error ? error : new Error(String(error));
     }
+  }
+
+  /**
+   * Applies once the web server is able to accept it.
+   *
+   * The panel and Caddy are separate Windows services that start in parallel,
+   * so the first attempt often lands before Caddy's admin API is listening.
+   * One swallowed failure there used to leave every route unbuilt until some
+   * later edit happened to trigger another apply — and on a server where
+   * nobody edits anything, that is never. Preview addresses show the symptom
+   * most clearly: the port is allocated and displayed, but nothing is
+   * listening on it.
+   *
+   * Only retries when Caddy could not be reached. A configuration it has
+   * actively rejected will be rejected again, and saying so straight away is
+   * more useful than saying so a minute later.
+   */
+  async applyWhenReady(
+    options: ReconcileOptions & { attempts?: number; delayMs?: number } = {},
+  ): Promise<Error | null> {
+    const { attempts = 10, delayMs = 3000, ...reconcile } = options;
+
+    let last: Error | null = null;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      last = await this.tryApply(reconcile);
+      if (last === null) return null;
+      if (last instanceof CaddyError && last.status !== undefined) return last;
+      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+
+    return last;
   }
 }

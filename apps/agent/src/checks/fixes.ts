@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { eq } from 'drizzle-orm';
+import { FirewallManager, requiredFirewallRules } from '../bootstrap/windows-setup.js';
 import type { DatabaseHandle } from '../db/index.js';
 import { serverChanges } from '../db/schema.js';
 import { runCommand } from '../process/run-command.js';
@@ -168,6 +169,25 @@ export function buildFixes(): FixDefinition[] {
       },
       undo: async () => {
         throw new FixError('Correcting the clock cannot be undone.');
+      },
+    },
+
+    {
+      action: 'server.restore-firewall',
+      changeType: 'firewall',
+      targetKey: 'WinPanel firewall rules',
+      reversible: true,
+      // The names already present, so undo only removes what this added.
+      capture: async () => await new FirewallManager().listInstalled(),
+      apply: async () => {
+        await new FirewallManager().applyAll(requiredFirewallRules());
+      },
+      undo: async (previous) => {
+        const before = new Set(Array.isArray(previous) ? (previous as string[]) : []);
+        const firewall = new FirewallManager();
+        for (const rule of requiredFirewallRules()) {
+          if (!before.has(rule.name)) await firewall.remove(rule.name);
+        }
       },
     },
   ];
