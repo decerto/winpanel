@@ -23,7 +23,7 @@ import {
   testOutboundMail,
 } from '../../mail/readiness.js';
 import { MailServerError, StalwartClient, probeMailServer } from '../../mail/stalwart-client.js';
-import { findIssuedCertificate } from '../../mail/certificate.js';
+import { findIssuedCertificate, waitForIssuedCertificate } from '../../mail/certificate.js';
 import { syncMailCertificates, syncMailEnvironment } from '../../mail/service.js';
 import {
   forgetMailAdminCredentials,
@@ -650,15 +650,20 @@ export const mailRouter = router({
          */
         certificate: {
           trusted: !untrusted,
-          canFix: mayInstall && haveCertificate,
+          canFix: mayInstall,
+          /** Whether the fix is a copy, or has to obtain one first. */
+          issued: haveCertificate,
+          fixLabel: haveCertificate
+            ? 'Use this website\u2019s certificate'
+            : `Get a certificate for ${mailHostname}`,
           /** Why there is no button, when there is no button. */
-          fixHint: !haveCertificate
-            ? `There is no certificate for ${mailHostname} yet. One is issued automatically ` +
-              'once that name points at this server.'
-            : !mayInstall
-              ? 'Fixing it restarts the mail server for everybody on this machine, so ask an ' +
-                'administrator to install the certificate.'
-              : null,
+          fixHint: mayInstall
+            ? haveCertificate
+              ? null
+              : `The web server has no certificate for ${mailHostname} yet. This asks it for ` +
+                'one, then puts it on the mail ports. It usually takes under a minute.'
+            : 'Fixing it restarts the mail server for everybody on this machine, so ask an ' +
+              'administrator to install the certificate.',
           summary: untrusted
             ? 'The mail server is using a certificate it made for itself. Webmail still works, ' +
               'but Outlook, Apple Mail and phone mail apps refuse to sign in to a mailbox ' +
@@ -671,36 +676,79 @@ export const mailRouter = router({
     }),
 
   /**
-   * Puts the website's certificate on the mail ports.
+   * Puts a publicly-trusted certificate on the mail ports.
    *
    * The mail server issues itself a self-signed certificate on first start and
    * never replaces it, which is invisible from webmail and fatal in every real
-   * mail client. The web server already holds a trusted certificate for the
-   * same name, so this copies it across rather than obtaining anything.
+   * mail client. This obtains one through the web server if there is not
+   * already one on disk — reloading the configuration is the whole mechanism,
+   * because Caddy runs the issue-and-renew loop for every name it is told to
+   * serve and there is no "issue this one now" endpoint — then copies it into
+   * the mail server and restarts it.
    */
   installCertificate: adminProcedure
     .input(z.object({ domain: Hostname }))
     .mutation(async ({ ctx, input }) => {
       const mailHostname = mailHostnameFor(input.domain);
+      const caddyDir = ctx.app.config.caddyDir;
+
+      if (!(await findIssuedCertificate(caddyDir, mailHostname))) {
+        const addresses = await resolveHostAddress(mailHostname);
+        const ip = serverIp();
+
+        if (addresses.length === 0) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              `${mailHostname} does not exist in DNS, so no certificate can be issued for it. ` +
+              'Set up email DNS on this website\u2019s DNS tab first.',
+          });
+        }
+
+        if (ip !== null && !addresses.includes(ip)) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              `${mailHostname} points at ${addresses.join(', ')} rather than at this server ` +
+              `(${ip}), so the certificate authority cannot reach it. Fix that record on the ` +
+              'DNS tab first.',
+          });
+        }
+
+        const failure = await ctx.app.routing.tryApply();
+        if (failure) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: `The web server did not accept the change: ${failure.message}`,
+          });
+        }
+
+        if (!(await waitForIssuedCertificate(caddyDir, mailHostname))) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              `The web server is asking for a certificate for ${mailHostname} but has not got ` +
+              'one yet. It usually arrives within a minute \u2014 try again shortly. If it keeps ' +
+              'failing, check that port 80 is open to the internet, and that the ' +
+              `${mailHostname} record is not on Cloudflare\u2019s proxy. Adding a Cloudflare ` +
+              'token on the DNS tab lets the certificate be issued without either.',
+          });
+        }
+      }
 
       try {
         const result = await syncMailCertificates({
           db: ctx.app.db,
           vault: ctx.app.vault,
           services: ctx.app.services,
-          caddyDir: ctx.app.config.caddyDir,
+          caddyDir,
           hostnames: [mailHostname],
         });
 
         if (result.installed.length === 0) {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
-            message:
-              result.missing.length > 0
-                ? `The web server has no certificate for ${mailHostname} yet. Check that ` +
-                  `${mailHostname} points at this server on the DNS tab, then try again once ` +
-                  'the certificate has been issued.'
-                : `${mailHostname} already has the right certificate on its mail ports.`,
+            message: `${mailHostname} already has the right certificate on its mail ports.`,
           });
         }
 

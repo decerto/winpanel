@@ -111,3 +111,28 @@ export async function findIssuedCertificate(
     found.sort((a, b) => b.expiresAt.getTime() - a.expiresAt.getTime())[0] ?? null
   );
 }
+
+/**
+ * The same, but gives an issue that is already under way time to finish.
+ *
+ * Caddy obtains certificates in the background after a config load, so a fix
+ * button that looked once would report failure on a server that was seconds
+ * away from succeeding. Polling the folder is how the result arrives: there is
+ * no admin endpoint that reports the state of an individual certificate.
+ */
+export async function waitForIssuedCertificate(
+  caddyDir: string,
+  hostname: string,
+  timeoutMs = 60_000,
+  intervalMs = 2_000,
+): Promise<IssuedCertificate | null> {
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    const issued = await findIssuedCertificate(caddyDir, hostname);
+    if (issued) return issued;
+    if (Date.now() + intervalMs >= deadline) return null;
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}

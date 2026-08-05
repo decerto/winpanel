@@ -54,8 +54,15 @@ export interface CaddyConfigInput {
   dnsChallenges?: readonly DnsChallengeGroup[];
   /** Contact address for the certificate authority. */
   acmeEmail?: string;
-  /** Route mail.<domain> to the mail server's web interface. */
-  mailHost?: { hostname: string; port: number };
+  /**
+   * Route every mail.<domain> to the mail server's web interface.
+   *
+   * Listing them here is also what gets each one a certificate, which the
+   * panel then copies onto the mail ports — without it, mail clients meet the
+   * self-signed certificate the mail server made for itself and refuse to
+   * sign in.
+   */
+  mailHost?: { hostnames: readonly string[]; port: number };
   /**
    * The admin block exactly as the running server has it.
    *
@@ -290,11 +297,11 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
     });
   }
 
-  if (input.mailHost) {
-    allDomains.add(input.mailHost.hostname);
+  if (input.mailHost && input.mailHost.hostnames.length > 0) {
+    for (const hostname of input.mailHost.hostnames) allDomains.add(hostname);
     routes.push({
       '@id': 'mail_route',
-      match: [{ host: [input.mailHost.hostname] }],
+      match: [{ host: [...input.mailHost.hostnames] }],
       handle: [
         {
           handler: 'reverse_proxy',

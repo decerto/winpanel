@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import selfsigned from 'selfsigned';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { findIssuedCertificate } from '../src/mail/certificate.js';
+import { findIssuedCertificate, waitForIssuedCertificate } from '../src/mail/certificate.js';
 import { caddyDataDir } from '../src/tls/site-certificates.js';
 
 /**
@@ -144,5 +144,25 @@ describe('the certificate to give the mail server', () => {
     });
 
     expect(await findIssuedCertificate(caddyDir, 'mail.example.com')).not.toBeNull();
+  });
+});
+
+describe('waiting for one to be issued', () => {
+  it('picks it up once the web server has written it', async () => {
+    setTimeout(() => {
+      void storeCertificate({
+        issuerDir: ACME,
+        subject: 'mail.example.com',
+        altNames: ['mail.example.com'],
+        days: 90,
+      });
+    }, 60);
+
+    const issued = await waitForIssuedCertificate(caddyDir, 'mail.example.com', 5_000, 50);
+    expect(issued?.subject).toBe('mail.example.com');
+  });
+
+  it('gives up rather than hanging when none arrives', async () => {
+    expect(await waitForIssuedCertificate(caddyDir, 'mail.example.com', 120, 50)).toBeNull();
   });
 });

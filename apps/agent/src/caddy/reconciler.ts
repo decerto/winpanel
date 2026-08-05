@@ -77,14 +77,31 @@ export class CaddyReconciler {
       rows.map((row) => ({ id: row.id, domains: row.domains as string[] })),
     ).map((group) => ({ envVar: group.envVar, domains: group.domains }));
 
-    const firstDomain = siteInputs.find((site) => site.domains.length > 0)?.domains[0];
+    /*
+     * Every domain gets a mail hostname, not just the first one.
+     *
+     * The mail server accepts mailboxes on any domain the panel adds to it, so
+     * covering only the first site left every other domain's mail ports on the
+     * self-signed certificate for good — the panel had nothing trusted to copy
+     * across, and no way to say why. `www.` is skipped: nobody runs mail there.
+     */
+    const mailHostnames = [
+      ...new Set(
+        siteInputs.flatMap((site) =>
+          site.domains
+            .filter((domain) => !domain.toLowerCase().startsWith('www.'))
+            .map((domain) => mailHostnameFor(domain)),
+        ),
+      ),
+    ];
 
-    // The mail server's own hostname needs a certificate too, and the only
-    // token that can obtain one is whichever covers the domain it sits under.
-    if (firstDomain) {
-      const mailHostname = mailHostnameFor(firstDomain);
-      const owner = dnsChallenges.find((group) => group.domains.includes(firstDomain));
-      if (owner) owner.domains = [...owner.domains, mailHostname];
+    // The only token that can obtain a certificate for a mail hostname is
+    // whichever one covers the domain it sits under.
+    for (const group of dnsChallenges) {
+      const owned = mailHostnames.filter((mailHostname) =>
+        group.domains.some((domain) => mailHostname === mailHostnameFor(domain)),
+      );
+      if (owned.length > 0) group.domains = [...group.domains, ...owned];
     }
 
     // Derived rather than passed in: a caller that forgot the flag would take
@@ -104,8 +121,8 @@ export class CaddyReconciler {
        */
       ...(dnsChallenges.length > 0 ? { dnsChallenges } : {}),
       ...(options.acmeEmail ? { acmeEmail: options.acmeEmail } : {}),
-      ...(mailInstalled && firstDomain
-        ? { mailHost: { hostname: mailHostnameFor(firstDomain), port: STALWART_HTTP_PORT } }
+      ...(mailInstalled && mailHostnames.length > 0
+        ? { mailHost: { hostnames: mailHostnames, port: STALWART_HTTP_PORT } }
         : {}),
     });
   }

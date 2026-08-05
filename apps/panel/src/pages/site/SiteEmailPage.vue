@@ -667,9 +667,15 @@ watch(() => site.value?.slug, load, { immediate: true });
                   @click="fixCertificate"
                 >
                   <ShieldCheck :size="14" aria-hidden="true" />
-                  {{ fixingCertificate ? 'Installing\u2026' : 'Use this website\u2019s certificate' }}
+                  {{
+                    fixingCertificate
+                      ? clientSetup.certificate.issued
+                        ? 'Installing\u2026'
+                        : 'Getting a certificate\u2026'
+                      : clientSetup.certificate.fixLabel
+                  }}
                 </button>
-                <p v-else-if="clientSetup.certificate.fixHint" class="text-xs text-ink-faint">
+                <p v-if="clientSetup.certificate.fixHint" class="text-xs text-ink-faint">
                   {{ clientSetup.certificate.fixHint }}
                 </p>
               </div>

@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
-import { sites } from '../src/db/schema.js';
+import { components, sites } from '../src/db/schema.js';
 import { SecretVault } from '../src/security/vault.js';
 import { storeCloudflareToken } from '../src/dns/token.js';
 import { CaddyReconciler, siteInputsFrom } from '../src/caddy/reconciler.js';
@@ -161,6 +161,30 @@ describe('turning the database into a Caddy config', () => {
     const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
     const ids = config.apps.http.servers.main.routes.map((r: any) => r['@id']);
     expect(ids).not.toContain('mail_route');
+  });
+
+  it('asks for a mail certificate for every domain, not just the first', () => {
+    // Covering only the first site left every other domain's mail ports on the
+    // mail server's self-signed certificate, which no mail client accepts.
+    insertSite();
+    insertSite({ slug: 'second', domains: ['second.com', 'www.second.com'], previewPort: 7002 });
+    db.db.insert(components).values({ id: 'stalwart', state: 'installed' }).run();
+
+    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
+    const route = config.apps.http.servers.main.routes.find((r: any) => r['@id'] === 'mail_route');
+
+    expect(route.match[0].host).toEqual(['mail.example.com', 'mail.second.com']);
+  });
+
+  it('puts a mail hostname under the token that can see its domain', () => {
+    insertSite();
+    db.db.insert(components).values({ id: 'stalwart', state: 'installed' }).run();
+    storeCloudflareToken(db, vault, 'cf-secret-token');
+
+    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
+    const policy = config.apps.tls.automation.policies.find((p: any) => p.issuers);
+
+    expect(policy.subjects).toEqual(expect.arrayContaining(['example.com', 'mail.example.com']));
   });
 });
 

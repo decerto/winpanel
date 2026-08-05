@@ -436,7 +436,7 @@ describe('mail routing', () => {
   it('routes the mail hostname to the mail server web interface', () => {
     const config = buildCaddyConfig({
       sites: [],
-      mailHost: { hostname: 'mail.example.com', port: 8080 },
+      mailHost: { hostnames: ['mail.example.com'], port: 8080 },
     }) as any;
 
     const route = findRoute(config, 'mail_route');
@@ -447,10 +447,31 @@ describe('mail routing', () => {
   it('includes the mail hostname in certificate coverage', () => {
     const config = buildCaddyConfig({
       sites: [],
-      mailHost: { hostname: 'mail.example.com', port: 8080 },
+      mailHost: { hostnames: ['mail.example.com'], port: 8080 },
       dnsChallenges: [{ envVar: 'CF_API_TOKEN', domains: ['example.com', 'mail.example.com'] }],
     }) as any;
 
     expect(config.apps.tls.automation.policies[0].subjects).toContain('mail.example.com');
+  });
+
+  it('covers every domain, not only the first, so no mailbox is left self-signed', () => {
+    const config = buildCaddyConfig({
+      sites: [],
+      mailHost: { hostnames: ['mail.example.com', 'mail.other.com'], port: 8080 },
+    }) as any;
+
+    expect(findRoute(config, 'mail_route').match[0].host).toEqual([
+      'mail.example.com',
+      'mail.other.com',
+    ]);
+    expect(config.apps.tls.automation.policies[0].subjects).toEqual(
+      expect.arrayContaining(['mail.example.com', 'mail.other.com']),
+    );
+  });
+
+  it('adds no route at all when there is no mail hostname', () => {
+    const config = buildCaddyConfig({ sites: [], mailHost: { hostnames: [], port: 8080 } }) as any;
+
+    expect(config.apps.http.servers.main.routes).toEqual([]);
   });
 });
