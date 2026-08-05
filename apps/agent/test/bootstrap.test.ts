@@ -71,7 +71,7 @@ describe('mail firewall rules', () => {
       .map((rule) => rule.port)
       .filter((port): port is number => typeof port === 'number')
       .sort((a, b) => a - b);
-    expect(ports).toEqual([25, 465, 587, 993]);
+    expect(ports).toEqual([25, 465, 587, 993, 995]);
   });
 
   it('allows rather than blocks', () => {

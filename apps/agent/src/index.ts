@@ -4,7 +4,7 @@ import { createAppContext } from './app-context.js';
 import { config, paths } from './config.js';
 import { createServer } from './server.js';
 import { CADDY_SERVICE_ID, syncCaddyEnvironment } from './caddy/service.js';
-import { releaseWebPortsFromMail, syncMailEnvironment } from './mail/service.js';
+import { releaseWebPortsFromMail, syncMailCertificates, syncMailEnvironment } from './mail/service.js';
 import { cleanUpAfterUpdate } from './components/panel-update.js';
 import { localAddresses } from './tls/panel-certificate.js';
 import { ServiceWatchdog } from './windows/service-watchdog.js';
@@ -138,6 +138,35 @@ async function main(): Promise<void> {
     } catch (error) {
       server.log.warn({ err: error }, 'Could not check which ports the mail server is using.');
     }
+
+    /*
+     * The mail server serves a certificate it made for itself until it is
+     * given a better one, and no mail client will accept that. The web server
+     * already holds a trusted certificate for the same name, so it is copied
+     * across here — and again on a timer, because Caddy renews roughly every
+     * sixty days and a stale copy breaks every mail client at once.
+     */
+    const syncCertificates = async (): Promise<void> => {
+      try {
+        const result = await syncMailCertificates({
+          db: app.db,
+          vault: app.vault,
+          services: app.services,
+          caddyDir: config.caddyDir,
+        });
+
+        if (result.installed.length > 0) {
+          server.log.info(
+            `Gave the mail server the certificate for ${result.installed.join(', ')}.`,
+          );
+        }
+      } catch (error) {
+        server.log.warn({ err: error }, 'Could not update the mail server\u2019s certificate.');
+      }
+    };
+
+    await syncCertificates();
+    setInterval(() => void syncCertificates(), 12 * 60 * 60 * 1000).unref();
 
     /*
      * Repairs sites created before preview ports existed. Without a port they

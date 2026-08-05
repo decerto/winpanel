@@ -20,7 +20,7 @@ export const STALWART_HTTP_PORT = 8080;
  */
 export const WEB_PORTS = [80, 443] as const;
 
-export const MAIL_PORTS = [25, 465, 587, 993, 4190] as const;
+export const MAIL_PORTS = [25, 465, 587, 993, 995, 4190] as const;
 
 /**
  * Ports the allocator must never hand out.

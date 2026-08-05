@@ -429,6 +429,96 @@ describe('the web server\u2019s ports', () => {
     expect(await mail.releaseWebPorts()).toEqual([]);
     expect(argsOf(seen, 'x:NetworkListener/set')).toBeUndefined();
   });
+
+  it('reports every port there is a listener for', async () => {
+    const { mail } = client(LISTENERS);
+
+    expect(await mail.listeningPorts()).toEqual([25, 80, 443, 8080]);
+  });
+});
+
+/*
+ * The certificate is what decides whether Outlook can sign in at all. Stalwart
+ * makes one for itself on first start, webmail never validates it because it
+ * never leaves the machine, and every real mail client refuses the account.
+ */
+describe('the certificate mail clients see', () => {
+  const CERTIFICATE = {
+    hostname: 'mail.example.com',
+    certificate: '-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n',
+    privateKey: '-----BEGIN PRIVATE KEY-----\ny\n-----END PRIVATE KEY-----\n',
+    expiresAt: new Date('2026-01-01T00:00:00.000Z'),
+  };
+
+  it('creates one when the mail server has none for the name', async () => {
+    const { mail, seen } = client({
+      'x:Certificate/query': { ids: [] },
+      'x:Certificate/set': {},
+    });
+
+    expect(await mail.installCertificate(CERTIFICATE)).toBe('created');
+
+    const create = argsOf(seen, 'x:Certificate/set')?.['create'] as Record<string, unknown>;
+    expect(create['new1']).toEqual({
+      certificate: { '@type': 'Text', value: CERTIFICATE.certificate },
+      privateKey: { '@type': 'Text', secret: CERTIFICATE.privateKey },
+    });
+  });
+
+  // Two certificates for one name leaves which is served to chance.
+  it('replaces the one already covering the name rather than adding another', async () => {
+    const { mail, seen } = client({
+      'x:Certificate/query': { ids: ['c1'] },
+      'x:Certificate/get': {
+        list: [
+          {
+            id: 'c1',
+            subjectAlternativeNames: { '0': 'mail.example.com' },
+            notValidAfter: '2025-06-01T00:00:00Z',
+          },
+        ],
+      },
+      'x:Certificate/set': {},
+    });
+
+    expect(await mail.installCertificate(CERTIFICATE)).toBe('updated');
+    expect(argsOf(seen, 'x:Certificate/set')?.['update']).toHaveProperty('c1');
+  });
+
+  // This runs on a timer, and writing provokes a restart that drops every
+  // open connection.
+  it('writes nothing when the installed certificate is already the current one', async () => {
+    const { mail, seen } = client({
+      'x:Certificate/query': { ids: ['c1'] },
+      'x:Certificate/get': {
+        list: [
+          {
+            id: 'c1',
+            subjectAlternativeNames: ['mail.example.com'],
+            notValidAfter: '2026-01-01T00:00:00Z',
+          },
+        ],
+      },
+      'x:Certificate/set': {},
+    });
+
+    expect(await mail.installCertificate(CERTIFICATE)).toBe('unchanged');
+    expect(argsOf(seen, 'x:Certificate/set')).toBeUndefined();
+  });
+
+  // The query filter matches on text, so `mail.example.com` must not be
+  // satisfied by a record that only covers `webmail.example.com`.
+  it('does not take a near miss for a match', async () => {
+    const { mail } = client({
+      'x:Certificate/query': { ids: ['c1'] },
+      'x:Certificate/get': {
+        list: [{ id: 'c1', subjectAlternativeNames: ['webmail.example.com'] }],
+      },
+      'x:Certificate/set': {},
+    });
+
+    expect(await mail.installCertificate(CERTIFICATE)).toBe('created');
+  });
 });
 
 describe('failures', () => {

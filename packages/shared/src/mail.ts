@@ -38,6 +38,61 @@ export function mailHostnameFor(domain: string): string {
   return `mail.${domain.replace(/^www\./i, '').toLowerCase()}`;
 }
 
+/**
+ * How a mail program connects to a mailbox on this server.
+ *
+ * Both the implicit-TLS ports and the STARTTLS ones are listed because clients
+ * disagree about which they will use: the new Outlook only offers SSL/TLS and
+ * fails outright on anything else, while Thunderbird defaults to STARTTLS.
+ * POP3 is offered too — it is the one people reach for when IMAP appears not
+ * to work, and answering "is POP3 available here" with a probe is better than
+ * leaving them to guess.
+ */
+export const MAIL_CLIENT_PORTS = [
+  {
+    id: 'imap',
+    direction: 'incoming',
+    protocol: 'IMAP',
+    port: 993,
+    encryption: 'SSL/TLS',
+    implicitTls: true,
+    preferred: true,
+    note: 'Keeps mail on the server, so every device sees the same mailbox.',
+  },
+  {
+    id: 'pop3',
+    direction: 'incoming',
+    protocol: 'POP3',
+    port: 995,
+    encryption: 'SSL/TLS',
+    implicitTls: true,
+    preferred: false,
+    note: 'Downloads mail to one device. Only use it if IMAP is not an option.',
+  },
+  {
+    id: 'smtps',
+    direction: 'outgoing',
+    protocol: 'SMTP',
+    port: 465,
+    encryption: 'SSL/TLS',
+    implicitTls: true,
+    preferred: true,
+    note: 'Encrypted from the first byte. This is what Outlook expects.',
+  },
+  {
+    id: 'submission',
+    direction: 'outgoing',
+    protocol: 'SMTP',
+    port: 587,
+    encryption: 'STARTTLS',
+    implicitTls: false,
+    preferred: false,
+    note: 'Starts unencrypted and upgrades. Used by Thunderbird and older clients.',
+  },
+] as const;
+
+export type MailClientPortId = (typeof MAIL_CLIENT_PORTS)[number]['id'];
+
 /** Mailbox size when the user does not choose one. */
 export const DEFAULT_MAILBOX_QUOTA_BYTES = 5 * 1024 * 1024 * 1024;
 

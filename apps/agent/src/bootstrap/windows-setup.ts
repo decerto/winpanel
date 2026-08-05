@@ -99,6 +99,7 @@ export function mailFirewallRules(): FirewallRule[] {
     { name: `${RULE_PREFIX} - Mail (submission)`, port: 587, protocol: 'TCP', action: 'allow', purpose: 'Sending email from your devices.' },
     { name: `${RULE_PREFIX} - Mail (secure submission)`, port: 465, protocol: 'TCP', action: 'allow', purpose: 'Sending email securely.' },
     { name: `${RULE_PREFIX} - Mail (IMAP)`, port: 993, protocol: 'TCP', action: 'allow', purpose: 'Reading email in Outlook.' },
+    { name: `${RULE_PREFIX} - Mail (POP3)`, port: 995, protocol: 'TCP', action: 'allow', purpose: 'Reading email in clients that cannot use IMAP.' },
   ];
 }
 

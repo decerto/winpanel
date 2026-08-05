@@ -3,20 +3,28 @@ import dns from 'node:dns/promises';
 import crypto from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
-import { DEFAULT_MAILBOX_QUOTA_BYTES, Hostname, mailHostnameFor } from '@winpanel/shared';
+import {
+  DEFAULT_MAILBOX_QUOTA_BYTES,
+  Hostname,
+  MAIL_CLIENT_PORTS,
+  mailHostnameFor,
+  roleAtLeast,
+  type CheckState,
+} from '@winpanel/shared';
 import { adminProcedure, protectedProcedure, router } from '../trpc.js';
 import type { RequestContext } from '../trpc.js';
 import { settings } from '../../db/schema.js';
 import {
   checkDmarc,
-  checkMailTls,
   checkMx,
   checkReverseDns,
   checkSpf,
+  probeMailPort,
   testOutboundMail,
 } from '../../mail/readiness.js';
 import { MailServerError, StalwartClient, probeMailServer } from '../../mail/stalwart-client.js';
-import { syncMailEnvironment } from '../../mail/service.js';
+import { findIssuedCertificate } from '../../mail/certificate.js';
+import { syncMailCertificates, syncMailEnvironment } from '../../mail/service.js';
 import {
   forgetMailAdminCredentials,
   loadMailAdminCredentials,
@@ -63,6 +71,21 @@ function clientFor(app: AppContext): StalwartClient {
   }
 
   return new StalwartClient(credentials.username, credentials.password);
+}
+
+/**
+ * The ports the mail server has listeners for, or null when it cannot be asked.
+ *
+ * Null is a third answer on purpose: not knowing is different from knowing
+ * there is no listener, and only the second justifies telling somebody a
+ * protocol is unavailable.
+ */
+async function listeningMailPorts(app: AppContext): Promise<number[] | null> {
+  try {
+    return await clientFor(app).listeningPorts();
+  } catch {
+    return null;
+  }
 }
 
 function toTrpcError(error: unknown): never {
@@ -302,25 +325,32 @@ export const mailRouter = router({
         .where(eq(settings.key, OVH_REQUESTED_KEY))
         .get();
 
-      const [outbound, reverseDns, mx, spf, dmarc, submissionTls, imapTls] = await Promise.all([
-        testOutboundMail(),
-        ip
-          ? checkReverseDns(ip, input.mailHostname)
-          : Promise.resolve({
-              ok: false,
-              pointerName: null,
-              forwardConfirmed: false,
-              matchesMailHostname: false,
-              summary: 'Could not determine this server\u2019s public address.',
-            }),
-        checkMx(input.domain, input.mailHostname),
-        checkSpf(input.domain),
-        checkDmarc(input.domain),
-        checkMailTls(input.mailHostname, 587),
-        checkMailTls(input.mailHostname, 993),
-      ]);
+      const [outbound, reverseDns, mx, spf, dmarc, submissionTls, starttls, imapTls] =
+        await Promise.all([
+          testOutboundMail(),
+          ip
+            ? checkReverseDns(ip, input.mailHostname)
+            : Promise.resolve({
+                ok: false,
+                pointerName: null,
+                forwardConfirmed: false,
+                matchesMailHostname: false,
+                summary: 'Could not determine this server\u2019s public address.',
+              }),
+          checkMx(input.domain, input.mailHostname),
+          checkSpf(input.domain),
+          checkDmarc(input.domain),
+          // 465 first: it is what Outlook and the phone clients use, and it is
+          // the one whose certificate they will reject.
+          probeMailPort(input.mailHostname, 465, true),
+          probeMailPort(input.mailHostname, 587, false),
+          probeMailPort(input.mailHostname, 993, true),
+        ]);
 
       const dkim = await checkDkim(input.domain);
+
+      const encryptedPorts = [submissionTls, imapTls].filter((probe) => probe.reachable);
+      const untrusted = encryptedPorts.filter((probe) => !probe.certificateTrusted);
 
       // Only the things that genuinely stop mail working gate mailbox
       // creation. SPF and DMARC affect deliverability, not delivery.
@@ -354,14 +384,36 @@ export const mailRouter = router({
             detail: dmarc.value,
           },
           submission: {
-            state: submissionTls.ok ? 'ok' : 'warning',
-            summary: submissionTls.summary,
-            detail: null,
+            state: submissionTls.reachable ? 'ok' : starttls.reachable ? 'warning' : 'blocked',
+            summary: submissionTls.reachable
+              ? 'Your devices can send email through this server.'
+              : starttls.reachable
+                ? 'Port 465 is closed, so only clients that can use STARTTLS on 587 will send.'
+                : 'Neither port your devices send email on is reachable.',
+            detail: `465: ${submissionTls.summary} 587: ${starttls.summary}`,
           },
           imap: {
-            state: imapTls.ok ? 'ok' : 'warning',
-            summary: imapTls.summary,
+            state: imapTls.reachable ? 'ok' : 'blocked',
+            summary: imapTls.reachable
+              ? 'Mail programs can reach this server to read email.'
+              : imapTls.summary,
             detail: null,
+          },
+          /*
+           * Its own row because it is the failure nothing else catches. The
+           * ports answer, webmail works, the password is right — and Outlook
+           * still refuses, saying only that something went wrong.
+           */
+          clientCertificate: {
+            state: untrusted.length === 0 ? 'ok' : 'warning',
+            summary:
+              untrusted.length === 0
+                ? encryptedPorts.length > 0
+                  ? 'Mail programs trust this server\u2019s certificate.'
+                  : 'No encrypted mail port answered, so the certificate could not be checked.'
+                : 'The mail ports use a certificate this server made for itself. Webmail works, ' +
+                  'but Outlook and phone mail apps will refuse to sign in.',
+            detail: untrusted[0]?.certificateName ?? null,
           },
         },
       };
@@ -521,24 +573,149 @@ export const mailRouter = router({
 
   /** Everything needed to set a mailbox up in Outlook. */
   clientSettings: protectedProcedure
-    .input(z.object({ mailHostname: Hostname, address: z.string().email() }))
-    .query(({ input }) => ({
-      incoming: {
-        protocol: 'IMAP',
-        server: input.mailHostname,
-        port: 993,
-        encryption: 'SSL/TLS',
-        username: input.address,
-      },
-      outgoing: {
-        protocol: 'SMTP',
-        server: input.mailHostname,
-        port: 587,
-        encryption: 'STARTTLS',
-        username: input.address,
-      },
-      note: 'Use your mailbox password. The username is the full email address.',
-    })),
+    .input(z.object({ domain: Hostname, address: z.string().email().optional() }))
+    .query(async ({ ctx, input }) => {
+      const mailHostname = mailHostnameFor(input.domain);
+      const ip = serverIp();
+
+      /*
+       * Everything here is measured rather than described. A page that lists
+       * "IMAP, port 993, SSL/TLS" and leaves it there is exactly what somebody
+       * has already tried by the time they come looking, so each port is
+       * opened the way a mail client would open it and reported as it answers.
+       */
+      const [addresses, listening, ...probes] = await Promise.all([
+        resolveHostAddress(mailHostname),
+        listeningMailPorts(ctx.app),
+        ...MAIL_CLIENT_PORTS.map((entry) =>
+          probeMailPort(mailHostname, entry.port, entry.implicitTls),
+        ),
+      ]);
+
+      const ports = MAIL_CLIENT_PORTS.map((entry, index) => {
+        const probe = probes[index]!;
+
+        return {
+          ...entry,
+          server: mailHostname,
+          reachable: probe.reachable,
+          certificateTrusted: probe.certificateTrusted,
+          certificateName: probe.certificateName,
+          certificateIssuer: probe.certificateIssuer,
+          // A listener the mail server does not have is a different answer
+          // from a port a firewall is swallowing, and only one of them is
+          // worth telling somebody to phone their host about.
+          configured: listening === null ? null : listening.includes(entry.port),
+          state: (probe.reachable && probe.certificateTrusted
+            ? 'ok'
+            : probe.reachable
+              ? 'warning'
+              : 'blocked') as CheckState,
+          summary: probe.summary,
+        };
+      });
+
+      const hostPointsHere = ip !== null && addresses.includes(ip);
+      const untrusted = ports.some((port) => port.reachable && !port.certificateTrusted);
+
+      // Installing it restarts the mail server for every tenant on the machine,
+      // so it is an administrator's to do. Offering the button to somebody who
+      // cannot press it is worse than explaining why they are not seeing one.
+      const mayInstall = roleAtLeast(ctx.user.role, 'admin');
+      const haveCertificate =
+        (await findIssuedCertificate(ctx.app.config.caddyDir, mailHostname)) !== null;
+
+      return {
+        mailHostname,
+        username: input.address ?? `you@${input.domain}`,
+        serverIp: ip,
+        /** The name every setting below depends on resolving to this server. */
+        host: {
+          resolvesHere: hostPointsHere,
+          addresses,
+          summary: hostPointsHere
+            ? `${mailHostname} points at this server.`
+            : addresses.length > 0
+              ? `${mailHostname} points at ${addresses.join(', ')}, not at this server. Mail ` +
+                'programs will connect to the wrong machine.'
+              : `${mailHostname} does not exist in DNS yet, so no mail program can find this ` +
+                'server.',
+        },
+        /**
+         * The one failure that looks like a wrong password.
+         *
+         * Outlook reports an untrusted certificate as "something went wrong
+         * while setting up your account", with no mention of certificates at
+         * all, so it has to be named here or nobody will ever find it.
+         */
+        certificate: {
+          trusted: !untrusted,
+          canFix: mayInstall && haveCertificate,
+          /** Why there is no button, when there is no button. */
+          fixHint: !haveCertificate
+            ? `There is no certificate for ${mailHostname} yet. One is issued automatically ` +
+              'once that name points at this server.'
+            : !mayInstall
+              ? 'Fixing it restarts the mail server for everybody on this machine, so ask an ' +
+                'administrator to install the certificate.'
+              : null,
+          summary: untrusted
+            ? 'The mail server is using a certificate it made for itself. Webmail still works, ' +
+              'but Outlook, Apple Mail and phone mail apps refuse to sign in to a mailbox ' +
+              'behind one.'
+            : 'The mail ports present a certificate mail programs trust.',
+        },
+        ports,
+        note: 'Use the mailbox password, and the full email address as the username.',
+      };
+    }),
+
+  /**
+   * Puts the website's certificate on the mail ports.
+   *
+   * The mail server issues itself a self-signed certificate on first start and
+   * never replaces it, which is invisible from webmail and fatal in every real
+   * mail client. The web server already holds a trusted certificate for the
+   * same name, so this copies it across rather than obtaining anything.
+   */
+  installCertificate: adminProcedure
+    .input(z.object({ domain: Hostname }))
+    .mutation(async ({ ctx, input }) => {
+      const mailHostname = mailHostnameFor(input.domain);
+
+      try {
+        const result = await syncMailCertificates({
+          db: ctx.app.db,
+          vault: ctx.app.vault,
+          services: ctx.app.services,
+          caddyDir: ctx.app.config.caddyDir,
+          hostnames: [mailHostname],
+        });
+
+        if (result.installed.length === 0) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              result.missing.length > 0
+                ? `The web server has no certificate for ${mailHostname} yet. Check that ` +
+                  `${mailHostname} points at this server on the DNS tab, then try again once ` +
+                  'the certificate has been issued.'
+                : `${mailHostname} already has the right certificate on its mail ports.`,
+          });
+        }
+
+        return {
+          ok: true,
+          mailHostname,
+          note:
+            `The mail server now presents the certificate for ${mailHostname}. It was ` +
+            'restarted, so mail programs can be set up again straight away.',
+        };
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        toTrpcError(error);
+      }
+    }),
 
   /**
    * Whether the panel can manage mailboxes at all.

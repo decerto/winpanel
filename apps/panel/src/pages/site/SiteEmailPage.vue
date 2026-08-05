@@ -10,6 +10,8 @@ import {
   Plus,
   RefreshCw,
   Server,
+  Settings2,
+  ShieldCheck,
   Trash2,
 } from 'lucide-vue-next';
 import {
@@ -40,6 +42,7 @@ type ServerStatus = Awaited<ReturnType<typeof api.mail.serverStatus.query>>;
 type Mailbox = Awaited<ReturnType<typeof api.mail.mailboxes.query>>[number];
 type Readiness = Awaited<ReturnType<typeof api.mail.readiness.query>>;
 type MailDns = Awaited<ReturnType<typeof api.mail.dnsStatus.query>>;
+type ClientSetup = Awaited<ReturnType<typeof api.mail.clientSettings.query>>;
 
 const status = ref<ServerStatus | null>(null);
 const mailboxes = ref<Mailbox[]>([]);
@@ -101,6 +104,7 @@ const DELIVERY_LABELS: Record<string, string> = {
   dmarc: 'What to do with suspicious email',
   submission: 'Sending from your devices',
   imap: 'Reading your email',
+  clientCertificate: 'Certificate mail programs see',
 };
 
 const deliveryChecks = computed(() =>
@@ -115,6 +119,104 @@ const deliveryChecks = computed(() =>
 function usage(mailbox: Mailbox): number {
   if (mailbox.quotaBytes === 0) return 0;
   return Math.min(100, (mailbox.usedBytes / mailbox.quotaBytes) * 100);
+}
+
+/*
+ * What to type into Outlook, measured rather than described.
+ *
+ * A page that simply lists "IMAP, 993, SSL/TLS" is no help to the person who
+ * has already typed exactly that and been told only that something went wrong.
+ * So every port is opened here the way a mail client opens it, and the answer
+ * — closed, encrypted, trusted — is what gets shown.
+ */
+const clientSetup = ref<ClientSetup | null>(null);
+const setupOpen = ref(false);
+const setupAddress = ref<string | null>(null);
+const loadingSetup = ref(false);
+const fixingCertificate = ref(false);
+const copiedSettings = ref(false);
+
+const incomingPorts = computed(() =>
+  (clientSetup.value?.ports ?? []).filter((port) => port.direction === 'incoming'),
+);
+const outgoingPorts = computed(() =>
+  (clientSetup.value?.ports ?? []).filter((port) => port.direction === 'outgoing'),
+);
+
+async function loadClientSetup(): Promise<void> {
+  if (!domain.value) return;
+
+  loadingSetup.value = true;
+
+  try {
+    clientSetup.value = await api.mail.clientSettings.query({
+      domain: domain.value,
+      ...(setupAddress.value ? { address: setupAddress.value } : {}),
+    });
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    loadingSetup.value = false;
+  }
+}
+
+/** Opens the settings, for a particular mailbox when one was asked for. */
+async function openClientSetup(address?: string): Promise<void> {
+  setupAddress.value = address ?? setupAddress.value;
+
+  if (setupOpen.value && !address) {
+    setupOpen.value = false;
+    return;
+  }
+
+  setupOpen.value = true;
+  await loadClientSetup();
+}
+
+/**
+ * Replaces the mail server's own certificate with the website's.
+ *
+ * The mail server issues itself one on first start and keeps it forever, which
+ * webmail never notices and no mail client will accept.
+ */
+async function fixCertificate(): Promise<void> {
+  fixingCertificate.value = true;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    const result = await api.mail.installCertificate.mutate({ domain: domain.value });
+    notice.value = result.note;
+    await loadClientSetup();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    fixingCertificate.value = false;
+  }
+}
+
+function settingsText(): string {
+  const setup = clientSetup.value;
+  if (!setup) return '';
+
+  const line = (port: (typeof setup.ports)[number]): string =>
+    `${port.protocol} \u2014 server ${port.server}, port ${port.port}, ${port.encryption}`;
+
+  return [
+    `Username: ${setup.username}`,
+    'Password: your mailbox password',
+    ...setup.ports.filter((port) => port.preferred).map(line),
+  ].join('\n');
+}
+
+async function copySettings(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(settingsText());
+    copiedSettings.value = true;
+    setTimeout(() => (copiedSettings.value = false), 2000);
+  } catch {
+    // Clipboard access can be refused; the settings are on screen to be read.
+  }
 }
 
 async function loadMailboxes(): Promise<void> {
@@ -314,6 +416,9 @@ watch(
 
 watch(domain, () => {
   showRecords.value = false;
+  setupOpen.value = false;
+  setupAddress.value = null;
+  clientSetup.value = null;
   void loadMailboxes();
   void loadMailDns();
 });
@@ -471,9 +576,182 @@ watch(() => site.value?.slug, load, { immediate: true });
 
           <p class="hint">
             In Outlook, use <span class="font-mono text-ink">{{ mailHostname }}</span> for both
-            incoming (IMAP, port 993) and outgoing (SMTP, port 587) mail, with the full address
-            as the username.
+            incoming and outgoing mail, with the full address as the username.
+            <button
+              type="button"
+              class="text-brand-bright underline"
+              @click="openClientSetup(revealed.address)"
+            >
+              Show the exact settings
+            </button>
           </p>
+        </section>
+
+        <!--
+          Mail client setup.
+          ------------------
+          Everything below is probed live rather than printed from a table.
+          The failure this exists for is invisible otherwise: the mail server
+          serves a certificate it made for itself, webmail is perfectly happy
+          with it because it never leaves this machine, and Outlook refuses the
+          account with nothing more useful than "something went wrong".
+        -->
+        <section class="card overflow-hidden">
+          <div class="flex flex-wrap items-center gap-3 border-b border-line px-5 py-3">
+            <h3 class="flex items-center gap-2 text-sm font-semibold text-ink">
+              <Settings2 :size="15" class="text-ink-faint" aria-hidden="true" />
+              Set up Outlook or another mail program
+            </h3>
+
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm ml-auto"
+              :disabled="loadingSetup"
+              @click="openClientSetup()"
+            >
+              <RefreshCw
+                v-if="loadingSetup"
+                :size="14"
+                class="animate-spin"
+                aria-hidden="true"
+              />
+              {{
+                loadingSetup
+                  ? 'Checking the ports\u2026'
+                  : setupOpen
+                    ? 'Hide settings'
+                    : 'Show settings'
+              }}
+            </button>
+          </div>
+
+          <p v-if="!setupOpen" class="px-5 py-4 text-sm text-ink-muted">
+            The server name, ports and encryption for
+            <span class="font-mono text-ink">@{{ domain }}</span
+            >, checked against this server as a mail program would see them.
+          </p>
+
+          <div v-else-if="clientSetup" class="space-y-4 px-5 py-4">
+            <!-- Nothing else on the card can work if the name is wrong. -->
+            <AlertMessage
+              v-if="!clientSetup.host.resolvesHere"
+              tone="warning"
+              title="Mail programs cannot find this server"
+            >
+              <p>{{ clientSetup.host.summary }}</p>
+              <RouterLink
+                v-if="site?.slug"
+                :to="`/sites/${site.slug}/dns`"
+                class="btn btn-ghost btn-sm mt-3"
+              >
+                Open DNS
+              </RouterLink>
+            </AlertMessage>
+
+            <!--
+              The one that reads as a wrong password. Outlook says only that
+              something went wrong, so it has to be named here explicitly.
+            -->
+            <AlertMessage
+              v-if="!clientSetup.certificate.trusted"
+              tone="warning"
+              title="Outlook will refuse this server&rsquo;s certificate"
+            >
+              <p>{{ clientSetup.certificate.summary }}</p>
+              <div class="mt-3 flex flex-wrap items-center gap-2">
+                <button
+                  v-if="clientSetup.certificate.canFix"
+                  type="button"
+                  class="btn btn-primary btn-sm"
+                  :disabled="fixingCertificate"
+                  @click="fixCertificate"
+                >
+                  <ShieldCheck :size="14" aria-hidden="true" />
+                  {{ fixingCertificate ? 'Installing\u2026' : 'Use this website\u2019s certificate' }}
+                </button>
+                <p v-else-if="clientSetup.certificate.fixHint" class="text-xs text-ink-faint">
+                  {{ clientSetup.certificate.fixHint }}
+                </p>
+              </div>
+            </AlertMessage>
+
+            <dl class="grid gap-3 sm:grid-cols-2">
+              <div class="rounded-lg border border-line bg-black/20 px-3 py-2">
+                <dt class="text-xs text-ink-faint">Username</dt>
+                <dd class="font-mono text-sm text-ink">{{ clientSetup.username }}</dd>
+              </div>
+              <div class="rounded-lg border border-line bg-black/20 px-3 py-2">
+                <dt class="text-xs text-ink-faint">Password</dt>
+                <dd class="text-sm text-ink">
+                  The mailbox password. Reset it above if it is not to hand.
+                </dd>
+              </div>
+            </dl>
+
+            <div v-for="group in [
+                { title: 'Incoming mail', ports: incomingPorts },
+                { title: 'Outgoing mail', ports: outgoingPorts },
+              ]"
+              :key="group.title"
+            >
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-ink-faint">
+                {{ group.title }}
+              </h4>
+
+              <ul class="mt-2 space-y-2">
+                <li
+                  v-for="port in group.ports"
+                  :key="port.id"
+                  class="rounded-lg border bg-black/20 px-3 py-2"
+                  :class="port.preferred ? 'border-brand/40' : 'border-line'"
+                >
+                  <div class="flex flex-wrap items-center gap-3">
+                    <StatusBadge :state="port.state" size="sm" :show-label="false" />
+                    <span class="text-sm font-medium text-ink">{{ port.protocol }}</span>
+                    <span
+                      v-if="port.preferred"
+                      class="rounded-full bg-brand-soft px-1.5 py-0.5 text-[10px] font-semibold
+                             uppercase tracking-wide text-brand-bright"
+                    >
+                      Recommended
+                    </span>
+                    <span class="ml-auto font-mono text-xs text-ink-muted">
+                      {{ port.server }}:{{ port.port }} &middot; {{ port.encryption }}
+                    </span>
+                  </div>
+                  <p class="mt-1 text-xs text-ink-faint">
+                    {{ port.summary }}
+                    <template v-if="port.configured === false">
+                      The mail server has no listener on this port, so this protocol is not
+                      available here.
+                    </template>
+                    <template v-else-if="port.state === 'ok'">{{ port.note }}</template>
+                  </p>
+                </li>
+              </ul>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <button type="button" class="btn btn-ghost btn-sm" @click="copySettings">
+                <Copy :size="14" aria-hidden="true" />
+                {{ copiedSettings ? 'Copied' : 'Copy the recommended settings' }}
+              </button>
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
+                :disabled="loadingSetup"
+                @click="loadClientSetup"
+              >
+                <RefreshCw
+                  :size="14"
+                  :class="loadingSetup ? 'animate-spin' : ''"
+                  aria-hidden="true"
+                />
+                Check again
+              </button>
+              <p class="text-xs text-ink-faint">{{ clientSetup.note }}</p>
+            </div>
+          </div>
         </section>
 
         <section class="card overflow-hidden">
@@ -609,6 +887,15 @@ watch(() => site.value?.slug, load, { immediate: true });
                   >
                     <ExternalLink :size="15" />
                   </RouterLink>
+
+                  <button
+                    type="button"
+                    class="rounded-md p-2 text-ink-faint hover:bg-white/5 hover:text-ink"
+                    :aria-label="`Mail program settings for ${mailbox.address}`"
+                    @click="openClientSetup(mailbox.address)"
+                  >
+                    <Settings2 :size="15" />
+                  </button>
 
                   <button
                     type="button"

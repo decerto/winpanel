@@ -1,7 +1,10 @@
 import crypto from 'node:crypto';
+import { mailHostnameFor } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
+import { sites } from '../db/schema.js';
 import type { SecretVault } from '../security/vault.js';
 import type { ServiceManager } from '../windows/service-manager.js';
+import { findIssuedCertificate } from './certificate.js';
 import {
   loadMailAdminCredentials,
   storeMailAdminCredentials,
@@ -114,4 +117,80 @@ export async function releaseWebPortsFromMail(
   await deps.services.restart(STALWART_SERVICE_ID);
 
   return { changes, restarted: true };
+}
+
+/** Every mail hostname this server is expected to answer for. */
+export function mailHostnames(db: DatabaseHandle): string[] {
+  const rows = db.db.select({ domains: sites.domains }).from(sites).all();
+
+  const names = new Set<string>();
+  for (const row of rows) {
+    for (const domain of row.domains as string[]) {
+      if (!domain.toLowerCase().startsWith('www.')) names.add(mailHostnameFor(domain));
+    }
+  }
+
+  return [...names];
+}
+
+export interface MailCertificateSync {
+  /** Hostnames whose certificate was installed or refreshed. */
+  installed: string[];
+  /** Hostnames with no publicly-trusted certificate on disk to install. */
+  missing: string[];
+  restarted: boolean;
+}
+
+/**
+ * Gives the mail server the certificates the web server already holds.
+ *
+ * Without this, Stalwart serves the self-signed certificate it made for itself
+ * on 993, 995 and 465, and every real mail client refuses the connection —
+ * while the panel's own webmail keeps working, because it reaches the mail
+ * server over loopback and validates nothing. That asymmetry is what makes the
+ * fault so hard to place from inside the panel, so it is repaired rather than
+ * reported.
+ *
+ * Restarting is what makes the new certificate take effect, and it is done
+ * once for the whole batch rather than per hostname. Nothing is written or
+ * restarted when every certificate is already current, so this is safe to run
+ * on a timer.
+ */
+export async function syncMailCertificates(deps: {
+  db: DatabaseHandle;
+  vault: SecretVault;
+  services: ServiceManager;
+  caddyDir: string;
+  hostnames?: readonly string[];
+}): Promise<MailCertificateSync> {
+  const credentials = loadMailAdminCredentials(deps.db, deps.vault);
+  if (!credentials) return { installed: [], missing: [], restarted: false };
+
+  const client = new StalwartClient(credentials.username, credentials.password);
+  const installed: string[] = [];
+  const missing: string[] = [];
+
+  for (const hostname of deps.hostnames ?? mailHostnames(deps.db)) {
+    const issued = await findIssuedCertificate(deps.caddyDir, hostname);
+
+    if (!issued) {
+      missing.push(hostname);
+      continue;
+    }
+
+    const result = await client.installCertificate({
+      hostname,
+      certificate: issued.certificate,
+      privateKey: issued.privateKey,
+      expiresAt: issued.expiresAt,
+    });
+
+    if (result !== 'unchanged') installed.push(hostname);
+  }
+
+  if (installed.length === 0) return { installed, missing, restarted: false };
+
+  await deps.services.restart(STALWART_SERVICE_ID);
+
+  return { installed, missing, restarted: true };
 }

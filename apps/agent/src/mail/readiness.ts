@@ -353,55 +353,104 @@ export async function checkMx(
 }
 
 /**
- * Checks that a mail port offers encryption.
+ * What a mail client would find on one of the mail ports.
  *
- * Ports 465 and 993 are encrypted from the first byte; 25 and 587 start plain
- * and upgrade with STARTTLS.
+ * Reachability and trust are separated deliberately. A closed port and a port
+ * answering with a self-signed certificate both stop Outlook dead, but the
+ * first is a listener or firewall problem and the second is a certificate
+ * problem — and the certificate one is invisible from the panel's own webmail,
+ * which never validates anything because it talks to the mail server over
+ * loopback. That is why "webmail works but Outlook does not" is the single
+ * most common shape of this failure.
  */
-export async function checkMailTls(
+export interface MailPortProbe {
+  port: number;
+  reachable: boolean;
+  encrypted: boolean;
+  /** False for a self-signed certificate, or one issued for another name. */
+  certificateTrusted: boolean;
+  certificateName: string | null;
+  certificateIssuer: string | null;
+  summary: string;
+}
+
+const UNREACHABLE = {
+  reachable: false,
+  encrypted: false,
+  certificateTrusted: false,
+  certificateName: null,
+  certificateIssuer: null,
+} as const;
+
+/** Opens the port the way a mail client would, and reports what came back. */
+export async function probeMailPort(
   host: string,
   port: number,
+  implicitTls: boolean,
   timeoutMs = 10_000,
-): Promise<{ ok: boolean; summary: string }> {
-  const implicitTls = port === 465 || port === 993;
-
+): Promise<MailPortProbe> {
   if (!implicitTls) {
     const probe = await probeSmtp(host, port, timeoutMs);
+    const answered = probe.outcome === 'banner-received';
+
     return {
-      ok: probe.outcome === 'banner-received',
-      summary:
-        probe.outcome === 'banner-received'
-          ? `Port ${port} is answering.`
+      port,
+      ...UNREACHABLE,
+      reachable: answered,
+      // STARTTLS upgrades after the greeting, so a banner is as far as this
+      // goes. The implicit-TLS port on the same server proves the certificate.
+      certificateTrusted: answered,
+      summary: answered
+        ? `Port ${port} is answering.`
+        : probe.outcome === 'refused'
+          ? `Nothing is listening on port ${port}.`
           : `Port ${port} is not reachable from this server.`,
     };
   }
 
-  return await new Promise((resolve) => {
+  return await new Promise<MailPortProbe>((resolve) => {
+    let settled = false;
+    const finish = (probe: MailPortProbe): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(probe);
+    };
+
     const socket = tls.connect(
       { host, port, servername: host, timeout: timeoutMs, rejectUnauthorized: false },
       () => {
         const certificate = socket.getPeerCertificate();
-        const authorized = socket.authorized;
-        socket.destroy();
+        const trusted = socket.authorized;
+        // A distinguished-name field can repeat, and Node hands back an array
+        // when it does.
+        const first = (value: string | string[] | undefined): string | null =>
+          (Array.isArray(value) ? value[0] : value) ?? null;
 
-        resolve({
-          ok: authorized,
-          summary: authorized
-            ? `Port ${port} is encrypted with a valid certificate.`
+        const name = first(certificate.subject?.CN);
+        const issuer = first(certificate.issuer?.O) ?? first(certificate.issuer?.CN);
+
+        finish({
+          port,
+          reachable: true,
+          encrypted: true,
+          certificateTrusted: trusted,
+          certificateName: name,
+          certificateIssuer: issuer,
+          summary: trusted
+            ? `Port ${port} is encrypted with a certificate mail clients trust.`
             : `Port ${port} is encrypted, but the certificate is not trusted ` +
-              `(${certificate.subject?.CN ?? 'unknown'}).`,
+              `(${name ?? 'unknown'}). Outlook and Apple Mail refuse to sign in to a ` +
+              'mailbox behind an untrusted certificate.',
         });
       },
     );
 
-    socket.once('error', () => {
-      socket.destroy();
-      resolve({ ok: false, summary: `Port ${port} is not reachable.` });
-    });
-
-    socket.once('timeout', () => {
-      socket.destroy();
-      resolve({ ok: false, summary: `Port ${port} did not respond.` });
-    });
+    socket.once('error', () =>
+      finish({ port, ...UNREACHABLE, summary: `Port ${port} is not reachable.` }),
+    );
+    socket.once('timeout', () =>
+      finish({ port, ...UNREACHABLE, summary: `Port ${port} did not respond.` }),
+    );
   });
 }
