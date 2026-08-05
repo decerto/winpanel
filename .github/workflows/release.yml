@@ -2,16 +2,29 @@ name: Release
 
 # Builds the installer and publishes it.
 #
-# Deliberately does NOT run the test suite. CI already runs typecheck, build,
-# tests and the dependency audit on every push to main, so repeating them here
-# would double the wait and give the same failure two places to appear. Tag a
-# commit you have already seen go green.
+# Deliberately does NOT run the test suite: `pnpm check` is the gate before
+# tagging, and repeating it here would double the wait for a commit already
+# known to be good.
+#
+# Two ways in. Push a `v1.2.3` tag, or run it from the Actions tab and give it
+# a version — the manual run tags the commit it built and publishes the same
+# release, so a release never has to be assembled by hand.
 
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 1.2.3. Leave empty to build without publishing.'
+        required: false
+        type: string
+      prerelease:
+        description: 'Mark the release as a pre-release'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -55,15 +68,34 @@ jobs:
 
       - name: Work out the version
         id: version
-        # Tags are written v1.2.3; the installer wants 1.2.3.
+        # Read through the environment rather than interpolated straight into
+        # the script: a workflow input is a free-text string, and pasting it
+        # into a shell would run whatever it contained.
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if ("${{ github.ref_type }}" -eq "tag") {
-            $version = "${{ github.ref_name }}" -replace '^v', ''
+          if ($env:INPUT_VERSION) {
+            $version = $env:INPUT_VERSION -replace '^v', ''
+          } elseif ($env:REF_TYPE -eq 'tag') {
+            # Tags are written v1.2.3; the installer wants 1.2.3.
+            $version = $env:REF_NAME -replace '^v', ''
           } else {
-            $version = "0.0.0-dev"
+            $version = '0.0.0-dev'
           }
+
+          if ($version -ne '0.0.0-dev' -and
+              $version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$') {
+            throw "Version '$version' is not a version number like 1.2.3."
+          }
+
+          $publish = if ($version -eq '0.0.0-dev') { 'false' } else { 'true' }
+
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "Building version $version"
+          "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "publish=$publish" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Building version $version (publishing: $publish)"
 
       - name: Compile the installer
         # No separate compiler install step: the build script fetches a pinned
@@ -99,9 +131,15 @@ jobs:
           retention-days: 30
 
       - name: Publish release
-        if: github.ref_type == 'tag'
+        if: steps.version.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
+          # Named explicitly so a manual run works too: the tag does not have
+          # to exist beforehand, and is created against the commit just built.
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: WinPanel ${{ steps.version.outputs.version }}
+          prerelease: ${{ inputs.prerelease || false }}
           files: |
             dist/WinPanel-Setup-x64.exe
             dist/SHA256SUMS.txt

@@ -7,8 +7,6 @@
 Websites, Node and .NET apps, Cloudflare DNS, self-hosted mailboxes, customer accounts
 and the Windows fixes that make it all work — in one panel, without IIS.
 
-[![CI](https://github.com/decerto/winpanel/actions/workflows/ci.yml/badge.svg)](https://github.com/decerto/winpanel/actions/workflows/ci.yml)
-
 [Features](#what-it-does) · [Websites](#websites) · [DNS](#dns-control) · [Email](#email-control) · [People](#user-control-and-management) · [Compare](#how-it-compares) · [FAQ](#frequently-asked-questions) · [Install](#installing) · [Develop](#development)
 
 ![The websites list](docs/screenshots/websites.png)
