@@ -5,6 +5,7 @@ import {
   CloudflareError,
   planWebsiteRecords,
   recommendedWebsiteRecords,
+  wwwDomainToAdd,
 } from '../src/dns/cloudflare.js';
 
 /**
@@ -687,5 +688,45 @@ describe('planWebsiteRecords', () => {
 
     const methods = calls.map((c) => c.method);
     expect(methods.indexOf('DELETE')).toBeLessThan(methods.indexOf('POST'));
+  });
+});
+
+/**
+ * The bug this closes: pointing a domain here always wrote a `www` record, but
+ * the website was never told it answered on that name, so the web server had
+ * no certificate for it and aborted the handshake. Visitors saw an SSL error
+ * on www while the bare domain loaded normally.
+ */
+describe('wwwDomainToAdd', () => {
+  const base = { domain: 'example.com', siteDomains: ['example.com'], otherSiteDomains: [] };
+
+  it('adds www for a site serving the bare domain', () => {
+    expect(wwwDomainToAdd(base)).toBe('www.example.com');
+  });
+
+  it('does nothing when the site already serves it', () => {
+    expect(
+      wwwDomainToAdd({ ...base, siteDomains: ['example.com', 'WWW.Example.com.'] }),
+    ).toBeNull();
+  });
+
+  it('does nothing for a site that does not serve the domain', () => {
+    expect(wwwDomainToAdd({ ...base, siteDomains: ['other.com'] })).toBeNull();
+  });
+
+  it('leaves a name another website already claims alone', () => {
+    // Two sites on one host is a config Caddy resolves unpredictably.
+    expect(wwwDomainToAdd({ ...base, otherSiteDomains: ['www.example.com'] })).toBeNull();
+  });
+
+  it('does not derive www.www from a www domain', () => {
+    expect(
+      wwwDomainToAdd({ domain: 'www.example.com', siteDomains: ['www.example.com'], otherSiteDomains: [] }),
+    ).toBeNull();
+  });
+
+  it('stops at the limit the form allows', () => {
+    const siteDomains = ['example.com', ...Array.from({ length: 19 }, (_, i) => `a${i}.example.com`)];
+    expect(wwwDomainToAdd({ ...base, siteDomains })).toBeNull();
   });
 });

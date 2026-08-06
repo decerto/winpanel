@@ -1,4 +1,5 @@
 import { TRPCError } from '@trpc/server';
+import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { DnsRecordType, Hostname } from '@winpanel/shared';
 import { protectedProcedure, router } from '../trpc.js';
@@ -7,6 +8,7 @@ import {
   CloudflareClient,
   CloudflareError,
   planWebsiteRecords,
+  wwwDomainToAdd,
   type DnsChange,
 } from '../../dns/cloudflare.js';
 import {
@@ -19,6 +21,7 @@ import {
   type TokenSource,
 } from '../../dns/token.js';
 import { syncCaddyEnvironment } from '../../caddy/service.js';
+import { sites } from '../../db/schema.js';
 import { SiteService } from '../../sites/site-service.js';
 import type { AppContext } from '../../app-context.js';
 
@@ -121,6 +124,50 @@ async function planFor(
   });
 
   return { zone, changes };
+}
+
+/**
+ * Gives the website the `www` name the plan has just created a record for.
+ *
+ * Without this the record sends visitors to a server holding no certificate
+ * for that name, which they see as an SSL error rather than as a website that
+ * is not set up yet.
+ *
+ * @returns the name that was added, or null when nothing needed adding.
+ */
+async function adoptWwwDomain(
+  app: AppContext,
+  slug: string | undefined,
+  domain: string,
+): Promise<string | null> {
+  if (!slug) return null;
+
+  const service = new SiteService(app.db, app.vault, app.config.sitesRoot);
+  const site = service.get(slug);
+  if (!site) return null;
+
+  const www = wwwDomainToAdd({
+    domain,
+    siteDomains: site.domains as string[],
+    otherSiteDomains: service
+      .list()
+      .filter((other) => other.id !== site.id)
+      .flatMap((other) => other.domains as string[]),
+  });
+
+  if (!www) return null;
+
+  app.db.db
+    .update(sites)
+    .set({ domains: [...(site.domains as string[]), www], updatedAt: new Date() })
+    .where(eq(sites.id, site.id))
+    .run();
+
+  // The certificate is only requested once the web server has been told the
+  // name exists, so this cannot wait for the next deploy.
+  await app.routing.tryApply();
+
+  return www;
 }
 
 /**
@@ -352,17 +399,23 @@ export const dnsRouter = router({
           await client.setStrictSsl(zone.id).catch(() => undefined);
         }
 
+        const adopted = await adoptWwwDomain(ctx.app, input.slug, input.domain);
         const applied = changes.filter((change) => change.action !== 'unchanged');
+
+        const note = applied.length === 0
+          ? 'Everything was already correct \u2014 nothing needed changing.'
+          : input.proxied
+            ? 'Traffic will go through Cloudflare. It can take a few minutes to take effect.'
+            : 'Your domain now points straight at this server.';
 
         return {
           zone: zone.name,
           changes,
           applied: applied.map((change) => `${change.record.type} ${change.record.name}`),
-          note: applied.length === 0
-            ? 'Everything was already correct \u2014 nothing needed changing.'
-            : input.proxied
-              ? 'Traffic will go through Cloudflare. It can take a few minutes to take effect.'
-              : 'Your domain now points straight at this server.',
+          ...(adopted ? { addedDomain: adopted } : {}),
+          note: adopted
+            ? `${note} This website now also answers on ${adopted}, so it can be given a certificate for that name.`
+            : note,
         };
       } catch (error) {
         if (error instanceof TRPCError) throw error;

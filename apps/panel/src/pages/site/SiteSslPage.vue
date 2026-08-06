@@ -93,6 +93,21 @@ const SSL_MODES = [
 
 const TLS_VERSIONS = ['1.0', '1.1', '1.2', '1.3'] as const;
 
+/**
+ * Cloudflare choosing the mode itself, offered only where it exists.
+ *
+ * Not every domain has been given the setting yet, and the panel has no way to
+ * turn it on for one that has not, so a null means the choice is simply not
+ * shown rather than shown and refused.
+ */
+const automaticOffered = computed(() => settings.value?.sslAutomaticMode != null);
+const automatic = computed(() => settings.value?.sslAutomaticMode === 'auto');
+
+/** What Cloudflare has settled on while it is choosing. */
+const runningMode = computed(
+  () => SSL_MODES.find((mode) => mode.value === settings.value?.sslMode)?.label ?? null,
+);
+
 const CERT_LABEL = {
   valid: 'Secured',
   expiring: 'Renewing soon',
@@ -186,6 +201,7 @@ async function load(): Promise<void> {
 
 interface SettingChange {
   sslMode?: SslMode;
+  sslAutomaticMode?: 'auto' | 'custom';
   alwaysUseHttps?: boolean;
   automaticHttpsRewrites?: boolean;
   minTlsVersion?: TlsVersion;
@@ -607,11 +623,38 @@ watch(slug, load, { immediate: true });
           <fieldset class="mt-4 space-y-2" :disabled="busy || !settings.editable">
             <legend class="sr-only">Encryption mode</legend>
             <label
+              v-if="automaticOffered"
+              class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors"
+              :class="
+                automatic ? 'border-brand/50 bg-brand-soft/25' : 'border-line hover:border-line-strong'
+              "
+            >
+              <input
+                type="radio"
+                name="ssl-mode"
+                class="mt-1"
+                value="automatic"
+                :checked="automatic"
+                @change="save({ sslAutomaticMode: 'auto' })"
+              />
+              <span class="min-w-0">
+                <span class="block text-sm font-medium text-ink">Automatic</span>
+                <span class="block text-xs text-ink-muted">
+                  Cloudflare checks this server every so often and moves to the strongest mode it
+                  can. It never moves to a weaker one.
+                  <template v-if="automatic && runningMode">
+                    Currently using <strong>{{ runningMode }}</strong
+                    >.
+                  </template>
+                </span>
+              </span>
+            </label>
+            <label
               v-for="mode in SSL_MODES"
               :key="mode.value"
               class="flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors"
               :class="
-                settings.sslMode === mode.value
+                !automatic && settings.sslMode === mode.value
                   ? 'border-brand/50 bg-brand-soft/25'
                   : 'border-line hover:border-line-strong'
               "
@@ -621,7 +664,7 @@ watch(slug, load, { immediate: true });
                 name="ssl-mode"
                 class="mt-1"
                 :value="mode.value"
-                :checked="settings.sslMode === mode.value"
+                :checked="!automatic && settings.sslMode === mode.value"
                 @change="save({ sslMode: mode.value })"
               />
               <span class="min-w-0">

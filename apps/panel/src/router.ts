@@ -1,14 +1,9 @@
 import { createRouter, createWebHistory } from 'vue-router';
-import { roleAtLeast, type UserRole } from '@winpanel/shared';
 import { api } from './lib/api';
 
 /**
  * Routes are lazily loaded so the first paint after sign-in is fast even on a
  * slow connection to a remote server.
- *
- * `minRole` marks a page as belonging to whoever runs the server rather than
- * to whoever is hosted on it. It is a signpost, not a lock — the endpoints
- * behind each page are authorised on the server regardless.
  */
 export const router = createRouter({
   history: createWebHistory(),
@@ -31,7 +26,7 @@ export const router = createRouter({
       path: '/health',
       name: 'health',
       component: () => import('./pages/HealthPage.vue'),
-      meta: { title: 'Server health', minRole: 'admin' },
+      meta: { title: 'Server health' },
     },
     {
       path: '/sites',
@@ -78,11 +73,6 @@ export const router = createRouter({
           component: () => import('./pages/site/SiteAppPage.vue'),
         },
         {
-          path: 'traffic',
-          name: 'site-traffic',
-          component: () => import('./pages/site/SiteTrafficPage.vue'),
-        },
-        {
           path: 'dns',
           name: 'site-dns',
           component: () => import('./pages/site/SiteDnsPage.vue'),
@@ -108,7 +98,7 @@ export const router = createRouter({
       path: '/email',
       name: 'email',
       component: () => import('./pages/MailPage.vue'),
-      meta: { title: 'Email', minRole: 'admin' },
+      meta: { title: 'Email' },
     },
     {
       path: '/webmail',
@@ -123,22 +113,10 @@ export const router = createRouter({
       meta: { title: 'Security' },
     },
     {
-      path: '/people',
-      name: 'people',
-      component: () => import('./pages/PeoplePage.vue'),
-      meta: { title: 'People', minRole: 'admin' },
-    },
-    {
-      path: '/sign-ins',
-      name: 'access',
-      component: () => import('./pages/AccessPage.vue'),
-      meta: { title: 'Sign-in activity', minRole: 'superadmin' },
-    },
-    {
       path: '/settings',
       name: 'settings',
       component: () => import('./pages/SettingsPage.vue'),
-      meta: { title: 'Settings', minRole: 'admin' },
+      meta: { title: 'Settings' },
     },
   ],
 });
@@ -171,14 +149,6 @@ router.beforeEach(async (to) => {
 
   // Already signed in: no reason to sit on the sign-in screen.
   if (to.name === 'login' || to.name === 'setup') {
-    return { name: 'sites' };
-  }
-
-  // Pages that belong to whoever runs the server. The server refuses these
-  // calls regardless; this just avoids showing a screen made entirely of
-  // errors.
-  const minRole = to.meta['minRole'] as UserRole | undefined;
-  if (minRole !== undefined && !(state.user && roleAtLeast(state.user.role, minRole))) {
     return { name: 'sites' };
   }
 

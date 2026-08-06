@@ -1,6 +1,7 @@
 import {
   CLOUDFLARE_PERMISSION_SUMMARY,
   CloudflareMinTlsVersion,
+  CloudflareSslAutomaticMode,
   CloudflareSslMode,
   validateDnsRecord,
   type CloudflareZone,
@@ -46,6 +47,8 @@ export interface ZoneSslSettings {
   /** False when the plan does not allow the settings to be changed. */
   editable: boolean;
   sslMode: CloudflareSslMode | null;
+  /** Null when Cloudflare has not given this zone the automatic mode at all. */
+  sslAutomaticMode: CloudflareSslAutomaticMode | null;
   alwaysUseHttps: boolean | null;
   automaticHttpsRewrites: boolean | null;
   minTlsVersion: CloudflareMinTlsVersion | null;
@@ -56,6 +59,7 @@ const UNKNOWN_SSL_SETTINGS: ZoneSslSettings = {
   readable: true,
   editable: false,
   sslMode: null,
+  sslAutomaticMode: null,
   alwaysUseHttps: null,
   automaticHttpsRewrites: null,
   minTlsVersion: null,
@@ -462,6 +466,9 @@ export class CloudflareClient {
       // it, so the panel can grey the control instead of failing on save.
       editable: byId.get('ssl')?.editable !== false,
       sslMode: sslMode.success ? sslMode.data : null,
+      sslAutomaticMode: byId.has('ssl_automatic_mode')
+        ? this.parseAutomaticMode(value('ssl_automatic_mode'))
+        : await this.getSslAutomaticMode(zoneId),
       alwaysUseHttps: onOff('always_use_https'),
       automaticHttpsRewrites: onOff('automatic_https_rewrites'),
       minTlsVersion: minTls.success ? minTls.data : null,
@@ -473,6 +480,31 @@ export class CloudflareClient {
   /** Changes one setting. Cloudflare has no bulk write worth the risk. */
   async setSslSetting(zoneId: string, setting: string, value: unknown): Promise<void> {
     await this.request('PATCH', `/zones/${zoneId}/settings/${setting}`, { value });
+  }
+
+  private parseAutomaticMode(raw: unknown): CloudflareSslAutomaticMode | null {
+    const parsed = CloudflareSslAutomaticMode.safeParse(raw);
+    return parsed.success ? parsed.data : null;
+  }
+
+  /**
+   * Whether Cloudflare is choosing the encryption mode for this zone.
+   *
+   * Asked for on its own because the bulk settings list does not always carry
+   * it, and a zone Cloudflare has not migrated has no such setting at all —
+   * which answers null rather than failing, so the panel simply does not offer
+   * a choice that does not exist for that domain.
+   */
+  private async getSslAutomaticMode(zoneId: string): Promise<CloudflareSslAutomaticMode | null> {
+    try {
+      const payload = await this.request<{ value: unknown }>(
+        'GET',
+        `/zones/${zoneId}/settings/ssl_automatic_mode`,
+      );
+      return this.parseAutomaticMode(payload.result?.value);
+    } catch {
+      return null;
+    }
   }
 
   /** Rejects a write that would break mail or certificate renewal. */
@@ -533,6 +565,39 @@ export function recommendedWebsiteRecords(input: {
   });
 
   return records;
+}
+
+/** What `sites.updateDomains` will accept, so the panel cannot push past it. */
+const MAX_SITE_DOMAINS = 20;
+
+/**
+ * The `www` name a website should start answering on, if any.
+ *
+ * Pointing a domain here always writes a `www` record, but the website itself
+ * was never told it serves that name, so the web server had no certificate for
+ * it and aborted the handshake: the bare domain loaded and `www` showed an SSL
+ * error. Deciding it here keeps the rule testable and out of the router.
+ *
+ * @returns the name to add, or null when adding one would be wrong.
+ */
+export function wwwDomainToAdd(input: {
+  domain: string;
+  siteDomains: readonly string[];
+  otherSiteDomains: readonly string[];
+}): string | null {
+  const domain = normaliseName(input.domain);
+  if (domain.startsWith('www.')) return null;
+
+  const www = `www.${domain}`;
+  const mine = input.siteDomains.map(normaliseName);
+
+  if (!mine.includes(domain) || mine.includes(www)) return null;
+  // Two websites claiming one name is a configuration Caddy resolves
+  // unpredictably, so the existing claim wins.
+  if (input.otherSiteDomains.map(normaliseName).includes(www)) return null;
+  if (input.siteDomains.length >= MAX_SITE_DOMAINS) return null;
+
+  return www;
 }
 
 /** One edit the panel intends to make, with the reason in the user's terms. */

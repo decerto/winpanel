@@ -108,6 +108,18 @@ export function validateDnsRecord(
 export const CloudflareSslMode = z.enum(['off', 'flexible', 'full', 'strict']);
 export type CloudflareSslMode = z.infer<typeof CloudflareSslMode>;
 
+/**
+ * Whether Cloudflare picks the encryption mode itself.
+ *
+ * `auto` lets Cloudflare probe the origin every month or so and raise the mode
+ * when it finds the origin can support a stronger one; it never lowers it.
+ * `custom` means whatever `ssl` says is what stays. Zones Cloudflare has not
+ * migrated to this feature have no such setting at all, which is why every
+ * read of it can come back null.
+ */
+export const CloudflareSslAutomaticMode = z.enum(['auto', 'custom']);
+export type CloudflareSslAutomaticMode = z.infer<typeof CloudflareSslAutomaticMode>;
+
 /** The oldest TLS version Cloudflare will accept from a visitor. */
 export const CloudflareMinTlsVersion = z.enum(['1.0', '1.1', '1.2', '1.3']);
 export type CloudflareMinTlsVersion = z.infer<typeof CloudflareMinTlsVersion>;

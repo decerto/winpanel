@@ -1,6 +1,10 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { CloudflareMinTlsVersion, CloudflareSslMode } from '@winpanel/shared';
+import {
+  CloudflareMinTlsVersion,
+  CloudflareSslAutomaticMode,
+  CloudflareSslMode,
+} from '@winpanel/shared';
 import { protectedProcedure, router } from '../trpc.js';
 import { CloudflareClient, CloudflareError, type ZoneSslSettings } from '../../dns/cloudflare.js';
 import { cloudflareTokenForSite, type TokenSource } from '../../dns/token.js';
@@ -73,6 +77,7 @@ type CloudflareBlock = 'no-token' | 'no-domain' | 'zone-not-found' | 'no-permiss
 
 const SETTING_IDS = {
   sslMode: 'ssl',
+  sslAutomaticMode: 'ssl_automatic_mode',
   alwaysUseHttps: 'always_use_https',
   automaticHttpsRewrites: 'automatic_https_rewrites',
   minTlsVersion: 'min_tls_version',
@@ -206,6 +211,7 @@ export const sslRouter = router({
       z.object({
         slug: z.string().min(1),
         sslMode: CloudflareSslMode.optional(),
+        sslAutomaticMode: CloudflareSslAutomaticMode.optional(),
         alwaysUseHttps: z.boolean().optional(),
         automaticHttpsRewrites: z.boolean().optional(),
         minTlsVersion: CloudflareMinTlsVersion.optional(),
@@ -225,6 +231,22 @@ export const sslRouter = router({
       }
 
       const writes: Array<[string, unknown]> = [];
+
+      /*
+       * Choosing a mode by hand means choosing it for good. While Cloudflare
+       * is on automatic it re-scans the origin every month or so and writes
+       * the mode itself, so a bare `ssl` write would be quietly undone later.
+       * The opt-out goes first, and only for a zone that actually has the
+       * setting — Cloudflare has not given it to every zone yet, and asking
+       * for it where it does not exist fails the whole save.
+       */
+      const automatic =
+        input.sslAutomaticMode ??
+        (input.sslMode !== undefined && (await client.getSslSettings(zone.id)).sslAutomaticMode
+          ? 'custom'
+          : undefined);
+
+      if (automatic !== undefined) writes.push([SETTING_IDS.sslAutomaticMode, automatic]);
       if (input.sslMode !== undefined) writes.push([SETTING_IDS.sslMode, input.sslMode]);
       if (input.alwaysUseHttps !== undefined) {
         writes.push([SETTING_IDS.alwaysUseHttps, input.alwaysUseHttps ? 'on' : 'off']);

@@ -146,6 +146,7 @@ function stubFetch(routes: Record<string, StubRoute>) {
 describe('Cloudflare SSL settings', () => {
   const SETTINGS = [
     { id: 'ssl', value: 'flexible', editable: true },
+    { id: 'ssl_automatic_mode', value: 'auto', editable: true },
     { id: 'always_use_https', value: 'off', editable: true },
     { id: 'automatic_https_rewrites', value: 'on', editable: true },
     { id: 'min_tls_version', value: '1.2', editable: true },
@@ -161,6 +162,7 @@ describe('Cloudflare SSL settings', () => {
       readable: true,
       editable: true,
       sslMode: 'flexible',
+      sslAutomaticMode: 'auto',
       alwaysUseHttps: false,
       automaticHttpsRewrites: true,
       minTlsVersion: '1.2',
@@ -168,6 +170,33 @@ describe('Cloudflare SSL settings', () => {
       tls13: true,
     });
     expect(calls).toHaveLength(1);
+  });
+
+  it('asks for the automatic mode separately when the settings list omits it', async () => {
+    const { impl, calls } = stubFetch({
+      '/zones/zone1/settings': {
+        result: SETTINGS.filter((entry) => entry.id !== 'ssl_automatic_mode'),
+      },
+      '/zones/zone1/settings/ssl_automatic_mode': { result: { value: 'custom' } },
+    });
+
+    const settings = await new CloudflareClient('token', impl).getSslSettings('zone1');
+
+    expect(settings.sslAutomaticMode).toBe('custom');
+    expect(calls).toHaveLength(2);
+  });
+
+  it('reports no automatic mode for a zone Cloudflare has not given it', async () => {
+    // The zone simply has no such setting, which is not an error: the panel
+    // offers the four manual modes and nothing else.
+    const { impl } = stubFetch({
+      '/zones/zone1/settings': {
+        result: SETTINGS.filter((entry) => entry.id !== 'ssl_automatic_mode'),
+      },
+    });
+
+    const settings = await new CloudflareClient('token', impl).getSslSettings('zone1');
+    expect(settings.sslAutomaticMode).toBeNull();
   });
 
   it('reports a token without permission as unreadable, not as an error', async () => {
