@@ -800,11 +800,13 @@ export class StalwartClient {
     // Port 25 speaks the same protocol with the same STARTTLS upgrade, so it
     // is the one listener whose settings can be reused without deciding
     // anything. An implicit-TLS listener could not: clients on 587 expect to
-    // start in the clear.
+    // start in the clear. An absent protocol is smtp, which is its default —
+    // a response that omits it would otherwise match nothing and repair
+    // nothing, silently.
     const host = listeners.find(
       (listener) =>
         listener.id &&
-        listener.protocol === 'smtp' &&
+        (listener.protocol ?? 'smtp') === 'smtp' &&
         listener.tlsImplicit !== true &&
         listensOn(listener, SMTP_PORT),
     );

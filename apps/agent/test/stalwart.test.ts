@@ -497,6 +497,23 @@ describe('the submission port', () => {
     });
   });
 
+  // `smtp` is the default, so a response that leaves the field out means the
+  // same thing. Matching on the literal alone would repair nothing, silently.
+  it('treats a listener with no stated protocol as the SMTP one it is', async () => {
+    const { mail, seen } = client({
+      ...SUBMISSION_LISTENERS,
+      'x:NetworkListener/get': {
+        list: [{ id: 'l1', name: 'smtp', bind: { '0': '[::]:25' } }],
+      },
+    });
+
+    await mail.ensureSubmissionPort();
+
+    expect(argsOf(seen, 'x:NetworkListener/set')?.['update']).toEqual({
+      l1: { bind: { '0': '[::]:25', '1': '[::]:587' } },
+    });
+  });
+
   it('changes nothing when something is already listening there', async () => {
     const { mail, seen } = client({
       ...SUBMISSION_LISTENERS,
