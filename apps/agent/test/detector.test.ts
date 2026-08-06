@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { detectApp, extractOutputDir } from '../src/detect/detector.js';
+import { detectApp, entryFromStartScript, extractOutputDir } from '../src/detect/detector.js';
 
 /**
  * Fixture suite for project detection.
@@ -73,6 +73,11 @@ describe('frontend builds into backend (the primary layout)', () => {
     expect(result.manifest.app.cwd).toBe('backend');
   });
 
+  it('names the backend entry file rather than leaving it to guesswork', async () => {
+    const result = await detectApp(tmpDir);
+    expect(result.manifest.app.entry).toBe('server.js');
+  });
+
   it('produces the three build steps in the right order and folders', async () => {
     const result = await detectApp(tmpDir);
     const steps = result.manifest.steps;
@@ -133,6 +138,74 @@ describe('frontend builds into backend (the primary layout)', () => {
     // Forces blue/green rather than load balancing, because socket.io needs
     // sticky sessions.
     expect(result.manifest.websockets).toBe(true);
+  });
+});
+
+describe('workspace monorepo with a Vue frontend and an Express backend', () => {
+  beforeEach(async () => {
+    await write(
+      'package.json',
+      JSON.stringify({ name: 'kitora', private: true, workspaces: ['frontend', 'backend'] }),
+    );
+    await write(
+      'frontend/package.json',
+      JSON.stringify({ name: 'frontend', scripts: { build: 'vite build' }, devDependencies: { vite: '^7.0.0' } }),
+    );
+    await write('frontend/vite.config.js', 'export default {};');
+    await write(
+      'backend/package.json',
+      JSON.stringify({
+        name: 'backend',
+        scripts: { start: 'node src/index.js', dev: 'nodemon src/index.js' },
+        dependencies: { express: '^5.0.0' },
+      }),
+    );
+    await write('backend/src/index.js', 'require("express")()');
+  });
+
+  it('runs the backend from the file its start script names', async () => {
+    // With no entry the service falls back to index.js in the application
+    // folder, which crashes with "Cannot find module .../backend/index.js"
+    // naming a file the user never chose.
+    const result = await detectApp(tmpDir);
+    expect(result.shape).toBe('workspace-monorepo');
+    expect(result.manifest.app.cwd).toBe('backend');
+    expect(result.manifest.app.entry).toBe('src/index.js');
+  });
+
+  it('falls back to a file that exists when nothing names one', async () => {
+    await write(
+      'backend/package.json',
+      JSON.stringify({ name: 'backend', dependencies: { express: '^5.0.0' } }),
+    );
+    const result = await detectApp(tmpDir);
+    expect(result.manifest.app.entry).toBe('src/index.js');
+  });
+
+  it('says so when it cannot work out the startup file', async () => {
+    await fs.rm(path.join(tmpDir, 'backend', 'src'), { recursive: true, force: true });
+    await write(
+      'backend/package.json',
+      JSON.stringify({ name: 'backend', dependencies: { express: '^5.0.0' } }),
+    );
+
+    const result = await detectApp(tmpDir);
+    expect(result.manifest.app.entry).toBeUndefined();
+    expect(result.notes.join(' ')).toMatch(/could not tell which file starts/i);
+  });
+});
+
+describe('entryFromStartScript', () => {
+  it('takes the first plain script argument', () => {
+    expect(entryFromStartScript('node src/index.js')).toBe('src/index.js');
+    expect(entryFromStartScript('nodemon server.js')).toBe('server.js');
+    expect(entryFromStartScript('cross-env NODE_ENV=production node dist/main.js')).toBe('dist/main.js');
+    expect(entryFromStartScript('node --env-file=.env -r ./hook src/app.mjs')).toBe('src/app.mjs');
+  });
+
+  it('answers nothing when the script names no file', () => {
+    expect(entryFromStartScript('node .')).toBeNull();
+    expect(entryFromStartScript('ts-node src/index.ts')).toBeNull();
   });
 });
 

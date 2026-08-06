@@ -1,7 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { BuildStep, PackageManager, SiteManifest, StepCommand } from '@winpanel/shared';
-import { MANIFEST_FILENAME, SiteManifest as SiteManifestSchema } from '@winpanel/shared';
+import {
+  MANIFEST_FILENAME,
+  SiteManifest as SiteManifestSchema,
+  validateRelativePath,
+} from '@winpanel/shared';
 
 /**
  * Works out how to build and run a project by looking at it.
@@ -218,6 +222,80 @@ const CANDIDATE_FOLDERS = [
   'frontend', 'client', 'web', 'ui', 'app',
 ];
 
+/** Where a Node app's entry file usually lives, in the order worth trying. */
+const ENTRY_CANDIDATES = [
+  'index.js', 'index.mjs', 'index.cjs',
+  'server.js', 'server.mjs', 'app.js', 'main.js',
+  'src/index.js', 'src/index.mjs', 'src/server.js', 'src/app.js', 'src/main.js',
+  'dist/index.js', 'dist/index.mjs', 'dist/server.js', 'dist/main.js',
+  'build/index.js', 'build/server.js',
+  'app/index.js', 'app/server.js',
+];
+
+/**
+ * Pulls the file a `start` script runs out of the script itself.
+ *
+ * `start` is the most reliable statement of intent there is: it is what the
+ * author runs, so it names the real entry file even when `main` is missing or
+ * stale. Flags and env-var prefixes (`cross-env NODE_ENV=production node
+ * dist/main.js`) are skipped by taking the first plain `.js` argument.
+ */
+export function entryFromStartScript(script: string): string | null {
+  for (const raw of script.split(/\s+/)) {
+    if (raw.startsWith('-')) continue;
+    const token = raw.replace(/^["']|["']$/g, '');
+    if (/\.[cm]?js$/.test(token)) return token.replace(/\\/g, '/');
+  }
+  return null;
+}
+
+/**
+ * Works out which file starts a Node app in `dir`.
+ *
+ * Without this the manifest carries no entry at all and the service falls back
+ * to `index.js` in the application folder, so anything laid out as
+ * `src/index.js` dies at start-up with "Cannot find module" naming a file the
+ * user never chose. Candidates are preferred in the order they are checked
+ * against the disk, because a wrong guess produces exactly that same failure.
+ */
+export async function detectEntryPoint(dir: string): Promise<string | undefined> {
+  const pkg = await readJson<PackageJson>(path.join(dir, 'package.json'));
+
+  // The repository is untrusted, so an entry that escapes the folder (or is
+  // absolute) is discarded rather than written into the manifest.
+  const clean = (candidate: string): string | null => {
+    const checked = validateRelativePath(candidate.replace(/^\.\//, ''));
+    return checked.ok && checked.value.length > 0 ? checked.value : null;
+  };
+
+  const declared: string[] = [];
+  const start = pkg?.scripts?.['start'];
+  const fromScript = start ? entryFromStartScript(start) : null;
+  if (fromScript) declared.push(fromScript);
+  if (pkg?.main) declared.push(pkg.main);
+
+  for (const candidate of [...declared, ...ENTRY_CANDIDATES]) {
+    const relative = clean(candidate);
+    if (relative && (await exists(path.join(dir, relative)))) return relative;
+  }
+
+  // Nothing is on disk yet. A declared entry still beats a guess: it is
+  // usually a build output that only appears once the build has run.
+  for (const candidate of declared) {
+    const relative = clean(candidate);
+    if (relative) return relative;
+  }
+
+  return undefined;
+}
+
+function startupFileNote(folder: string): string {
+  return (
+    `The panel could not tell which file starts the ${folder} folder, so it will try ` +
+    'index.js. If that is not right, set the startup file on the Application page.'
+  );
+}
+
 function installArgs(manager: PackageManager, production: boolean): string[] {
   if (manager === 'npm') return production ? ['ci', '--omit=dev'] : ['install'];
   if (manager === 'pnpm') return production ? ['install', '--prod'] : ['install'];
@@ -345,6 +423,9 @@ export async function detectApp(rootDir: string): Promise<DetectionResult> {
       );
     }
 
+    const entry = await detectEntryPoint(path.join(rootDir, server.path));
+    if (!entry) notes.push(startupFileNote(server.path));
+
     const manifest = SiteManifestSchema.parse({
       runtime: 'node',
       nodeVersion: nodeVersion ?? undefined,
@@ -353,6 +434,7 @@ export async function detectApp(rootDir: string): Promise<DetectionResult> {
       steps,
       app: {
         cwd: server.path,
+        entry,
         portEnvVar: 'PORT',
         healthCheckPath: '/',
       },
@@ -387,6 +469,8 @@ export async function detectApp(rootDir: string): Promise<DetectionResult> {
   if (hasWorkspaces && serverFolders.length > 0) {
     const server = serverFolders[0]!;
     const manager = (await detectPackageManager(rootDir)) ?? 'npm';
+    const entry = await detectEntryPoint(path.join(rootDir, server.path));
+    if (!entry) notes.push(startupFileNote(server.path));
 
     return {
       shape: 'workspace-monorepo',
@@ -406,8 +490,14 @@ export async function detectApp(rootDir: string): Promise<DetectionResult> {
           },
           { name: 'Build', cwd: '', command: manager, args: buildArgs(manager) },
         ],
-        app: { cwd: server.path },
+        app: {
+          cwd: server.path,
+          entry,
+          portEnvVar: 'PORT',
+          healthCheckPath: '/',
+        },
         spaFallback: false,
+        websockets: await hasWebsockets(path.join(rootDir, server.path)),
       }),
       notes,
       fromManifestFile: false,
@@ -499,7 +589,7 @@ export async function detectApp(rootDir: string): Promise<DetectionResult> {
         steps,
         app: {
           cwd: '',
-          entry: isNuxt ? '.output/server/index.mjs' : (rootPkg?.main ?? undefined),
+          entry: isNuxt ? '.output/server/index.mjs' : await detectEntryPoint(rootDir),
           // Nuxt's server reads a different variable than everything else.
           portEnvVar: isNuxt ? 'NITRO_PORT' : 'PORT',
           healthCheckPath: '/',

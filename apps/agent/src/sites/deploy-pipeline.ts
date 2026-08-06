@@ -150,9 +150,10 @@ export function explainRuntimeFailure(message: string, packageManager: string): 
 
   if (missing.startsWith('.') || missing.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(missing)) {
     return (
-      `Your website looked for the file "${missing}" and it is not there. The startup file on ` +
-      'the Application page has to name the file your build produces \u2014 for a Nuxt site ' +
-      'that is .output/server/index.mjs.'
+      `Your website looked for the file "${missing}" and it is not there. Set the startup file ` +
+      'on the Application page to the file your app really starts from, written relative to the ' +
+      'application folder \u2014 often src/index.js or dist/index.js, and .output/server/index.mjs ' +
+      'for Nuxt.'
     );
   }
 
