@@ -212,6 +212,20 @@ const lowConfidence = computed(
 /** Detection found nothing to go on, which is a question rather than a failure. */
 const unrecognised = computed(() => inspection.value?.shape === 'unknown');
 
+/**
+ * Answer none of it now.
+ *
+ * The deploy then fetches and builds the project and stops with the files on
+ * disk, which is the only way to answer these for a repository you have not
+ * seen. Emptied rather than skipped, so a guess cannot be carried forward.
+ */
+function decideLater(): void {
+  appRoot.value = '';
+  startupFile.value = '';
+  documentRoot.value = '';
+  step.value = 'domain';
+}
+
 function chooseKind(next: Kind): void {
   kind.value = next;
   step.value = next === 'git' ? 'source' : 'domain';
@@ -867,6 +881,9 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
 
         <div class="mt-6 flex gap-2">
           <button type="button" class="btn btn-ghost" @click="step = 'source'">Back</button>
+          <button type="button" class="btn btn-ghost" @click="decideLater">
+            Decide after the first deploy
+          </button>
           <button type="button" class="btn btn-primary flex-1" @click="step = 'domain'">
             {{ unrecognised ? 'Continue' : 'Looks right' }}
           </button>

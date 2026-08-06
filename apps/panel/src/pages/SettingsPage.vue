@@ -942,8 +942,8 @@ async function installUpdate(): Promise<void> {
 
       <pre
         v-if="updateJob.lines.value.length > 0"
-        class="mt-4 max-h-64 overflow-y-auto rounded-card bg-black/25 p-4 font-mono text-xs
-               leading-relaxed"
+        class="mt-4 max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-card
+               bg-black/25 p-4 font-mono text-xs leading-relaxed"
       ><span
         v-for="line in updateJob.lines.value"
         :key="line.seq"

@@ -225,7 +225,8 @@ provide(siteContextKey, { site, reload: load, deploy, deploying });
           <StatusBadge :state="deployState" :label="deployLabel" size="sm" />
         </div>
         <pre
-          class="max-h-96 overflow-y-auto bg-black/25 p-4 font-mono text-xs leading-relaxed"
+          class="max-h-96 overflow-y-auto whitespace-pre-wrap break-words bg-black/25 p-4
+                 font-mono text-xs leading-relaxed"
         ><span
           v-for="line in job.lines.value"
           :key="line.seq"

@@ -401,7 +401,8 @@ watch(slug, load, { immediate: true });
           </button>
           <pre
             v-if="outputOpen"
-            class="max-h-80 overflow-y-auto border-t border-line bg-black/25 p-4 font-mono text-xs leading-relaxed"
+            class="max-h-80 overflow-y-auto whitespace-pre-wrap break-words border-t border-line
+                   bg-black/25 p-4 font-mono text-xs leading-relaxed"
           ><span
             v-for="line in job.lines.value"
             :key="line.seq"
@@ -696,7 +697,8 @@ watch(slug, load, { immediate: true });
           <span class="text-xs capitalize text-ink-muted">{{ job.status.value ?? '' }}</span>
         </div>
         <pre
-          class="max-h-96 overflow-y-auto bg-black/25 p-4 font-mono text-xs leading-relaxed"
+          class="max-h-96 overflow-y-auto whitespace-pre-wrap break-words bg-black/25 p-4
+                 font-mono text-xs leading-relaxed"
         ><span
           v-for="line in job.lines.value"
           :key="line.seq"

@@ -75,6 +75,41 @@ function configuredEntry(manifest: SiteManifest): string | undefined {
   return manifest.app.entry?.trim() ? manifest.app.entry : undefined;
 }
 
+async function isFile(candidate: string): Promise<boolean> {
+  return fs
+    .stat(candidate)
+    .then((stat) => stat.isFile())
+    .catch(() => false);
+}
+
+/**
+ * Forgives a startup file that repeats the application root.
+ *
+ * The field is measured from the application root, so `server/app.js` with an
+ * application root of `server` means `server/server/app.js`. Writing it that
+ * way is the most natural mistake there is - it is how the file browser and
+ * the Files tab both spell it - and the file it was meant to name is right
+ * there, so it is taken as read rather than refused.
+ *
+ * Only ever strips when the shorter path exists and the literal one does not,
+ * so a project that genuinely nests `server/server/app.js` is untouched.
+ */
+export async function normaliseEntry(
+  entry: string,
+  appDir: string,
+  appRoot: string,
+): Promise<string> {
+  const clean = entry.replace(/\\/g, '/').replace(/^\.\//, '');
+  const root = appRoot.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  if (!root || !clean.startsWith(`${root}/`)) return clean;
+
+  const stripped = clean.slice(root.length + 1);
+  if (!stripped) return clean;
+
+  if (await isFile(path.join(appDir, clean))) return clean;
+  return (await isFile(path.join(appDir, stripped))) ? stripped : clean;
+}
+
 /** The executable that runs a site of a given runtime. */
 async function resolveRuntimeExecutable(
   deps: DeployDependencies,
@@ -243,9 +278,10 @@ export function createDeployHandler(deps: DeployDependencies) {
           sshPrivateKey: await deps.loadGitSshKey(site.id),
           ...(deps.sshKnownHostsPath ? { knownHostsPath: deps.sshKnownHostsPath } : {}),
           onOutput: (line) => {
+            if (!line.trim() || isProgressNoise(line)) return;
             // Belt and braces: a token should never reach the log, but git
             // occasionally echoes a URL back on error.
-            if (line.trim()) ctx.log(redactSecrets(line), 'debug', 'download');
+            ctx.log(redactSecrets(line), 'debug', 'download');
           },
         });
 
@@ -273,6 +309,32 @@ export function createDeployHandler(deps: DeployDependencies) {
       if (detection.fromManifestFile) {
         ctx.log('Using the settings committed in your project.');
         manifest = detection.manifest;
+      }
+
+      const entry = configuredEntry(manifest);
+      if (entry) {
+        const corrected = await normaliseEntry(
+          entry,
+          path.join(folders.staging, manifest.app.cwd),
+          manifest.app.cwd,
+        );
+
+        if (corrected !== entry) {
+          manifest = { ...manifest, app: { ...manifest.app, entry: corrected } };
+          ctx.log(
+            `The startup file is measured from the application root, so "${entry}" was read ` +
+              `as "${corrected}".`,
+          );
+
+          // Kept, so the Application page stops showing the longer spelling.
+          if (!detection.fromManifestFile) {
+            deps.db.db
+              .update(sites)
+              .set({ manifest, updatedAt: new Date() })
+              .where(eq(sites.id, site.id))
+              .run();
+          }
+        }
       }
 
       // 3. Make the site's secrets available to the build and the app.
@@ -731,4 +793,18 @@ export function redactSecrets(line: string): string {
     .replace(/https:\/\/[^@\s]+@/gi, 'https://***@')
     .replace(/(gh[pousr]_[A-Za-z0-9]{16,})/g, '***')
     .replace(/([?&](?:token|access_token|api_key)=)[^&\s]+/gi, '$1***');
+}
+
+/**
+ * Whether a line is one frame of a git progress bar.
+ *
+ * Git redraws these with a carriage return for a terminal that overwrites the
+ * line in place; a log that only appends turns a single clone into a hundred
+ * near-identical lines, burying the one message that matters. The final frame
+ * says "done", and that one is kept.
+ */
+export function isProgressNoise(line: string): boolean {
+  return /^(remote: )?(Counting|Compressing|Enumerating|Receiving|Resolving|Updating|Filtering|Unpacking|Checking out)[^:]*:\s+\d+%/.test(
+    line.trim(),
+  ) && !line.includes('done');
 }

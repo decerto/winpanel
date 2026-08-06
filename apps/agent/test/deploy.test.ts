@@ -22,7 +22,7 @@ import {
   waitForHealthy,
   withPnpmDefaults,
 } from '../src/sites/deploy-pipeline.js';
-import { entryFileProblem } from '../src/sites/deploy-handler.js';
+import { entryFileProblem, isProgressNoise, normaliseEntry } from '../src/sites/deploy-handler.js';
 import type { JobContext } from '../src/jobs/queue.js';
 
 const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
@@ -398,6 +398,59 @@ describe('entryFileProblem', () => {
   it('leaves .NET to the runtime, which has its own message', async () => {
     const problem = await entryFileProblem(SiteManifest.parse({ runtime: 'dotnet' }), tmpDir);
     expect(problem).toBeNull();
+  });
+});
+
+describe('normaliseEntry', () => {
+  beforeEach(async () => {
+    await fs.mkdir(path.join(tmpDir, 'server'), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, 'server', 'app.js'), '');
+  });
+
+  it('forgives a startup file that repeats the application root', async () => {
+    // What the file browser and the Files tab both call it, and the way
+    // everyone writes it the first time.
+    const appDir = path.join(tmpDir, 'server');
+    expect(await normaliseEntry('server/app.js', appDir, 'server')).toBe('app.js');
+  });
+
+  it('leaves a correct path alone', async () => {
+    const appDir = path.join(tmpDir, 'server');
+    expect(await normaliseEntry('app.js', appDir, 'server')).toBe('app.js');
+  });
+
+  it('keeps a project that genuinely nests the folder name', async () => {
+    await fs.mkdir(path.join(tmpDir, 'server', 'server'), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, 'server', 'server', 'app.js'), '');
+
+    const appDir = path.join(tmpDir, 'server');
+    expect(await normaliseEntry('server/app.js', appDir, 'server')).toBe('server/app.js');
+  });
+
+  it('does not invent a file that is not there either way', async () => {
+    const appDir = path.join(tmpDir, 'server');
+    expect(await normaliseEntry('server/missing.js', appDir, 'server')).toBe('server/missing.js');
+  });
+
+  it('has nothing to strip when the app runs from the root', async () => {
+    expect(await normaliseEntry('server/app.js', tmpDir, '')).toBe('server/app.js');
+  });
+});
+
+describe('isProgressNoise', () => {
+  it('drops the frames of a git progress bar', () => {
+    expect(isProgressNoise('Updating files:  42% (3276/7800)')).toBe(true);
+    expect(isProgressNoise('Receiving objects:   7% (546/7800)')).toBe(true);
+    expect(isProgressNoise('remote: Compressing objects:  99% (100/101)')).toBe(true);
+  });
+
+  it('keeps the frame that says it finished', () => {
+    expect(isProgressNoise('Updating files: 100% (7800/7800), done.')).toBe(false);
+  });
+
+  it('keeps everything that is not a progress bar', () => {
+    expect(isProgressNoise("Cloning into 'C:\\Sites\\example\\.staging'...")).toBe(false);
+    expect(isProgressNoise('fatal: could not read Username')).toBe(false);
   });
 });
 

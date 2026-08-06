@@ -16,7 +16,7 @@ import { protectedProcedure, router } from '../trpc.js';
 import { appRootFor, SiteService } from '../../sites/site-service.js';
 import { retargetSteps } from '../../sites/package-manager.js';
 import { deployments, sites, type SiteRow } from '../../db/schema.js';
-import { serviceIdFor } from '../../sites/deploy-handler.js';
+import { serviceIdFor, normaliseEntry } from '../../sites/deploy-handler.js';
 import { discoverNodeVersions, matchVersion } from '../../sites/node-versions.js';
 import type { AppContext } from '../../app-context.js';
 
@@ -273,13 +273,24 @@ export const siteAppRouter = router({
           ? retargetSteps(manifest.steps, input.packageManager)
           : null;
 
+      const applicationRoot = input.applicationRoot ?? manifest.app.cwd;
+      // Against the root being saved, not the one already stored.
+      const nextAppDir = appRootFor(ctx.app.config.sitesRoot, {
+        ...site,
+        manifest: { ...manifest, app: { ...manifest.app, cwd: applicationRoot } },
+      });
+      const startupFile =
+        input.startupFile !== undefined && input.startupFile
+          ? await normaliseEntry(input.startupFile, nextAppDir, applicationRoot)
+          : input.startupFile;
+
       const next: SiteManifest = {
         ...manifest,
         app: {
           ...manifest.app,
           ...(input.applicationRoot !== undefined ? { cwd: input.applicationRoot } : {}),
           // An emptied field means "you work it out", not a file called "".
-          ...(input.startupFile !== undefined ? { entry: input.startupFile || undefined } : {}),
+          ...(startupFile !== undefined ? { entry: startupFile || undefined } : {}),
         },
         ...(input.packageManager !== undefined ? { packageManager: input.packageManager } : {}),
         ...(retargeted ? { steps: retargeted.steps } : {}),
@@ -310,7 +321,16 @@ export const siteAppRouter = router({
           `${input.packageManager}, from the next deployment onwards.`
         : '';
 
-      return { ok: true, note: `Saved. Restart the app for it to take effect.${stepNote}` };
+      const entryNote =
+        startupFile && startupFile !== input.startupFile
+          ? ` The startup file is measured from the application root, so it was saved as ` +
+            `"${startupFile}".`
+          : '';
+
+      return {
+        ok: true,
+        note: `Saved. Restart the app for it to take effect.${entryNote}${stepNote}`,
+      };
     }),
 
   /** Stops and starts the live process. Nothing is rebuilt. */
