@@ -433,6 +433,25 @@ describe('the release swap', () => {
     expect(await restorePrevious(folders)).toBe(false);
   });
 
+  it('does not treat the empty release folder a new site starts with as a version', async () => {
+    // Every git site is created with an empty `release/`. Moving that aside
+    // made the FIRST failed deploy restore emptiness over the build it had
+    // just made: the site was left with no files at all, and the log claimed
+    // the previous version had been put back.
+    const siteDir = path.join(tmpDir, 'site');
+    const folders = releaseFoldersFor(siteDir);
+    await fs.mkdir(folders.release, { recursive: true });
+    await stage(siteDir, 'first');
+
+    await promoteStaging(folders);
+    expect(await fs.readFile(path.join(folders.release, 'index.js'), 'utf8')).toBe('first');
+    expect(await fs.readdir(folders.previous).catch(() => [])).toHaveLength(0);
+
+    expect(await restorePrevious(folders)).toBe(false);
+    // The failed build stays where the user can look at it.
+    expect(await fs.readFile(path.join(folders.release, 'index.js'), 'utf8')).toBe('first');
+  });
+
   it('keeps the last working version when a second deploy follows a failed one', async () => {
     // A leftover `.previous` means the last deploy failed after swapping, so
     // `release/` holds a build that never ran. Overwriting the working copy

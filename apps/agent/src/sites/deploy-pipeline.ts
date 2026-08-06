@@ -426,10 +426,13 @@ export async function promoteStaging(folders: ReleaseFolders): Promise<void> {
    * that build, which is what deleting it here used to do, threw away the
    * last working copy of the site on the second failure in a row.
    */
-  const keepPrevious = await exists(folders.previous);
+  const keepPrevious = await hasContent(folders.previous);
 
   if (await exists(folders.release)) {
-    if (keepPrevious) {
+    // A site is created with an empty `release/`, and moving that aside as if
+    // it were a version made the first failed deploy "restore" emptiness over
+    // the build it had just made.
+    if (keepPrevious || !(await hasContent(folders.release))) {
       await removeDirectory(folders.release);
     } else {
       await renameWithRetry(folders.release, folders.previous);
@@ -452,7 +455,10 @@ export async function promoteStaging(folders: ReleaseFolders): Promise<void> {
 
 /** Puts the outgoing version back, after the new one failed to run. */
 export async function restorePrevious(folders: ReleaseFolders): Promise<boolean> {
-  if (!(await exists(folders.previous))) return false;
+  if (!(await hasContent(folders.previous))) {
+    await removeDirectory(folders.previous).catch(() => undefined);
+    return false;
+  }
 
   await removeDirectory(folders.staging);
   // Keep the failed build: it is the only evidence of what went wrong, and
@@ -518,6 +524,12 @@ async function exists(target: string): Promise<boolean> {
     () => true,
     () => false,
   );
+}
+
+/** A folder that holds nothing is not a version of the website. */
+async function hasContent(target: string): Promise<boolean> {
+  const entries = await fs.readdir(target).catch(() => null);
+  return entries !== null && entries.length > 0;
 }
 
 /** Removes build-only dependency folders once the output has been produced. */
