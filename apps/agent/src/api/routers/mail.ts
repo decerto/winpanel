@@ -491,7 +491,9 @@ export const mailRouter = router({
             summary: hostPointsHere
               ? `${mailHostname} points at this server.`
               : host.length > 0
-                ? `${mailHostname} points at ${host.join(', ')}, not at this server.`
+                ? `${mailHostname} points at ${host.join(', ')}, not at this server. If you ` +
+                  'have just changed it, the DNS tab shows what is published now and this ' +
+                  'will agree once the old answer expires.'
                 : `${mailHostname} does not exist yet, so nothing can connect to it.`,
           },
           mx: { ok: mx.ok, value: mx.value, summary: mx.summary },
@@ -667,7 +669,9 @@ export const mailRouter = router({
             ? `${mailHostname} points at this server.`
             : addresses.length > 0
               ? `${mailHostname} points at ${addresses.join(', ')}, not at this server. Mail ` +
-                'programs will connect to the wrong machine.'
+                'programs will connect to the wrong machine. If you have just changed this ' +
+                'record, the DNS tab shows what is published now and this will agree once ' +
+                'the old answer expires.'
               : `${mailHostname} does not exist in DNS yet, so no mail program can find this ` +
                 'server.',
         },

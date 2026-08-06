@@ -96,14 +96,22 @@ export async function syncMailEnvironment(deps: MailEnvDependencies): Promise<Ma
 }
 
 /**
- * Keeps the mail server off ports 80 and 443, which belong to the web server.
+ * Makes the mail server's listeners match what the rest of the machine needs.
  *
- * Restarting is the point: a listener is only given up when the process
- * holding it exits, so changing the setting alone leaves the web server just
- * as locked out as before. Nothing happens on a machine where the mail server
- * was never connected, or where it is already off those ports.
+ * Two repairs, done together because both take effect only when the process
+ * restarts and one restart is enough for both:
+ *
+ *   - Ports 80 and 443 belong to the web server. A listener is only given up
+ *     when the process holding it exits, so changing the setting alone leaves
+ *     the web server just as locked out as before.
+ *   - Port 587 is where every mail program that does not use implicit TLS
+ *     sends. Nothing listening there is invisible until somebody tries to set
+ *     up Thunderbird, or is on a network that blocks 465.
+ *
+ * Nothing happens on a machine where the mail server was never connected, or
+ * where both are already right.
  */
-export async function releaseWebPortsFromMail(
+export async function reconcileMailListeners(
   deps: MailEnvDependencies,
 ): Promise<{ changes: string[]; restarted: boolean }> {
   const credentials = loadMailAdminCredentials(deps.db, deps.vault);
@@ -111,6 +119,10 @@ export async function releaseWebPortsFromMail(
 
   const client = new StalwartClient(credentials.username, credentials.password);
   const changes = await client.releaseWebPorts();
+
+  const submission = await client.ensureSubmissionPort();
+  if (submission) changes.push(submission);
+
   if (changes.length === 0) return { changes, restarted: false };
 
   await deps.services.restart(STALWART_SERVICE_ID);

@@ -4,7 +4,7 @@ import { createAppContext } from './app-context.js';
 import { config, paths } from './config.js';
 import { createServer } from './server.js';
 import { CADDY_SERVICE_ID, syncCaddyEnvironment } from './caddy/service.js';
-import { releaseWebPortsFromMail, syncMailCertificates, syncMailEnvironment } from './mail/service.js';
+import { reconcileMailListeners, syncMailCertificates, syncMailEnvironment } from './mail/service.js';
 import { cleanUpAfterUpdate } from './components/panel-update.js';
 import { localAddresses } from './tls/panel-certificate.js';
 import { ServiceWatchdog } from './windows/service-watchdog.js';
@@ -120,18 +120,19 @@ async function main(): Promise<void> {
      * The mail server binds :443 by default, and after an update — which stops
      * everything and starts it again — it can win that port from the web
      * server permanently. Repairing it here also starts the web server, since
-     * the panel has just removed the only reason it could not run.
+     * the panel has just removed the only reason it could not run. The same
+     * pass puts it back on the submission port if it is not on one.
      */
     try {
-      const release = await releaseWebPortsFromMail({
+      const listeners = await reconcileMailListeners({
         db: app.db,
         vault: app.vault,
         services: app.services,
       });
 
-      for (const change of release.changes) server.log.warn(change);
+      for (const change of listeners.changes) server.log.warn(change);
 
-      if (release.restarted && (await app.services.getState(CADDY_SERVICE_ID)) === 'stopped') {
+      if (listeners.restarted && (await app.services.getState(CADDY_SERVICE_ID)) === 'stopped') {
         await app.services.start(CADDY_SERVICE_ID);
         server.log.info('Started the web server now that its ports are free.');
       }

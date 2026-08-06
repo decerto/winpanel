@@ -30,6 +30,12 @@ const JMAP_ENDPOINT = '/jmap';
 /** Management objects live behind Stalwart's own capability. */
 const CAPABILITIES = ['urn:ietf:params:jmap:core', 'urn:stalwart:jmap'];
 
+/** Where other mail servers deliver, and the pattern for submission. */
+const SMTP_PORT = 25;
+
+/** Where mail programs that upgrade to TLS after connecting send. */
+const SUBMISSION_PORT = 587;
+
 /** Nothing sensible is ever this large, and it bounds a runaway response. */
 const PAGE_LIMIT = 500;
 
@@ -86,6 +92,8 @@ interface ListenerPayload {
   id?: string;
   name?: string;
   bind?: Record<string, string> | string[];
+  protocol?: string;
+  tlsImplicit?: boolean;
 }
 
 interface CertificatePayload {
@@ -129,6 +137,17 @@ function indexed<T>(values: readonly T[]): Record<string, T> {
 export function portOfBindAddress(address: string): number | null {
   const port = Number(address.slice(address.lastIndexOf(':') + 1));
   return Number.isInteger(port) && port > 0 ? port : null;
+}
+
+/**
+ * The same interface, on another port.
+ *
+ * Copying an address the mail server already listens on is deliberate: `[::]`
+ * on Windows does not accept IPv4 unless the socket says so, so a bind address
+ * invented here could listen on nothing reachable while looking correct.
+ */
+export function withPort(address: string, port: number): string {
+  return `${address.slice(0, address.lastIndexOf(':'))}:${port}`;
 }
 
 /**
@@ -747,6 +766,67 @@ export class StalwartClient {
     });
 
     return changes;
+  }
+
+  /**
+   * Puts the mail server back on port 587 when nothing is listening there.
+   *
+   * The submission port is not part of every build's starting configuration,
+   * and its absence is close to invisible: Outlook and the phone clients use
+   * 465, so mail appears to work while Thunderbird, older clients and any
+   * network that blocks 465 simply cannot send. The panel's own setup page
+   * reports it as a dead port with nothing to do about it.
+   *
+   * An existing listener is extended rather than a new one created. Its
+   * protocol, TLS settings and bind addresses are already right for
+   * submission — STARTTLS on the port the mail server receives on — and
+   * copying them is the only way to be sure the new address is reachable in
+   * the same way the working ones are.
+   *
+   * @returns a description of the change, or null when none was needed.
+   */
+  async ensureSubmissionPort(): Promise<string | null> {
+    const listeners = await this.fetchByIds<ListenerPayload>(
+      'x:NetworkListener',
+      await this.queryIds('x:NetworkListener'),
+    );
+
+    const bound = (listener: ListenerPayload): string[] => valuesOf(listener.bind);
+    const listensOn = (listener: ListenerPayload, port: number): boolean =>
+      bound(listener).some((address) => portOfBindAddress(address) === port);
+
+    if (listeners.some((listener) => listensOn(listener, SUBMISSION_PORT))) return null;
+
+    // Port 25 speaks the same protocol with the same STARTTLS upgrade, so it
+    // is the one listener whose settings can be reused without deciding
+    // anything. An implicit-TLS listener could not: clients on 587 expect to
+    // start in the clear.
+    const host = listeners.find(
+      (listener) =>
+        listener.id &&
+        listener.protocol === 'smtp' &&
+        listener.tlsImplicit !== true &&
+        listensOn(listener, SMTP_PORT),
+    );
+
+    if (!host?.id) return null;
+
+    const added = [
+      ...new Set(
+        bound(host)
+          .filter((address) => portOfBindAddress(address) === SMTP_PORT)
+          .map((address) => withPort(address, SUBMISSION_PORT)),
+      ),
+    ];
+
+    await this.set('x:NetworkListener', {
+      update: { [host.id]: { bind: indexed([...bound(host), ...added]) } },
+    });
+
+    return (
+      `Put the mail server\u2019s "${host.name ?? host.id}" listener on ${added.join(', ')} ` +
+      'so mail programs that use STARTTLS can send.'
+    );
   }
 
   /**

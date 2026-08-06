@@ -438,6 +438,105 @@ describe('the web server\u2019s ports', () => {
 });
 
 /*
+ * Port 587 is the one whose absence nobody notices until it is somebody
+ * else's problem: Outlook uses 465 and works, so the panel looks healthy
+ * while Thunderbird and any network that blocks 465 cannot send at all.
+ */
+describe('the submission port', () => {
+  const SUBMISSION_LISTENERS = {
+    'x:NetworkListener/query': { ids: ['l1', 'l2'] },
+    'x:NetworkListener/get': {
+      list: [
+        { id: 'l1', name: 'smtp', protocol: 'smtp', bind: { '0': '0.0.0.0:25' } },
+        {
+          id: 'l2',
+          name: 'submissions',
+          protocol: 'smtp',
+          tlsImplicit: true,
+          bind: { '0': '0.0.0.0:465' },
+        },
+      ],
+    },
+    'x:NetworkListener/set': {},
+  };
+
+  it('adds it to the listener that already receives mail', async () => {
+    const { mail, seen } = client(SUBMISSION_LISTENERS);
+
+    const change = await mail.ensureSubmissionPort();
+
+    expect(argsOf(seen, 'x:NetworkListener/set')?.['update']).toEqual({
+      l1: { bind: { '0': '0.0.0.0:25', '1': '0.0.0.0:587' } },
+    });
+    expect(change).toMatch(/0\.0\.0\.0:587/);
+  });
+
+  // `[::]` does not accept IPv4 on Windows unless the socket says so, so an
+  // address invented here could listen on nothing anybody can reach.
+  it('copies the addresses the mail server already receives on', async () => {
+    const { mail, seen } = client({
+      ...SUBMISSION_LISTENERS,
+      'x:NetworkListener/get': {
+        list: [
+          {
+            id: 'l1',
+            name: 'smtp',
+            protocol: 'smtp',
+            bind: { '0': '[::]:25', '1': '192.0.2.7:25' },
+          },
+        ],
+      },
+    });
+
+    await mail.ensureSubmissionPort();
+
+    expect(argsOf(seen, 'x:NetworkListener/set')?.['update']).toEqual({
+      l1: {
+        bind: { '0': '[::]:25', '1': '192.0.2.7:25', '2': '[::]:587', '3': '192.0.2.7:587' },
+      },
+    });
+  });
+
+  it('changes nothing when something is already listening there', async () => {
+    const { mail, seen } = client({
+      ...SUBMISSION_LISTENERS,
+      'x:NetworkListener/get': {
+        list: [
+          { id: 'l1', name: 'smtp', protocol: 'smtp', bind: { '0': '0.0.0.0:25' } },
+          { id: 'l3', name: 'submission', protocol: 'smtp', bind: { '0': '0.0.0.0:587' } },
+        ],
+      },
+    });
+
+    expect(await mail.ensureSubmissionPort()).toBeNull();
+    expect(argsOf(seen, 'x:NetworkListener/set')).toBeUndefined();
+  });
+
+  // Clients on 587 start in the clear and upgrade, so borrowing the settings
+  // of an implicit-TLS listener would leave them unable to connect at all.
+  it('will not borrow an implicit-TLS listener', async () => {
+    const { mail, seen } = client({
+      ...SUBMISSION_LISTENERS,
+      'x:NetworkListener/get': {
+        list: [
+          {
+            id: 'l2',
+            name: 'submissions',
+            protocol: 'smtp',
+            tlsImplicit: true,
+            bind: { '0': '0.0.0.0:465' },
+          },
+          { id: 'l4', name: 'imaptls', protocol: 'imap', bind: { '0': '0.0.0.0:993' } },
+        ],
+      },
+    });
+
+    expect(await mail.ensureSubmissionPort()).toBeNull();
+    expect(argsOf(seen, 'x:NetworkListener/set')).toBeUndefined();
+  });
+});
+
+/*
  * The certificate is what decides whether Outlook can sign in at all. Stalwart
  * makes one for itself on first start, webmail never validates it because it
  * never leaves the machine, and every real mail client refuses the account.
