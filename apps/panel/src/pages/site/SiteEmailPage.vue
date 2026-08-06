@@ -62,9 +62,22 @@ const creating = ref(false);
 const localPart = ref('');
 const displayName = ref('');
 const newQuota = ref<number>(DEFAULT_MAILBOX_QUOTA_BYTES);
+const ownPassword = ref(false);
+const newPassword = ref('');
+
+/** Checked here as well as on the server, so the form can say so before it is sent. */
+const passwordProblem = computed(() => {
+  if (!ownPassword.value) return null;
+  if (newPassword.value.length === 0) return null;
+  if (newPassword.value.length < 10) return 'Use at least 10 characters.';
+  if (newPassword.value.trim() !== newPassword.value) {
+    return 'A space at the start or end is too easy to lose when it is typed again.';
+  }
+  return null;
+});
 
 /** Shown once, then gone. The panel has no way to produce it again. */
-const revealed = ref<{ address: string; password: string } | null>(null);
+const revealed = ref<{ address: string; password: string; generated: boolean } | null>(null);
 const copied = ref(false);
 
 const readiness = ref<Readiness | null>(null);
@@ -314,11 +327,18 @@ async function createMailbox(): Promise<void> {
       address: `${localPart.value.trim()}@${domain.value}`,
       displayName: displayName.value.trim(),
       quotaBytes: newQuota.value,
+      password: ownPassword.value ? newPassword.value : undefined,
     });
 
-    revealed.value = { address: result.address, password: result.password };
+    revealed.value = {
+      address: result.address,
+      password: result.password,
+      generated: result.generated,
+    };
     localPart.value = '';
     displayName.value = '';
+    newPassword.value = '';
+    ownPassword.value = false;
     creating.value = false;
     await loadMailboxes();
   } catch (err) {
@@ -353,7 +373,11 @@ async function resetPassword(mailbox: Mailbox): Promise<void> {
 
   try {
     const result = await api.mail.setMailboxPassword.mutate({ address: mailbox.address });
-    revealed.value = { address: mailbox.address, password: result.password };
+    revealed.value = {
+      address: mailbox.address,
+      password: result.password,
+      generated: result.generated,
+    };
   } catch (err) {
     error.value = describeError(err);
   }
@@ -556,8 +580,14 @@ watch(() => site.value?.slug, load, { immediate: true });
             <KeyRound :size="15" aria-hidden="true" /> Password for {{ revealed.address }}
           </h3>
           <p class="mt-1 text-sm text-ink-muted">
-            Write this down now. It is not stored in the panel and cannot be shown again — only
-            replaced.
+            <template v-if="revealed.generated">
+              Write this down now. It is not stored in the panel and cannot be shown again &mdash;
+              only replaced.
+            </template>
+            <template v-else>
+              The password you chose is in use from now on. It is not stored in the panel and
+              cannot be shown again &mdash; only replaced.
+            </template>
           </p>
 
           <div class="mt-3 flex flex-wrap items-center gap-2">
@@ -834,14 +864,45 @@ watch(() => site.value?.slug, load, { immediate: true });
               </select>
             </div>
 
+            <div>
+              <label for="password-mode" class="label">Password</label>
+              <select id="password-mode" v-model="ownPassword" class="field w-40">
+                <option :value="false">Generate one</option>
+                <option :value="true">Set my own</option>
+              </select>
+            </div>
+
+            <div v-if="ownPassword">
+              <label for="mailbox-password" class="label">Chosen password</label>
+              <input
+                id="mailbox-password"
+                v-model="newPassword"
+                type="password"
+                class="field w-56 font-mono"
+                autocomplete="new-password"
+                placeholder="At least 10 characters"
+              />
+            </div>
+
             <button
               type="submit"
               class="btn btn-primary"
-              :disabled="busy || localPart.trim().length === 0"
+              :disabled="
+                busy ||
+                localPart.trim().length === 0 ||
+                passwordProblem !== null ||
+                (ownPassword && newPassword.length === 0)
+              "
             >
               {{ busy ? 'Creating\u2026' : 'Create mailbox' }}
             </button>
             <button type="button" class="btn btn-ghost" @click="creating = false">Cancel</button>
+
+            <p v-if="passwordProblem" class="w-full text-sm text-danger">{{ passwordProblem }}</p>
+            <p v-else-if="ownPassword" class="hint w-full">
+              This is what the mailbox owner types into Outlook or their phone. The panel keeps no
+              copy of it, so it can only be replaced, never looked up.
+            </p>
           </form>
 
           <EmptyState

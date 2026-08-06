@@ -28,8 +28,10 @@ own domains' mailboxes and nothing else.
 | `mail.testOutbound`, `mail.installCertificate`, `mail.recordUnblockRequested` | `admin` |
 
 Each mailbox carries a quota (`null` meaning no limit), aliases, and a password the panel
-can reset. A customer account additionally has a total mail allowance across all of their
-domains — see [users-and-roles.md](users-and-roles.md).
+can reset. The password may be typed when the mailbox is created, or left to the panel to
+generate; either way it is shown once and never stored here. A customer account additionally
+has a total mail allowance across all of their domains — see
+[users-and-roles.md](users-and-roles.md).
 
 ## Client ports
 
