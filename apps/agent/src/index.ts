@@ -177,6 +177,22 @@ async function main(): Promise<void> {
     setInterval(() => void syncCertificates(), 6 * 60 * 60 * 1000).unref();
 
     /*
+     * Ports are handed out lowest-first, so anything left behind by a deleted
+     * site, a failed creation, or a static site that was given a pair before
+     * it stopped needing one pushes every new website further up the range
+     * for no reason. Returning them first also means the repair below can use
+     * them.
+     */
+    try {
+      const freed = app.sites.reclaimStalePorts();
+      if (freed > 0) {
+        server.log.info(`Freed ${freed} port(s) that no website was using.`);
+      }
+    } catch (error) {
+      server.log.warn({ err: error }, 'Could not free unused ports.');
+    }
+
+    /*
      * Repairs sites created before preview ports existed. Without a port they
      * have no address at all until a domain is bought and DNS propagates.
      */

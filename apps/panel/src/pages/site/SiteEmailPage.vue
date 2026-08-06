@@ -89,6 +89,9 @@ const resetProblem = computed(() =>
 /** The open "change the name on this mailbox's messages" form, if any. */
 const renaming = ref<{ address: string; displayName: string } | null>(null);
 
+/** The open "other addresses this mailbox answers to" form, if any. */
+const aliasEditor = ref<{ address: string; entries: string[] } | null>(null);
+
 /** Shown once, then gone. The panel has no way to produce it again. */
 const revealed = ref<{ address: string; password: string; generated: boolean } | null>(null);
 const copied = ref(false);
@@ -406,6 +409,36 @@ async function saveDisplayName(): Promise<void> {
     });
     notice.value = `${form.address}: ${result.note}`;
     renaming.value = null;
+    await loadMailboxes();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    busy.value = false;
+  }
+}
+
+function openAliases(mailbox: Mailbox): void {
+  aliasEditor.value =
+    aliasEditor.value?.address === mailbox.address
+      ? null
+      : { address: mailbox.address, entries: [...mailbox.aliases, ''] };
+}
+
+async function saveAliases(): Promise<void> {
+  const form = aliasEditor.value;
+  if (!form) return;
+
+  busy.value = true;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    const result = await api.mail.setMailboxAliases.mutate({
+      address: form.address,
+      aliases: form.entries.map((entry) => entry.trim()).filter((entry) => entry.length > 0),
+    });
+    notice.value = `${form.address}: ${result.note}`;
+    aliasEditor.value = null;
     await loadMailboxes();
   } catch (err) {
     error.value = describeError(err);
@@ -979,6 +1012,9 @@ watch(() => site.value?.slug, load, { immediate: true });
                   <p v-if="mailbox.displayName" class="text-xs text-ink-muted">
                     {{ mailbox.displayName }}
                   </p>
+                  <p v-if="mailbox.aliases.length > 0" class="truncate text-xs text-ink-faint">
+                    also {{ mailbox.aliases.join(', ') }}
+                  </p>
                 </div>
 
                 <div class="flex items-center gap-1">
@@ -1037,6 +1073,17 @@ watch(() => site.value?.slug, load, { immediate: true });
                     @click="openRename(mailbox)"
                   >
                     <Pencil :size="15" />
+                  </button>
+
+                  <button
+                    type="button"
+                    class="rounded-md p-2 text-ink-faint hover:bg-white/5 hover:text-ink"
+                    :class="aliasEditor?.address === mailbox.address ? 'bg-white/5 text-ink' : ''"
+                    :aria-label="`Other addresses for ${mailbox.address}`"
+                    :aria-expanded="aliasEditor?.address === mailbox.address"
+                    @click="openAliases(mailbox)"
+                  >
+                    <AtSign :size="15" />
                   </button>
 
                   <button
@@ -1108,6 +1155,62 @@ watch(() => site.value?.slug, load, { immediate: true });
                 <p class="hint w-full">
                   What people see this mailbox called when it sends them mail. Leave it empty to
                   show only the address.
+                </p>
+              </form>
+
+              <form
+                v-if="aliasEditor && aliasEditor.address === mailbox.address"
+                class="mt-3 rounded-lg border border-line bg-sunken px-4 py-3"
+                @submit.prevent="saveAliases"
+              >
+                <p class="label">Other addresses</p>
+
+                <div class="mt-1 space-y-2">
+                  <div
+                    v-for="(_, index) in aliasEditor.entries"
+                    :key="index"
+                    class="flex items-center gap-2"
+                  >
+                    <input
+                      v-model="aliasEditor.entries[index]"
+                      class="field w-72 font-mono text-sm"
+                      type="email"
+                      :placeholder="`noreply@${domain}`"
+                      :aria-label="`Other address ${index + 1} for ${mailbox.address}`"
+                      maxlength="254"
+                    />
+                    <button
+                      type="button"
+                      class="rounded-md p-2 text-ink-faint hover:bg-danger-soft hover:text-danger"
+                      :aria-label="`Remove address ${index + 1}`"
+                      @click="aliasEditor.entries.splice(index, 1)"
+                    >
+                      <Trash2 :size="15" />
+                    </button>
+                  </div>
+                </div>
+
+                <div class="mt-3 flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-sm"
+                    @click="aliasEditor.entries.push('')"
+                  >
+                    <Plus :size="15" /> Add another
+                  </button>
+                  <button type="submit" class="btn btn-primary btn-sm" :disabled="busy">
+                    {{ busy ? 'Saving\u2026' : 'Save addresses' }}
+                  </button>
+                  <button type="button" class="btn btn-ghost btn-sm" @click="aliasEditor = null">
+                    Cancel
+                  </button>
+                </div>
+
+                <p class="hint mt-2">
+                  Mail sent to these arrives in this mailbox, and an app signed in as
+                  {{ mailbox.address }} may send from them. That is what a website needs when it
+                  sends as more than one address — the mail server refuses a message whose sender
+                  is not one the account owns.
                 </p>
               </form>
 

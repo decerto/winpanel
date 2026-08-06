@@ -24,7 +24,7 @@ own domains' mailboxes and nothing else.
 | Procedure | Role |
 | --- | --- |
 | `mail.domains`, `mail.serverStatus`, `mail.provisionServer`, `mail.connectServer` | `admin` |
-| `mail.mailboxes`, `mail.createMailbox`, `mail.setMailboxQuota`, `mail.setMailboxDisplayName`, `mail.setMailboxPassword`, `mail.deleteMailbox`, `mail.addDomain` | site-scoped |
+| `mail.mailboxes`, `mail.createMailbox`, `mail.setMailboxQuota`, `mail.setMailboxDisplayName`, `mail.setMailboxAliases`, `mail.setMailboxPassword`, `mail.deleteMailbox`, `mail.addDomain` | site-scoped |
 | `mail.testOutbound`, `mail.installCertificate`, `mail.recordUnblockRequested` | `admin` |
 
 Each mailbox carries a quota (`null` meaning no limit), aliases, a display name (the mail
@@ -33,6 +33,23 @@ Both `mail.createMailbox` and `mail.setMailboxPassword` take an optional `passwo
 one to choose it, or omit it and the panel generates one. Either way it is returned once and
 never stored here. A customer account additionally has a total mail allowance across all of
 their domains — see [users-and-roles.md](users-and-roles.md).
+
+### Aliases
+
+`mail.setMailboxAliases` replaces the whole list rather than adding to it, so an address
+removed in the panel is removed on the server. Every alias must be in a domain the mail
+server already handles, and one that already has its own mailbox is refused — the mail
+server's own complaint does not say which of the two addresses is at fault.
+
+Aliases matter for sending, not only receiving. Stalwart rejects a message whose envelope
+sender is not an address the authenticated account owns (`501 5.5.4 You are not allowed to
+send from this address`), so an application that signs in once and sends as `noreply@`,
+`support@` and `invoices@` needs the three to be one account with two aliases, not three
+separate mailboxes.
+
+On the wire an alias is `{ name, domainId, enabled }` in the account's index-keyed
+`aliases` map; the read path composes `emails` as the primary address followed by the
+aliases, which is why `mail.mailboxes` returns `aliases: emails.slice(1)`.
 
 ## Client ports
 

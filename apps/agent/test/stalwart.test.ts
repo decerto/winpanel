@@ -351,6 +351,55 @@ describe('mailboxes', () => {
     });
   });
 
+  it('gives a mailbox the other addresses it answers to, and may send as', async () => {
+    const { mail, seen } = client(oneAccount);
+
+    await mail.setAliases('sam@example.com', ['Sales@Example.com', 'support@example.com']);
+
+    expect(argsOf(seen, 'x:Account/set')?.['update']).toEqual({
+      a1: {
+        aliases: {
+          '0': { name: 'sales', domainId: 'd1', enabled: true },
+          '1': { name: 'support', domainId: 'd1', enabled: true },
+        },
+      },
+    });
+  });
+
+  it('ignores the mailbox\u2019s own address, and a repeat of one already listed', async () => {
+    // Either would be an alias the account already answers to, which the mail
+    // server refuses as a duplicate address rather than quietly ignoring.
+    const { mail, seen } = client(oneAccount);
+
+    await mail.setAliases('sam@example.com', [
+      'sam@example.com',
+      'sales@example.com',
+      ' SALES@example.com ',
+      '',
+    ]);
+
+    expect(argsOf(seen, 'x:Account/set')?.['update']).toEqual({
+      a1: { aliases: { '0': { name: 'sales', domainId: 'd1', enabled: true } } },
+    });
+  });
+
+  it('sends an empty list, so removing the last one removes it on the server', async () => {
+    const { mail, seen } = client(oneAccount);
+
+    await mail.setAliases('sam@example.com', []);
+    expect(argsOf(seen, 'x:Account/set')?.['update']).toEqual({ a1: { aliases: {} } });
+  });
+
+  it('refuses an address in a domain the mail server does not handle', async () => {
+    // The mail server would accept the alias and then never receive for it,
+    // which looks like a delivery fault rather than a missing domain.
+    const { mail } = client(oneAccount);
+
+    await expect(mail.setAliases('sam@example.com', ['sales@other.org'])).rejects.toThrow(
+      /does not handle mail for other\.org/i,
+    );
+  });
+
   it('deletes by id, so an odd address cannot reshape the request', async () => {
     const { mail, seen } = client({
       ...DOMAIN_HANDLERS,

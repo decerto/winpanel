@@ -14,7 +14,7 @@ import {
 import type { DatabaseHandle } from '../db/index.js';
 import { deployments, sites } from '../db/schema.js';
 import { removeLegacyLayout } from './deploy-pipeline.js';
-import { PortAllocator } from './port-allocator.js';
+import { PortAllocator, runtimeNeedsAppPorts } from './port-allocator.js';
 import { scaffoldSite } from './scaffold.js';
 import type { SecretVault } from '../security/vault.js';
 import { secrets } from '../db/schema.js';
@@ -214,6 +214,19 @@ export class SiteService {
   }
 
   /**
+   * Returns ports nothing is using to the pool.
+   *
+   * Run at startup so a server that has been through a few deletions, a
+   * failed creation, or an upgrade that stopped giving static sites a pair
+   * gets those numbers back rather than climbing further up the range.
+   *
+   * @returns the number of ports freed.
+   */
+  reclaimStalePorts(): number {
+    return this.ports.reclaimStalePorts();
+  }
+
+  /**
    * Leaves a site with exactly one folder that holds its website.
    *
    * Removes the timestamped `releases/` tree and `current` junction sites used
@@ -306,7 +319,15 @@ export class SiteService {
       .run();
 
     try {
-      const pair = await this.ports.allocatePair(id, input.manifest.runtime);
+      // Anything a previous failure or an earlier version left behind is a
+      // number this site could be using instead of a higher one.
+      this.ports.reclaimStalePorts();
+
+      // Static sites are served from disk, so a pair held for one would be two
+      // numbers nothing ever listens on.
+      const pair = runtimeNeedsAppPorts(input.manifest.runtime)
+        ? await this.ports.allocatePair(id, input.manifest.runtime)
+        : null;
 
       // A site with no domain would otherwise be unreachable, and a site whose
       // DNS has not propagated yet indistinguishable from a broken one.
@@ -320,7 +341,7 @@ export class SiteService {
 
       this.db.db
         .update(sites)
-        .set({ portBlue: pair.blue, portGreen: pair.green, previewPort })
+        .set({ portBlue: pair?.blue ?? null, portGreen: pair?.green ?? null, previewPort })
         .where(eq(sites.id, id))
         .run();
 

@@ -699,6 +699,44 @@ export class StalwartClient {
     });
   }
 
+  /**
+   * The other addresses a mailbox answers to, and may send as.
+   *
+   * Sending is the reason this exists: the mail server only lets a session
+   * send from an address the account it signed in as owns, so an application
+   * that sends as `noreply@` while authenticating as `invoices@` is refused
+   * with "you are not allowed to send from this address" until the two are
+   * the same account. The list replaces what was there rather than adding to
+   * it, so removing an alias in the panel removes it on the server.
+   */
+  async setAliases(address: string, aliases: readonly string[]): Promise<void> {
+    const primary = address.toLowerCase();
+    const domainIds = new Map<string, string>();
+    const entries: AliasPayload[] = [];
+    const seen = new Set<string>([primary]);
+
+    for (const candidate of aliases) {
+      const wanted = candidate.trim().toLowerCase();
+      if (wanted.length === 0 || seen.has(wanted)) continue;
+      seen.add(wanted);
+
+      const [local, domain] = wanted.split('@');
+      if (!local || !domain) {
+        throw new MailServerError(`"${candidate}" is not a complete email address.`);
+      }
+
+      let domainId = domainIds.get(domain);
+      if (domainId === undefined) {
+        domainId = await this.requireDomainId(domain);
+        domainIds.set(domain, domainId);
+      }
+
+      entries.push({ name: local, domainId, enabled: true });
+    }
+
+    await this.update(address, { aliases: indexed(entries) });
+  }
+
   async setDisplayName(address: string, displayName: string): Promise<void> {
     await this.update(address, { description: displayName });
   }

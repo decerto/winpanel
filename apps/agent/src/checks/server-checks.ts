@@ -2,7 +2,16 @@ import net from 'node:net';
 import os from 'node:os';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { PANEL_PORT, WEB_PORTS } from '@winpanel/shared';
+import {
+  APP_PORT_RANGE_END,
+  APP_PORT_RANGE_START,
+  DOTNET_PORT_RANGE_END,
+  DOTNET_PORT_RANGE_START,
+  PANEL_PORT,
+  PREVIEW_PORT_RANGE_END,
+  PREVIEW_PORT_RANGE_START,
+  WEB_PORTS,
+} from '@winpanel/shared';
 import { FirewallManager, requiredFirewallRules } from '../bootstrap/windows-setup.js';
 import { runCommand } from '../process/run-command.js';
 import { listPanelServices } from '../windows/panel-services.js';
@@ -363,6 +372,56 @@ export function buildServerChecks(): CheckDefinition[] {
         }
 
         return { state: 'ok', detail: `Port ${PANEL_PORT} is in use by this panel.` };
+      },
+    },
+
+    {
+      id: 'server.website-port-ranges',
+      category: 'network',
+      name: 'Website port ranges',
+      plainDescription:
+        'Every website is given numbered ports out of a fixed range. Windows can reserve ' +
+        'blocks inside that range for its own features, and those numbers are then ' +
+        'skipped when a new website is created.',
+      ttlSeconds: 300,
+      run: async (): Promise<CheckOutcome> => {
+        const ranges = await excludedPortRanges();
+        const bands = [
+          { label: 'website apps', start: APP_PORT_RANGE_START, end: APP_PORT_RANGE_END },
+          { label: '.NET apps', start: DOTNET_PORT_RANGE_START, end: DOTNET_PORT_RANGE_END },
+          { label: 'previews', start: PREVIEW_PORT_RANGE_START, end: PREVIEW_PORT_RANGE_END },
+        ];
+
+        const clashes = bands.flatMap((band) =>
+          ranges
+            .filter((range) => range.start <= band.end && range.end >= band.start)
+            .map((range) => {
+              const start = Math.max(range.start, band.start);
+              const end = Math.min(range.end, band.end);
+              const span = start === end ? `${start}` : `${start}\u2013${end}`;
+              return { label: band.label, span, count: end - start + 1 };
+            }),
+        );
+
+        if (clashes.length === 0) {
+          return {
+            state: 'ok',
+            detail: `Ports ${APP_PORT_RANGE_START}\u2013${APP_PORT_RANGE_END} and ${PREVIEW_PORT_RANGE_START}\u2013${PREVIEW_PORT_RANGE_END} are all available.`,
+          };
+        }
+
+        const lost = clashes.reduce((total, clash) => total + clash.count, 0);
+
+        return {
+          state: 'warning',
+          detail: clashes.map((clash) => `${clash.span} (${clash.label})`).join(', '),
+          reason:
+            `Windows has reserved ${lost} port(s) inside the ranges websites are given ` +
+            'numbers from, usually for Hyper-V, WSL or Docker. Nothing is broken — those ' +
+            'numbers are simply passed over, which is why a new website can start on a ' +
+            'higher number than the last one with apparently free numbers below it. ' +
+            'A restart is what changes which blocks Windows holds.',
+        };
       },
     },
 

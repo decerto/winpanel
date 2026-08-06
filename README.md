@@ -81,7 +81,7 @@ Windows equivalent.
 | **Releases** | Builds off to one side and swaps it in, so a failed build never touches the live site |
 | **HTTPS** | Free certificates, renewed automatically, using the DNS challenge |
 | **DNS** | Cloudflare records per website, including the proxy toggle and a one-click "point this domain here" |
-| **Email** | Self-hosted mailboxes with quotas and aliases, MX/SPF/DKIM/DMARC checks, and webmail |
+| **Email** | Self-hosted mailboxes with quotas and send-as aliases, MX/SPF/DKIM/DMARC checks, and webmail |
 | **People** | Owner, administrator and customer accounts, each with website, disk and mail limits |
 | **Security** | Two-factor sign-in, recovery codes, live sessions, failed-attempt log and automatic IP blocking |
 | **Files** | Browse, upload, edit and download each site's files from the browser |
@@ -181,6 +181,12 @@ Open one and you get the mailboxes for that domain, each with a storage quota, a
 password reset and a link straight into webmail.
 
 ![Mailboxes and delivery checks for one domain](docs/screenshots/email.png)
+
+A mailbox can answer to more than one address. Add `noreply@` and `support@` as aliases of
+`invoices@` and all three arrive in the same inbox — and, less obviously, an application
+signed in as that one mailbox may send from any of them. Mail servers refuse a message
+whose sender is not an address the account owns, so this is what a website needs when it
+sends receipts from one address and password resets from another.
 
 **Will your email arrive?** is the part that usually gets skipped. WinPanel checks the
 things that decide whether mail is delivered *and believed*, and explains each one in
@@ -441,8 +447,8 @@ and its modules configure Linux services, so a Windows box is not a supported ta
 
 ### Does it support PHP or WordPress?
 
-No. WinPanel hosts static sites, Node.js apps and .NET apps. PHP is not supported, and
-WordPress is not something it can install for you.
+Not yet. WinPanel hosts static sites, Node.js apps and .NET apps today. PHP support is
+planned, and WordPress with it.
 
 ### Does it work with ASP.NET Core?
 
@@ -480,9 +486,11 @@ server for every request, not hidden in the interface.
 
 ### Can I really host email on it?
 
-Yes — Stalwart, with mailboxes, aliases, quotas, DKIM signing and webmail. The panel
-checks your MX, SPF, DKIM, DMARC, PTR and certificate for each domain and tells you which
-one is wrong. Do check that your host does not block port 25 outbound first.
+Yes — Stalwart, with mailboxes, aliases, quotas, DKIM signing and webmail. One mailbox can
+receive and send as several addresses, which is what an application needs when it sends
+from more than one. The panel checks your MX, SPF, DKIM, DMARC, PTR and certificate for
+each domain and tells you which one is wrong. Do check that your host does not block port
+25 outbound first.
 
 ### How is this different from installing Caddy myself?
 
@@ -519,7 +527,7 @@ scratch folder instead — [docs/development.md](docs/development.md) walks thro
 | [docs/architecture.md](docs/architecture.md) | How the agent, panel, Caddy and Stalwart fit together |
 | [docs/development.md](docs/development.md) | Running the panel locally, environment variables, gotchas |
 | [docs/dns.md](docs/dns.md) | Cloudflare tokens, the record planner, certificate issuance |
-| [docs/email.md](docs/email.md) | Stalwart, JMAP, mailboxes, DKIM and the certificate sync |
+| [docs/email.md](docs/email.md) | Stalwart, JMAP, mailboxes, aliases, DKIM and the certificate sync |
 | [docs/users-and-roles.md](docs/users-and-roles.md) | Roles, limits, ownership checks, sessions and IP bans |
 | [docs/updating.md](docs/updating.md) | How the panel updates itself in place |
 | [docs/testing.md](docs/testing.md) | Testing conventions, including the adversarial ones |

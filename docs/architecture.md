@@ -92,6 +92,15 @@ Node and .NET sites run as Windows Services through WinSW. Each site gets two po
 only then repoints Caddy. A failed build or a failed start leaves the live site
 untouched.
 
+The pair is allocated once, when the site is created, and reused for the life of the
+site — deploys alternate between the two numbers rather than taking new ones. Static
+sites get no pair at all, because Caddy serves them from disk. Allocation scans from
+`3001` upward and takes the first free numbers, so anything a deleted site gave back is
+reused before the range grows; `PortAllocator.reclaimStalePorts()` runs at startup to
+return rows that outlived their site. If a new site still starts higher than expected,
+the usual cause is Windows having reserved a block for Hyper-V, WSL or Docker — the
+`server.website-port-ranges` health check reports exactly which numbers those are.
+
 `windows/service-watchdog.ts` exists because a WinSW wrapper killed without a clean stop
 (sleep/wake is the usual cause) orphans its child. An orphaned `caddy.exe` keeps
 `:80`/`:443` bound and every restart then fails. The watchdog kills the stray and starts

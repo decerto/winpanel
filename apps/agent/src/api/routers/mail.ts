@@ -1119,6 +1119,58 @@ export const mailRouter = router({
       }
     }),
 
+  /**
+   * The other addresses this mailbox answers to, and may send as.
+   *
+   * An address that already has its own mailbox is refused here rather than
+   * left to the mail server, whose complaint does not say which of the two
+   * addresses is the problem.
+   */
+  setMailboxAliases: protectedProcedure
+    .input(
+      z.object({
+        address: MailboxAddress,
+        aliases: z.array(MailboxAddress).max(20),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const aliases = [...new Set(input.aliases)].filter((alias) => alias !== input.address);
+
+      try {
+        const client = clientFor(ctx.app);
+        const domain = input.address.split('@')[1] ?? '';
+        const existing = await client.listMailboxes(domain);
+
+        const taken = aliases.find((alias) =>
+          existing.some(
+            (mailbox) => mailbox.emails[0] === alias && mailbox.emails[0] !== input.address,
+          ),
+        );
+
+        if (taken) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message:
+              `${taken} already has its own mailbox. Delete it first if you want this ` +
+              'mailbox to answer to that address instead.',
+          });
+        }
+
+        await client.setAliases(input.address, aliases);
+
+        return {
+          ok: true,
+          note:
+            aliases.length === 0
+              ? 'This mailbox now answers only to its own address.'
+              : `Mail to ${aliases.join(' and ')} now arrives here, and apps signed in as ` +
+                `${input.address} may send from ${aliases.length === 1 ? 'it' : 'them'}.`,
+        };
+      } catch (error) {
+        toTrpcError(error);
+      }
+    }),
+
   setMailboxPassword: protectedProcedure
     .input(z.object({ address: MailboxAddress, password: z.string().min(10).max(512).optional() }))
     .mutation(async ({ ctx, input }) => {
