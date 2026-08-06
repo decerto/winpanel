@@ -7,7 +7,7 @@
 Websites, Node and .NET apps, Cloudflare DNS, self-hosted mailboxes, customer accounts
 and the Windows fixes that make it all work — in one panel, without IIS.
 
-[Features](#what-it-does) · [Websites](#websites) · [DNS](#dns-control) · [Email](#email-control) · [People](#user-control-and-management) · [Compare](#how-it-compares) · [FAQ](#frequently-asked-questions) · [Install](#installing) · [Develop](#development)
+[Features](#what-it-does) · [Websites](#websites) · [DNS](#dns-control) · [Email](#email-control) · [People](#user-control-and-management) · [Compare](#how-it-compares) · [Live sites](#sites-running-on-it) · [FAQ](#frequently-asked-questions) · [Install](#installing) · [Develop](#development)
 
 ![The websites list](docs/screenshots/websites.png)
 
@@ -268,6 +268,24 @@ for them, explains the consequence, and fixes the safe ones itself.
 
 ---
 
+## Sites running on it
+
+WinPanel is not a demo. These are live sites hosted on it, sharing one Windows Server 2025
+box, with their certificates, DNS records and deploys driven from the panel.
+
+| Site | Kind | What it exercises |
+| --- | --- | --- |
+| [kitora.io](https://kitora.io) | Node app, deployed from Git | A commercial SaaS — time tracking, invoicing and Stripe payments. Blue/green deploys, so a bad build never reaches paying customers. |
+| [diminished-studios.com](https://diminished-studios.com) | Node app, deployed from Git | A game studio site with accounts, Steam sign-in and leaderboards. |
+| [taskbarlegends.com](https://taskbarlegends.com) | Node app with Socket.IO | Long-lived WebSocket connections through the reverse proxy, for a game's live player counts and match traffic. |
+| [jean-kseafishing.com](https://www.jean-kseafishing.com) | Static site | The other end of the scale: plain HTML and images, uploaded through the file manager, no build step at all. |
+
+Between them they cover every kind of site the panel supports, which is why the awkward
+parts — WebSockets, `www` redirects, certificate renewal, a deploy that fails to start —
+are handled rather than assumed.
+
+---
+
 ## Requirements
 
 - Windows Server 2025 (or Windows Server 2022)
@@ -478,6 +496,12 @@ edit the DNS records yourself, wherever they live.
 No. Caddy and each app are separate Windows Services. The panel configures and supervises
 them; it is not in the request path. Restarting or updating it does not interrupt traffic.
 
+### Does it support WebSockets and Socket.IO?
+
+Yes, with nothing to configure. Caddy upgrades and proxies the connection to your app on
+its loopback port. [Taskbar Legends](https://taskbarlegends.com) is a Socket.IO game
+hosted this way.
+
 ### Can I give clients their own logins?
 
 Yes. Customer accounts see only the websites assigned to them, with limits on how many
@@ -501,8 +525,8 @@ hosting.
 
 ### Is it production ready?
 
-It runs real sites, but it is young. Take backups, read the release notes before updating,
-and report anything that surprises you.
+It runs real sites — [see which](#sites-running-on-it) — but it is young. Take backups,
+read the release notes before updating, and report anything that surprises you.
 
 ---
 

@@ -42,6 +42,11 @@ beforeEach(async () => {
   await vault.initialise();
 
   services = new ServiceManager(path.join(tmpDir, 'WinSW.exe'), configDir());
+
+  // Service ids are machine-wide, so on a developer's own server sc.exe finds
+  // the real mail service and the test would restart it. The configuration
+  // under test lives in tmpDir; the state of the real one is irrelevant.
+  services.getState = async () => 'stopped';
 });
 
 afterEach(async () => {

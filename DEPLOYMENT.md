@@ -2,6 +2,12 @@
 
 How to go from a fresh OVH Windows Server 2025 box to your websites running with HTTPS.
 
+The examples name real sites running this way — [kitora.io](https://kitora.io),
+[diminished-studios.com](https://diminished-studios.com),
+[taskbarlegends.com](https://taskbarlegends.com) and
+[jean-kseafishing.com](https://www.jean-kseafishing.com) — because between them they cover
+every kind of site the panel hosts.
+
 Read the [Before you start](#before-you-start) section first — two of the steps have to be
 requested from OVH and can take a day or two, so it's worth starting them early.
 
@@ -242,12 +248,16 @@ Repeat step 7 for each. Notes for specific setups:
 **Nuxt (kitora.io)** — detected automatically. The panel knows Nuxt reads `NITRO_PORT`
 rather than `PORT` and runs `.output/server/index.mjs`.
 
-**A site using WebSockets (the idle game)** — detected from your `socket.io` dependency.
-Caddy passes WebSocket connections through with no extra configuration.
+**A site using WebSockets (taskbarlegends.com)** — detected from your `socket.io`
+dependency. Caddy passes WebSocket connections through with no extra configuration.
 
 > **If you put this site behind Cloudflare's proxy**, set socket.io's `pingInterval` below
 > 100 seconds. Cloudflare closes idle WebSocket connections at around that point, and the
 > disconnects look like random client faults.
+
+**A plain HTML site (jean-kseafishing.com)** — no repository and no build. Add it as **I
+already have the files**, then upload them from the Files tab. Changes are live as soon as
+they finish uploading.
 
 **Your .NET application** — publish it, then add it as a website with type **proxy**
 pointing at the port Kestrel listens on. WinPanel handles the domain and HTTPS; you keep
