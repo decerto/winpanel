@@ -1101,6 +1101,20 @@ export const mailRouter = router({
       }
     }),
 
+  setMailboxDisplayName: protectedProcedure
+    .input(z.object({ address: MailboxAddress, displayName: z.string().max(120) }))
+    .mutation(async ({ ctx, input }) => {
+      try {
+        await clientFor(ctx.app).setDisplayName(input.address, input.displayName.trim());
+        return {
+          ok: true,
+          note: 'Mail sent from now on shows the new name. Messages already delivered keep the old one.',
+        };
+      } catch (error) {
+        toTrpcError(error);
+      }
+    }),
+
   setMailboxPassword: protectedProcedure
     .input(z.object({ address: MailboxAddress, password: z.string().min(10).max(512).optional() }))
     .mutation(async ({ ctx, input }) => {

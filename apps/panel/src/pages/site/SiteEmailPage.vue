@@ -7,6 +7,7 @@ import {
   ExternalLink,
   Inbox,
   KeyRound,
+  Pencil,
   Plus,
   RefreshCw,
   Server,
@@ -65,16 +66,28 @@ const newQuota = ref<number>(DEFAULT_MAILBOX_QUOTA_BYTES);
 const ownPassword = ref(false);
 const newPassword = ref('');
 
-/** Checked here as well as on the server, so the form can say so before it is sent. */
-const passwordProblem = computed(() => {
-  if (!ownPassword.value) return null;
-  if (newPassword.value.length === 0) return null;
-  if (newPassword.value.length < 10) return 'Use at least 10 characters.';
-  if (newPassword.value.trim() !== newPassword.value) {
+/** Checked here as well as on the server, so a form can say so before it is sent. */
+function passwordProblemFor(value: string): string | null {
+  if (value.length === 0) return null;
+  if (value.length < 10) return 'Use at least 10 characters.';
+  if (value.trim() !== value) {
     return 'A space at the start or end is too easy to lose when it is typed again.';
   }
   return null;
-});
+}
+
+const passwordProblem = computed(() =>
+  ownPassword.value ? passwordProblemFor(newPassword.value) : null,
+);
+
+/** The open "change this mailbox's password" form, if any. */
+const passwordReset = ref<{ address: string; own: boolean; password: string } | null>(null);
+const resetProblem = computed(() =>
+  passwordReset.value?.own ? passwordProblemFor(passwordReset.value.password) : null,
+);
+
+/** The open "change the name on this mailbox's messages" form, if any. */
+const renaming = ref<{ address: string; displayName: string } | null>(null);
 
 /** Shown once, then gone. The panel has no way to produce it again. */
 const revealed = ref<{ address: string; password: string; generated: boolean } | null>(null);
@@ -364,22 +377,66 @@ async function changeQuota(mailbox: Mailbox, quotaBytes: number): Promise<void> 
   }
 }
 
-async function resetPassword(mailbox: Mailbox): Promise<void> {
-  if (!window.confirm(`Give ${mailbox.address} a new password? The old one stops working.`)) {
-    return;
-  }
+function openPasswordReset(mailbox: Mailbox): void {
+  passwordReset.value =
+    passwordReset.value?.address === mailbox.address
+      ? null
+      : { address: mailbox.address, own: false, password: '' };
+}
 
+function openRename(mailbox: Mailbox): void {
+  renaming.value =
+    renaming.value?.address === mailbox.address
+      ? null
+      : { address: mailbox.address, displayName: mailbox.displayName ?? '' };
+}
+
+async function saveDisplayName(): Promise<void> {
+  const form = renaming.value;
+  if (!form) return;
+
+  busy.value = true;
   error.value = null;
+  notice.value = null;
 
   try {
-    const result = await api.mail.setMailboxPassword.mutate({ address: mailbox.address });
+    const result = await api.mail.setMailboxDisplayName.mutate({
+      address: form.address,
+      displayName: form.displayName.trim(),
+    });
+    notice.value = `${form.address}: ${result.note}`;
+    renaming.value = null;
+    await loadMailboxes();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    busy.value = false;
+  }
+}
+
+async function changePassword(): Promise<void> {
+  const form = passwordReset.value;
+  if (!form) return;
+
+  busy.value = true;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    const result = await api.mail.setMailboxPassword.mutate({
+      address: form.address,
+      password: form.own ? form.password : undefined,
+    });
     revealed.value = {
-      address: mailbox.address,
+      address: form.address,
       password: result.password,
       generated: result.generated,
     };
+    passwordReset.value = null;
   } catch (err) {
     error.value = describeError(err);
+  } finally {
+    busy.value = false;
   }
 }
 
@@ -974,8 +1031,21 @@ watch(() => site.value?.slug, load, { immediate: true });
                   <button
                     type="button"
                     class="rounded-md p-2 text-ink-faint hover:bg-white/5 hover:text-ink"
-                    :aria-label="`Reset the password for ${mailbox.address}`"
-                    @click="resetPassword(mailbox)"
+                    :class="renaming?.address === mailbox.address ? 'bg-white/5 text-ink' : ''"
+                    :aria-label="`Change the name shown on mail from ${mailbox.address}`"
+                    :aria-expanded="renaming?.address === mailbox.address"
+                    @click="openRename(mailbox)"
+                  >
+                    <Pencil :size="15" />
+                  </button>
+
+                  <button
+                    type="button"
+                    class="rounded-md p-2 text-ink-faint hover:bg-white/5 hover:text-ink"
+                    :class="passwordReset?.address === mailbox.address ? 'bg-white/5 text-ink' : ''"
+                    :aria-label="`Change the password for ${mailbox.address}`"
+                    :aria-expanded="passwordReset?.address === mailbox.address"
+                    @click="openPasswordReset(mailbox)"
                   >
                     <KeyRound :size="15" />
                   </button>
@@ -1010,6 +1080,85 @@ watch(() => site.value?.slug, load, { immediate: true });
                   <template v-else>, with no limit set</template>
                 </span>
               </div>
+
+              <form
+                v-if="renaming && renaming.address === mailbox.address"
+                class="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-line
+                       bg-sunken px-4 py-3"
+                @submit.prevent="saveDisplayName"
+              >
+                <div>
+                  <label for="rename-display-name" class="label">Name on messages</label>
+                  <input
+                    id="rename-display-name"
+                    v-model="renaming.displayName"
+                    class="field w-64"
+                    placeholder="Sales team"
+                    maxlength="120"
+                  />
+                </div>
+
+                <button type="submit" class="btn btn-primary btn-sm" :disabled="busy">
+                  {{ busy ? 'Saving\u2026' : 'Save name' }}
+                </button>
+                <button type="button" class="btn btn-ghost btn-sm" @click="renaming = null">
+                  Cancel
+                </button>
+
+                <p class="hint w-full">
+                  What people see this mailbox called when it sends them mail. Leave it empty to
+                  show only the address.
+                </p>
+              </form>
+
+              <form
+                v-if="passwordReset && passwordReset.address === mailbox.address"
+                class="mt-3 flex flex-wrap items-end gap-3 rounded-lg border border-line
+                       bg-sunken px-4 py-3"
+                @submit.prevent="changePassword"
+              >
+                <div>
+                  <label for="reset-mode" class="label">New password</label>
+                  <select id="reset-mode" v-model="passwordReset.own" class="field w-40">
+                    <option :value="false">Generate one</option>
+                    <option :value="true">Set my own</option>
+                  </select>
+                </div>
+
+                <div v-if="passwordReset.own">
+                  <label for="reset-password" class="label">Chosen password</label>
+                  <input
+                    id="reset-password"
+                    v-model="passwordReset.password"
+                    type="password"
+                    class="field w-56 font-mono"
+                    autocomplete="new-password"
+                    placeholder="At least 10 characters"
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  class="btn btn-primary btn-sm"
+                  :disabled="
+                    busy ||
+                    resetProblem !== null ||
+                    (passwordReset.own && passwordReset.password.length === 0)
+                  "
+                >
+                  {{ busy ? 'Saving\u2026' : 'Change password' }}
+                </button>
+                <button type="button" class="btn btn-ghost btn-sm" @click="passwordReset = null">
+                  Cancel
+                </button>
+
+                <p v-if="resetProblem" class="w-full text-sm text-danger">{{ resetProblem }}</p>
+                <p v-else class="hint w-full">
+                  The old password for
+                  <span class="font-mono text-ink">{{ mailbox.address }}</span> stops working as
+                  soon as this is saved, on every phone and mail program using it.
+                </p>
+              </form>
             </li>
           </ul>
         </section>

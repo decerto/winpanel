@@ -24,14 +24,15 @@ own domains' mailboxes and nothing else.
 | Procedure | Role |
 | --- | --- |
 | `mail.domains`, `mail.serverStatus`, `mail.provisionServer`, `mail.connectServer` | `admin` |
-| `mail.mailboxes`, `mail.createMailbox`, `mail.setMailboxQuota`, `mail.setMailboxPassword`, `mail.deleteMailbox`, `mail.addDomain` | site-scoped |
+| `mail.mailboxes`, `mail.createMailbox`, `mail.setMailboxQuota`, `mail.setMailboxDisplayName`, `mail.setMailboxPassword`, `mail.deleteMailbox`, `mail.addDomain` | site-scoped |
 | `mail.testOutbound`, `mail.installCertificate`, `mail.recordUnblockRequested` | `admin` |
 
-Each mailbox carries a quota (`null` meaning no limit), aliases, and a password the panel
-can reset. The password may be typed when the mailbox is created, or left to the panel to
-generate; either way it is shown once and never stored here. A customer account additionally
-has a total mail allowance across all of their domains — see
-[users-and-roles.md](users-and-roles.md).
+Each mailbox carries a quota (`null` meaning no limit), aliases, a display name (the mail
+server's `description` field, shown as the sender's name on outgoing mail) and a password.
+Both `mail.createMailbox` and `mail.setMailboxPassword` take an optional `password`: supply
+one to choose it, or omit it and the panel generates one. Either way it is returned once and
+never stored here. A customer account additionally has a total mail allowance across all of
+their domains — see [users-and-roles.md](users-and-roles.md).
 
 ## Client ports
 
