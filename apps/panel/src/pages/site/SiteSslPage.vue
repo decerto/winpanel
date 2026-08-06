@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue';
 import { RouterLink, useRoute } from 'vue-router';
-import { ExternalLink, RefreshCw, ShieldCheck } from 'lucide-vue-next';
+import { ExternalLink, RefreshCw, ShieldCheck, Upload } from 'lucide-vue-next';
 import { CLOUDFLARE_SSL_PERMISSION_ROW } from '@winpanel/shared';
 import { api, describeError } from '../../lib/api';
 import { siteContextKey } from '../../lib/site-context';
@@ -42,6 +42,14 @@ const notice = ref<string | null>(null);
 
 const token = ref('');
 const tokenBusy = ref(false);
+
+/** The bring-your-own-certificate form, closed until somebody asks for it. */
+const showUpload = ref(false);
+const uploadCertificate = ref('');
+const uploadKey = ref('');
+const uploadBusy = ref(false);
+
+const custom = computed(() => status.value?.custom ?? null);
 
 const settings = computed(() => status.value?.cloudflare.settings ?? null);
 const blocked = computed(() => status.value?.cloudflare.blocked ?? null);
@@ -92,6 +100,14 @@ const CERT_LABEL = {
   absent: 'No certificate yet',
 } as const;
 
+/** Nothing renews a certificate the user supplied, so "renewing" would be a lie. */
+const CUSTOM_CERT_LABEL = {
+  valid: 'Secured — yours',
+  expiring: 'Expires soon',
+  expired: 'Expired',
+  absent: 'No certificate yet',
+} as const;
+
 const CERT_STATE = {
   valid: 'ok',
   expiring: 'warning',
@@ -111,6 +127,48 @@ const missingCertificate = computed(() =>
 
 function formatExpiry(value: Date | null): string {
   return value ? new Date(value).toLocaleDateString() : '\u2014';
+}
+
+async function installCertificate(): Promise<void> {
+  uploadBusy.value = true;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    const result = await api.ssl.uploadCertificate.mutate({
+      slug: slug.value,
+      certificate: uploadCertificate.value,
+      privateKey: uploadKey.value,
+    });
+
+    // Cleared on success only: a rejected paste is usually one character out,
+    // and emptying the boxes would mean finding the file again.
+    uploadCertificate.value = '';
+    uploadKey.value = '';
+    showUpload.value = false;
+    notice.value = result.note;
+    await load();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    uploadBusy.value = false;
+  }
+}
+
+async function removeCertificate(): Promise<void> {
+  uploadBusy.value = true;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    const result = await api.ssl.removeCertificate.mutate({ slug: slug.value });
+    notice.value = result.note;
+    await load();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    uploadBusy.value = false;
+  }
 }
 
 async function load(): Promise<void> {
@@ -265,7 +323,11 @@ watch(slug, load, { immediate: true });
               <td class="px-5 py-2.5">
                 <StatusBadge
                   :state="CERT_STATE[entry.state]"
-                  :label="CERT_LABEL[entry.state]"
+                  :label="
+                    entry.source === 'custom'
+                      ? CUSTOM_CERT_LABEL[entry.state]
+                      : CERT_LABEL[entry.state]
+                  "
                   size="sm"
                 />
               </td>
@@ -281,6 +343,151 @@ watch(slug, load, { immediate: true });
             </tr>
           </tbody>
         </table>
+      </section>
+
+      <!-- A certificate the user obtained themselves, in place of ours. -->
+      <section class="card overflow-hidden">
+        <div
+          class="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3"
+        >
+          <div class="min-w-0">
+            <h3 class="text-sm font-semibold text-ink">Use your own certificate</h3>
+            <p class="mt-0.5 text-xs text-ink-faint">
+              For a Cloudflare Origin certificate, or one from your own authority. Nothing
+              renews it.
+            </p>
+          </div>
+
+          <button
+            v-if="!custom && status && status.domains.length > 0"
+            type="button"
+            class="btn btn-ghost btn-sm"
+            :disabled="uploadBusy"
+            @click="showUpload = !showUpload"
+          >
+            {{ showUpload ? 'Cancel' : 'Install one' }}
+          </button>
+          <button
+            v-else-if="custom"
+            type="button"
+            class="btn btn-ghost btn-sm"
+            :disabled="uploadBusy"
+            @click="removeCertificate"
+          >
+            Go back to automatic
+          </button>
+        </div>
+
+        <div v-if="custom" class="space-y-3 px-5 py-4 text-sm">
+          <AlertMessage v-if="custom.originOnly" tone="warning">
+            This is a Cloudflare Origin certificate. Only Cloudflare trusts it, so every domain
+            using it has to stay proxied &mdash; orange cloud, not grey. Turned off, visitors
+            get a full-page browser warning.
+          </AlertMessage>
+
+          <dl class="grid gap-x-6 gap-y-2 sm:grid-cols-2">
+            <div>
+              <dt class="text-xs uppercase tracking-wide text-ink-faint">Issued by</dt>
+              <dd class="text-ink">{{ custom.issuer }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs uppercase tracking-wide text-ink-faint">Expires</dt>
+              <dd class="text-ink">{{ formatExpiry(custom.notAfter) }}</dd>
+            </div>
+            <div class="sm:col-span-2">
+              <dt class="text-xs uppercase tracking-wide text-ink-faint">Serving</dt>
+              <dd class="font-mono text-ink">{{ custom.covers.join(', ') || '\u2014' }}</dd>
+            </div>
+          </dl>
+
+          <p v-if="custom.covers.length < (status?.domains.length ?? 0)" class="text-ink-muted">
+            The rest of this website&rsquo;s domains are not on it, so they carry on with the
+            certificate the panel obtains and renews by itself.
+          </p>
+        </div>
+
+        <div v-else-if="!showUpload" class="px-5 py-4 text-sm text-ink-muted">
+          The certificate above is obtained and renewed for you, at no cost and with nothing to
+          remember. Install your own only if you have a reason to &mdash; from here on, the
+          expiry date is yours to watch.
+        </div>
+
+        <form v-else class="space-y-4 px-5 py-4" @submit.prevent="installCertificate">
+          <HowTo title="Getting one from Cloudflare">
+            <li>
+              Open
+              <a
+                href="https://dash.cloudflare.com/?to=/:account/:zone/ssl-tls/origin"
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                Cloudflare &rarr; SSL/TLS &rarr; Origin Server
+                <ExternalLink :size="11" class="inline" aria-hidden="true" />
+              </a>
+              and choose Create Certificate. Origin Server, not Client Certificates &mdash; those
+              are for the other direction and will not work here.
+            </li>
+            <li>
+              List the hostnames this website serves, and pick however long you want. Cloudflare
+              shows the certificate and the key once and never again, so copy both now.
+            </li>
+            <li>
+              Paste them below. Then set the encryption mode further down this page to
+              <strong>Full (strict)</strong>, which is the whole reason for using one.
+            </li>
+          </HowTo>
+
+          <AlertMessage tone="warning">
+            A Cloudflare Origin certificate is trusted by Cloudflare and by nothing else. Every
+            domain on it must stay proxied through Cloudflare, and none of them can be used for
+            email &mdash; mail programs reject it. For a certificate any browser trusts, leave
+            this alone and let the panel obtain one.
+          </AlertMessage>
+
+          <div>
+            <label for="custom-cert" class="label">Certificate</label>
+            <textarea
+              id="custom-cert"
+              v-model="uploadCertificate"
+              rows="7"
+              spellcheck="false"
+              autocomplete="off"
+              class="field font-mono text-xs"
+              placeholder="-----BEGIN CERTIFICATE-----"
+            ></textarea>
+            <p class="hint">
+              Paste the whole block. If the authority gave you intermediate certificates as
+              well, put them underneath in the same box.
+            </p>
+          </div>
+
+          <div>
+            <label for="custom-key" class="label">Private key</label>
+            <textarea
+              id="custom-key"
+              v-model="uploadKey"
+              rows="5"
+              spellcheck="false"
+              autocomplete="off"
+              class="field font-mono text-xs"
+              placeholder="-----BEGIN PRIVATE KEY-----"
+            ></textarea>
+            <p class="hint">
+              Kept encrypted on this server and never sent back to the browser. It cannot have a
+              passphrase &mdash; the web server has nowhere to type one.
+            </p>
+          </div>
+
+          <button
+            type="submit"
+            class="btn btn-primary"
+            :disabled="uploadBusy || !uploadCertificate.trim() || !uploadKey.trim()"
+          >
+            <Upload v-if="!uploadBusy" :size="14" aria-hidden="true" />
+            <RefreshCw v-else :size="14" class="animate-spin" aria-hidden="true" />
+            {{ uploadBusy ? 'Checking\u2026' : 'Install certificate' }}
+          </button>
+        </form>
       </section>
 
       <!-- Half two: what Cloudflare does in front of it. -->

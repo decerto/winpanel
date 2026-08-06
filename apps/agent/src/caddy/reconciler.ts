@@ -6,9 +6,20 @@ import { cloudflareTokenGroups } from '../dns/token.js';
 import { mailHostnames } from '../mail/domains.js';
 import type { SecretVault } from '../security/vault.js';
 import { contentRootFor } from '../sites/site-service.js';
+import {
+  coveredDomains,
+  customCertificateFiles,
+  readCustomCertificate,
+  writeCustomCertificateFiles,
+} from '../tls/custom-certificates.js';
 import type { CaddyClient } from './client.js';
 import { CaddyError } from './client.js';
-import { buildCaddyConfig, type CaddySiteInput, type DnsChallengeGroup } from './config-builder.js';
+import {
+  buildCaddyConfig,
+  type CaddySiteInput,
+  type DnsChallengeGroup,
+  type ManualCertificate,
+} from './config-builder.js';
 
 /**
  * Keeps Caddy's running configuration in step with the panel's database.
@@ -66,7 +77,36 @@ export class CaddyReconciler {
     private readonly vault: SecretVault,
     /** Omitted turns access logging off, which is what the tests want. */
     private readonly accessLogDir?: string,
+    /** Where certificates the user supplied are written for Caddy to read. */
+    private readonly customCertDir?: string,
   ) {}
+
+  /**
+   * The certificates the user supplied, and the site domains each one covers.
+   *
+   * A certificate is only allowed to claim names the website it belongs to
+   * actually serves. Without that, uploading one for `example.com` against a
+   * site you own would take that name out of automatic management for every
+   * other site on the machine.
+   */
+  private manualCertificates(): ManualCertificate[] {
+    if (!this.customCertDir) return [];
+
+    const rows = this.db.db.select({ id: sites.id, domains: sites.domains }).from(sites).all();
+    const manual: ManualCertificate[] = [];
+
+    for (const row of rows) {
+      const stored = readCustomCertificate(this.db, row.id);
+      if (!stored) continue;
+
+      const subjects = coveredDomains(stored.certificate, row.domains as string[]);
+      if (subjects.length === 0) continue;
+
+      manual.push({ ...customCertificateFiles(this.customCertDir, row.id), subjects });
+    }
+
+    return manual;
+  }
 
   /** Builds the configuration that matches the current database state. */
   buildConfig(options: ReconcileOptions = {}, admin?: unknown): Record<string, unknown> {
@@ -90,6 +130,8 @@ export class CaddyReconciler {
      */
     const mailNames = mailHostnames(this.db);
 
+    const manualCertificates = this.manualCertificates();
+
     // The only token that can obtain a certificate for a mail hostname is
     // whichever one covers the domain it sits under.
     for (const group of dnsChallenges) {
@@ -110,6 +152,7 @@ export class CaddyReconciler {
        * which would fail every renewal forever.
        */
       ...(dnsChallenges.length > 0 ? { dnsChallenges } : {}),
+      ...(manualCertificates.length > 0 ? { manualCertificates } : {}),
       ...(options.acmeEmail ? { acmeEmail: options.acmeEmail } : {}),
       /*
        * The list itself is the proof the mail server is there: it only ever
@@ -129,6 +172,15 @@ export class CaddyReconciler {
 
   /** Rebuilds and loads the configuration. Throws if Caddy refuses it. */
   async apply(options: ReconcileOptions = {}): Promise<void> {
+    /*
+     * Written from the database on every load, not once at upload. Caddy
+     * refuses the entire configuration if a file it is pointed at has gone,
+     * which would take every website down over one missing key.
+     */
+    if (this.customCertDir) {
+      await writeCustomCertificateFiles(this.db, this.vault, this.customCertDir);
+    }
+
     /*
      * The admin endpoint is whatever the running server decided at startup,
      * and it has to be handed back unchanged: Caddy binds the replacement

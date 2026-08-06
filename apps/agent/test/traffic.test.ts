@@ -5,7 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
 import { sites, siteTraffic } from '../src/db/schema.js';
 import { bucketOf, parseAccessLine } from '../src/traffic/access-log.js';
-import { TrafficCollector, readNewLines } from '../src/traffic/collector.js';
+import { TrafficCollector, logFilesFor, readNewLines } from '../src/traffic/collector.js';
+import { scanFailures } from '../src/traffic/failures.js';
 import { trafficAllTime, trafficSeries, trafficThisMonth } from '../src/traffic/queries.js';
 import { buildCaddyConfig, accessLoggerNameFor } from '../src/caddy/config-builder.js';
 import { SiteManifest } from '@winpanel/shared';
@@ -261,5 +262,86 @@ describe('asking the web server to write the logs', () => {
 
     expect(Object.keys(config.logging.logs)).toEqual(['default']);
     expect(config.apps.http.servers.main.logs).toBeUndefined();
+  });
+});
+
+describe('finding out what failed', () => {
+  const HOUR = 3_600_000;
+
+  async function scan(since = Date.now() - 24 * HOUR) {
+    return scanFailures(await logFilesFor(logDir, 'example'), { since });
+  }
+
+  it('lists the addresses that failed, most frequent first', async () => {
+    await append('example', [
+      entry({ status: 200, request: { method: 'GET', host: 'example.com', uri: '/' } }),
+      entry({ status: 404, request: { method: 'GET', host: 'example.com', uri: '/wp-login.php' } }),
+      entry({ status: 404, request: { method: 'GET', host: 'example.com', uri: '/wp-login.php' } }),
+      entry({ status: 500, request: { method: 'POST', host: 'example.com', uri: '/api/send' } }),
+    ]);
+
+    const result = await scan();
+
+    expect(result.total).toBe(3);
+    expect(result.groups[0]).toMatchObject({ status: 404, path: '/wp-login.php', count: 2 });
+    expect(result.groups[1]).toMatchObject({ status: 500, method: 'POST', path: '/api/send' });
+  });
+
+  it('groups on the address without its query, and keeps the query in the samples', async () => {
+    await append('example', [
+      entry({ status: 404, request: { method: 'GET', host: 'example.com', uri: '/search?q=one' } }),
+      entry({ status: 404, request: { method: 'GET', host: 'example.com', uri: '/search?q=two' } }),
+    ]);
+
+    const result = await scan();
+
+    // Two visitors looking for the same missing page is one problem, not two.
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0]).toMatchObject({ path: '/search', count: 2 });
+    expect(result.recent.map((f) => f.uri)).toContain('/search?q=two');
+  });
+
+  it('ignores failures from before the window', async () => {
+    await append('example', [
+      entry({ ts: (AT_MS - 48 * HOUR) / 1000, status: 404 }),
+      entry({ status: 404 }),
+    ]);
+
+    const result = await scan();
+
+    expect(result.total).toBe(1);
+    // An older entry was seen, so nothing within the window can be missing.
+    expect(result.complete).toBe(true);
+  });
+
+  it('says so when the log does not reach back as far as the window', async () => {
+    await append('example', [entry({ status: 502 })]);
+
+    const result = await scan(AT_MS - 90 * 24 * HOUR);
+
+    expect(result.total).toBe(1);
+    expect(result.complete).toBe(false);
+    expect(result.oldestAt).toBe(AT_MS);
+  });
+
+  it('reads rolled files as well as the live one', async () => {
+    await fs.writeFile(
+      path.join(logDir, 'example-2026-01-01T00-00-00.000.log'),
+      `${entry({ status: 403, request: { method: 'GET', host: 'example.com', uri: '/admin' } })}\n`,
+      'utf8',
+    );
+    await append('example', [entry({ status: 200 })]);
+
+    const result = await scan();
+
+    expect(result.groups[0]).toMatchObject({ status: 403, path: '/admin' });
+  });
+
+  it('has nothing to say about a website that has never been visited', async () => {
+    const result = await scan();
+
+    expect(result.total).toBe(0);
+    expect(result.groups).toEqual([]);
+    expect(result.oldestAt).toBeNull();
   });
 });

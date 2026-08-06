@@ -295,6 +295,29 @@ export const components = sqliteTable('components', {
 });
 
 /**
+ * A certificate the user supplied instead of one the panel obtained.
+ *
+ * Only the public half is here. The private key is in `secrets`, encrypted by
+ * the vault, because this table is read to render a page and a key that can be
+ * read by accident is a key that will be.
+ */
+export const siteCertificates = sqliteTable('site_certificates', {
+  siteId: text('site_id')
+    .primaryKey()
+    .references(() => sites.id, { onDelete: 'cascade' }),
+  /** PEM, leaf first, with any intermediates that came with it. */
+  certificate: text('certificate').notNull(),
+  /** JSON array of the names it is valid for, wildcards included. */
+  subjects: text('subjects', { mode: 'json' }).notNull().default(sql`'[]'`),
+  issuer: text('issuer').notNull(),
+  notBefore: integer('not_before', { mode: 'timestamp_ms' }).notNull(),
+  notAfter: integer('not_after', { mode: 'timestamp_ms' }).notNull(),
+  uploadedAt: integer('uploaded_at', { mode: 'timestamp_ms' })
+    .notNull()
+    .default(sql`(unixepoch() * 1000)`),
+});
+
+/**
  * Undo records for server hardening.
  *
  * Every change the panel makes to the machine records the previous value here

@@ -5,6 +5,13 @@ import { protectedProcedure, router } from '../trpc.js';
 import { CloudflareClient, CloudflareError, type ZoneSslSettings } from '../../dns/cloudflare.js';
 import { cloudflareTokenForSite, type TokenSource } from '../../dns/token.js';
 import { certificatesForDomains, type DomainCertificate } from '../../tls/site-certificates.js';
+import {
+  clearCustomCertificate,
+  coveredDomains,
+  parseCertificateBundle,
+  readCustomCertificate,
+  storeCustomCertificate,
+} from '../../tls/custom-certificates.js';
 import { SiteService } from '../../sites/site-service.js';
 import type { AppContext } from '../../app-context.js';
 
@@ -79,9 +86,18 @@ export const sslRouter = router({
   status: protectedProcedure
     .input(z.object({ slug: z.string().min(1) }))
     .query(async ({ ctx, input }) => {
-      const { domains, client, zone, source } = await cloudflareContextFor(ctx.app, input.slug);
+      const { site, domains, client, zone, source } = await cloudflareContextFor(
+        ctx.app,
+        input.slug,
+      );
 
-      const certificates = await certificatesForDomains(ctx.app.config.caddyDir, domains);
+      const custom = readCustomCertificate(ctx.app.db, site.id);
+      const certificates = await certificatesForDomains(
+        ctx.app.config.caddyDir,
+        domains,
+        new Date(),
+        custom?.certificate,
+      );
       const webServerRunning = await ctx.app.caddy.isRunning();
 
       let settings: ZoneSslSettings | null = null;
@@ -106,6 +122,22 @@ export const sslRouter = router({
         domains,
         certificates,
         webServerRunning,
+        /*
+         * The certificate itself is deliberately not sent. The page only has
+         * to say what is installed and until when; the PEM adds nothing on
+         * screen and the private key must never leave this machine at all.
+         */
+        custom: custom
+          ? {
+              subjects: custom.subjects,
+              issuer: custom.issuer,
+              notAfter: custom.notAfter,
+              uploadedAt: custom.uploadedAt,
+              originOnly: custom.originOnly,
+              /** Which of this website's domains it actually serves. */
+              covers: coveredDomains(custom.certificate, domains),
+            }
+          : null,
         cloudflare: {
           source,
           zone: zone ? { id: zone.id, name: zone.name } : null,
@@ -137,7 +169,12 @@ export const sslRouter = router({
         continue;
       }
 
-      const certificates = await certificatesForDomains(ctx.app.config.caddyDir, domains);
+      const certificates = await certificatesForDomains(
+        ctx.app.config.caddyDir,
+        domains,
+        new Date(),
+        readCustomCertificate(ctx.app.db, site.id)?.certificate,
+      );
 
       // The worst domain decides the website's state: a site is not secure
       // because three of its four names are.
@@ -248,6 +285,132 @@ export const sslRouter = router({
         note:
           'The web server is now asking for a certificate. It usually takes under a minute, ' +
           'and this page will show it once it arrives.',
+      };
+    }),
+
+  /**
+   * Installs a certificate the user obtained themselves.
+   *
+   * Almost nobody should need this: Caddy obtains a publicly-trusted
+   * certificate for nothing and renews it indefinitely. It exists for the two
+   * cases automation cannot cover — a Cloudflare Origin certificate, and an
+   * authority private to a company — and the price is that nothing renews it.
+   * When it expires the website goes down, so the expiry date is stored and
+   * shown rather than left inside the file.
+   *
+   * Everything is checked here rather than at reload. Caddy answers a bad
+   * certificate by refusing the whole configuration, which would take every
+   * other website on the machine offline over one bad paste.
+   */
+  uploadCertificate: protectedProcedure
+    .input(
+      z.object({
+        slug: z.string().min(1),
+        certificate: z.string().min(1).max(64_000),
+        privateKey: z.string().min(1).max(64_000),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const site = siteFor(ctx.app, input.slug);
+      const domains = site.domains as string[];
+
+      if (domains.length === 0) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message:
+            'This website has no domain yet, so there is nothing a certificate could be ' +
+            'served for. Add one on its Settings tab.',
+        });
+      }
+
+      let bundle: ReturnType<typeof parseCertificateBundle>;
+      try {
+        bundle = parseCertificateBundle(input.certificate, input.privateKey);
+      } catch (error) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: error instanceof Error ? error.message : 'That certificate could not be read.',
+        });
+      }
+
+      /*
+       * A certificate may only claim names this website already serves.
+       * Without that check, uploading one for a domain belonging to somebody
+       * else's site would take their name out of automatic management and
+       * serve their visitors this file instead.
+       */
+      const covers = coveredDomains(bundle.certificate, domains);
+
+      if (covers.length === 0) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message:
+            `That certificate is for ${bundle.subjects.join(', ')}, and this website serves ` +
+            `${domains.join(', ')}. It has to cover at least one of them to be of any use here.`,
+        });
+      }
+
+      storeCustomCertificate(ctx.app.db, ctx.app.vault, site.id, bundle);
+
+      const failure = await ctx.app.routing.tryApply();
+      if (failure) {
+        // Leaving it stored would mean the panel says one thing and the web
+        // server serves another, until some unrelated edit reloaded it.
+        clearCustomCertificate(ctx.app.db, site.id);
+        await ctx.app.routing.tryApply();
+
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `The web server did not accept the certificate: ${failure.message}`,
+        });
+      }
+
+      const uncovered = domains.filter((domain) => !covers.includes(domain));
+
+      return {
+        ok: true,
+        covers,
+        uncovered,
+        originOnly: bundle.originOnly,
+        notAfter: bundle.notAfter,
+        note:
+          `Installed for ${covers.join(', ')}. Nothing renews it, so it stops working on ` +
+          `${bundle.notAfter.toDateString()} unless it is replaced.` +
+          (uncovered.length > 0
+            ? ` ${uncovered.join(', ')} is not on it, and carries on with the certificate the ` +
+              'panel obtains automatically.'
+            : ''),
+      };
+    }),
+
+  /** Goes back to the certificate the panel obtains and renews itself. */
+  removeCertificate: protectedProcedure
+    .input(z.object({ slug: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      const site = siteFor(ctx.app, input.slug);
+
+      if (!readCustomCertificate(ctx.app.db, site.id)) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'This website is already using the certificate the panel manages.',
+        });
+      }
+
+      clearCustomCertificate(ctx.app.db, site.id);
+
+      const failure = await ctx.app.routing.tryApply();
+      if (failure) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: `The web server did not accept the change: ${failure.message}`,
+        });
+      }
+
+      return {
+        ok: true,
+        note:
+          'Removed. The web server is obtaining its own certificate again, which usually ' +
+          'takes under a minute.',
       };
     }),
 });

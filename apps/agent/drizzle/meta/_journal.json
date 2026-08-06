@@ -50,6 +50,13 @@
       "when": 1785964562953,
       "tag": "0006_add_site_traffic",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1785996549731,
+      "tag": "0007_add_site_certificates",
+      "breakpoints": true
     }
   ]
 }

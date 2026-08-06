@@ -39,6 +39,14 @@ export const config = {
   binDir: envPath('WINPANEL_BIN_DIR', path.join(root, 'bin')),
   /** SQLite database, vault key, panel certificate. */
   dataDir: envPath('WINPANEL_DATA_DIR', path.join(root, 'data')),
+  /**
+   * Certificates the user supplied, written out for Caddy to read.
+   *
+   * Under the data folder because that is the one the installer strips of
+   * inherited permissions: these are private keys, and Caddy's own storage is
+   * readable by anything on the machine.
+   */
+  customCertDir: envPath('WINPANEL_CUSTOM_CERT_DIR', path.join(root, 'data', 'certificates')),
   /** Caddy's own storage: autosave.json and issued certificates. */
   caddyDir: envPath('WINPANEL_CADDY_DIR', path.join(root, 'caddy')),
   /** Built panel SPA, served by the agent. */

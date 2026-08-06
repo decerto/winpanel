@@ -24,6 +24,8 @@ export interface DomainCertificate {
   daysRemaining: number | null;
   /** True when the certificate covers the domain through a wildcard. */
   wildcard: boolean;
+  /** Whether the panel obtained this, or the user supplied it. */
+  source: 'automatic' | 'custom';
 }
 
 /** Below this, a renewal has had several chances and something is wrong. */
@@ -36,8 +38,7 @@ export function caddyDataDir(caddyDir: string): string {
 
 interface LoadedCertificate {
   certificate: X509Certificate;
-  /** The folder name, which is the subject Caddy filed it under. */
-  subject: string;
+  source: DomainCertificate['source'];
 }
 
 /** Certificates never live more than three levels down, so the walk is bounded. */
@@ -68,7 +69,7 @@ async function loadCertificates(caddyDir: string): Promise<LoadedCertificate[]> 
     for (const subject of subjects) {
       try {
         const pem = await fs.readFile(path.join(root, issuer, subject, `${subject}.crt`));
-        loaded.push({ certificate: new X509Certificate(pem), subject });
+        loaded.push({ certificate: new X509Certificate(pem), source: 'automatic' });
       } catch {
         // A half-written or unreadable file is not worth failing the page for.
       }
@@ -100,6 +101,7 @@ const ABSENT = {
   expiresAt: null,
   daysRemaining: null,
   wildcard: false,
+  source: 'automatic',
 } as const;
 
 /** The certificate the web server holds for each domain, if any. */
@@ -107,21 +109,47 @@ export async function certificatesForDomains(
   caddyDir: string,
   domains: readonly string[],
   now: Date = new Date(),
+  /** PEM of a certificate the user supplied for this website, if there is one. */
+  customCertificate?: string | null,
 ): Promise<DomainCertificate[]> {
   if (domains.length === 0) return [];
 
   const loaded = await loadCertificates(caddyDir);
 
+  /*
+   * Listed first so it wins a tie. A domain can have both — an automatic
+   * certificate obtained before the user supplied their own — and the one
+   * Caddy is actually serving is theirs, so that is the one to report.
+   */
+  if (customCertificate) {
+    try {
+      loaded.unshift({
+        certificate: new X509Certificate(customCertificate),
+        source: 'custom',
+      });
+    } catch {
+      // Unreadable here means unreadable at upload, which cannot happen.
+    }
+  }
+
   return domains.map((domain) => {
     /*
      * checkHost applies the certificate's own name matching, wildcards
      * included, so a site behind *.example.com is reported as covered rather
-     * than as having nothing. The newest match wins: a renewal leaves the old
-     * certificate on disk until it is cleaned up.
+     * than as having nothing. It answers with the name that matched, which is
+     * how a wildcard is told from an exact one. The newest match wins: a
+     * renewal leaves the old certificate on disk until it is cleaned up.
      */
     const matches = loaded
-      .filter(({ certificate }) => certificate.checkHost(domain, { subject: 'always' }))
-      .sort((a, b) => (expiryOf(b.certificate)?.getTime() ?? 0) - (expiryOf(a.certificate)?.getTime() ?? 0));
+      .map((entry) => ({
+        ...entry,
+        matched: entry.certificate.checkHost(domain, { subject: 'always' }),
+      }))
+      .filter((entry): entry is typeof entry & { matched: string } => entry.matched !== undefined)
+      .sort((a, b) => {
+        if (a.source !== b.source) return a.source === 'custom' ? -1 : 1;
+        return (expiryOf(b.certificate)?.getTime() ?? 0) - (expiryOf(a.certificate)?.getTime() ?? 0);
+      });
 
     const match = matches[0];
     if (!match) return { domain, ...ABSENT };
@@ -138,7 +166,8 @@ export async function certificatesForDomains(
       issuer: issuerNameOf(match.certificate),
       expiresAt,
       daysRemaining,
-      wildcard: match.subject.startsWith('wildcard_'),
+      wildcard: match.matched.startsWith('*.'),
+      source: match.source,
     };
   });
 }

@@ -31,6 +31,11 @@ function stepFor(range: TrafficRange): number {
   return range === '24h' || range === '7d' ? HOUR_MS : 24 * HOUR_MS;
 }
 
+/** When a range begins, for anything that has to look at the same window. */
+export function rangeStart(range: TrafficRange, now = Date.now()): number {
+  return now - RANGE_HOURS[range] * HOUR_MS;
+}
+
 export interface TrafficPoint extends Totals {
   /** Start of the interval this point covers. */
   at: Date;

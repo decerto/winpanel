@@ -21,6 +21,10 @@ export interface AccessEntry {
   /** Response body bytes sent. */
   bytesOut: number;
   durationMs: number;
+  method: string;
+  /** Path and query string, as it was asked for. */
+  uri: string;
+  host: string;
 }
 
 /**
@@ -46,6 +50,11 @@ function nonNegative(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
+/** Trimmed because these end up on a page, and a header can be arbitrarily long. */
+function text(value: unknown, fallback: string, max = 512): string {
+  return typeof value === 'string' && value.length > 0 ? value.slice(0, max) : fallback;
+}
+
 export function parseAccessLine(line: string): AccessEntry | null {
   const trimmed = line.trim();
   if (trimmed.length === 0 || trimmed[0] !== '{') return null;
@@ -65,6 +74,8 @@ export function parseAccessLine(line: string): AccessEntry | null {
   const at = timestampOf(record['ts']);
   if (at === null) return null;
 
+  const request = (record['request'] ?? {}) as Record<string, unknown>;
+
   return {
     at,
     status,
@@ -72,6 +83,9 @@ export function parseAccessLine(line: string): AccessEntry | null {
     bytesOut: nonNegative(record['size']),
     // `duration` is seconds, as a float.
     durationMs: Math.round(nonNegative(record['duration']) * 1000),
+    method: text(request['method'], 'GET', 16),
+    uri: text(request['uri'], '/'),
+    host: text(request['host'], '', 256),
   };
 }
 

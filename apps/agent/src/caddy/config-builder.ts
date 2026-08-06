@@ -45,6 +45,16 @@ export interface DnsChallengeGroup {
   domains: readonly string[];
 }
 
+/** A certificate the user supplied, already written out for Caddy to read. */
+export interface ManualCertificate {
+  /** Absolute path to the PEM chain, leaf first. */
+  certificateFile: string;
+  /** Absolute path to the private key. */
+  keyFile: string;
+  /** The site domains this certificate covers. */
+  subjects: readonly string[];
+}
+
 export interface CaddyConfigInput {
   sites: readonly CaddySiteInput[];
   /**
@@ -63,6 +73,15 @@ export interface CaddyConfigInput {
    * cannot share a certificate policy.
    */
   dnsChallenges?: readonly DnsChallengeGroup[];
+  /**
+   * Certificates supplied by the user rather than obtained by Caddy.
+   *
+   * The names they cover are taken out of automatic management entirely: a
+   * name Caddy holds a file for and also tries to issue for would renew into a
+   * certificate the user did not ask for, which is the whole point of them
+   * having supplied one.
+   */
+  manualCertificates?: readonly ManualCertificate[];
   /** Contact address for the certificate authority. */
   acmeEmail?: string;
   /**
@@ -370,6 +389,19 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
 
   const siteLoggers = Object.keys(accessLogs);
 
+  /*
+   * Names served from a file the user supplied.
+   *
+   * Caddy will not manage a name it already holds a certificate for, but
+   * saying so explicitly is what keeps the HTTP-to-HTTPS redirect: without
+   * `skip_certificates` a name that failed to issue is simply dropped from the
+   * server, and the site stops answering on port 80 as well.
+   */
+  const manual = (input.manualCertificates ?? []).filter(
+    (entry) => entry.subjects.length > 0,
+  );
+  const manualSubjects = new Set(manual.flatMap((entry) => entry.subjects));
+
   const config: Record<string, unknown> = {
     ...(input.admin != null ? { admin: input.admin } : {}),
     logging: {
@@ -399,6 +431,9 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
             routes,
             // Enables HTTP/3 alongside HTTP/2.
             protocols: ['h1', 'h2', 'h3'],
+            ...(manualSubjects.size > 0
+              ? { automatic_https: { skip_certificates: [...manualSubjects] } }
+              : {}),
             /*
              * Requests are attributed by Host header, so a request for a
              * domain no website claims — a scan, or a stale DNS record — is
@@ -414,7 +449,23 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
     },
   };
 
-  if (allDomains.size > 0) {
+  const tls: Record<string, unknown> = {};
+
+  if (manual.length > 0) {
+    tls['certificates'] = {
+      load_files: manual.map((entry) => ({
+        certificate: entry.certificateFile,
+        key: entry.keyFile,
+        format: 'pem',
+      })),
+    };
+  }
+
+  // A name with a certificate of its own is not a subject for automation, so
+  // it is dropped before the policies are worked out rather than after.
+  const managed = [...allDomains].filter((domain) => !manualSubjects.has(domain));
+
+  if (managed.length > 0) {
     /*
      * A policy per token, then one for whatever is left over.
      *
@@ -430,7 +481,7 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
 
     for (const group of input.dnsChallenges ?? []) {
       const subjects = group.domains.filter(
-        (domain) => allDomains.has(domain) && !covered.has(domain),
+        (domain) => managed.includes(domain) && !covered.has(domain),
       );
       if (subjects.length === 0) continue;
 
@@ -442,15 +493,14 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
       });
     }
 
-    const uncovered = [...allDomains].filter((domain) => !covered.has(domain));
+    const uncovered = managed.filter((domain) => !covered.has(domain));
     if (uncovered.length > 0) policies.push({ subjects: uncovered });
 
-    config['apps'] = {
-      ...(config['apps'] as object),
-      tls: {
-        automation: { policies },
-      },
-    };
+    tls['automation'] = { policies };
+  }
+
+  if (Object.keys(tls).length > 0) {
+    config['apps'] = { ...(config['apps'] as object), tls };
   }
 
   return config;

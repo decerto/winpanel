@@ -122,6 +122,34 @@ export async function accessLogExists(dir: string, slug: string): Promise<boolea
   }
 }
 
+/**
+ * The live log file for a site plus any rolled copies of it still on disk.
+ *
+ * Caddy names a rolled file `<slug>-<timestamp>.log` and keeps a couple of
+ * them. They stop growing, so their cursors settle at the end and cost one
+ * `stat` per sweep after that.
+ *
+ * Ordered oldest first, so the hours a rolled file holds land before the live
+ * file's.
+ */
+export async function logFilesFor(dir: string, slug: string): Promise<string[]> {
+  const live = accessLogPathFor(dir, slug);
+  const rolled: string[] = [];
+
+  try {
+    for (const name of await fs.readdir(dir)) {
+      if (name.startsWith(`${slug}-`) && name.endsWith('.log')) {
+        rolled.push(path.join(dir, name));
+      }
+    }
+  } catch {
+    // No log folder yet: nothing has been served through the web server.
+  }
+
+  // The rolled names carry a sortable timestamp, so this is chronological.
+  return [...rolled.sort(), live];
+}
+
 export class TrafficCollector {  #timer: NodeJS.Timeout | null = null;
   #running = false;
 
@@ -174,27 +202,9 @@ export class TrafficCollector {  #timer: NodeJS.Timeout | null = null;
 
   /**
    * The live file plus any rolled copies of it still on disk.
-   *
-   * Caddy names a rolled file `<slug>-<timestamp>.log` and keeps a couple of
-   * them. They stop growing, so their cursors settle at the end and cost one
-   * `stat` per sweep after that.
    */
   async #logFilesFor(slug: string): Promise<string[]> {
-    const live = accessLogPathFor(this.options.accessLogDir, slug);
-    const rolled: string[] = [];
-
-    try {
-      for (const name of await fs.readdir(this.options.accessLogDir)) {
-        if (name.startsWith(`${slug}-`) && name.endsWith('.log')) {
-          rolled.push(path.join(this.options.accessLogDir, name));
-        }
-      }
-    } catch {
-      // No log folder yet: nothing has been served through the web server.
-    }
-
-    // Rolled first, so the hours they hold land before the live file's.
-    return [...rolled.sort(), live];
+    return logFilesFor(this.options.accessLogDir, slug);
   }
 
   async #collectSite(siteId: string, slug: string): Promise<number> {

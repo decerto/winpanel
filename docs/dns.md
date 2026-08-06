@@ -71,6 +71,36 @@ If the web server is not installed yet, `applyTokens` deliberately returns
 lower-level "could not reach the web server", because only one of the two says what to do
 next.
 
+## Certificates the user supplies
+
+`ssl.uploadCertificate` stores a certificate and key the user obtained elsewhere — almost
+always a Cloudflare Origin certificate, occasionally one from a company's own authority.
+The certificate goes in `site_certificates`; the private key goes in the vault under
+`site.certificateKey:<siteId>`, never in the table and never back over the API.
+
+`writeCustomCertificateFiles` rewrites `<dataDir>\certificates\<siteId>.{crt,key}` from
+the database on *every* reconcile rather than once at upload, and deletes files belonging
+to sites that no longer have one. Caddy needs a path, and a config pointing at a file
+that is not there fails the entire load — including every other website on the machine.
+Rebuilding from the database means a restored backup or a half-finished write repairs
+itself.
+
+Three things follow from that same "one bad certificate takes everything down" property:
+
+- `parseCertificateBundle` validates at upload, not at reload: the key must match the
+  certificate, it must not carry a passphrase, and it must be inside its validity window.
+- The names on the certificate are intersected with the site's own domains
+  (`coveredDomains`), so nobody can take a domain out of automatic management by
+  uploading a certificate that claims it.
+- The subjects go into `automatic_https.skip_certificates`. Caddy will not manage a name
+  it already holds, but saying so explicitly is what keeps the HTTP-to-HTTPS redirect
+  alive — a name that fails issuance is otherwise dropped from the server entirely.
+
+Nothing renews these, so `notAfter` is stored and shown rather than left inside the file.
+A Cloudflare Origin certificate is flagged `originOnly`, because it is trusted by
+Cloudflare's edge alone: grey-clouding the record afterwards gives every visitor a
+full-page browser warning.
+
 ## Router surface
 
 | Procedure | Notes |

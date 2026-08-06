@@ -302,6 +302,79 @@ describe('certificate automation', () => {
   });
 });
 
+describe('certificates the user supplied', () => {
+  const manual = {
+    certificateFile: 'C:\\panel\\data\\certificates\\abc.crt',
+    keyFile: 'C:\\panel\\data\\certificates\\abc.key',
+    subjects: ['example.com'],
+  };
+
+  it('loads the pair of files', () => {
+    const config = buildCaddyConfig({
+      sites: [site()],
+      manualCertificates: [manual],
+    }) as any;
+
+    expect(config.apps.tls.certificates.load_files).toEqual([
+      {
+        certificate: manual.certificateFile,
+        key: manual.keyFile,
+        format: 'pem',
+      },
+    ]);
+  });
+
+  it('stops Caddy asking an authority for a name it already has', () => {
+    /*
+     * Left in automation, Caddy would request a certificate for a name it is
+     * already serving from a file — every renewal attempt failing against a
+     * domain whose owner deliberately opted out of the process.
+     */
+    const config = buildCaddyConfig({
+      sites: [site()],
+      manualCertificates: [manual],
+    }) as any;
+
+    expect(config.apps.http.servers.main.automatic_https.skip_certificates).toEqual([
+      'example.com',
+    ]);
+
+    const subjects = config.apps.tls.automation.policies.flatMap((p: any) => p.subjects);
+    expect(subjects).not.toContain('example.com');
+    // The site's other domain has no certificate of its own, so it carries on
+    // being obtained and renewed as normal.
+    expect(subjects).toContain('www.example.com');
+  });
+
+  it('leaves automation alone for a site with no certificate of its own', () => {
+    const config = buildCaddyConfig({ sites: [site()] }) as any;
+    expect(config.apps.http.servers.main.automatic_https).toBeUndefined();
+    expect(config.apps.tls.certificates).toBeUndefined();
+  });
+
+  it('drops automation entirely when every domain is served from a file', () => {
+    const config = buildCaddyConfig({
+      sites: [site()],
+      manualCertificates: [{ ...manual, subjects: ['example.com', 'www.example.com'] }],
+    }) as any;
+
+    expect(config.apps.tls.automation).toBeUndefined();
+    expect(config.apps.tls.certificates.load_files).toHaveLength(1);
+  });
+
+  it('ignores a certificate that covers none of the site\u2019s domains', () => {
+    // Otherwise an empty `skip_certificates` entry would sit in the config
+    // pointing at files for names nothing serves.
+    const config = buildCaddyConfig({
+      sites: [site()],
+      manualCertificates: [{ ...manual, subjects: [] }],
+    }) as any;
+
+    expect(config.apps.tls.certificates).toBeUndefined();
+    expect(config.apps.http.servers.main.automatic_https).toBeUndefined();
+  });
+});
+
 describe('single-page app fallback', () => {
   it('adds an index.html fallback for a static site that needs it', () => {
     // The Caddy equivalent of the URL Rewrite rule people add to web.config

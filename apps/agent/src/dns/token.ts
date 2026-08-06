@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import type { DatabaseHandle } from '../db/index.js';
 import { secrets } from '../db/schema.js';
+import { readSecret, writeSecret } from '../security/secret-store.js';
 import type { SecretVault } from '../security/vault.js';
 
 /**
@@ -28,29 +29,6 @@ export const CLOUDFLARE_TOKEN_KEY = 'cloudflare.token';
 
 export function siteCloudflareTokenKey(siteId: string): string {
   return `site.cloudflareToken:${siteId}`;
-}
-
-function readSecret(db: DatabaseHandle, vault: SecretVault, key: string): string | null {
-  const row = db.db.select().from(secrets).where(eq(secrets.key, key)).get();
-  if (!row) return null;
-
-  try {
-    return vault.decrypt(row.ciphertext, key);
-  } catch {
-    // A vault that cannot decrypt its own value is a re-key, not a DNS
-    // problem. Reporting it as absent sends the user somewhere useful.
-    return null;
-  }
-}
-
-function writeSecret(db: DatabaseHandle, vault: SecretVault, key: string, value: string): void {
-  const ciphertext = vault.encrypt(value, key);
-
-  db.db
-    .insert(secrets)
-    .values({ key, ciphertext })
-    .onConflictDoUpdate({ target: secrets.key, set: { ciphertext, updatedAt: new Date() } })
-    .run();
 }
 
 export function loadCloudflareToken(db: DatabaseHandle, vault: SecretVault): string | null {

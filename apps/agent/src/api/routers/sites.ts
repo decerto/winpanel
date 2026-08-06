@@ -24,9 +24,11 @@ import { GitClient, validateGitRef, validateRepositoryUrl } from '../../sites/gi
 import { generateDeployKey, isSshUrl } from '../../sites/ssh-keys.js';
 import { serviceIdFor } from '../../sites/deploy-handler.js';
 import { localAddresses } from '../../tls/panel-certificate.js';
-import { accessLogExists } from '../../traffic/collector.js';
+import { accessLogExists, logFilesFor } from '../../traffic/collector.js';
+import { scanFailures } from '../../traffic/failures.js';
 import {
   TRAFFIC_RANGES,
+  rangeStart,
   trafficAllTime,
   trafficSeries,
   trafficThisMonth,
@@ -249,6 +251,31 @@ export const sitesRouter = router({
          */
         collecting: await accessLogExists(ctx.app.config.accessLogDir, site.slug),
       };
+    }),
+
+  /**
+   * The requests behind the error counts.
+   *
+   * Separate from `traffic` because it reads the log files rather than the
+   * database, and only matters once something has actually gone wrong: there
+   * is no reason to touch the disk for a website that is answering everything.
+   */
+  trafficErrors: protectedProcedure
+    .input(
+      z.object({
+        slug: z.string().min(1),
+        range: z.enum(TRAFFIC_RANGES).default('7d'),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
+      const site = service.get(input.slug);
+      if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
+
+      const files = await logFilesFor(ctx.app.config.accessLogDir, site.slug);
+      const scan = await scanFailures(files, { since: rangeStart(input.range) });
+
+      return { range: input.range, ...scan };
     }),
 
   /**
