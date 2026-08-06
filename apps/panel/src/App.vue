@@ -96,13 +96,34 @@ const bare = computed(() => route.meta['bare'] === true);
 
 const username = ref('');
 const role = ref<UserRole | null>(null);
-void api.auth.me
-  .query()
-  .then((user) => {
+
+async function loadMe(): Promise<void> {
+  try {
+    const user = await api.auth.me.query();
     username.value = user?.username ?? '';
     role.value = user?.role ?? null;
-  })
-  .catch(() => undefined);
+  } catch {
+    // Each page reports a dead agent in its own way; the shell staying as it
+    // is beats a sidebar that empties itself over one failed request.
+  }
+}
+
+/*
+ * Asked again every time the shell comes back into view.
+ *
+ * The shell is created once, while the panel is usually still on the sign-in
+ * screen — where `me` is nobody. Signing in swaps the page underneath it but
+ * does not rebuild it, so a single fetch at start-up would leave the sidebar
+ * believing the visitor has no role and hiding every entry that needs one
+ * until the next full reload.
+ */
+watch(
+  bare,
+  (isBare) => {
+    if (!isBare) void loadMe();
+  },
+  { immediate: true },
+);
 
 const drawerOpen = ref(false);
 watch(() => route.fullPath, () => (drawerOpen.value = false));
