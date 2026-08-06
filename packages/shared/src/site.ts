@@ -171,6 +171,10 @@ export const DeploymentStatus = z.enum([
   'healthchecking',
   'switching',
   'succeeded',
+  // The files arrived and built, but the site cannot run until the user says
+  // which file starts it or which folder to serve. Not a failure: the code is
+  // published, and the answer is only knowable by looking at the files.
+  'needs-setup',
   'failed',
   'cancelled',
   'rolledback',

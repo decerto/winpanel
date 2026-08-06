@@ -178,6 +178,24 @@ const inspection = ref<Inspection | null>(null);
 /** Detected from the lockfile, but the user gets the last word. */
 const packageManager = ref<'npm' | 'pnpm' | 'yarn' | 'bun'>('npm');
 
+/**
+ * The two things a project cannot run without.
+ *
+ * Detection recognises the layouts that have a name - Nuxt, a workspace, a
+ * frontend building into a backend - and a good many projects have none.
+ * Rather than let the wizard finish on a guess and fail at start-up naming a
+ * file nobody chose, both are shown here, filled in with whatever was found,
+ * and whatever is typed wins.
+ *
+ * Neither is required. Nobody can name a folder inside a repository they have
+ * not seen yet, and a build often has to run before the folder to serve even
+ * exists, so left blank the first deploy downloads and builds the project and
+ * stops there, with the files on disk to look through.
+ */
+const appRoot = ref('');
+const startupFile = ref('');
+const documentRoot = ref('');
+
 const envRows = ref<Array<{ key: string; value: string }>>([]);
 
 const domainList = computed(() =>
@@ -190,6 +208,9 @@ const domainList = computed(() =>
 const lowConfidence = computed(
   () => inspection.value !== null && inspection.value.confidence < 0.6,
 );
+
+/** Detection found nothing to go on, which is a question rather than a failure. */
+const unrecognised = computed(() => inspection.value?.shape === 'unknown');
 
 function chooseKind(next: Kind): void {
   kind.value = next;
@@ -230,6 +251,9 @@ async function inspectRepository(): Promise<void> {
     // Pre-fill from what was found, so the remaining steps are mostly reading.
     envRows.value = result.manifest.envVars.map((key) => ({ key, value: '' }));
     packageManager.value = result.manifest.packageManager;
+    appRoot.value = result.manifest.app.cwd;
+    startupFile.value = result.manifest.app.entry ?? '';
+    documentRoot.value = result.manifest.staticRoot ?? '';
 
     if (!displayName.value) {
       const match = /\/([^/]+?)(?:\.git)?$/.exec(repoUrl.value.trim());
@@ -270,6 +294,18 @@ function payloadFor(): {
   }
 }
 
+/** What was detected, with the answers the user gave on top. */
+function manifestToCreate(): NonNullable<Inspection>['manifest'] {
+  const detected = inspection.value!.manifest;
+  const entry = startupFile.value.trim();
+
+  return {
+    ...detected,
+    staticRoot: documentRoot.value.trim(),
+    app: { ...detected.app, cwd: appRoot.value.trim(), entry: entry || undefined },
+  };
+}
+
 async function createSite(): Promise<void> {
   if (isGit.value && !inspection.value) return;
 
@@ -290,7 +326,7 @@ async function createSite(): Promise<void> {
       runtime,
       // Git sites carry the manifest the inspection produced; for everything
       // else the server writes one that matches the runtime.
-      ...(isGit.value && inspection.value ? { manifest: inspection.value.manifest } : {}),
+      ...(isGit.value && inspection.value ? { manifest: manifestToCreate() } : {}),
       ...(isGit.value ? { packageManager: packageManager.value } : {}),
       spaFallback: spaFallback.value,
       envVars,
@@ -318,7 +354,8 @@ const afterCreation = computed<{ title: string; steps: string[] }>(() => {
       return {
         title: 'What happens next',
         steps: [
-          'The panel clones your repository and runs the build steps it found.',
+          'The panel clones your repository and runs the build steps it found. If it found none, it installs the packages in your application root.',
+          'If it cannot tell which file starts your app, it stops there and keeps the files, so you can look through them and say.',
           'Open the website and use its preview link to check it works.',
           'Press "Pull now" on the Git tab whenever you push new commits.',
         ],
@@ -676,8 +713,16 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
         <h2 class="text-lg font-semibold tracking-tight text-ink">Here's what we found</h2>
         <p class="mt-1 text-sm text-ink-muted">{{ inspection.summary }}</p>
 
-        <AlertMessage v-if="lowConfidence" tone="warning" class="mt-4">
-          We are not confident about this. Check the steps below before continuing.
+        <AlertMessage v-if="unrecognised" tone="info" class="mt-4">
+          We could not work this project out from the outside, which is normal for a layout
+          that is your own rather than a framework's. It is not a problem, and you do not have
+          to answer it now: leave the settings below empty and the first deploy will download
+          your project, build it, and stop there so you can look through the files it fetched.
+          You then fill these in from the website's Application page and deploy again.
+        </AlertMessage>
+        <AlertMessage v-else-if="lowConfidence" tone="warning" class="mt-4">
+          We are not confident about this. Check the folders and the two settings below before
+          continuing.
         </AlertMessage>
 
         <div v-if="inspection.folders.length > 0" class="mt-5">
@@ -696,6 +741,74 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
               </span>
             </li>
           </ul>
+        </div>
+
+        <!--
+          Always editable, never hidden behind "advanced", and never required.
+          These are the answers a deploy needs, but they describe files that do
+          not exist here yet: the folder to serve is often created by the build.
+          Left empty, the first deploy fetches and builds, then asks.
+        -->
+        <div class="mt-5 space-y-4">
+          <h3 class="text-sm font-medium text-ink">
+            How to run it
+            <span class="ml-1 text-xs font-normal text-ink-faint">(optional)</span>
+          </h3>
+          <p class="text-sm text-ink-muted">
+            Fill in what you know. Anything left empty is settled after the first deploy, once
+            your files are on the server and you can see them.
+          </p>
+
+          <template v-if="inspection.manifest.runtime !== 'static'">
+            <div>
+              <label for="new-site-app-root" class="label">Application root</label>
+              <input
+                id="new-site-app-root"
+                v-model="appRoot"
+                class="field font-mono"
+                placeholder="(the project root)"
+              />
+              <p class="hint">
+                The folder holding the <span class="font-mono">package.json</span> of the part
+                that runs, e.g. <span class="font-mono">server</span>. Leave it empty if that is
+                the top of the repository.
+              </p>
+            </div>
+
+            <div>
+              <label for="new-site-startup-file" class="label">Startup file</label>
+              <input
+                id="new-site-startup-file"
+                v-model="startupFile"
+                class="field font-mono"
+                placeholder="index.js"
+              />
+              <p class="hint">
+                Relative to the application root
+                (<span class="font-mono">{{ appRoot || 'the project root' }}</span>), so
+                <span class="font-mono">app.js</span> rather than
+                <span class="font-mono">{{ appRoot ? `${appRoot}/app.js` : 'src/app.js' }}</span>
+                when the folder above is already
+                <span class="font-mono">{{ appRoot || 'the project root' }}</span
+                >.
+              </p>
+            </div>
+          </template>
+
+          <div v-else>
+            <label for="new-site-document-root" class="label">Folder to serve</label>
+            <input
+              id="new-site-document-root"
+              v-model="documentRoot"
+              class="field font-mono"
+              placeholder="dist"
+            />
+            <p class="hint">
+              Where the build leaves the finished files, e.g.
+              <span class="font-mono">dist</span>. This folder usually does not exist until the
+              build has run, so if you are unsure, leave it and check after the first deploy.
+            </p>
+          </div>
         </div>
 
         <div v-if="inspection.steps.length > 0" class="mt-5">
@@ -733,6 +846,17 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
           </p>
         </div>
 
+        <div
+          v-else-if="inspection.manifest.runtime !== 'static'"
+          class="mt-5 rounded-lg border border-line bg-black/20 px-3 py-2 text-sm text-ink-muted"
+        >
+          We found no build steps, so every deploy will install the packages in the application
+          root and run that folder's <span class="font-mono">build</span> script if it has one.
+          If your project needs more than that, commit a
+          <span class="font-mono">winpanel.json</span> to the root of your repository and it
+          will be used instead of anything set here.
+        </div>
+
         <p
           v-for="note in inspection.notes"
           :key="note"
@@ -744,7 +868,7 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
         <div class="mt-6 flex gap-2">
           <button type="button" class="btn btn-ghost" @click="step = 'source'">Back</button>
           <button type="button" class="btn btn-primary flex-1" @click="step = 'domain'">
-            Looks right
+            {{ unrecognised ? 'Continue' : 'Looks right' }}
           </button>
         </div>
       </template>

@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Save,
   Terminal,
+  Zap,
 } from 'lucide-vue-next';
 import { api, describeError } from '../../lib/api';
 import { siteContextKey } from '../../lib/site-context';
@@ -74,6 +75,17 @@ const picking = ref<'applicationRoot' | 'startupFile' | 'documentRoot' | null>(n
 
 /** The folder the site's paths are measured from: a release, or the public folder. */
 const pathBase = computed(() => info.value?.applicationRoot.split('/')[0] ?? 'release');
+
+/**
+ * The folder the startup file is measured from, spelled out.
+ *
+ * It is the only field on this page relative to the application root rather
+ * than to the release, and a generic hint invites `server/app.js` when the
+ * application root is already `server`.
+ */
+const startupBase = computed(() =>
+  [pathBase.value, form.value.applicationRoot].filter(Boolean).join('/'),
+);
 
 const job = useJobLog({ onFinished: () => refresh() });
 
@@ -236,6 +248,22 @@ watch(slug, load, { immediate: true });
     <div v-if="loading" class="h-80 animate-pulse rounded-card bg-surface" />
 
     <template v-else-if="info">
+      <!--
+        Your files are on the server but nothing is running, and the only way
+        to know the answer was to look at them. Said first, and said as a task
+        rather than as a failure.
+      -->
+      <AlertMessage v-if="info.setupNeeded" tone="warning">
+        <p class="font-medium">Your files are here. Tell us how to run them.</p>
+        <p class="mt-1">{{ info.setupNeeded }}</p>
+        <p class="mt-2">
+          <RouterLink :to="`/sites/${slug}/files`" class="underline underline-offset-2">
+            Browse the files
+          </RouterLink>
+          to see what arrived, fill in the settings below, then deploy again.
+        </p>
+      </AlertMessage>
+
       <!-- Actions first. This page exists for them; the facts below are context. -->
       <section class="card p-5">
         <div class="flex flex-wrap items-center gap-3">
@@ -490,7 +518,12 @@ watch(slug, load, { immediate: true });
                   <FolderSearch :size="14" aria-hidden="true" /> Browse
                 </button>
               </div>
-              <p class="hint">Relative to the application root, e.g. src/server.js</p>
+              <p class="hint">
+                Relative to the application root
+                (<span class="font-mono">{{ startupBase }}</span>), e.g.
+                <span class="font-mono">app.js</span> or
+                <span class="font-mono">src/server.js</span>.
+              </p>
             </dd>
           </div>
 
@@ -560,6 +593,62 @@ watch(slug, load, { immediate: true });
         <button type="button" class="btn btn-primary mt-4" :disabled="saving" @click="saveSettings">
           <Save :size="15" aria-hidden="true" /> {{ saving ? 'Saving\u2026' : 'Save changes' }}
         </button>
+      </section>
+
+      <!--
+        What a deploy does before the app starts.
+        Read-only on purpose: the point is that nothing here is a mystery, not
+        that every project needs its build rewritten from the panel.
+      -->
+      <section v-if="tab === 'dashboard'" class="card p-5">
+        <h3 class="text-sm font-semibold text-ink">What runs when you deploy</h3>
+
+        <ol v-if="info.buildSteps.length > 0" class="mt-4 space-y-1.5 text-sm">
+          <li
+            v-for="(buildStep, index) in info.buildSteps"
+            :key="index"
+            class="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-line bg-black/20 px-3 py-2"
+          >
+            <span class="text-ink-faint">{{ index + 1 }}.</span>
+            <span class="text-ink">{{ buildStep.name }}</span>
+            <span class="ml-auto font-mono text-xs text-ink-faint">
+              {{ buildStep.command }} in {{ buildStep.folder || pathBase }}
+            </span>
+          </li>
+        </ol>
+
+        <p v-else class="mt-3 text-sm text-ink-muted">
+          This project has no build steps of its own, which is normal for a layout the panel
+          could not recognise. Every deploy installs its packages in the application root
+          (<span class="font-mono">{{ startupBase }}</span>) and runs that folder&#8217;s
+          <span class="font-mono">build</span> script if it has one. If your project needs
+          something else, commit a <span class="font-mono">winpanel.json</span> to the root of
+          your repository and it will be used instead.
+        </p>
+
+        <template v-if="info.lifecycleScripts.length > 0">
+          <h4 class="mt-6 flex items-center gap-2 text-sm font-medium text-ink">
+            <Zap :size="15" class="text-ink-faint" aria-hidden="true" /> Scripts that run by
+            themselves
+          </h4>
+          <p class="mt-1 text-sm text-ink-muted">
+            Your <span class="font-mono">package.json</span> asks npm to run these as part of
+            installing packages, so they run on every deploy without appearing as a step.
+            Worth a look if a deploy does something you did not expect.
+          </p>
+          <ul class="mt-3 space-y-1.5">
+            <li
+              v-for="script in info.lifecycleScripts"
+              :key="script.name"
+              class="rounded-lg border border-line bg-black/20 px-3 py-2"
+            >
+              <span class="font-mono text-sm text-ink">{{ script.name }}</span>
+              <p class="mt-0.5 break-words font-mono text-xs text-ink-muted">
+                {{ script.command }}
+              </p>
+            </li>
+          </ul>
+        </template>
       </section>
 
       <section v-else class="card p-5">
@@ -633,7 +722,7 @@ watch(slug, load, { immediate: true });
         v-model="form.startupFile"
         :open="picking === 'startupFile'"
         :site-slug="slug"
-        :base="[pathBase, form.applicationRoot].filter(Boolean).join('/')"
+        :base="startupBase"
         mode="file"
         title="Choose the startup file"
         @close="picking = null"

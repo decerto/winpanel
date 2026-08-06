@@ -48,6 +48,7 @@ const RUNTIME_LABEL: Record<string, string> = {
 const STATUS_CLASS: Record<string, string> = {
   succeeded: 'text-ok',
   failed: 'text-danger',
+  'needs-setup': 'text-warn',
   running: 'text-info',
 };
 

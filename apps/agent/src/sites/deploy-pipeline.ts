@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { PREVIOUS_DIR, RELEASE_DIR, STAGING_DIR, type BuildStep, type SiteManifest } from '@winpanel/shared';
 import { runCommand } from '../process/run-command.js';
+import { buildArgs, detectPackageManager, installArgs } from '../detect/detector.js';
 import type { JobContext } from '../jobs/queue.js';
 
 /**
@@ -232,6 +233,64 @@ export interface RunBuildOptions {
 }
 
 /**
+ * What to run when the project carries no build steps of its own.
+ *
+ * Detection cannot recognise every layout, and a project it could not read is
+ * created with no steps at all — which used to mean a deploy that installed
+ * nothing, then an app that could not start, for a reason the log never gave.
+ * The application root is the one thing the user is always asked for, and it
+ * is enough: install there, and run its build script if it declares one. A
+ * site that genuinely needs no build has no package.json there and is left
+ * alone.
+ */
+export async function stepsForUnconfiguredApp(
+  manifest: SiteManifest,
+  releaseDir: string,
+): Promise<BuildStep[]> {
+  if (manifest.runtime !== 'node') return [];
+
+  const appDir = path.join(releaseDir, manifest.app.cwd);
+
+  let pkg: { scripts?: Record<string, unknown> };
+  try {
+    pkg = JSON.parse(await fs.readFile(path.join(appDir, 'package.json'), 'utf8')) as {
+      scripts?: Record<string, unknown>;
+    };
+  } catch {
+    return [];
+  }
+
+  const manager = (await detectPackageManager(appDir)) ?? manifest.packageManager;
+  const where = manifest.app.cwd || 'the project root';
+
+  // Not a production install: a build script needs the tools it builds with,
+  // and whether one runs is only known once the packages are there.
+  const steps: BuildStep[] = [
+    {
+      name: `Install packages in ${where}`,
+      cwd: manifest.app.cwd,
+      command: manager,
+      args: installArgs(manager, false),
+      optional: false,
+      env: {},
+    },
+  ];
+
+  if (typeof pkg.scripts?.['build'] === 'string') {
+    steps.push({
+      name: `Build ${where}`,
+      cwd: manifest.app.cwd,
+      command: manager,
+      args: buildArgs(manager),
+      optional: false,
+      env: {},
+    });
+  }
+
+  return steps;
+}
+
+/**
  * Executes the manifest's build steps in order.
  *
  * Each step may run in a different folder, which is what makes the common
@@ -246,10 +305,20 @@ export async function runBuildSteps(options: RunBuildOptions): Promise<void> {
     return;
   }
 
-  const steps = manifest.steps;
+  let steps = manifest.steps;
+
   if (steps.length === 0) {
-    ctx.log('No build steps are configured for this project.');
-    return;
+    steps = await stepsForUnconfiguredApp(manifest, releaseDir);
+
+    if (steps.length === 0) {
+      ctx.log('This project has no build steps, and nothing here needs building.');
+      return;
+    }
+
+    ctx.log(
+      'This project has no build steps of its own, so the panel will install its packages ' +
+        'from the application root set on the Application page.',
+    );
   }
 
   for (const [index, step] of steps.entries()) {

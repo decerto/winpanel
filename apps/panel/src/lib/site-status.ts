@@ -29,6 +29,9 @@ export function siteStatus(site: {
       };
     case 'failed':
       return { label: 'Last deploy failed', dot: 'bg-danger', text: 'text-danger' };
+    case 'needs-setup':
+      // The files are there; only a setting is missing. Not a failure.
+      return { label: 'Needs setup', dot: 'bg-warn', text: 'text-warn' };
     case 'running':
     case 'pending':
       return { label: 'Deploying', dot: 'bg-info', text: 'text-info' };

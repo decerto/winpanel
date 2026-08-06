@@ -1,6 +1,6 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
+import { eq, desc } from 'drizzle-orm';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import {
@@ -15,7 +15,7 @@ import {
 import { protectedProcedure, router } from '../trpc.js';
 import { appRootFor, SiteService } from '../../sites/site-service.js';
 import { retargetSteps } from '../../sites/package-manager.js';
-import { sites, type SiteRow } from '../../db/schema.js';
+import { deployments, sites, type SiteRow } from '../../db/schema.js';
 import { serviceIdFor } from '../../sites/deploy-handler.js';
 import { discoverNodeVersions, matchVersion } from '../../sites/node-versions.js';
 import type { AppContext } from '../../app-context.js';
@@ -31,6 +31,28 @@ import type { AppContext } from '../../app-context.js';
  */
 
 const MAX_PACKAGE_JSON_BYTES = 512 * 1024;
+
+/**
+ * Scripts npm runs on its own, in the order it runs them.
+ *
+ * These never appear in the deploy log as a step of their own, so a project
+ * that patches something, downloads a binary or builds native code from one
+ * of these looks like it is doing it by magic. Worth showing precisely
+ * because nobody chose to run them.
+ */
+const LIFECYCLE_SCRIPTS = [
+  'preinstall',
+  'install',
+  'postinstall',
+  'prepare',
+  'prepublish',
+  'prepublishOnly',
+  'prepack',
+  'postpack',
+] as const;
+
+/** Enough of a command to recognise it, without pasting a minified one-liner. */
+const MAX_SCRIPT_CHARS = 300;
 
 function requireSite(app: AppContext, slug: string) {
   const service = new SiteService(app.db, app.vault, app.config.sitesRoot);
@@ -62,31 +84,46 @@ function requireProcessSite(app: AppContext, slug: string) {
  * — a site that has never deployed has no package.json — so it is reported as
  * "none found" rather than as an error.
  */
-async function readPackageScripts(
-  appRoot: string,
-): Promise<{ found: boolean; scripts: string[]; name: string | null }> {
+async function readPackageScripts(appRoot: string): Promise<{
+  found: boolean;
+  scripts: string[];
+  /** The ones npm runs by itself during an install, with what they run. */
+  lifecycle: Array<{ name: string; command: string }>;
+  name: string | null;
+}> {
   const file = path.join(appRoot, 'package.json');
+  const empty = { found: true, scripts: [], lifecycle: [], name: null };
 
   try {
     const stats = await fs.stat(file);
-    if (stats.size > MAX_PACKAGE_JSON_BYTES) return { found: true, scripts: [], name: null };
+    if (stats.size > MAX_PACKAGE_JSON_BYTES) return empty;
 
     const parsed = JSON.parse(await fs.readFile(file, 'utf8')) as {
       name?: unknown;
       scripts?: Record<string, unknown>;
     };
 
-    const scripts = Object.keys(parsed.scripts ?? {})
+    const declared = parsed.scripts ?? {};
+
+    const scripts = Object.keys(declared)
       .filter((key) => /^[A-Za-z0-9_:.-]{1,64}$/.test(key))
       .sort();
+
+    const lifecycle = LIFECYCLE_SCRIPTS.filter(
+      (key) => typeof declared[key] === 'string' && (declared[key] as string).trim().length > 0,
+    ).map((key) => ({
+      name: key,
+      command: (declared[key] as string).trim().slice(0, MAX_SCRIPT_CHARS),
+    }));
 
     return {
       found: true,
       scripts,
+      lifecycle,
       name: typeof parsed.name === 'string' ? parsed.name.slice(0, 120) : null,
     };
   } catch {
-    return { found: false, scripts: [], name: null };
+    return { found: false, scripts: [], lifecycle: [], name: null };
   }
 }
 
@@ -154,8 +191,20 @@ export const siteAppRouter = router({
       const pinned = manifest.nodeVersion ?? '';
       const resolved = pinned ? matchVersion(installed, pinned) : installed[0];
 
+      // The deploy stops short of starting when it cannot tell what to run,
+      // and what it needs is a decision, not a retry.
+      const last = ctx.app.db.db
+        .select()
+        .from(deployments)
+        .where(eq(deployments.siteId, site.id))
+        .orderBy(desc(deployments.startedAt))
+        .limit(1)
+        .get();
+
       return {
         runtime: site.runtime,
+        /** What the last deploy is still waiting to be told, if anything. */
+        setupNeeded: last?.status === 'needs-setup' ? (last.errorMessage ?? null) : null,
         /** Relative to the site folder, which is how the Files tab shows it. */
         applicationRoot: path.posix.join(
           source.kind === 'git' ? RELEASE_DIR : PUBLIC_DIR,
@@ -181,6 +230,17 @@ export const siteAppRouter = router({
         packageName: pkg.name,
         packageJsonFound: pkg.found,
         scripts: pkg.scripts,
+        /** Runs on every install, whether or not anybody asked for it. */
+        lifecycleScripts: pkg.lifecycle,
+        /**
+         * What the deploy runs before starting the app. Empty is normal for a
+         * layout the panel could not read, and the page says what happens then.
+         */
+        buildSteps: manifest.steps.map((step) => ({
+          name: step.name,
+          folder: step.cwd,
+          command: [step.command, ...step.args].join(' '),
+        })),
       };
     }),
 
@@ -218,7 +278,8 @@ export const siteAppRouter = router({
         app: {
           ...manifest.app,
           ...(input.applicationRoot !== undefined ? { cwd: input.applicationRoot } : {}),
-          ...(input.startupFile !== undefined ? { entry: input.startupFile } : {}),
+          // An emptied field means "you work it out", not a file called "".
+          ...(input.startupFile !== undefined ? { entry: input.startupFile || undefined } : {}),
         },
         ...(input.packageManager !== undefined ? { packageManager: input.packageManager } : {}),
         ...(retargeted ? { steps: retargeted.steps } : {}),

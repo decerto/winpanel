@@ -6,7 +6,7 @@ import { PUBLIC_DIR, SHARED_DIR, SiteManifest, type SiteSource } from '@winpanel
 import type { DatabaseHandle } from '../db/index.js';
 import { deployments, sites } from '../db/schema.js';
 import type { JobContext } from '../jobs/queue.js';
-import { detectApp } from '../detect/detector.js';
+import { detectApp, detectEntryPoint } from '../detect/detector.js';
 import { GitClient } from './git-client.js';
 import {
   DeploymentError,
@@ -70,12 +70,17 @@ export function serviceIdFor(slug: string, colour: 'blue' | 'green'): string {
   return `winpanel-site-${slug}-${colour}`;
 }
 
+/** The startup file the user set, treating a cleared field as nothing at all. */
+function configuredEntry(manifest: SiteManifest): string | undefined {
+  return manifest.app.entry?.trim() ? manifest.app.entry : undefined;
+}
+
 /** The executable that runs a site of a given runtime. */
 async function resolveRuntimeExecutable(
   deps: DeployDependencies,
   manifest: SiteManifest,
 ): Promise<{ exe: string; args: string[] }> {
-  const entry = manifest.app.entry ?? (manifest.runtime === 'dotnet' ? undefined : 'index.js');
+  const entry = configuredEntry(manifest) ?? (manifest.runtime === 'dotnet' ? undefined : 'index.js');
 
   if (manifest.runtime === 'dotnet') {
     if (!entry) {
@@ -89,6 +94,59 @@ async function resolveRuntimeExecutable(
 
   const node = await deps.tools.resolve('node', manifest.nodeVersion ?? undefined);
   return { exe: node.exe, args: [...node.args, entry ?? 'index.js'] };
+}
+
+/**
+ * Says what is wrong with the startup file, or nothing if it is fine.
+ *
+ * Checked in staging, before anything is swapped: without this the mistake
+ * only surfaces once the live version has been stopped and the new one has
+ * failed to start, naming `index.js` - the fallback used when nothing was
+ * configured, not anything the user ever typed.
+ */
+export async function entryFileProblem(
+  manifest: SiteManifest,
+  stagingDir: string,
+): Promise<string | null> {
+  const appDir = path.join(stagingDir, manifest.app.cwd);
+  const configured = configuredEntry(manifest);
+  // .NET without an entry is reported by resolveRuntimeExecutable instead.
+  const entry = configured ?? (manifest.runtime === 'dotnet' ? null : 'index.js');
+  if (!entry) return null;
+
+  try {
+    await fs.access(path.join(appDir, entry));
+    return null;
+  } catch {
+    // Reported below, with the context this catch does not have.
+  }
+
+  const where = manifest.app.cwd ? `the ${manifest.app.cwd} folder` : 'the project root';
+  const suggestion = await detectEntryPoint(appDir);
+  const hint = suggestion ? ` It looks like it should be "${suggestion}".` : '';
+
+  return configured
+    ? `The startup file "${entry}" is not in ${where}, so there is nothing to run. Set the ` +
+        'startup file on the Application page, written relative to the application root.' +
+        hint
+    : `This website does not say which file starts it, and there is no index.js in ${where}. ` +
+        'Set the startup file on the Application page, written relative to the application ' +
+        'root.' + hint;
+}
+
+/** Whether a previous version is serving right now, and would be lost. */
+async function isServing(
+  deps: DeployDependencies,
+  serviceId: string,
+  folders: ReleaseFolders,
+): Promise<boolean> {
+  if (!(await deps.services.isInstalled(serviceId))) return false;
+
+  try {
+    return (await fs.readdir(folders.release)).length > 0;
+  } catch {
+    return false;
+  }
 }
 
 export function createDeployHandler(deps: DeployDependencies) {
@@ -252,6 +310,36 @@ export function createDeployHandler(deps: DeployDependencies) {
           .where(eq(sites.id, site.id))
           .run();
 
+        /*
+         * The folder to serve often only exists once the build has run, so it
+         * cannot honestly be confirmed until now. The files are published
+         * either way: the user can open the file manager, see where the build
+         * actually put them, and correct the document root.
+         */
+        const documentRoot = path.join(folders.release, manifest.staticRoot ?? '');
+        const documentRootExists = await fs
+          .stat(documentRoot)
+          .then((stat) => stat.isDirectory())
+          .catch(() => false);
+
+        if (!documentRootExists) {
+          const where = manifest.staticRoot || 'the project root';
+          const problem =
+            `Your files were published, but there is no "${where}" folder to serve. Open the ` +
+            'Files tab to see where the build put them, then set the document root on the ' +
+            'Application page.';
+
+          deps.db.db
+            .update(deployments)
+            .set({ commit, status: 'needs-setup', errorMessage: problem, finishedAt: new Date() })
+            .where(eq(deployments.id, deploymentId))
+            .run();
+
+          ctx.progress(100);
+          ctx.log(problem, 'info');
+          return;
+        }
+
         deps.db.db
           .update(deployments)
           .set({ commit, status: 'succeeded', finishedAt: new Date() })
@@ -267,6 +355,56 @@ export function createDeployHandler(deps: DeployDependencies) {
         throw new DeploymentError(
           'This website has no port assigned yet. Remove and re-create it to fix this.',
         );
+      }
+
+      // Still in staging: the running version has not been touched yet.
+      const entryProblem = await entryFileProblem(manifest, folders.staging);
+      if (entryProblem) {
+        /*
+         * Nobody can name a startup file for a project they have not seen. On
+         * a first deploy there is nothing serving to protect, so the files are
+         * published anyway: the user opens the file manager, sees what is
+         * actually there, sets the startup file, and deploys again. Failing
+         * here instead would leave them with nothing to look at.
+         */
+        if (!(await isServing(deps, serviceId, folders))) {
+          setStatus('switching');
+          ctx.log('Publishing your files so you can look at them\u2026', 'info', 'switch');
+
+          await promoteStaging(folders);
+          liveIsPrevious = false;
+          await discardPrevious(folders);
+          await cleanUpLegacyLayout(siteDir, ctx);
+
+          deps.db.db
+            .update(sites)
+            .set({ updatedAt: new Date() })
+            .where(eq(sites.id, site.id))
+            .run();
+
+          deps.db.db
+            .update(deployments)
+            .set({
+              commit,
+              status: 'needs-setup',
+              errorMessage: entryProblem,
+              finishedAt: new Date(),
+            })
+            .where(eq(deployments.id, deploymentId))
+            .run();
+
+          ctx.progress(100);
+          ctx.log('Your files are here, but the site is not running yet.', 'info');
+          ctx.log(entryProblem, 'info');
+          ctx.log(
+            'Open the Files tab to see what was downloaded, set the startup file on the ' +
+              'Application page, then deploy again.',
+            'info',
+          );
+          return;
+        }
+
+        throw new DeploymentError(entryProblem);
       }
 
       /*

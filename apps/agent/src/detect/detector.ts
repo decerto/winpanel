@@ -144,13 +144,20 @@ const FRONTEND_MARKERS: Array<{ file: RegExp; framework: string }> = [
  * files come from an untrusted repository and must never be evaluated. A
  * regex can be defeated by an unusual config, which is why detection reports
  * confidence and lets the user correct it.
+ *
+ * The path is not always a bare string. `outDir: fileURLToPath(new
+ * URL('../server/web-dist', import.meta.url))` is a common way to write it,
+ * so the first quoted string on the value's own line is taken rather than
+ * insisting the quote follow the colon immediately.
  */
 export function extractOutputDir(configSource: string): string | null {
+  // `[^,\n]*?` skips a wrapping call without ever crossing a comma or a line
+  // break, so it cannot wander off and pick up an unrelated string.
   const patterns = [
-    /outDir\s*:\s*['"`]([^'"`]+)['"`]/,
-    /outputDir\s*:\s*['"`]([^'"`]+)['"`]/,
-    /outputPath\s*:\s*['"`]([^'"`]+)['"`]/,
-    /build\s*:\s*\{[^}]*outDir\s*:\s*['"`]([^'"`]+)['"`]/s,
+    /outDir\s*:\s*[^,\n]*?['"`]([^'"`]+)['"`]/,
+    /outputDir\s*:\s*[^,\n]*?['"`]([^'"`]+)['"`]/,
+    /outputPath\s*:\s*[^,\n]*?['"`]([^'"`]+)['"`]/,
+    /build\s*:\s*\{[^}]*outDir\s*:\s*[^,\n]*?['"`]([^'"`]+)['"`]/s,
     /"outputPath"\s*:\s*"([^"]+)"/,
   ];
 
@@ -296,14 +303,16 @@ function startupFileNote(folder: string): string {
   );
 }
 
-function installArgs(manager: PackageManager, production: boolean): string[] {
+/** The arguments that install a project's packages, per package manager. */
+export function installArgs(manager: PackageManager, production: boolean): string[] {
   if (manager === 'npm') return production ? ['ci', '--omit=dev'] : ['install'];
   if (manager === 'pnpm') return production ? ['install', '--prod'] : ['install'];
   if (manager === 'yarn') return production ? ['install', '--production'] : ['install'];
   return production ? ['install', '--production'] : ['install'];
 }
 
-function buildArgs(manager: PackageManager): string[] {
+/** The arguments that run a project's build script. */
+export function buildArgs(manager: PackageManager): string[] {
   return manager === 'npm' ? ['run', 'build'] : ['run', 'build'];
 }
 
@@ -596,6 +605,151 @@ export async function detectApp(rootDir: string): Promise<DetectionResult> {
         },
         spaFallback: false,
         websockets: await hasWebsockets(rootDir),
+      }),
+      notes,
+      fromManifestFile: false,
+    };
+  }
+
+  /*
+   * A repository whose only runnable thing lives in a sub-folder.
+   *
+   * Nothing at the root says how to build this, and no frontend build output
+   * could be traced into the server folder - but a sub-folder plainly runs,
+   * and calling the whole project unrecognised here is the worst outcome
+   * available: the site is created with no build steps and no entry file, so
+   * it deploys, installs nothing, and dies at start-up asking for index.js, a
+   * file the user never chose.
+   */
+  const backendNamed = new Set(['backend', 'server', 'api']);
+  const runnable =
+    serverFolders.length > 0
+      ? serverFolders
+      : // A backend-named folder with a package.json but neither a start
+        // script nor a recognised server package still runs this site: no
+        // other folder here is a candidate for it.
+        folders.filter((f) => f.kind === 'unknown' && backendNamed.has(f.path));
+
+  if (runnable.length > 0) {
+    // CANDIDATE_FOLDERS is ordered, so the first match is the most likely.
+    const server = runnable[0]!;
+    const serverManager = server.packageManager ?? 'npm';
+    const steps: BuildStep[] = [];
+
+    for (const frontend of frontendFolders) {
+      const manager = frontend.packageManager ?? 'npm';
+      steps.push(
+        {
+          name: `Install ${frontend.path} packages`,
+          cwd: frontend.path,
+          command: manager as StepCommand,
+          args: installArgs(manager, false),
+          optional: false,
+          env: {},
+        },
+        {
+          name: `Build ${frontend.path}`,
+          cwd: frontend.path,
+          command: manager as StepCommand,
+          args: buildArgs(manager),
+          optional: false,
+          env: {},
+        },
+      );
+    }
+
+    steps.push({
+      name: `Install ${server.path} packages`,
+      cwd: server.path,
+      command: serverManager as StepCommand,
+      args: installArgs(serverManager, true),
+      optional: false,
+      env: {},
+    });
+
+    const entry = await detectEntryPoint(path.join(rootDir, server.path));
+    if (!entry) notes.push(startupFileNote(server.path));
+
+    if (frontendFolders.length > 0) {
+      notes.push(
+        `Where ${frontendFolders.map((f) => f.path).join(' and ')} builds to could not be read ` +
+          `from its config, so check that ${server.path} serves the built files.`,
+      );
+    }
+
+    const others = runnable.slice(1).map((f) => f.path);
+    if (others.length > 0) {
+      notes.push(
+        `${others.join(' and ')} could also run this site. The ${server.path} folder was ` +
+          'chosen; change the application root on the next screen if that is wrong.',
+      );
+    }
+
+    return {
+      shape: 'multi-folder',
+      confidence: others.length > 0 ? 0.45 : 0.6,
+      summary: `The ${server.path} folder looks like the one that runs this site.`,
+      folders,
+      manifest: SiteManifestSchema.parse({
+        runtime: 'node',
+        nodeVersion: nodeVersion ?? undefined,
+        packageManager: serverManager,
+        steps,
+        app: {
+          cwd: server.path,
+          entry,
+          portEnvVar: 'PORT',
+          healthCheckPath: '/',
+        },
+        spaFallback: false,
+        websockets: await hasWebsockets(path.join(rootDir, server.path)),
+      }),
+      notes,
+      fromManifestFile: false,
+    };
+  }
+
+  /*
+   * A repository that is only a frontend, kept in a sub-folder. Nothing runs
+   * as a process: it is built, and the built files are served.
+   */
+  if (frontendFolders.length === 1) {
+    const frontend = frontendFolders[0]!;
+    const manager = frontend.packageManager ?? 'npm';
+    const staticRoot = frontend.buildOutput ?? `${frontend.path}/dist`;
+
+    if (!frontend.buildOutput) {
+      notes.push(
+        `Where ${frontend.path} builds to could not be read from its config, so ` +
+          `${staticRoot} was assumed. Change the document root if that is wrong.`,
+      );
+    }
+
+    return {
+      shape: 'multi-folder',
+      confidence: 0.6,
+      summary: `This project is a ${frontend.framework ?? 'web'} app in the ${frontend.path} folder. It will be built, then served as files.`,
+      folders,
+      manifest: SiteManifestSchema.parse({
+        runtime: 'static',
+        nodeVersion: nodeVersion ?? undefined,
+        packageManager: manager,
+        steps: [
+          {
+            name: `Install ${frontend.path} packages`,
+            cwd: frontend.path,
+            command: manager,
+            args: installArgs(manager, false),
+          },
+          {
+            name: `Build ${frontend.path}`,
+            cwd: frontend.path,
+            command: manager,
+            args: buildArgs(manager),
+          },
+        ],
+        staticRoot,
+        spaFallback: true,
       }),
       notes,
       fromManifestFile: false,

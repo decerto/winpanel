@@ -59,6 +59,11 @@ const deployState = computed<CheckState>(() => {
 });
 
 const deployLabel = computed(() => {
+  // The files arrived: calling that "unknown" would hide the one thing to do.
+  if (!deploying.value && site.value?.deployments?.[0]?.status === 'needs-setup') {
+    return 'Needs setup';
+  }
+
   switch (deployState.value) {
     case 'checking':
       return 'Deploying';

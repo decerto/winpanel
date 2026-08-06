@@ -18,9 +18,11 @@ import {
   removeLegacyLayout,
   restorePrevious,
   runBuildSteps,
+  stepsForUnconfiguredApp,
   waitForHealthy,
   withPnpmDefaults,
 } from '../src/sites/deploy-pipeline.js';
+import { entryFileProblem } from '../src/sites/deploy-handler.js';
 import type { JobContext } from '../src/jobs/queue.js';
 
 const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
@@ -291,6 +293,112 @@ describe('runBuildSteps', () => {
     expect(ctx.lines).toContain('saw development');
     expect(ctx.lines).toContain('saw production');
   }, 30_000);
+
+  /*
+   * A project the panel could not recognise is created with no steps at all.
+   * Doing nothing then means an empty node_modules and an app that cannot
+   * start, so the application root the user was asked for is used instead.
+   */
+  describe('a project with no build steps of its own', () => {
+    it('installs in the application root, and builds when there is a build script', async () => {
+      await fs.mkdir(path.join(tmpDir, 'server'), { recursive: true });
+      await fs.writeFile(
+        path.join(tmpDir, 'server', 'package.json'),
+        JSON.stringify({ name: 'server', scripts: { build: 'tsc' } }),
+      );
+
+      const steps = await stepsForUnconfiguredApp(
+        SiteManifest.parse({ runtime: 'node', app: { cwd: 'server', entry: 'app.js' } }),
+        tmpDir,
+      );
+
+      expect(steps.map((step) => `${step.command} ${step.args.join(' ')} @${step.cwd}`)).toEqual([
+        'npm install @server',
+        'npm run build @server',
+      ]);
+    });
+
+    it('installs only, when the project declares no build script', async () => {
+      await fs.mkdir(path.join(tmpDir, 'server'), { recursive: true });
+      await fs.writeFile(
+        path.join(tmpDir, 'server', 'package.json'),
+        JSON.stringify({ name: 'server', scripts: { start: 'node app.js' } }),
+      );
+
+      const steps = await stepsForUnconfiguredApp(
+        SiteManifest.parse({ runtime: 'node', app: { cwd: 'server' } }),
+        tmpDir,
+      );
+
+      expect(steps).toHaveLength(1);
+      expect(steps[0]?.args).toEqual(['install']);
+    });
+
+    it('does nothing at all when there is no package.json to install', async () => {
+      const steps = await stepsForUnconfiguredApp(SiteManifest.parse({ runtime: 'node' }), tmpDir);
+      expect(steps).toEqual([]);
+    });
+
+    it('says so in the log rather than silently building nothing', async () => {
+      await fs.writeFile(
+        path.join(tmpDir, 'package.json'),
+        JSON.stringify({ name: 'app', scripts: {} }),
+      );
+      const ctx = fakeCtx();
+
+      await runBuildSteps({
+        manifest: SiteManifest.parse({ runtime: 'node' }),
+        releaseDir: tmpDir,
+        tools: { resolve: async () => ({ exe: process.execPath, args: ['-e', ''] }) },
+        ctx,
+      });
+
+      expect(ctx.lines.join(' ')).toMatch(/no build steps of its own/i);
+    }, 30_000);
+  });
+});
+
+/*
+ * The startup file describes a file inside a repository the user has usually
+ * never seen. Getting it wrong is normal, so the message has to say what is
+ * missing, where it looked, and what it should probably be.
+ */
+describe('entryFileProblem', () => {
+  it('is happy when the configured file is there', async () => {
+    await fs.mkdir(path.join(tmpDir, 'server'), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, 'server', 'app.js'), '');
+
+    const problem = await entryFileProblem(
+      SiteManifest.parse({ app: { cwd: 'server', entry: 'app.js' } }),
+      tmpDir,
+    );
+    expect(problem).toBeNull();
+  });
+
+  it('names the folder it looked in and suggests the file that is there', async () => {
+    await fs.mkdir(path.join(tmpDir, 'server'), { recursive: true });
+    await fs.writeFile(path.join(tmpDir, 'server', 'app.js'), '');
+
+    const problem = await entryFileProblem(
+      SiteManifest.parse({ app: { cwd: 'server', entry: 'server/app.js' } }),
+      tmpDir,
+    );
+
+    // The classic mistake: the entry is relative to the application root, so
+    // repeating the folder name looks right and is not.
+    expect(problem).toMatch(/the server folder/i);
+    expect(problem).toMatch(/should be "app\.js"/i);
+  });
+
+  it('does not blame the user for a file they never chose', async () => {
+    const problem = await entryFileProblem(SiteManifest.parse({}), tmpDir);
+    expect(problem).toMatch(/does not say which file starts it/i);
+  });
+
+  it('leaves .NET to the runtime, which has its own message', async () => {
+    const problem = await entryFileProblem(SiteManifest.parse({ runtime: 'dotnet' }), tmpDir);
+    expect(problem).toBeNull();
+  });
 });
 
 describe('waitForHealthy', () => {

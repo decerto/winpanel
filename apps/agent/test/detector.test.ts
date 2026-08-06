@@ -320,6 +320,115 @@ describe('committed winpanel.json', () => {
   });
 });
 
+describe('a repository whose only Node app is a sub-folder', () => {
+  // No package.json at the root, and a Vite config whose output folder is
+  // built with fileURLToPath rather than written as a plain string.
+  beforeEach(async () => {
+    await write('TaskbarQuest.sln', '# a solution file, not a Node project');
+    await write(
+      'web/package.json',
+      JSON.stringify({ name: 'web', scripts: { build: 'vite build' }, devDependencies: { vite: '^7.0.0' } }),
+    );
+    await write(
+      'web/vite.config.ts',
+      `import { fileURLToPath, URL } from 'node:url';
+       export default defineConfig({
+         build: {
+           outDir: fileURLToPath(new URL('../server/web-dist', import.meta.url)),
+           emptyOutDir: true,
+         },
+       });`,
+    );
+    await write(
+      'server/package.json',
+      JSON.stringify({
+        name: 'server',
+        main: 'app.js',
+        scripts: { start: 'node app.js' },
+        dependencies: { express: '^5.0.0' },
+      }),
+    );
+    await write('server/app.js', 'require("express")()');
+  });
+
+  it('follows an outDir wrapped in a call, so it is the primary layout', async () => {
+    const result = await detectApp(tmpDir);
+    expect(result.shape).toBe('frontend-builds-into-backend');
+    expect(result.manifest.app.cwd).toBe('server');
+    expect(result.manifest.app.entry).toBe('app.js');
+  });
+
+  it('still finds the app when the output folder cannot be read at all', async () => {
+    await write('web/vite.config.ts', 'export default defineConfig({ plugins: [vue()] });');
+
+    const result = await detectApp(tmpDir);
+    expect(result.shape).toBe('multi-folder');
+    expect(result.manifest.app.cwd).toBe('server');
+    expect(result.manifest.app.entry).toBe('app.js');
+    // Without steps the deploy installs nothing and the app cannot start.
+    expect(result.manifest.steps.length).toBeGreaterThan(0);
+  });
+});
+
+describe('other layouts that must not fall through to unrecognised', () => {
+  it('picks one of two runnable folders and says the other exists', async () => {
+    await write(
+      'api/package.json',
+      JSON.stringify({ name: 'api', scripts: { start: 'node index.js' } }),
+    );
+    await write('api/index.js', '');
+    await write(
+      'server/package.json',
+      JSON.stringify({ name: 'server', dependencies: { express: '^5.0.0' } }),
+    );
+    await write('server/app.js', '');
+
+    const result = await detectApp(tmpDir);
+    expect(result.shape).toBe('multi-folder');
+    // CANDIDATE_FOLDERS is ordered, so "server" is preferred over "api".
+    expect(result.manifest.app.cwd).toBe('server');
+    expect(result.confidence).toBeLessThan(0.6);
+    expect(result.notes.join(' ')).toMatch(/api could also run this site/i);
+  });
+
+  it('treats a backend folder with no start script and no framework as the app', async () => {
+    await write('backend/package.json', JSON.stringify({ name: 'backend' }));
+    await write('backend/index.js', '');
+
+    const result = await detectApp(tmpDir);
+    expect(result.shape).toBe('multi-folder');
+    expect(result.manifest.app.cwd).toBe('backend');
+    expect(result.manifest.app.entry).toBe('index.js');
+  });
+
+  it('builds and serves a project that is only a frontend in a sub-folder', async () => {
+    await write(
+      'client/package.json',
+      JSON.stringify({ name: 'client', scripts: { build: 'vite build' } }),
+    );
+    await write('client/vite.config.ts', `export default defineConfig({ build: { outDir: 'out' } });`);
+
+    const result = await detectApp(tmpDir);
+    expect(result.manifest.runtime).toBe('static');
+    expect(result.manifest.staticRoot).toBe('client/out');
+    // Refreshing on a sub-page of a built single-page app must not 404.
+    expect(result.manifest.spaFallback).toBe(true);
+    expect(result.manifest.steps.map((step) => step.cwd)).toEqual(['client', 'client']);
+  });
+
+  it('assumes dist, and says so, when the frontend output cannot be read', async () => {
+    await write(
+      'client/package.json',
+      JSON.stringify({ name: 'client', scripts: { build: 'vite build' } }),
+    );
+    await write('client/vite.config.ts', 'export default defineConfig({ plugins: [] });');
+
+    const result = await detectApp(tmpDir);
+    expect(result.manifest.staticRoot).toBe('client/dist');
+    expect(result.notes.join(' ')).toMatch(/could not be read/i);
+  });
+});
+
 describe('unrecognised project', () => {
   it('says so honestly rather than guessing', async () => {
     await write('README.md', '# Just some docs');
@@ -336,6 +445,9 @@ describe('extractOutputDir', () => {
     expect(extractOutputDir("build: { outDir: '../backend/public' }")).toBe('../backend/public');
     expect(extractOutputDir('outputDir: "dist"')).toBe('dist');
     expect(extractOutputDir('"outputPath": "dist/app"')).toBe('dist/app');
+    expect(
+      extractOutputDir("outDir: fileURLToPath(new URL('../server/web-dist', import.meta.url))"),
+    ).toBe('../server/web-dist');
   });
 
   it('returns null when there is nothing to find', () => {
