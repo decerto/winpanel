@@ -15,7 +15,7 @@ import {
 import { protectedProcedure, router } from '../trpc.js';
 import { appRootFor, SiteService } from '../../sites/site-service.js';
 import { retargetSteps } from '../../sites/package-manager.js';
-import { sites } from '../../db/schema.js';
+import { sites, type SiteRow } from '../../db/schema.js';
 import { serviceIdFor } from '../../sites/deploy-handler.js';
 import { discoverNodeVersions, matchVersion } from '../../sites/node-versions.js';
 import type { AppContext } from '../../app-context.js';
@@ -97,6 +97,34 @@ async function serviceStateFor(app: AppContext, slug: string, colour: 'blue' | '
   } catch {
     return null;
   }
+}
+
+/**
+ * Writes the site's current settings into its service configuration.
+ *
+ * The environment is baked into the service definition at deploy time, so
+ * without this a secret edited in the panel stayed invisible to the app until
+ * the next deployment — while the settings page promised a restart was enough.
+ * Composed exactly as `deploy-handler` composes it so that restarting and
+ * deploying cannot disagree about what the app runs with.
+ */
+async function applyRuntimeEnvironment(
+  app: AppContext,
+  service: SiteService,
+  site: SiteRow,
+): Promise<'not-installed' | 'unchanged' | 'updated'> {
+  const manifest = SiteManifest.parse(site.manifest);
+  const port = site.activeColour === 'blue' ? site.portBlue : site.portGreen;
+  if (port === null) return 'unchanged';
+
+  const env = await service.getEnv(site.id);
+
+  return await app.services.setEnvironment(serviceIdFor(site.slug, site.activeColour), {
+    ...env,
+    [manifest.app.portEnvVar]: String(port),
+    NODE_ENV: 'production',
+    HOST: '127.0.0.1',
+  });
 }
 
 /** Arguments for a run: the executable is chosen by us, never by the caller. */
@@ -228,7 +256,7 @@ export const siteAppRouter = router({
   restart: protectedProcedure
     .input(z.object({ slug: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      const { site } = requireProcessSite(ctx.app, input.slug);
+      const { service, site } = requireProcessSite(ctx.app, input.slug);
       const serviceId = serviceIdFor(site.slug, site.activeColour);
 
       if (!(await ctx.app.services.isInstalled(serviceId))) {
@@ -239,7 +267,12 @@ export const siteAppRouter = router({
       }
 
       try {
-        await ctx.app.services.restart(serviceId);
+        const wasRunning = (await ctx.app.services.getState(serviceId)) === 'running';
+        const applied = await applyRuntimeEnvironment(ctx.app, service, site);
+
+        // Writing a changed environment restarts a running service by itself,
+        // so restarting again here would only cost a second outage.
+        if (!(applied === 'updated' && wasRunning)) await ctx.app.services.restart(serviceId);
       } catch (error) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',
@@ -261,7 +294,7 @@ export const siteAppRouter = router({
   setRunning: protectedProcedure
     .input(z.object({ slug: z.string().min(1), running: z.boolean() }))
     .mutation(async ({ ctx, input }) => {
-      const { site } = requireProcessSite(ctx.app, input.slug);
+      const { service, site } = requireProcessSite(ctx.app, input.slug);
       const serviceId = serviceIdFor(site.slug, site.activeColour);
 
       if (!(await ctx.app.services.isInstalled(serviceId))) {
@@ -272,8 +305,10 @@ export const siteAppRouter = router({
       }
 
       try {
-        if (input.running) await ctx.app.services.start(serviceId);
-        else await ctx.app.services.stop(serviceId);
+        if (input.running) {
+          await applyRuntimeEnvironment(ctx.app, service, site);
+          await ctx.app.services.start(serviceId);
+        } else await ctx.app.services.stop(serviceId);
       } catch (error) {
         throw new TRPCError({
           code: 'INTERNAL_SERVER_ERROR',

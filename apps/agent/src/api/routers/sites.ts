@@ -717,7 +717,7 @@ export const sitesRouter = router({
       if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
 
       await service.setEnv(site.id, input.envVars);
-      return { ok: true, note: 'These take effect the next time the website is deployed.' };
+      return { ok: true, note: 'These take effect the next time you restart or deploy the app.' };
     }),
 
   /** Values are returned so they can be edited; this is an authenticated call. */
