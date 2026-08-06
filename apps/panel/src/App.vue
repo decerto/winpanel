@@ -4,6 +4,7 @@ import {
   Activity,
   ChevronRight,
   Globe,
+  History,
   Inbox,
   LogOut,
   Mail,
@@ -11,9 +12,11 @@ import {
   ServerCog,
   Settings,
   ShieldCheck,
+  UsersRound,
   X,
 } from 'lucide-vue-next';
 import { computed, ref, watch } from 'vue';
+import { roleAtLeast, type UserRole } from '@winpanel/shared';
 import { api } from './lib/api';
 import ServerReadyBanner from './components/ServerReadyBanner.vue';
 
@@ -34,12 +37,36 @@ const router = useRouter();
 
 const NAV = [
   { to: '/sites', label: 'Websites', icon: Globe, hint: 'Everything you host' },
-  { to: '/health', label: 'Server health', icon: Activity, hint: 'Checks and fixes' },
-  { to: '/email', label: 'Email', icon: Mail, hint: 'Mailboxes and delivery' },
+  { to: '/health', label: 'Server health', icon: Activity, hint: 'Checks and fixes', minRole: 'admin' },
+  { to: '/email', label: 'Email', icon: Mail, hint: 'Mailboxes and delivery', minRole: 'admin' },
   { to: '/webmail', label: 'Webmail', icon: Inbox, hint: 'Read and send mail' },
   { to: '/security', label: 'Security', icon: ShieldCheck, hint: 'Sign-in protection' },
-  { to: '/settings', label: 'Settings', icon: Settings, hint: 'Connected accounts' },
-] as const;
+  { to: '/people', label: 'People', icon: UsersRound, hint: 'Accounts and limits', minRole: 'admin' },
+  {
+    to: '/sign-ins',
+    label: 'Sign-in activity',
+    icon: History,
+    hint: 'Sessions and attempts',
+    minRole: 'superadmin',
+  },
+  { to: '/settings', label: 'Settings', icon: Settings, hint: 'Connected accounts', minRole: 'admin' },
+] as const satisfies ReadonlyArray<{
+  to: string;
+  label: string;
+  icon: unknown;
+  hint: string;
+  minRole?: UserRole;
+}>;
+
+// Entries above someone's level are hidden rather than shown-and-refused: a
+// customer who only manages their own website has no use for a door they
+// cannot open.
+const nav = computed(() =>
+  NAV.filter(
+    (item) =>
+      !('minRole' in item) || (role.value !== null && roleAtLeast(role.value, item.minRole)),
+  ),
+);
 
 const title = computed(() => (route.meta['title'] as string | undefined) ?? 'WinPanel');
 
@@ -68,12 +95,35 @@ const crumbs = computed<Array<{ label: string; to?: string }>>(() => {
 const bare = computed(() => route.meta['bare'] === true);
 
 const username = ref('');
-void api.auth.me
-  .query()
-  .then((user) => {
+const role = ref<UserRole | null>(null);
+
+async function loadMe(): Promise<void> {
+  try {
+    const user = await api.auth.me.query();
     username.value = user?.username ?? '';
-  })
-  .catch(() => undefined);
+    role.value = user?.role ?? null;
+  } catch {
+    // Each page reports a dead agent in its own way; the shell staying as it
+    // is beats a sidebar that empties itself over one failed request.
+  }
+}
+
+/*
+ * Asked again every time the shell comes back into view.
+ *
+ * The shell is created once, while the panel is usually still on the sign-in
+ * screen — where `me` is nobody. Signing in swaps the page underneath it but
+ * does not rebuild it, so a single fetch at start-up would leave the sidebar
+ * believing the visitor has no role and hiding every entry that needs one
+ * until the next full reload.
+ */
+watch(
+  bare,
+  (isBare) => {
+    if (!isBare) void loadMe();
+  },
+  { immediate: true },
+);
 
 const drawerOpen = ref(false);
 watch(() => route.fullPath, () => (drawerOpen.value = false));
@@ -128,7 +178,7 @@ function isCurrent(to: string): boolean {
 
       <nav class="flex-1 overflow-y-auto px-3 py-2" aria-label="Main">
         <RouterLink
-          v-for="item in NAV"
+          v-for="item in nav"
           :key="item.to"
           :to="item.to"
           class="group relative mb-1 flex items-start gap-3 rounded-lg px-3 py-2.5 transition-colors"

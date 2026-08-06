@@ -33,7 +33,7 @@ const CAPABILITIES = ['urn:ietf:params:jmap:core', 'urn:stalwart:jmap'];
 /** Nothing sensible is ever this large, and it bounds a runaway response. */
 const PAGE_LIMIT = 500;
 
-type ObjectType = 'x:Domain' | 'x:Account' | 'x:NetworkListener';
+type ObjectType = 'x:Domain' | 'x:Account' | 'x:NetworkListener' | 'x:Certificate';
 
 /** One entry of a JMAP `methodResponses` array. */
 type MethodResponse = [string, Record<string, unknown>, string];
@@ -86,6 +86,13 @@ interface ListenerPayload {
   id?: string;
   name?: string;
   bind?: Record<string, string> | string[];
+}
+
+interface CertificatePayload {
+  id?: string;
+  subjectAlternativeNames?: Record<string, string> | string[];
+  issuer?: string;
+  notValidAfter?: string;
 }
 
 interface AccountPayload {
@@ -740,5 +747,91 @@ export class StalwartClient {
     });
 
     return changes;
+  }
+
+  /**
+   * Every port the mail server is actually listening on.
+   *
+   * Asked rather than assumed, because "IMAP is on 993" is only true if a
+   * listener says so, and a build whose POP3 listener was never enabled is
+   * indistinguishable from a firewall problem when all you have is a timeout.
+   */
+  async listeningPorts(): Promise<number[]> {
+    const listeners = await this.fetchByIds<ListenerPayload>(
+      'x:NetworkListener',
+      await this.queryIds('x:NetworkListener'),
+    );
+
+    const ports = new Set<number>();
+
+    for (const listener of listeners) {
+      for (const address of valuesOf(listener.bind)) {
+        const port = portOfBindAddress(address);
+        if (port !== null) ports.add(port);
+      }
+    }
+
+    return [...ports].sort((a, b) => a - b);
+  }
+
+  /**
+   * Puts a certificate the world already trusts on the mail ports.
+   *
+   * Replaces the record covering this hostname rather than adding another,
+   * since two certificates for one name leaves which is served up to whichever
+   * the server finds first. Selection at handshake time is by SNI against the
+   * stored subject alternative names, so nothing else has to be configured for
+   * a client connecting to `mail.<domain>` to be given this one.
+   *
+   * The expiry is compared before anything is written. This runs on a timer,
+   * and rewriting an identical certificate would restart the mail server —
+   * dropping every open connection — twice a day for no reason.
+   */
+  async installCertificate(input: {
+    hostname: string;
+    certificate: string;
+    privateKey: string;
+    expiresAt: Date;
+  }): Promise<'created' | 'updated' | 'unchanged'> {
+    const wanted = input.hostname.toLowerCase();
+
+    const existing = await this.fetchByIds<CertificatePayload>(
+      'x:Certificate',
+      await this.queryIds('x:Certificate', { subjectAlternativeNames: wanted }),
+    );
+
+    const match = existing.find((candidate) =>
+      valuesOf(candidate.subjectAlternativeNames).some((name) => name.toLowerCase() === wanted),
+    );
+
+    if (match?.id) {
+      const installed = match.notValidAfter ? Date.parse(match.notValidAfter) : NaN;
+
+      // Compared to the minute, not the millisecond. X.509 expiry has second
+      // precision and the server formats it back in its own way, so an exact
+      // match would eventually stop matching and restart the mail server twice
+      // a day forever. A renewal moves the date by weeks.
+      if (Math.abs(installed - input.expiresAt.getTime()) < 60_000) return 'unchanged';
+
+      await this.set('x:Certificate', {
+        update: {
+          [match.id]: {
+            certificate: { '@type': 'Text', value: input.certificate },
+            privateKey: { '@type': 'Text', secret: input.privateKey },
+          },
+        },
+      });
+      return 'updated';
+    }
+
+    await this.set('x:Certificate', {
+      create: {
+        new1: {
+          certificate: { '@type': 'Text', value: input.certificate },
+          privateKey: { '@type': 'Text', secret: input.privateKey },
+        },
+      },
+    });
+    return 'created';
   }
 }

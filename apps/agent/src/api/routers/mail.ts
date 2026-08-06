@@ -3,19 +3,30 @@ import dns from 'node:dns/promises';
 import crypto from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
-import { DEFAULT_MAILBOX_QUOTA_BYTES, Hostname, mailHostnameFor } from '@winpanel/shared';
-import { protectedProcedure, router } from '../trpc.js';
+import {
+  DEFAULT_MAILBOX_QUOTA_BYTES,
+  Hostname,
+  MAIL_CLIENT_PORTS,
+  mailHostnameFor,
+  roleAtLeast,
+  type CheckState,
+} from '@winpanel/shared';
+import { adminProcedure, protectedProcedure, router } from '../trpc.js';
+import type { RequestContext } from '../trpc.js';
 import { settings } from '../../db/schema.js';
 import {
   checkDmarc,
-  checkMailTls,
   checkMx,
   checkReverseDns,
   checkSpf,
+  EXPIRY_WARNING_DAYS,
+  probeMailPort,
   testOutboundMail,
 } from '../../mail/readiness.js';
 import { MailServerError, StalwartClient, probeMailServer } from '../../mail/stalwart-client.js';
-import { syncMailEnvironment } from '../../mail/service.js';
+import { findIssuedCertificate, waitForIssuedCertificate } from '../../mail/certificate.js';
+import { storeMailDomains } from '../../mail/domains.js';
+import { syncMailCertificates, syncMailEnvironment } from '../../mail/service.js';
 import {
   forgetMailAdminCredentials,
   loadMailAdminCredentials,
@@ -64,6 +75,21 @@ function clientFor(app: AppContext): StalwartClient {
   return new StalwartClient(credentials.username, credentials.password);
 }
 
+/**
+ * The ports the mail server has listeners for, or null when it cannot be asked.
+ *
+ * Null is a third answer on purpose: not knowing is different from knowing
+ * there is no listener, and only the second justifies telling somebody a
+ * protocol is unavailable.
+ */
+async function listeningMailPorts(app: AppContext): Promise<number[] | null> {
+  try {
+    return await clientFor(app).listeningPorts();
+  } catch {
+    return null;
+  }
+}
+
 function toTrpcError(error: unknown): never {
   if (error instanceof MailServerError) {
     throw new TRPCError({
@@ -76,6 +102,12 @@ function toTrpcError(error: unknown): never {
     throw new TRPCError({ code: 'BAD_REQUEST', message: error.message, cause: error });
   }
   throw error;
+}
+
+/** True when the panel should have renewed this certificate by now, and has not. */
+function nearExpiry(probe: { certificateDaysRemaining: number | null }): boolean {
+  return probe.certificateDaysRemaining !== null &&
+    probe.certificateDaysRemaining <= EXPIRY_WARNING_DAYS;
 }
 
 /**
@@ -190,6 +222,99 @@ const MailboxAddress = z
   .max(254)
   .transform((value) => value.toLowerCase());
 
+/**
+ * Keeps a customer inside the mail storage they were sold.
+ *
+ * Counts what is already allocated across every domain they hold rather than
+ * trusting a per-mailbox number, because ten mailboxes of a gigabyte each is
+ * the same ten gigabytes as one of ten. Admins and the owner have no
+ * allowance and are not checked.
+ *
+ * @param replacing the mailbox whose size is being changed, so its current
+ *   allocation is not counted twice.
+ */
+/**
+ * How much of an allowance a set of mailboxes has already taken.
+ *
+ * Separate from the check around it because it is the part that decides
+ * whether somebody can have another mailbox, and it has two awkward cases
+ * worth pinning down: a mailbox being resized must not be counted at its old
+ * size, and a mailbox the mail server considers unlimited has to be read as
+ * using the whole allowance, since there is no safe smaller answer.
+ */
+export function allocatedMailBytes(
+  mailboxes: ReadonlyArray<{ name: string; emails: string[]; quota: number }>,
+  allowance: number,
+  replacing: string | null,
+): number {
+  let allocated = 0;
+
+  for (const mailbox of mailboxes) {
+    const address = (mailbox.emails[0] ?? mailbox.name).toLowerCase();
+    if (replacing !== null && address === replacing.toLowerCase()) continue;
+    allocated += mailbox.quota === 0 ? allowance : mailbox.quota;
+  }
+
+  return allocated;
+}
+
+async function assertWithinMailAllowance(
+  ctx: RequestContext,
+  quotaBytes: number,
+  replacing: string | null,
+): Promise<void> {
+  if (ctx.user?.role !== 'user') return;
+
+  const account = ctx.app.auth.getUser(ctx.user.id);
+  if (!account || account.mailQuotaBytes === null) return;
+
+  // Zero is the mail server's word for "no limit", which is not something an
+  // account with an allowance can be given.
+  if (quotaBytes === 0) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message:
+        'Give this mailbox a size. Your account has a mail allowance, so a mailbox cannot ' +
+        'be left to grow without limit.',
+    });
+  }
+
+  const client = clientFor(ctx.app);
+  const domains = new Set(
+    ctx.app.sites.list(ctx.user.id).flatMap((site) => (site.domains as string[]).map((name) => name.toLowerCase())),
+  );
+
+  let allocated = 0;
+  for (const domain of domains) {
+    try {
+      allocated += allocatedMailBytes(
+        await client.listMailboxes(domain),
+        account.mailQuotaBytes,
+        replacing,
+      );
+    } catch {
+      // A domain the mail server has never heard of has no mailboxes, which
+      // is not a reason to refuse the one being created.
+      continue;
+    }
+  }
+
+  if (allocated + quotaBytes > account.mailQuotaBytes) {
+    const remaining = Math.max(0, account.mailQuotaBytes - allocated);
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message:
+        `That would go over your mail allowance. You have ${formatGigabytes(remaining)} left ` +
+        `of ${formatGigabytes(account.mailQuotaBytes)}.`,
+    });
+  }
+}
+
+function formatGigabytes(bytes: number): string {
+  const gigabytes = bytes / 1024 ** 3;
+  return `${gigabytes >= 10 ? Math.round(gigabytes) : Math.round(gigabytes * 10) / 10} GB`;
+}
+
 export const mailRouter = router({
   /**
    * The full checklist.
@@ -208,25 +333,41 @@ export const mailRouter = router({
         .where(eq(settings.key, OVH_REQUESTED_KEY))
         .get();
 
-      const [outbound, reverseDns, mx, spf, dmarc, submissionTls, imapTls] = await Promise.all([
-        testOutboundMail(),
-        ip
-          ? checkReverseDns(ip, input.mailHostname)
-          : Promise.resolve({
-              ok: false,
-              pointerName: null,
-              forwardConfirmed: false,
-              matchesMailHostname: false,
-              summary: 'Could not determine this server\u2019s public address.',
-            }),
-        checkMx(input.domain, input.mailHostname),
-        checkSpf(input.domain),
-        checkDmarc(input.domain),
-        checkMailTls(input.mailHostname, 587),
-        checkMailTls(input.mailHostname, 993),
-      ]);
+      const [outbound, reverseDns, mx, spf, dmarc, submissionTls, starttls, imapTls] =
+        await Promise.all([
+          testOutboundMail(),
+          ip
+            ? checkReverseDns(ip, input.mailHostname)
+            : Promise.resolve({
+                ok: false,
+                pointerName: null,
+                forwardConfirmed: false,
+                matchesMailHostname: false,
+                summary: 'Could not determine this server\u2019s public address.',
+              }),
+          checkMx(input.domain, input.mailHostname),
+          checkSpf(input.domain),
+          checkDmarc(input.domain),
+          // 465 first: it is what Outlook and the phone clients use, and it is
+          // the one whose certificate they will reject.
+          probeMailPort(input.mailHostname, 465, true),
+          probeMailPort(input.mailHostname, 587, false),
+          probeMailPort(input.mailHostname, 993, true),
+        ]);
 
       const dkim = await checkDkim(input.domain);
+
+      const encryptedPorts = [submissionTls, imapTls].filter((probe) => probe.reachable);
+      const untrusted = encryptedPorts.filter((probe) => !probe.certificateTrusted);
+
+      // A certificate the panel renews automatically should never get near its
+      // expiry, so one that has means the copy on the mail ports stopped being
+      // refreshed — worth saying while there is still time to act.
+      const daysRemaining = encryptedPorts
+        .map((probe) => probe.certificateDaysRemaining)
+        .filter((days): days is number => days !== null);
+      const soonestExpiry = daysRemaining.length > 0 ? Math.min(...daysRemaining) : null;
+      const expiring = soonestExpiry !== null && soonestExpiry <= EXPIRY_WARNING_DAYS;
 
       // Only the things that genuinely stop mail working gate mailbox
       // creation. SPF and DMARC affect deliverability, not delivery.
@@ -260,21 +401,50 @@ export const mailRouter = router({
             detail: dmarc.value,
           },
           submission: {
-            state: submissionTls.ok ? 'ok' : 'warning',
-            summary: submissionTls.summary,
-            detail: null,
+            state: submissionTls.reachable ? 'ok' : starttls.reachable ? 'warning' : 'blocked',
+            summary: submissionTls.reachable
+              ? 'Your devices can send email through this server.'
+              : starttls.reachable
+                ? 'Port 465 is closed, so only clients that can use STARTTLS on 587 will send.'
+                : 'Neither port your devices send email on is reachable.',
+            detail: `465: ${submissionTls.summary} 587: ${starttls.summary}`,
           },
           imap: {
-            state: imapTls.ok ? 'ok' : 'warning',
-            summary: imapTls.summary,
+            state: imapTls.reachable ? 'ok' : 'blocked',
+            summary: imapTls.reachable
+              ? 'Mail programs can reach this server to read email.'
+              : imapTls.summary,
             detail: null,
+          },
+          /*
+           * Its own row because it is the failure nothing else catches. The
+           * ports answer, webmail works, the password is right — and Outlook
+           * still refuses, saying only that something went wrong.
+           */
+          clientCertificate: {
+            state: untrusted.length === 0 && !expiring ? 'ok' : 'warning',
+            summary:
+              untrusted.length > 0
+                ? 'The mail ports use a certificate this server made for itself. Webmail works, ' +
+                  'but Outlook and phone mail apps will refuse to sign in.'
+                : expiring
+                  ? `The certificate on the mail ports ${
+                      soonestExpiry! < 0 ? 'has expired' : `expires in ${soonestExpiry} day(s)`
+                    } and is not being renewed. Mail programs stop signing in the moment it ` +
+                    'runs out.'
+                  : encryptedPorts.length > 0
+                    ? 'Mail programs trust this server\u2019s certificate.'
+                    : 'No encrypted mail port answered, so the certificate could not be checked.',
+            detail:
+              untrusted[0]?.certificateName ??
+              (soonestExpiry !== null ? `Renews automatically; ${soonestExpiry} day(s) left.` : null),
           },
         },
       };
     }),
 
   /** Just the outbound test, for the "check again" button. */
-  testOutbound: protectedProcedure.mutation(async () => await testOutboundMail()),
+  testOutbound: adminProcedure.mutation(async () => await testOutboundMail()),
 
   /**
    * Is this domain's email actually pointed at this server?
@@ -410,7 +580,7 @@ export const mailRouter = router({
    * Providers can take days, so the panel remembers when it was asked and
    * keeps checking rather than making the user come back to look.
    */
-  recordUnblockRequested: protectedProcedure.mutation(({ ctx }) => {
+  recordUnblockRequested: adminProcedure.mutation(({ ctx }) => {
     const value = new Date().toISOString();
 
     ctx.app.db.db
@@ -427,24 +597,237 @@ export const mailRouter = router({
 
   /** Everything needed to set a mailbox up in Outlook. */
   clientSettings: protectedProcedure
-    .input(z.object({ mailHostname: Hostname, address: z.string().email() }))
-    .query(({ input }) => ({
-      incoming: {
-        protocol: 'IMAP',
-        server: input.mailHostname,
-        port: 993,
-        encryption: 'SSL/TLS',
-        username: input.address,
-      },
-      outgoing: {
-        protocol: 'SMTP',
-        server: input.mailHostname,
-        port: 587,
-        encryption: 'STARTTLS',
-        username: input.address,
-      },
-      note: 'Use your mailbox password. The username is the full email address.',
-    })),
+    .input(z.object({ domain: Hostname, address: z.string().email().optional() }))
+    .query(async ({ ctx, input }) => {
+      const mailHostname = mailHostnameFor(input.domain);
+      const ip = serverIp();
+
+      /*
+       * Everything here is measured rather than described. A page that lists
+       * "IMAP, port 993, SSL/TLS" and leaves it there is exactly what somebody
+       * has already tried by the time they come looking, so each port is
+       * opened the way a mail client would open it and reported as it answers.
+       */
+      const [addresses, listening, ...probes] = await Promise.all([
+        resolveHostAddress(mailHostname),
+        listeningMailPorts(ctx.app),
+        ...MAIL_CLIENT_PORTS.map((entry) =>
+          probeMailPort(mailHostname, entry.port, entry.implicitTls),
+        ),
+      ]);
+
+      const ports = MAIL_CLIENT_PORTS.map((entry, index) => {
+        const probe = probes[index]!;
+
+        return {
+          ...entry,
+          server: mailHostname,
+          reachable: probe.reachable,
+          certificateTrusted: probe.certificateTrusted,
+          certificateName: probe.certificateName,
+          certificateIssuer: probe.certificateIssuer,
+          // A listener the mail server does not have is a different answer
+          // from a port a firewall is swallowing, and only one of them is
+          // worth telling somebody to phone their host about.
+          configured: listening === null ? null : listening.includes(entry.port),
+          state: (probe.reachable && probe.certificateTrusted && !nearExpiry(probe)
+            ? 'ok'
+            : probe.reachable
+              ? 'warning'
+              : 'blocked') as CheckState,
+          summary: probe.summary,
+        };
+      });
+
+      const hostPointsHere = ip !== null && addresses.includes(ip);
+      const untrusted = ports.some((port) => port.reachable && !port.certificateTrusted);
+
+      const daysRemaining = probes
+        .map((probe) => probe.certificateDaysRemaining)
+        .filter((days): days is number => days !== null);
+      const expiresInDays = daysRemaining.length > 0 ? Math.min(...daysRemaining) : null;
+      const expiring = expiresInDays !== null && expiresInDays <= EXPIRY_WARNING_DAYS;
+
+      // Installing it restarts the mail server for every tenant on the machine,
+      // so it is an administrator's to do. Offering the button to somebody who
+      // cannot press it is worse than explaining why they are not seeing one.
+      const mayInstall = roleAtLeast(ctx.user.role, 'admin');
+      const haveCertificate =
+        (await findIssuedCertificate(ctx.app.config.caddyDir, mailHostname)) !== null;
+
+      return {
+        mailHostname,
+        username: input.address ?? `you@${input.domain}`,
+        serverIp: ip,
+        /** The name every setting below depends on resolving to this server. */
+        host: {
+          resolvesHere: hostPointsHere,
+          addresses,
+          summary: hostPointsHere
+            ? `${mailHostname} points at this server.`
+            : addresses.length > 0
+              ? `${mailHostname} points at ${addresses.join(', ')}, not at this server. Mail ` +
+                'programs will connect to the wrong machine.'
+              : `${mailHostname} does not exist in DNS yet, so no mail program can find this ` +
+                'server.',
+        },
+        /**
+         * The one failure that looks like a wrong password.
+         *
+         * Outlook reports an untrusted certificate as "something went wrong
+         * while setting up your account", with no mention of certificates at
+         * all, so it has to be named here or nobody will ever find it.
+         */
+        certificate: {
+          trusted: !untrusted && !expiring,
+          /** Null when nothing answered. The panel refreshes this well before zero. */
+          expiresInDays,
+          title: untrusted
+            ? 'Outlook will refuse this server\u2019s certificate'
+            : 'The mail certificate is running out',
+          canFix: mayInstall,
+          /** Whether the fix is a copy, or has to obtain one first. */
+          issued: haveCertificate,
+          fixLabel: haveCertificate
+            ? 'Use this website\u2019s certificate'
+            : `Get a certificate for ${mailHostname}`,
+          /** Why there is no button, when there is no button. */
+          fixHint: mayInstall
+            ? haveCertificate
+              ? null
+              : `The web server has no certificate for ${mailHostname} yet. This asks it for ` +
+                'one, then puts it on the mail ports. It usually takes under a minute.'
+            : 'Fixing it restarts the mail server for everybody on this machine, so ask an ' +
+              'administrator to install the certificate.',
+          summary: untrusted
+            ? 'The mail server is using a certificate it made for itself. Webmail still works, ' +
+              'but Outlook, Apple Mail and phone mail apps refuse to sign in to a mailbox ' +
+              'behind one.'
+            : expiring
+              ? `The certificate on the mail ports ${
+                  expiresInDays! < 0 ? 'has expired' : `expires in ${expiresInDays} day(s)`
+                }, and the panel has not managed to renew it. Mail programs stop signing in ` +
+                'the moment it runs out.'
+              : expiresInDays !== null
+                ? 'The mail ports present a certificate mail programs trust. It renews ' +
+                  `automatically, with ${expiresInDays} day(s) left on the current one.`
+                : 'The mail ports present a certificate mail programs trust.',
+        },
+        ports,
+        note: 'Use the mailbox password, and the full email address as the username.',
+      };
+    }),
+
+  /**
+   * Puts a publicly-trusted certificate on the mail ports.
+   *
+   * The mail server issues itself a self-signed certificate on first start and
+   * never replaces it, which is invisible from webmail and fatal in every real
+   * mail client. This obtains one through the web server if there is not
+   * already one on disk — reloading the configuration is the whole mechanism,
+   * because Caddy runs the issue-and-renew loop for every name it is told to
+   * serve and there is no "issue this one now" endpoint — then copies it into
+   * the mail server and restarts it.
+   */
+  installCertificate: adminProcedure
+    .input(z.object({ domain: Hostname }))
+    .mutation(async ({ ctx, input }) => {
+      const mailHostname = mailHostnameFor(input.domain);
+      const caddyDir = ctx.app.config.caddyDir;
+
+      if (!(await findIssuedCertificate(caddyDir, mailHostname))) {
+        const addresses = await resolveHostAddress(mailHostname);
+        const ip = serverIp();
+
+        if (addresses.length === 0) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              `${mailHostname} does not exist in DNS, so no certificate can be issued for it. ` +
+              'Set up email DNS on this website\u2019s DNS tab first.',
+          });
+        }
+
+        if (ip !== null && !addresses.includes(ip)) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              `${mailHostname} points at ${addresses.join(', ')} rather than at this server ` +
+              `(${ip}), so the certificate authority cannot reach it. Fix that record on the ` +
+              'DNS tab first.',
+          });
+        }
+
+        // The reload only asks for names the web server has been told to
+        // serve, and it takes those from the mail server's own domain list.
+        const known = await clientFor(ctx.app).listDomains();
+        storeMailDomains(ctx.app.db, known);
+
+        if (!known.some((name) => name.toLowerCase() === input.domain.toLowerCase())) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              `The mail server does not handle email for ${input.domain} yet, so there is ` +
+              'nothing to put a certificate on. Create a mailbox for it first.',
+          });
+        }
+
+        const failure = await ctx.app.routing.tryApply();
+        if (failure) {
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: `The web server did not accept the change: ${failure.message}`,
+          });
+        }
+
+        if (!(await waitForIssuedCertificate(caddyDir, mailHostname))) {
+          /*
+           * Cloudflare's proxy is deliberately not mentioned here. A proxied
+           * record resolves to Cloudflare rather than to this server, so the
+           * address check above has already rejected that case — repeating the
+           * advice sent people to look at a record that was never the problem.
+           */
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              `The web server is asking for a certificate for ${mailHostname} but has not got ` +
+              `one yet. ${mailHostname} points at this server, so what is left is the route in: ` +
+              'the certificate authority connects back on port 80, which has to be open to the ' +
+              'internet and reach this machine. Adding a Cloudflare token on the DNS tab avoids ' +
+              'that connection entirely. Otherwise this usually just needs another minute \u2014 ' +
+              'try again shortly.',
+          });
+        }
+      }
+
+      try {
+        const result = await syncMailCertificates({
+          db: ctx.app.db,
+          vault: ctx.app.vault,
+          services: ctx.app.services,
+          caddyDir,
+          hostnames: [mailHostname],
+        });
+
+        if (result.installed.length === 0) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: `${mailHostname} already has the right certificate on its mail ports.`,
+          });
+        }
+
+        return {
+          ok: true,
+          mailHostname,
+          note:
+            `The mail server now presents the certificate for ${mailHostname}. It was ` +
+            'restarted, so mail programs can be set up again straight away.',
+        };
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        toTrpcError(error);
+      }
+    }),
 
   /**
    * Whether the panel can manage mailboxes at all.
@@ -453,7 +836,7 @@ export const mailRouter = router({
    * completely different answers and a single "mail is broken" would send
    * people to the wrong place.
    */
-  serverStatus: protectedProcedure.query(async ({ ctx }) => {
+  serverStatus: adminProcedure.query(async ({ ctx }) => {
     const credentials = loadMailAdminCredentials(ctx.app.db, ctx.app.vault);
 
     if (!credentials) {
@@ -495,7 +878,7 @@ export const mailRouter = router({
    * configuration, which means a restart, which means waiting for it to answer
    * again before claiming success.
    */
-  provisionServer: protectedProcedure.mutation(async ({ ctx }) => {
+  provisionServer: adminProcedure.mutation(async ({ ctx }) => {
     const applied = await syncMailEnvironment({
       db: ctx.app.db,
       vault: ctx.app.vault,
@@ -542,7 +925,7 @@ export const mailRouter = router({
    * Verified before they are saved, so a wrong password fails while the user
    * is still looking at the field they typed it into.
    */
-  connectServer: protectedProcedure
+  connectServer: adminProcedure
     .input(
       z.object({
         username: z.string().min(1).max(120).default('admin'),
@@ -563,15 +946,17 @@ export const mailRouter = router({
 
       return { ok: true, message: result.message };
     }),
-  disconnectServer: protectedProcedure.mutation(({ ctx }) => {
+  disconnectServer: adminProcedure.mutation(({ ctx }) => {
     forgetMailAdminCredentials(ctx.app.db);
     return { ok: true };
   }),
 
   /** Domains the mail server will accept mail for. */
-  domains: protectedProcedure.query(async ({ ctx }) => {
+  domains: adminProcedure.query(async ({ ctx }) => {
     try {
-      return await clientFor(ctx.app).listDomains();
+      const domains = await clientFor(ctx.app).listDomains();
+      storeMailDomains(ctx.app.db, domains);
+      return domains;
     } catch (error) {
       toTrpcError(error);
     }
@@ -596,6 +981,14 @@ export const mailRouter = router({
         }
 
         await client.createDomain(input.domain);
+
+        // Reloading is what starts the web server obtaining a certificate for
+        // this domain's mail hostname, which is the only way mail clients will
+        // ever sign in to it.
+        if (storeMailDomains(ctx.app.db, [...existing, input.domain])) {
+          await ctx.app.routing.tryApply();
+        }
+
         return { ok: true, created: true };
       } catch (error) {
         toTrpcError(error);
@@ -648,6 +1041,8 @@ export const mailRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'That is not an email address.' });
       }
 
+      await assertWithinMailAllowance(ctx, input.quotaBytes, null);
+
       const password = input.password ?? generatePassword();
 
       try {
@@ -690,6 +1085,8 @@ export const mailRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      await assertWithinMailAllowance(ctx, input.quotaBytes, input.address);
+
       try {
         await clientFor(ctx.app).setQuota(input.address, input.quotaBytes);
         return {
