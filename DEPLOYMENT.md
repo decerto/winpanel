@@ -344,6 +344,10 @@ Get-Content C:\Sites\<site>\logs\*.out.log -Tail 50            # a website
 that failed is left in the site's hidden `.staging` folder so it can be
 inspected, and the next deploy clears it.
 
+**Still stuck?** Ask on [Discord](https://discord.gg/wT6mnfAnUD). Bring the WinPanel
+version, your Windows build and the exact wording of the error — that is usually enough
+to identify it straight away.
+
 ---
 
 ## What to back up

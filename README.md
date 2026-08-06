@@ -7,7 +7,9 @@
 Websites, Node and .NET apps, Cloudflare DNS, self-hosted mailboxes, customer accounts
 and the Windows fixes that make it all work — in one panel, without IIS.
 
-[Features](#what-it-does) · [Websites](#websites) · [DNS](#dns-control) · [Email](#email-control) · [People](#user-control-and-management) · [Compare](#how-it-compares) · [Live sites](#sites-running-on-it) · [FAQ](#frequently-asked-questions) · [Install](#installing) · [Develop](#development)
+[Features](#what-it-does) · [Websites](#websites) · [DNS](#dns-control) · [Email](#email-control) · [People](#user-control-and-management) · [Compare](#how-it-compares) · [Live sites](#sites-running-on-it) · [FAQ](#frequently-asked-questions) · [Install](#installing) · [Support](#support) · [Develop](#development)
+
+[![Chat on Discord](https://img.shields.io/badge/Discord-Ask%20for%20help-5865F2?logo=discord&logoColor=white)](https://discord.gg/wT6mnfAnUD)
 
 ![The websites list](docs/screenshots/websites.png)
 
@@ -555,6 +557,20 @@ scratch folder instead — [docs/development.md](docs/development.md) walks thro
 | [docs/users-and-roles.md](docs/users-and-roles.md) | Roles, limits, ownership checks, sessions and IP bans |
 | [docs/updating.md](docs/updating.md) | How the panel updates itself in place |
 | [docs/testing.md](docs/testing.md) | Testing conventions, including the adversarial ones |
+
+---
+
+## Support
+
+**[Ask on Discord](https://discord.gg/wT6mnfAnUD)** — the quickest way to get help, and
+where setup questions, "is this meant to happen", and release announcements go.
+
+For anything that needs a paper trail — a reproducible bug, or a feature you want
+remembered — [open an issue](https://github.com/decerto/winpanel/issues) instead, and
+include your WinPanel version, your Windows build and the exact wording the panel gave
+you.
+
+Security vulnerabilities go to neither. See [SECURITY.md](SECURITY.md).
 
 ---
 

@@ -3,6 +3,10 @@
 Thanks for taking an interest. WinPanel runs on other people's servers, so the bar for
 changes is "would I be happy for this to run unattended on a machine I cannot reach".
 
+If you want to talk something through before writing it, the
+[Discord](https://discord.gg/wT6mnfAnUD) is the place — it saves finding out at review
+time that an idea was already tried.
+
 ## Getting set up
 
 See [docs/development.md](docs/development.md) for prerequisites and how to run a local
@@ -48,4 +52,7 @@ come with tests written against the attack rather than the happy path — see
 Open an issue with the template. Include the WinPanel version, the Windows build, and what
 the panel said — the exact wording usually identifies the code path immediately.
 
-Security issues do **not** go in the issue tracker. See [SECURITY.md](SECURITY.md).
+If you are not sure it is a bug, ask on [Discord](https://discord.gg/wT6mnfAnUD) first.
+
+Security issues do **not** go in the issue tracker, and not on Discord either. See
+[SECURITY.md](SECURITY.md).

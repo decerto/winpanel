@@ -5,7 +5,7 @@ credentials and the panel's own sessions. Vulnerabilities are taken seriously.
 
 ## Reporting a vulnerability
 
-**Please do not open a public issue.**
+**Please do not open a public issue, and please do not post it on Discord.**
 
 Use GitHub's private vulnerability reporting on this repository
 (*Security* → *Report a vulnerability*). That keeps the discussion private until a fix

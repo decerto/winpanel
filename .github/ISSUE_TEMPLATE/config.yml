@@ -1,5 +1,8 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Ask on Discord
+    url: https://discord.gg/wT6mnfAnUD
+    about: Setup help, questions and anything you are not sure is a bug.
   - name: Security vulnerability
     url: https://github.com/decerto/winpanel/security/advisories/new
     about: Report privately. Please do not open a public issue.
