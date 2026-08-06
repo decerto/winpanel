@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SiteManifest } from '@winpanel/shared';
 import {
+  UNCLAIMED_HOST_ROUTE_ID,
   buildCaddyConfig,
   previewServerIdFor,
   proxyIdFor,
@@ -63,7 +64,9 @@ describe('preview listeners', () => {
 
     expect(config.apps.http.servers[previewServerIdFor('example')]).toBeDefined();
     // It has no domain, so it must not appear on the public listener.
-    expect(config.apps.http.servers.main.routes).toHaveLength(0);
+    expect(config.apps.http.servers.main.routes.map((r: any) => r['@id'])).toEqual([
+      UNCLAIMED_HOST_ROUTE_ID,
+    ]);
   });
 
   it('uses a different proxy id from the public route', () => {
@@ -181,7 +184,7 @@ describe('buildCaddyConfig', () => {
     }) as any;
 
     const ids = config.apps.http.servers.main.routes.map((r: any) => r['@id']);
-    expect(ids).toEqual([routeIdFor('live')]);
+    expect(ids).toEqual([routeIdFor('live'), UNCLAIMED_HOST_ROUTE_ID]);
   });
 
   it('forwards the original scheme and client address', () => {
@@ -190,6 +193,60 @@ describe('buildCaddyConfig', () => {
 
     expect(proxy.headers.request.set['X-Forwarded-Proto']).toEqual(['{http.request.scheme}']);
     expect(proxy.headers.request.set['X-Real-IP']).toEqual(['{http.request.remote.host}']);
+  });
+});
+
+describe('a hostname no website claims', () => {
+  /*
+   * Reached this server, matched no site. Caddy's own answer is an empty 200,
+   * which is indistinguishable from an application that rendered nothing —
+   * the failure people actually hit is a `www` name the panel wrote a DNS
+   * record for but never added to the site's Domains.
+   */
+  it('answers 404 rather than Caddy\u2019s blank 200', () => {
+    const config = buildCaddyConfig({ sites: [site()] }) as any;
+    const handler = findRoute(config, UNCLAIMED_HOST_ROUTE_ID).handle[0];
+
+    expect(handler.handler).toBe('static_response');
+    expect(handler.status_code).toBe(404);
+    expect(handler.body).toMatch(/no website/i);
+  });
+
+  it('names the hostname that was asked for', () => {
+    const config = buildCaddyConfig({ sites: [site()] }) as any;
+    const handler = findRoute(config, UNCLAIMED_HOST_ROUTE_ID).handle[0];
+
+    expect(handler.body).toContain('{http.request.host}');
+    // Never HTML: the Host header is attacker-controlled, and reflecting it
+    // into a rendered page would be script on this server's own origin.
+    expect(handler.headers['Content-Type']).toEqual(['text/plain; charset=utf-8']);
+  });
+
+  it('carries no matcher and comes last', () => {
+    // Caddy inserts its HTTP-to-HTTPS redirects after the last route with a
+    // host matcher and before any catch-all, so both of these have to hold
+    // or every redirect on the server moves behind this route.
+    const config = buildCaddyConfig({
+      sites: [site()],
+      mailHost: { hostnames: ['mail.example.com'], port: 8080 },
+    }) as any;
+    const routes = config.apps.http.servers.main.routes;
+
+    expect(routes.at(-1)['@id']).toBe(UNCLAIMED_HOST_ROUTE_ID);
+    expect(routes.at(-1).match).toBeUndefined();
+  });
+
+  it('is not on the preview listener, where every request belongs to the site', () => {
+    const config = buildCaddyConfig({ sites: [site({ previewPort: 7001 })] }) as any;
+    const routes = config.apps.http.servers[previewServerIdFor('example')].routes;
+
+    expect(routes.some((r: any) => r['@id'] === UNCLAIMED_HOST_ROUTE_ID)).toBe(false);
+  });
+
+  it('claims no domain, so it cannot pull a certificate in', () => {
+    const config = buildCaddyConfig({ sites: [site({ domains: [] })] }) as any;
+
+    expect(config.apps.tls).toBeUndefined();
   });
 });
 
@@ -545,6 +602,8 @@ describe('mail routing', () => {
   it('adds no route at all when there is no mail hostname', () => {
     const config = buildCaddyConfig({ sites: [], mailHost: { hostnames: [], port: 8080 } }) as any;
 
-    expect(config.apps.http.servers.main.routes).toEqual([]);
+    expect(config.apps.http.servers.main.routes.map((r: any) => r['@id'])).toEqual([
+      UNCLAIMED_HOST_ROUTE_ID,
+    ]);
   });
 });

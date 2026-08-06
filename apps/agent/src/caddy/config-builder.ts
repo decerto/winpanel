@@ -118,6 +118,56 @@ export function previewServerIdFor(slug: string): string {
   return `preview_${slug}`;
 }
 
+/** The route that answers for a name no website on this server claims. */
+export const UNCLAIMED_HOST_ROUTE_ID = 'unclaimed_host';
+
+/**
+ * The last route on the public listener: a name nothing here serves.
+ *
+ * Caddy's own answer to a request that matches no route is an empty 200, and
+ * an empty 200 is the single most misleading thing a web server can say. It
+ * looks exactly like a website that loaded and rendered nothing, so it gets
+ * blamed on the application, the build, or the browser cache — never on the
+ * one thing that is actually wrong, which is that the hostname is missing
+ * from the website's Domains list.
+ *
+ * A `www` name is how this is nearly always reached: the panel's Cloudflare
+ * automation writes a `www` record for every domain it points here, so the
+ * name resolves to this server whether or not the website claims it.
+ *
+ * Plain text, and the host is echoed back: `text/plain` cannot be rendered as
+ * markup, so reflecting a header that anyone can set cannot turn into script
+ * on our own origin.
+ *
+ * It carries no matcher, which is deliberate — Caddy inserts its automatic
+ * HTTP-to-HTTPS redirects after the last route that has a host matcher and
+ * before any catch-all, so this route has to stay last and matcher-less for
+ * those redirects to keep working.
+ */
+function unclaimedHostRoute(): unknown {
+  const body = [
+    'No website on this server is set up for {http.request.host}.',
+    '',
+    'The address reached the right server, but no website here claims that',
+    'name. Add it to the website\u2019s Domains in WinPanel, or point the DNS',
+    'record at wherever the site is really hosted.',
+    '',
+  ].join('\n');
+
+  return {
+    '@id': UNCLAIMED_HOST_ROUTE_ID,
+    handle: [
+      {
+        handler: 'static_response',
+        status_code: 404,
+        headers: { 'Content-Type': ['text/plain; charset=utf-8'] },
+        body,
+      },
+    ],
+    terminal: true,
+  };
+}
+
 export function previewProxyIdFor(slug: string): string {
   return `${slug}_preview_proxy`;
 }
@@ -386,6 +436,8 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
       terminal: true,
     });
   }
+
+  routes.push(unclaimedHostRoute());
 
   const siteLoggers = Object.keys(accessLogs);
 

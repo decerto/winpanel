@@ -8,7 +8,11 @@ import { SecretVault } from '../src/security/vault.js';
 import { storeCloudflareToken } from '../src/dns/token.js';
 import { storeMailDomains } from '../src/mail/domains.js';
 import { CaddyReconciler, siteInputsFrom } from '../src/caddy/reconciler.js';
-import { previewServerIdFor, routeIdFor } from '../src/caddy/config-builder.js';
+import {
+  UNCLAIMED_HOST_ROUTE_ID,
+  previewServerIdFor,
+  routeIdFor,
+} from '../src/caddy/config-builder.js';
 import { CaddyClient } from '../src/caddy/client.js';
 
 /**
@@ -111,7 +115,9 @@ describe('turning the database into a Caddy config', () => {
     const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
 
     expect(config.apps.http.servers[previewServerIdFor('example')].listen).toEqual([':7001']);
-    expect(config.apps.http.servers.main.routes).toHaveLength(0);
+    expect(config.apps.http.servers.main.routes.map((r: any) => r['@id'])).toEqual([
+      UNCLAIMED_HOST_ROUTE_ID,
+    ]);
   });
 
   it('asks for certificates only once Cloudflare is connected', () => {
@@ -133,7 +139,9 @@ describe('turning the database into a Caddy config', () => {
   it('leaves out a site that has been disabled', () => {
     insertSite({ enabled: false });
     const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
-    expect(config.apps.http.servers.main.routes).toHaveLength(0);
+    expect(config.apps.http.servers.main.routes.map((r: any) => r['@id'])).toEqual([
+      UNCLAIMED_HOST_ROUTE_ID,
+    ]);
     expect(config.apps.http.servers[previewServerIdFor('example')]).toBeUndefined();
   });
 
