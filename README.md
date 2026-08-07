@@ -608,7 +608,14 @@ so that people who need it have it, not so that somebody else can put a price on
 This means WinPanel is source-available rather than open source: everything an open source
 licence permits is permitted here, except building a substitute for the thing itself.
 
-Contributions are accepted under the same terms.
+The copyright holder keeps every right in the software and may license it on other terms,
+so a commercial licence can be asked about — [on Discord](https://discord.gg/wT6mnfAnUD) —
+if your plans need one.
+
+Contributions are accepted under the terms in [CONTRIBUTING.md](CONTRIBUTING.md), and the
+third-party components WinPanel uses are recorded in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Nothing it ships or downloads is under a
+copyleft licence.
 
 ---
 

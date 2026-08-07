@@ -18,4 +18,5 @@
 - [ ] Comments explain why the code is there, not what it does
 - [ ] Any new error message is written for a server administrator, not a developer
 - [ ] Code touching paths, process launching, downloads or authorisation has tests
-- [ ] No new dependency, or one added with a reason given above
+- [ ] No new dependency, or one added with a reason given above — and it is MIT, BSD, ISC or Apache-2.0
+- [ ] This is my own work, contributed on the terms in [CONTRIBUTING.md](../CONTRIBUTING.md#licence)

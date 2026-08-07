@@ -4,6 +4,18 @@
 
 Required Notice: Copyright 2026 Diminished Studios (https://github.com/decerto/winpanel)
 
+---
+
+**Rights reserved by the licensor.** These terms are a licence granted *by* the copyright
+holder, not a transfer of anything. The copyright holder keeps every right in the software
+and may license it to anyone else on any other terms, including commercial ones, and may
+publish future versions under a different licence entirely. Nothing here restricts them.
+
+**Third-party components** used by this software, and their licences, are recorded in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).
+
+---
+
 ## Acceptance
 
 In order to get any license under these terms, you must agree to them as both

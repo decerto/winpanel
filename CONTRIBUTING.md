@@ -60,9 +60,21 @@ Security issues do **not** go in the issue tracker, and not on Discord either. S
 ## Licence
 
 WinPanel is under [PolyForm Perimeter 1.0.1](LICENSE.md) — free to use and change,
-including commercially, but not to be sold or rebranded as a competing panel. By opening a
-pull request you agree your contribution is licensed on the same terms.
+including commercially, but not to be sold or rebranded as a competing panel.
 
-A practical consequence for contributors: **do not paste in code under a licence that
-conflicts with that**, which includes anything GPL or AGPL. New dependencies need a
-permissive licence — MIT, BSD, ISC or Apache 2.0.
+**By opening a pull request, you agree to two things:**
+
+1. The work is yours to give — you wrote it, or you have the right to contribute it, and it
+   is not copied from anywhere with incompatible terms.
+2. You grant the maintainers a perpetual, worldwide, irrevocable, royalty-free licence to
+   use, change, distribute and sublicense your contribution **under any terms, including
+   commercial or proprietary ones**.
+
+The second point exists because a project with a hundred part-owners can never change its
+licence again — every contributor would have to be found and asked. You keep the copyright
+in what you wrote; this only means the project can keep making decisions about itself.
+
+A practical consequence: **do not paste in code under a licence that conflicts with that**,
+which includes anything GPL, LGPL or AGPL. New dependencies need a permissive licence —
+MIT, BSD, ISC or Apache-2.0. What is already in use is listed in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

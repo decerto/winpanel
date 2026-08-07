@@ -54,12 +54,14 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "staging\bin\node\*"; DestDir: "{app}\bin\node"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Service wrapper.
 Source: "staging\bin\WinSW.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
+Source: "staging\bin\WinSW.LICENSE.txt"; DestDir: "{app}\bin"; Flags: ignoreversion
 ; The agent itself.
 Source: "staging\agent\*"; DestDir: "{app}\agent"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; The built panel interface.
 Source: "staging\panel\*"; DestDir: "{app}\panel"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; The licence travels with every copy, which its Notices clause requires.
 Source: "..\..\LICENSE.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
 ; Permissions are deliberately not set here. Inno Setup's [Dirs] permissions

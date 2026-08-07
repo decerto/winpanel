@@ -36,6 +36,8 @@ const NODE_URL = `https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}
 const NODE_SHASUMS_URL = `https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt`;
 const WINSW_URL =
   `https://github.com/winsw/winsw/releases/download/v${WINSW_VERSION}/WinSW-x64.exe`;
+const WINSW_LICENSE_URL =
+  `https://raw.githubusercontent.com/winsw/winsw/v${WINSW_VERSION}/LICENSE.txt`;
 
 async function log(message: string): Promise<void> {
   process.stdout.write(`  ${message}\n`);
@@ -111,6 +113,12 @@ async function stageNode(): Promise<void> {
 async function stageWinsw(): Promise<void> {
   await log(`Downloading WinSW ${WINSW_VERSION}\u2026`);
   await download(WINSW_URL, path.join(STAGING, 'bin', 'WinSW.exe'));
+
+  // WinSW is MIT, which requires its notice to travel with the binary. Only
+  // the .exe is published on the release, so the notice is fetched from the
+  // tag it was built from.
+  await download(WINSW_LICENSE_URL, path.join(STAGING, 'bin', 'WinSW.LICENSE.txt'));
+
   await log('Staged service wrapper.');
 }
 
