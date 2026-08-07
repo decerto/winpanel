@@ -28,6 +28,8 @@ import type { CaddyClient } from '../caddy/client.js';
 import type { CaddyReconciler } from '../caddy/reconciler.js';
 import { previewProxyIdFor, proxyIdFor } from '../caddy/config-builder.js';
 import type { ServiceManager } from '../windows/service-manager.js';
+import { siteServiceId } from '../windows/panel-services.js';
+import { clearStrayListeners, describeHolder } from '../windows/stray-processes.js';
 
 /**
  * The deployment, start to finish.
@@ -67,7 +69,7 @@ export interface DeployDependencies {
 }
 
 export function serviceIdFor(slug: string, colour: 'blue' | 'green'): string {
-  return `winpanel-site-${slug}-${colour}`;
+  return siteServiceId(slug, colour);
 }
 
 /** The startup file the user set, treating a cleared field as nothing at all. */
@@ -181,6 +183,42 @@ async function isServing(
     return (await fs.readdir(folders.release)).length > 0;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Makes the port genuinely free before anything is started on it.
+ *
+ * Without this the health check is not a check at all. It asks whether
+ * *something* answers on the port, so a previous copy of the site that the
+ * service manager lost track of answers on the new version's behalf: the
+ * deploy is declared healthy, the web server goes on proxying to the old
+ * process, and every deploy after that repeats the trick. The site looks
+ * perfectly well from outside while the panel reports it stopped and the code
+ * that is actually serving is however many releases old.
+ *
+ * A process of ours on our own port is ended. Anything else is refused rather
+ * than killed — the panel allocated the port, but it does not own the machine,
+ * and quietly proxying a customer's website to a stranger's program is a worse
+ * outcome than a deploy that stops and explains itself.
+ */
+async function claimPort(port: number, executable: string, ctx: JobContext): Promise<void> {
+  const { killed, foreign } = await clearStrayListeners([port], [path.basename(executable)]);
+
+  if (killed.length > 0) {
+    ctx.log(
+      `Port ${port} was still held by an earlier copy of this website ` +
+        `(${killed.map(describeHolder).join(', ')}). It has been ended.`,
+      'warn',
+    );
+  }
+
+  if (foreign.length > 0) {
+    throw new DeploymentError(
+      `Port ${port} is in use by ${foreign.map(describeHolder).join(', ')}, which is not part ` +
+        'of this website. The panel will not end another program to take its port. Close that ' +
+        'program, then deploy again.',
+    );
   }
 }
 
@@ -507,6 +545,8 @@ export function createDeployHandler(deps: DeployDependencies) {
       try {
         if (wasInstalled) await deps.services.uninstall(serviceId);
 
+        await claimPort(targetPort, runtimeExe.exe, ctx);
+
         await deps.services.install({
           id: serviceId,
           displayName: site.displayName,
@@ -735,6 +775,8 @@ async function publishManagedSite(
       if (await deps.services.isInstalled(serviceId)) {
         await deps.services.uninstall(serviceId);
       }
+
+      await claimPort(port, runtimeExe.exe, ctx);
 
       await deps.services.install({
         id: serviceId,

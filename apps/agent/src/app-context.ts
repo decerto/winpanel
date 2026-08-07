@@ -9,6 +9,7 @@ import { AuthService } from './services/auth-service.js';
 import { CaddyClient } from './caddy/client.js';
 import { CaddyReconciler } from './caddy/reconciler.js';
 import { ServiceManager } from './windows/service-manager.js';
+import { createServiceRecovery } from './windows/watched-services.js';
 import { SiteService } from './sites/site-service.js';
 import { TrafficCollector } from './traffic/collector.js';
 import { createDeployHandler } from './sites/deploy-handler.js';
@@ -83,6 +84,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
   const services = new ServiceManager(
     path.join(config.binDir, 'WinSW.exe'),
     path.join(config.dataDir, 'services'),
+    createServiceRecovery(db),
   );
   const sites = new SiteService(db, vault, config.sitesRoot);
   const traffic = new TrafficCollector({ db, accessLogDir: config.accessLogDir });

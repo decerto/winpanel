@@ -125,11 +125,7 @@ export async function findStrayListeners(
 ): Promise<StrayProcess[]> {
   if (images.length === 0) return [];
 
-  const wanted = new Set(images.map((image) => path.basename(image).toLowerCase()));
-
-  return (await listPortHolders(ports)).filter((holder) =>
-    wanted.has(path.basename(holder.image).toLowerCase()),
-  );
+  return partitionHolders(await listPortHolders(ports), images).ours;
 }
 
 /** Ends a process and anything it started. */
@@ -143,4 +139,62 @@ export async function killProcessTree(pid: number): Promise<boolean> {
   });
 
   return result.exitCode === 0;
+}
+
+/** Splits port holders into ones we own and ones we must not touch. */
+export function partitionHolders(
+  holders: readonly StrayProcess[],
+  images: readonly string[],
+): { ours: StrayProcess[]; foreign: StrayProcess[] } {
+  const wanted = new Set(images.map((image) => path.basename(image).toLowerCase()));
+
+  const ours: StrayProcess[] = [];
+  const foreign: StrayProcess[] = [];
+
+  for (const holder of holders) {
+    (wanted.has(path.basename(holder.image).toLowerCase()) ? ours : foreign).push(holder);
+  }
+
+  return { ours, foreign };
+}
+
+export interface PortClearance {
+  /** Processes that matched one of `images` and have been ended. */
+  killed: StrayProcess[];
+  /**
+   * Processes still holding a port that are nothing to do with the panel.
+   * Never killed: the port is ours to allocate, not ours to enforce, and
+   * ending an unrelated program is not a repair anyone asked for.
+   */
+  foreign: StrayProcess[];
+}
+
+/**
+ * Frees ports that should be unoccupied, and reports what it could not free.
+ *
+ * The distinction is the point. An orphan of the service being started is a
+ * fault the panel caused and must clear; anything else on the port is a
+ * collision the user has to be told about, because the alternative is the
+ * panel quietly proxying a website to a stranger's program.
+ */
+export async function clearStrayListeners(
+  ports: readonly number[],
+  images: readonly string[],
+): Promise<PortClearance> {
+  const { ours, foreign } = partitionHolders(await listPortHolders(ports), images);
+
+  const killed: StrayProcess[] = [];
+
+  for (const pid of new Set(ours.map((stray) => stray.pid))) {
+    if (await killProcessTree(pid)) {
+      killed.push(...ours.filter((stray) => stray.pid === pid));
+    }
+  }
+
+  return { killed, foreign };
+}
+
+/** Names a process in a sentence a person can act on. */
+export function describeHolder(holder: StrayProcess): string {
+  return `${holder.image} (process ${holder.pid}) on port ${holder.port}`;
 }

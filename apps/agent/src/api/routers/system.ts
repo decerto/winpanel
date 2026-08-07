@@ -18,9 +18,33 @@ import {
   startSupportingServices,
   stopPanelService,
   stopSupportingServices,
+  type PanelService,
 } from '../../windows/panel-services.js';
+import { createServiceRecovery, describeBlockers } from '../../windows/watched-services.js';
+import type { DatabaseHandle } from '../../db/index.js';
 import { validateUpdateUrl } from '../../components/panel-update.js';
 import { BrowseError, browseDirectory } from '../../files/server-browse.js';
+
+/**
+ * Why a service would not stay up, in terms of what to do about it.
+ *
+ * Its own orphan has already been cleared and retried by this point, so
+ * anything still on the port is a program the panel has no business ending —
+ * and naming it is the difference between a user who can fix this and one
+ * who reads "check the log" and gives up.
+ */
+async function explainFailedStart(db: DatabaseHandle, service: PanelService): Promise<string> {
+  const blockers = await describeBlockers(db, service.id);
+
+  if (!blockers) {
+    return `${service.label} did not stay running. Its log in the logs folder says why.`;
+  }
+
+  return (
+    `${service.label} cannot start: ${blockers} is already using a port it needs, and that ` +
+    'program is not the panel\u2019s to end. Close it, then try again.'
+  );
+}
 
 /**
  * Facts about the machine this panel is running on.
@@ -145,7 +169,7 @@ export const systemRouter = router({
         action: z.enum(['start', 'stop', 'restart']),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const services = await listPanelServices();
       const service = services.find((candidate) => candidate.id === input.id);
 
@@ -165,12 +189,14 @@ export const systemRouter = router({
         });
       }
 
+      const options = { unblock: createServiceRecovery(ctx.app.db).unblock };
+
       const succeeded =
         input.action === 'start'
-          ? await startPanelService(service.id)
+          ? await startPanelService(service.id, options)
           : input.action === 'stop'
-            ? await stopPanelService(service.id)
-            : await restartPanelService(service.id);
+            ? await stopPanelService(service.id, options)
+            : await restartPanelService(service.id, options);
 
       if (!succeeded) {
         throw new TRPCError({
@@ -178,7 +204,7 @@ export const systemRouter = router({
           message:
             input.action === 'stop'
               ? `${service.label} did not stop within a minute.`
-              : `${service.label} did not stay running. Its log in the logs folder says why.`,
+              : await explainFailedStart(ctx.app.db, service),
         });
       }
 
@@ -275,8 +301,10 @@ export const systemRouter = router({
    * The counterpart to `shutdown`, so stopping the server from here is not a
    * one-way door that needs a command prompt to reverse.
    */
-  startAll: adminProcedure.mutation(async () => {
-    return await startSupportingServices(await listPanelServices());
+  startAll: adminProcedure.mutation(async ({ ctx }) => {
+    return await startSupportingServices(await listPanelServices(), {
+      unblock: createServiceRecovery(ctx.app.db).unblock,
+    });
   }),
 
   /**
@@ -292,9 +320,17 @@ export const systemRouter = router({
    */
   shutdown: superadminProcedure
     .input(z.object({ includePanel: z.boolean().default(true) }).optional())
-    .mutation(async ({ input }) => {
+    .mutation(async ({ ctx, input }) => {
       const services = await listPanelServices();
-      const { changed, failed } = await stopSupportingServices(services);
+      /*
+       * Orphans are cleared as part of this, not merely asked to stop. This is
+       * the button pressed before an update or an uninstall, and a process the
+       * service manager has lost track of is exactly what makes Windows refuse
+       * to replace the files afterwards.
+       */
+      const { changed, failed } = await stopSupportingServices(services, {
+        unblock: createServiceRecovery(ctx.app.db).unblock,
+      });
 
       // Only worth asking Windows to stop the panel if Windows is what is
       // running it. Started by hand, there is no service to stop and the

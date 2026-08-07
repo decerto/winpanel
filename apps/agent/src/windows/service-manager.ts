@@ -228,10 +228,29 @@ export function describeCrashLog(text: string): string | null {
   return chosen ? chosen.slice(0, 300) : null;
 }
 
+/**
+ * How a service is rescued from its own leftovers.
+ *
+ * Supplied by the caller rather than worked out here: which ports a website
+ * owns is only recorded in the panel's database, and a service manager that
+ * had to open a database to stop a service would be the wrong shape entirely.
+ */
+export interface ServiceRecovery {
+  /**
+   * Ends any of the service's own processes still holding its ports.
+   * Reports whether anything was actually ended, so a start that failed for
+   * some other reason is not retried pointlessly.
+   */
+  unblock: (id: string) => Promise<boolean>;
+  /** Names whatever else is on those ports, for an error a user can act on. */
+  describeBlockers: (id: string) => Promise<string | null>;
+}
+
 export class ServiceManager {
   constructor(
     private readonly winswPath: string,
     private readonly configDir: string,
+    private readonly recovery?: ServiceRecovery,
   ) {}
 
   private configPathFor(id: string): string {
@@ -333,6 +352,9 @@ export class ServiceManager {
 
     if (await this.exists(wrapperPath)) {
       await runCommand({ exe: wrapperPath, args: ['stop'], timeoutMs: 60_000 });
+      // A leftover process holds the service's files as well as its port, and
+      // Windows will not let go of a service whose program is still running.
+      await this.recovery?.unblock(id).catch(() => false);
       await runCommand({ exe: wrapperPath, args: ['uninstall'], timeoutMs: 60_000 });
     }
 
@@ -387,7 +409,40 @@ export class ServiceManager {
     return wrapperPath;
   }
 
+  /**
+   * Starts a service and proves it is still there afterwards.
+   *
+   * The second attempt is the point of the shape. By far the commonest reason
+   * a service starts and dies a second later is that its own last process is
+   * still holding the port, and pressing Start again will never fix that
+   * however many times it is pressed. Clearing it is only tried after a real
+   * failure, so a service that is down for any other reason is never answered
+   * by killing something.
+   */
   async start(id: string): Promise<void> {
+    let failure = await this.startOnce(id);
+    if (!failure) return;
+
+    if (await this.recovery?.unblock(id).catch(() => false)) {
+      failure = await this.startOnce(id);
+      if (!failure) return;
+    }
+
+    // Anything still on the port now is a program the panel has no business
+    // ending, and naming it is the difference between a user who can fix this
+    // and one who reads "check the log" and gives up.
+    const blockers = await this.recovery?.describeBlockers(id).catch(() => null);
+
+    throw new Error(
+      blockers
+        ? `The "${id}" service cannot start: ${blockers} is already using a port it needs, ` +
+          'and that program is not the panel\u2019s to end. Close it, then try again.'
+        : failure,
+    );
+  }
+
+  /** One attempt. `null` when it started, otherwise why it did not. */
+  private async startOnce(id: string): Promise<string | null> {
     const result = await runCommand({
       exe: await this.requireWrapper(id),
       args: ['start'],
@@ -395,7 +450,7 @@ export class ServiceManager {
     });
 
     if (result.exitCode !== 0) {
-      throw new Error(`Could not start the "${id}" service. ${describeFailure(result)}`);
+      return `Could not start the "${id}" service. ${describeFailure(result)}`;
     }
 
     /*
@@ -408,13 +463,13 @@ export class ServiceManager {
     await settle();
 
     const state = await this.getState(id);
-    if (state !== 'running' && state !== 'starting') {
-      const reason = await this.lastLogError(id);
-      throw new Error(
-        `The "${id}" service was registered but stopped immediately after starting. ` +
-          (reason ? `It reported: ${reason}` : 'Its log in the logs folder says why.'),
-      );
-    }
+    if (state === 'running' || state === 'starting') return null;
+
+    const reason = await this.lastLogError(id);
+    return (
+      `The "${id}" service was registered but stopped immediately after starting. ` +
+      (reason ? `It reported: ${reason}` : 'Its log in the logs folder says why.')
+    );
   }
 
   /**
@@ -445,20 +500,38 @@ export class ServiceManager {
     }
   }
 
+  /**
+   * Stops a service, and makes sure that means what the user thinks it means.
+   *
+   * A wrapper that exits without taking its child with it leaves the program
+   * running: still serving requests, still holding its port, still holding its
+   * files open, while Windows reports the service as stopped. Somebody who
+   * pressed Stop to take an app down has every right to expect it to be down,
+   * and this is also the state that makes an update fail on a file nothing
+   * appears to be using.
+   */
   async stop(id: string): Promise<void> {
     await runCommand({
       exe: await this.requireWrapper(id),
       args: ['stop'],
       timeoutMs: 120_000,
     });
+
+    await this.recovery?.unblock(id).catch(() => false);
   }
 
+  /**
+   * Stops and starts, rather than asking the wrapper to restart itself.
+   *
+   * WinSW's own restart hands the port straight back to whatever is holding
+   * it, which if the last process was orphaned is the orphan — so the restart
+   * appears to work, the service is stopped again seconds later, and the site
+   * goes on being served by the code it was running before. Going through
+   * `stop` and `start` clears the port in between and proves the result.
+   */
   async restart(id: string): Promise<void> {
-    await runCommand({
-      exe: await this.requireWrapper(id),
-      args: ['restart'],
-      timeoutMs: 120_000,
-    });
+    await this.stop(id);
+    await this.start(id);
   }
 
   /**

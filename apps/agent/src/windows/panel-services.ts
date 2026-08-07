@@ -26,6 +26,11 @@ import { runCommand, runDetached } from '../process/run-command.js';
 export const PANEL_SERVICE_PREFIX = 'winpanel-';
 export const AGENT_SERVICE_ID = 'winpanel-agent';
 
+/** The one place the naming of a website's service is decided. */
+export function siteServiceId(slug: string, colour: 'blue' | 'green'): string {
+  return `${PANEL_SERVICE_PREFIX}site-${slug}-${colour}`;
+}
+
 export type PanelServiceState = 'running' | 'stopped' | 'starting' | 'stopping' | 'unknown';
 
 /** What a service is for. Also decides the order things are stopped in. */
@@ -181,18 +186,40 @@ function delay(ms: number): Promise<void> {
  * The exit code is ignored on purpose — sc.exe fails when the service is
  * already stopped, which is the outcome being asked for. Only the state that
  * follows is evidence of anything.
+ *
+ * `unblock` is what makes "stopped" mean the same thing to Windows and to the
+ * user. A wrapper that exits without taking its child with it leaves the
+ * service reporting stopped while the program is still running, still holding
+ * its port and still holding its files open — which is the state that makes an
+ * update or an uninstall fail on a file it cannot name. Anything of ours still
+ * on our own ports after a stop is therefore ended, not left.
  */
-export async function stopPanelService(id: string, timeoutMs = 60_000): Promise<boolean> {
+export async function stopPanelService(id: string, options: StopOptions = {}): Promise<boolean> {
+  const timeoutMs = options.timeoutMs ?? 60_000;
   await runCommand({ exe: 'sc.exe', args: ['stop', id], timeoutMs: 30_000 });
 
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const state = await panelServiceState(id);
-    if (state === 'stopped' || state === 'not-installed') return true;
+    if (state === 'stopped' || state === 'not-installed') {
+      await options.unblock?.(id);
+      return true;
+    }
     await delay(500);
   }
 
-  return false;
+  // Wedged in `stopping`. Ending the process is what an operator would do by
+  // hand, and it is the only thing that releases the service.
+  if (!(await options.unblock?.(id))) return false;
+
+  const state = await panelServiceState(id);
+  return state === 'stopped' || state === 'not-installed';
+}
+
+export interface StopOptions {
+  timeoutMs?: number;
+  /** Ends any of the service's own processes still holding its ports. */
+  unblock?: (id: string) => Promise<boolean>;
 }
 
 /**
@@ -202,8 +229,31 @@ export async function stopPanelService(id: string, timeoutMs = 60_000): Promise<
  * it has launched the process, so a website whose build is broken reports
  * "started" and is gone a second later. Waiting for the state to settle turns
  * that into an honest failure the user can act on.
+ *
+ * `unblock` is the second attempt. The commonest reason a service starts and
+ * dies immediately is that its own orphaned process still holds the port, and
+ * pressing Start again will never fix that however many times it is pressed.
+ * It runs only after a genuine failure, so a service that is down for any
+ * other reason is not answered by killing something.
  */
-export async function startPanelService(id: string, timeoutMs = 60_000): Promise<boolean> {
+export async function startPanelService(id: string, options: StartOptions = {}): Promise<boolean> {
+  if (await startOnce(id, options.timeoutMs ?? 60_000)) return true;
+  if (!options.unblock) return false;
+
+  // A false answer means nothing was in the way, so the failure was the
+  // service's own and a retry would just repeat it.
+  if (!(await options.unblock(id))) return false;
+
+  return await startOnce(id, options.timeoutMs ?? 60_000);
+}
+
+export interface StartOptions {
+  timeoutMs?: number;
+  /** Frees the service's ports. Returns whether anything was actually cleared. */
+  unblock?: (id: string) => Promise<boolean>;
+}
+
+async function startOnce(id: string, timeoutMs: number): Promise<boolean> {
   await runCommand({ exe: 'sc.exe', args: ['start', id], timeoutMs: 30_000 });
 
   const deadline = Date.now() + timeoutMs;
@@ -217,9 +267,9 @@ export async function startPanelService(id: string, timeoutMs = 60_000): Promise
   return false;
 }
 
-export async function restartPanelService(id: string): Promise<boolean> {
-  await stopPanelService(id);
-  return await startPanelService(id);
+export async function restartPanelService(id: string, options: StartOptions = {}): Promise<boolean> {
+  await stopPanelService(id, { unblock: options.unblock });
+  return await startPanelService(id, options);
 }
 
 export interface ServiceActionReport {
@@ -238,11 +288,16 @@ export interface ShutdownReport extends ServiceActionReport {
  * One failure never abandons the rest: a website whose service is wedged
  * should not leave the mail server running as well, and the user needs the
  * full list of what is still up, not the first thing that went wrong.
+ *
+ * `announce` separates "this was done" from "this was worth telling you
+ * about": a service already in the state being asked for still has to be
+ * visited, but naming it would claim credit for work that did not happen.
  */
 async function acrossServices(
   services: readonly PanelService[],
   operation: (id: string) => Promise<boolean>,
   failureReason: string,
+  announce: (service: PanelService) => boolean = () => true,
 ): Promise<ServiceActionReport> {
   const changed: string[] = [];
   const failed: ServiceActionReport['failed'] = [];
@@ -250,7 +305,7 @@ async function acrossServices(
   for (const service of services) {
     try {
       if (await operation(service.id)) {
-        changed.push(service.label);
+        if (announce(service)) changed.push(service.label);
       } else {
         failed.push({ id: service.id, label: service.label, reason: failureReason });
       }
@@ -266,16 +321,26 @@ async function acrossServices(
   return { changed, failed };
 }
 
-/** Stops everything except the panel, which the caller stops last. */
+/**
+ * Stops everything except the panel, which the caller stops last.
+ *
+ * Services already reporting stopped are still passed through when there is an
+ * `unblock`: "stopped" is exactly the state an orphaned process hides behind,
+ * and this is the button pressed before an update or an uninstall, which is
+ * the moment a file left open costs the most.
+ */
 export async function stopSupportingServices(
   services: readonly PanelService[],
+  options: StopOptions = {},
 ): Promise<ServiceActionReport> {
   return await acrossServices(
     sortForShutdown(services).filter(
-      (service) => service.kind !== 'panel' && service.state !== 'stopped',
+      (service) =>
+        service.kind !== 'panel' && (service.state !== 'stopped' || Boolean(options.unblock)),
     ),
-    (id) => stopPanelService(id),
+    (id) => stopPanelService(id, options),
     'It did not stop within a minute.',
+    (service) => service.state !== 'stopped',
   );
 }
 
@@ -290,12 +355,13 @@ export async function stopSupportingServices(
  */
 export async function startSupportingServices(
   services: readonly PanelService[],
+  options: StartOptions = {},
 ): Promise<ServiceActionReport> {
   return await acrossServices(
     sortForStartup(services).filter(
       (service) => service.kind !== 'panel' && service.state !== 'running',
     ),
-    (id) => startPanelService(id),
+    (id) => startPanelService(id, options),
     'It did not stay running. Its log in the logs folder says why.',
   );
 }

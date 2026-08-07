@@ -58,7 +58,7 @@ const app = await createAppContext({ databasePath, vaultKeyPath, setupTokenPath 
 | `traffic/` | Reads Caddy's access logs into hourly per-site counters |
 | `mail/` | Stalwart client, readiness probes, certificate sync |
 | `dns/` | Cloudflare client and the record planner |
-| `windows/` | Services (WinSW), firewall, stray-process watchdog |
+| `windows/` | Services (WinSW), firewall, and recovery from orphaned processes |
 | `components/` | Downloading and installing Caddy, Git, Stalwart, Node |
 | `bootstrap/` | First-run setup: folders, firewall rules, certificate, setup token |
 
@@ -102,10 +102,86 @@ the usual cause is Windows having reserved a block for Hyper-V, WSL or Docker �
 `server.website-port-ranges` health check reports exactly which numbers those are.
 
 `windows/service-watchdog.ts` exists because a WinSW wrapper killed without a clean stop
-(sleep/wake is the usual cause) orphans its child. An orphaned `caddy.exe` keeps
-`:80`/`:443` bound and every restart then fails. The watchdog kills the stray and starts
-the service — but only when a stopped service's ports are held by a process matching its
-own image, so a deliberate stop is left alone.
+(sleep/wake is the usual cause) orphans its child. See
+[Orphaned processes](#orphaned-processes) below.
+
+## Orphaned processes
+
+A WinSW wrapper that dies without running its stop path leaves the process below it
+running. Windows then reports the service as **stopped** while the program is still
+there: still bound to its port, still holding its files open. Sleep/wake is the usual
+cause; ending the wrapper in Task Manager does it too.
+
+For Caddy that is a plain outage — `:80` and `:443` stay bound, so every restart fails to
+bind and the service flaps on the failure-action interval until somebody intervenes.
+
+For a website it is worse, because nothing looks wrong from outside:
+
+- Caddy proxies to `127.0.0.1:<port>` and does not care which process answers, so the
+  site stays up;
+- the panel reports the service stopped, because Windows says it is;
+- every Start appears to work and is gone a second later, `EADDRINUSE` in the log;
+- a deploy's health check asks whether *something* answers on the port, so the orphan
+  answers on the new release's behalf. The deploy is declared healthy, Caddy goes on
+  proxying to the old process, and the code being served is however many releases old.
+
+### Two rules
+
+Everything below obeys both, and they are what keep this from being dangerous:
+
+1. **A stopped service with no stray is left alone.** Somebody stopped it deliberately,
+   and a control panel that restarts services behind your back is worse than one that
+   does nothing.
+2. **Only a process holding one of the service's own ports *and* running one of its own
+   executables is ended.** Anything else on the port is named in the error and left
+   running. The panel allocated the port; it does not own the machine.
+
+`windows/watched-services.ts` is what makes the second rule checkable: it maps a service
+id to the ports and executables it owns. The components are a fixed list; websites are
+read from the database every time, because the panel allocated their ports and so knows
+them exactly — guessing a port out of the app's own environment would eventually match
+something like `SMTP_PORT` and aim a kill at the wrong process.
+
+### Where recovery happens
+
+| Moment | What it does |
+| --- | --- |
+| Every 60 seconds | `ServiceWatchdog` sweeps every component and website, clears strays under a stopped service, and starts it |
+| Start, Restart | Clears the port and tries once more, but only after a real failure and only if something was actually cleared |
+| Stop, Stop everything | Ends the leftover after the service reports stopped, so "stopped" means the program is gone and its files are released |
+| Deploy | `claimPort` frees the port *before* the new process starts, so the health check cannot be satisfied by an impostor |
+| Site deleted, component removed | The service's process is ended before the service is unregistered, which Windows will not do while it is running |
+| Update, uninstall | `stop-all` visits services already reporting stopped — the state an orphan hides behind — and ends what it finds |
+| Panel start-up | `listenClearingStrays` clears a previous copy of the panel off the panel's own port before giving up on `EADDRINUSE` |
+
+### Deliberate gaps
+
+- **The panel is never watched.** The watchdog runs inside the panel, so the only process
+  it could find on the panel's port while that service reads as stopped is itself. It is
+  unblockable — stopping it before an update has to release `bin\node\node.exe` — but it
+  is not in the swept list.
+- **Sites mid-deploy are skipped.** A deploy stops the service on purpose and swaps the
+  folder underneath it. Anything else starting it in the middle is fighting the deploy
+  over the same files, and the deploy is the one that knows what it is doing.
+- **Foreign programs are never ended**, only reported. Quietly proxying a customer's
+  website to a stranger's process is a worse outcome than a start that stops and explains
+  itself.
+
+### Where the code is
+
+| Path | Responsibility |
+| --- | --- |
+| `windows/stray-processes.ts` | `netstat` / `tasklist` / `taskkill`, and the split into "ours" and "foreign" |
+| `windows/watched-services.ts` | Which ports and executables each service owns |
+| `windows/service-watchdog.ts` | The 60-second sweep |
+| `windows/service-manager.ts` | `ServiceRecovery`, applied inside start, stop, restart and uninstall |
+| `windows/panel-services.ts` | The `sc.exe` view of every `winpanel-*` service, used by the Settings page and the installer |
+
+Two details worth knowing before editing any of it. `netstat` output is matched on the
+port and a zero foreign port rather than on the word `LISTENING`, and service state is
+read from `sc.exe`'s numeric `STATE` code rather than the word beside it — both are
+translated strings on a server installed in another language, and searching the whole
+output for `RUNNING` also matches a site whose slug contains it.
 
 ## Traffic
 

@@ -4,7 +4,8 @@ import net from 'node:net';
 import path from 'node:path';
 import { config, paths } from '../config.js';
 import { createAppContext } from '../app-context.js';
-import { buildServiceXml, ServiceManager } from '../windows/service-manager.js';
+import { createDatabase } from '../db/index.js';
+import { buildServiceXml, ServiceManager, type ServiceRecovery } from '../windows/service-manager.js';
 import {
   FirewallManager,
   ensureBuildAccount,
@@ -20,6 +21,7 @@ import {
   startPanelService,
   stopPanelService,
 } from '../windows/panel-services.js';
+import { createServiceRecovery } from '../windows/watched-services.js';
 
 /**
  * Everything the installer needs to do, as a command rather than a script.
@@ -170,9 +172,14 @@ export async function install(options: { skipService?: boolean } = {}): Promise<
   await app.shutdown();
 
   if (!options.skipService) {
+    // The panel's own orphan holds the panel's port and its program files, so
+    // an update that could not stop the old one cleanly has to be able to end
+    // it here rather than fail to start the new one.
+    const recovery = await openServiceRecovery();
     const services = new ServiceManager(
       path.join(config.binDir, 'WinSW.exe'),
       path.join(config.dataDir, 'services'),
+      recovery,
     );
 
     // Before the panel, so that by the time the agent boots and pushes the
@@ -210,6 +217,8 @@ export async function install(options: { skipService?: boolean } = {}): Promise<
       }
     } catch (error) {
       warnings.push(`Could not start the panel service: ${(error as Error).message}`);
+    } finally {
+      recovery.close();
     }
   }
 
@@ -228,9 +237,13 @@ export async function install(options: { skipService?: boolean } = {}): Promise<
 export async function uninstall(options: { keepSites: boolean }): Promise<string[]> {
   const messages: string[] = [];
 
+  // A service whose process was orphaned cannot be removed while it is still
+  // running, and it is holding the very folder being uninstalled.
+  const recovery = await openServiceRecovery();
   const services = new ServiceManager(
     path.join(config.binDir, 'WinSW.exe'),
     path.join(config.dataDir, 'services'),
+    recovery,
   );
 
   /*
@@ -264,6 +277,10 @@ export async function uninstall(options: { keepSites: boolean }): Promise<string
     messages.push(`Could not remove the panel service: ${(error as Error).message}`);
   }
 
+  // Before anything is deleted: an open database is itself a file in use, and
+  // the uninstaller has the data folder still to remove.
+  recovery.close();
+
   try {
     await new FirewallManager().removeAll();
     messages.push('Removed firewall rules.');
@@ -282,25 +299,64 @@ export async function uninstall(options: { keepSites: boolean }): Promise<string
 }
 
 /**
+ * Port recovery backed by the panel's own database, for the installer.
+ *
+ * Which ports a website owns is only recorded in the database, and the
+ * installer runs as its own process with no panel to ask. Opening it directly
+ * is safe here — nothing is written and no migration is run — and a database
+ * that cannot be opened at all, which is every fresh install, degrades to
+ * doing nothing rather than failing the install.
+ */
+async function openServiceRecovery(): Promise<ServiceRecovery & { close: () => void }> {
+  try {
+    const db = createDatabase(paths.database());
+    return { ...createServiceRecovery(db), close: () => db.close() };
+  } catch {
+    return {
+      unblock: async () => false,
+      describeBlockers: async () => null,
+      close: () => undefined,
+    };
+  }
+}
+
+/**
  * Stops everything WinPanel runs, without removing anything.
  *
  * The installer calls this before overwriting files. Upgrading with the web
  * server or a website still running fails on files the user has no way to
  * connect to a program, because none of these have a window.
+ *
+ * Services already reporting stopped are visited too. That state is exactly
+ * what an orphaned process hides behind — the service manager has forgotten
+ * it, but it still holds its port and its files — and it is the reason an
+ * update fails on a file nothing appears to be using.
  */
 export async function stopAll(): Promise<string[]> {
   const messages: string[] = [];
   const suspended: string[] = [];
+  const recovery = await openServiceRecovery();
 
-  for (const service of await listPanelServices()) {
-    if (service.state === 'stopped') continue;
+  try {
+    for (const service of await listPanelServices()) {
+      if (service.state === 'stopped') {
+        if (await recovery.unblock(service.id)) {
+          messages.push(`Ended a leftover process from ${service.label}.`);
+        }
+        continue;
+      }
 
-    const ok = await stopPanelService(service.id).catch(() => false);
-    messages.push(ok ? `Stopped ${service.label}.` : `Could not stop ${service.label}.`);
+      const ok = await stopPanelService(service.id, { unblock: recovery.unblock }).catch(
+        () => false,
+      );
+      messages.push(ok ? `Stopped ${service.label}.` : `Could not stop ${service.label}.`);
 
-    // The panel is excluded because `install` starts it itself, and a service
-    // that would not stop is excluded because it never stopped running.
-    if (ok && service.id.toLowerCase() !== AGENT_SERVICE_ID) suspended.push(service.id);
+      // The panel is excluded because `install` starts it itself, and a service
+      // that would not stop is excluded because it never stopped running.
+      if (ok && service.id.toLowerCase() !== AGENT_SERVICE_ID) suspended.push(service.id);
+    }
+  } finally {
+    recovery.close();
   }
 
   await fs
@@ -335,19 +391,31 @@ export async function resumeSuspendedServices(): Promise<string[]> {
 
   const wanted = new Set(listed.filter((id): id is string => typeof id === 'string'));
   const warnings: string[] = [];
+  const recovery = await openServiceRecovery();
 
-  // Windows' own view, in dependency order: the web server has to be up
-  // before the websites that are proxied through it.
-  for (const service of sortForStartup(await listPanelServices())) {
-    if (!wanted.has(service.id) || service.state === 'running') continue;
+  try {
+    // Windows' own view, in dependency order: the web server has to be up
+    // before the websites that are proxied through it.
+    for (const service of sortForStartup(await listPanelServices())) {
+      if (!wanted.has(service.id) || service.state === 'running') continue;
 
-    const ok = await startPanelService(service.id).catch(() => false);
-    if (!ok) {
-      warnings.push(
-        `${service.label} did not start again after the update. ` +
-          `Its log in ${config.logDir} says why.`,
+      const ok = await startPanelService(service.id, { unblock: recovery.unblock }).catch(
+        () => false,
       );
+      if (!ok) {
+        const blockers = await recovery.describeBlockers(service.id).catch(() => null);
+
+        warnings.push(
+          `${service.label} did not start again after the update. ` +
+            (blockers
+              ? `${blockers} is using a port it needs. Close that program, then start ` +
+                `${service.label} again from the panel.`
+              : `Its log in ${config.logDir} says why.`),
+        );
+      }
     }
+  } finally {
+    recovery.close();
   }
 
   return warnings;

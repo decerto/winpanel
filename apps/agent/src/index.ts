@@ -8,6 +8,7 @@ import { reconcileMailListeners, syncMailCertificates, syncMailEnvironment } fro
 import { cleanUpAfterUpdate } from './components/panel-update.js';
 import { localAddresses } from './tls/panel-certificate.js';
 import { ServiceWatchdog } from './windows/service-watchdog.js';
+import { watchdogServices } from './windows/watched-services.js';
 import { findStrayListeners, killProcessTree } from './windows/stray-processes.js';
 
 /**
@@ -253,12 +254,19 @@ async function main(): Promise<void> {
    * Nothing else on the machine can rescue a component whose own orphaned
    * process is blocking its restart, because everything else on the machine
    * is that component.
+   *
+   * The list is rebuilt on every sweep rather than captured here: websites are
+   * created and removed while this is running, and a site added after start-up
+   * is the one most likely to be mid-experiment and in need of it.
    */
-  const watchdog = new ServiceWatchdog({
-    getState: (id) => app.services.getState(id),
-    start: (id) => app.services.start(id),
-    log: (message, detail) => server.log.warn({ detail }, message),
-  });
+  const watchdog = new ServiceWatchdog(
+    {
+      getState: (id) => app.services.getState(id),
+      start: (id) => app.services.start(id),
+      log: (message, detail) => server.log.warn({ detail }, message),
+    },
+    () => watchdogServices(app.db),
+  );
   watchdog.start();
   void watchdog.sweep();
 

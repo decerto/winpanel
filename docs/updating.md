@@ -65,6 +65,17 @@ people's websites.
 4. runs `install`, which re-registers the agent service, starts it, and resumes exactly the
    services listed in that file.
 
+`stop-all` visits services that already report **stopped** as well as running ones, and
+ends any leftover process it finds on their ports. That is not belt and braces: every
+Node site runs `bin\node\node.exe`, so a single orphaned site process holds a file inside
+the folder Inno Setup is about to replace, and reports it as a folder in use by nothing
+the user can see. The panel's own orphan does the same. See
+[Orphaned processes](architecture.md#orphaned-processes) for the shape of that failure and
+the rules about what may be ended.
+
+A service that does not come back afterwards is named in the wizard's final page, along
+with the program holding the port it needed if something else has taken it.
+
 That file is the reason the panel does not come back alone. Everything is set to start
 automatically, so a reboot would bring it all back — but an in-place update never reboots,
 and without the record every site on the server would stay dark until somebody noticed.

@@ -17,12 +17,12 @@ const caddy: WatchedService = {
 
 function deps(overrides: {
   states?: ServiceState[];
-  strays?: Array<{ pid: number; port: number; image: string }>;
+  holders?: Array<{ pid: number; port: number; image: string }>;
   start?: () => Promise<void>;
 }): {
   getState: (id: string) => Promise<ServiceState>;
   start: (id: string) => Promise<void>;
-  findStrays: () => Promise<Array<{ pid: number; port: number; image: string }>>;
+  listHolders: () => Promise<Array<{ pid: number; port: number; image: string }>>;
   kill: (pid: number) => Promise<boolean>;
   killed: number[];
   started: string[];
@@ -37,7 +37,7 @@ function deps(overrides: {
       started.push(id);
       if (overrides.start) await overrides.start();
     },
-    findStrays: async () => overrides.strays ?? [],
+    listHolders: async () => overrides.holders ?? [],
     kill: async (pid) => {
       killed.push(pid);
       return true;
@@ -49,7 +49,7 @@ function deps(overrides: {
 
 describe('recoverStalledService', () => {
   it('leaves a running service alone', async () => {
-    const d = deps({ states: ['running'], strays: [{ pid: 9, port: 80, image: 'caddy.exe' }] });
+    const d = deps({ states: ['running'], holders: [{ pid: 9, port: 80, image: 'caddy.exe' }] });
 
     expect(await recoverStalledService(caddy, d)).toBe('running');
     expect(d.killed).toEqual([]);
@@ -59,7 +59,7 @@ describe('recoverStalledService', () => {
   it('does not restart a service somebody stopped on purpose', async () => {
     // The distinguishing evidence is the absence of a stray listener. Without
     // this rule the panel would fight the operator every minute.
-    const d = deps({ states: ['stopped'], strays: [] });
+    const d = deps({ states: ['stopped'], holders: [] });
 
     expect(await recoverStalledService(caddy, d)).toBe('left-alone');
     expect(d.started).toEqual([]);
@@ -68,7 +68,7 @@ describe('recoverStalledService', () => {
   it('kills an orphan holding the ports and starts the service', async () => {
     const d = deps({
       states: ['stopped', 'running'],
-      strays: [
+      holders: [
         { pid: 11372, port: 2019, image: 'caddy.exe' },
         { pid: 11372, port: 443, image: 'caddy.exe' },
       ],
@@ -80,10 +80,36 @@ describe('recoverStalledService', () => {
     expect(d.started).toEqual(['winpanel-caddy']);
   });
 
+  it('refuses to end a program that is not ours, and says so', async () => {
+    const logged: string[] = [];
+    const d = {
+      ...deps({ states: ['stopped'], holders: [{ pid: 700, port: 80, image: 'httpd.exe' }] }),
+      log: (message: string) => logged.push(message),
+    };
+
+    expect(await recoverStalledService(caddy, d)).toBe('blocked');
+    expect(d.killed).toEqual([]);
+    expect(d.started).toEqual([]);
+    expect(logged[0]).toContain('httpd.exe');
+  });
+
+  it('clears its own orphan even when a foreign process holds another port', async () => {
+    const d = deps({
+      states: ['stopped', 'running'],
+      holders: [
+        { pid: 700, port: 80, image: 'httpd.exe' },
+        { pid: 11372, port: 2019, image: 'caddy.exe' },
+      ],
+    });
+
+    expect(await recoverStalledService(caddy, d)).toBe('recovered');
+    expect(d.killed).toEqual([11372]);
+  });
+
   it('reports a service that stays down after the ports were cleared', async () => {
     const d = deps({
       states: ['stopped', 'stopped'],
-      strays: [{ pid: 5, port: 80, image: 'caddy.exe' }],
+      holders: [{ pid: 5, port: 80, image: 'caddy.exe' }],
     });
 
     expect(await recoverStalledService(caddy, d)).toBe('still-down');
@@ -92,7 +118,7 @@ describe('recoverStalledService', () => {
   it('reports a start that threw rather than letting it escape', async () => {
     const d = deps({
       states: ['stopped'],
-      strays: [{ pid: 5, port: 80, image: 'caddy.exe' }],
+      holders: [{ pid: 5, port: 80, image: 'caddy.exe' }],
       start: async () => {
         throw new Error('access denied');
       },
@@ -153,6 +179,47 @@ describe('ServiceWatchdog', () => {
     const watched = WATCHED_SERVICES.find((service) => service.id === 'winpanel-caddy');
     expect(watched?.ports).toContain(2019);
     expect(watched?.ports).toContain(443);
+  });
+
+  it('re-reads the watched set each sweep, so a new website is picked up', async () => {
+    const sets: WatchedService[][] = [
+      [caddy],
+      [caddy, { id: 'winpanel-site-new-blue', label: 'new website', images: ['node.exe'], ports: [3001] }],
+    ];
+    const checked: string[] = [];
+
+    const watchdog = new ServiceWatchdog(
+      {
+        getState: async (id) => {
+          checked.push(id);
+          return 'running';
+        },
+        start: async () => undefined,
+      },
+      () => sets.shift() ?? [],
+    );
+
+    await watchdog.sweep();
+    await watchdog.sweep();
+
+    expect(checked).toEqual(['winpanel-caddy', 'winpanel-caddy', 'winpanel-site-new-blue']);
+  });
+
+  it('keeps running when the watched set cannot be worked out', async () => {
+    const logged: string[] = [];
+    const watchdog = new ServiceWatchdog(
+      {
+        getState: async () => 'running',
+        start: async () => undefined,
+        log: (message) => logged.push(message),
+      },
+      () => {
+        throw new Error('the database is locked');
+      },
+    );
+
+    await expect(watchdog.sweep()).resolves.toBeUndefined();
+    expect(logged).toHaveLength(1);
   });
 });
 

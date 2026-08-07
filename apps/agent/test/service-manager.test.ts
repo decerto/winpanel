@@ -301,3 +301,69 @@ describe('ServiceManager layout', () => {
     await expect(fs.access(path.join(configDir, 'winpanel-agent.exe'))).resolves.toBeUndefined();
   });
 });
+
+/**
+ * A wrapper that exits without taking its child with it leaves the program
+ * running while Windows reports the service as stopped: still serving, still
+ * holding its port, still holding its files. Stopping and restarting have to
+ * account for that, or "Stop app" does not stop the app and "Restart" hands
+ * the port straight back to the copy that should have died.
+ */
+describe.runIf(process.platform === 'win32')('ServiceManager recovery', () => {
+  const SERVICE_ID = 'winpanel-site-shop-blue';
+
+  let root: string;
+  let configDir: string;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'winpanel-recovery-'));
+    configDir = path.join(root, 'services');
+    await fs.mkdir(configDir, { recursive: true });
+
+    /*
+     * A stand-in for the WinSW wrapper that is a real Windows program, so the
+     * commands genuinely run and genuinely fail. Linked rather than copied:
+     * the interpreter is a hundred megabytes and none of it is read.
+     */
+    const wrapper = path.join(configDir, `${SERVICE_ID}.exe`);
+    await fs.link(process.execPath, wrapper).catch(() => fs.copyFile(process.execPath, wrapper));
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it('frees the port when stopping, so a stopped app is really stopped', async () => {
+    const cleared: string[] = [];
+
+    const manager = new ServiceManager(path.join(root, 'WinSW.exe'), configDir, {
+      unblock: async (id) => {
+        cleared.push(id);
+        return true;
+      },
+      describeBlockers: async () => null,
+    });
+
+    await manager.stop(SERVICE_ID);
+
+    expect(cleared).toEqual([SERVICE_ID]);
+  }, 30_000);
+
+  it('clears the port on the way through a restart, and says what it will not end', async () => {
+    const cleared: string[] = [];
+
+    const manager = new ServiceManager(path.join(root, 'WinSW.exe'), configDir, {
+      // Nothing of ours was in the way, so no second attempt is worth making.
+      unblock: async (id) => {
+        cleared.push(id);
+        return false;
+      },
+      describeBlockers: async () => 'someone-elses-app.exe (process 4242) on port 3001',
+    });
+
+    await expect(manager.restart(SERVICE_ID)).rejects.toThrow(/someone-elses-app\.exe/);
+
+    // Once on the way down, once when it would not come back up.
+    expect(cleared).toEqual([SERVICE_ID, SERVICE_ID]);
+  }, 30_000);
+});

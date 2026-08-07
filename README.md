@@ -88,6 +88,7 @@ Windows equivalent.
 | **Security** | Two-factor sign-in, recovery codes, live sessions, failed-attempt log and automatic IP blocking |
 | **Files** | Browse, upload, edit and download each site's files from the browser |
 | **Server** | Detects and fixes the Windows settings that break Node hosting |
+| **Recovery** | Notices an app that Windows thinks is stopped but whose old process is still running, ends it, and starts the app properly |
 
 ---
 
@@ -267,6 +268,28 @@ Windows breaks Node hosting in a small number of specific, boring ways: IIS hold
 for them, explains the consequence, and fixes the safe ones itself.
 
 ![Server health checks and fixes](docs/screenshots/health.png)
+
+### Apps that fix themselves
+
+Windows services have one failure mode that costs whole nights of downtime: the wrapper
+supervising an app is killed without a clean stop — a sleep/wake cycle is the usual cause
+— and the app underneath it keeps running. Windows reports the service as **stopped**
+while the program is still there, still holding its port. Every restart then fails to
+bind, and the service flaps until somebody signs in to the server and ends a process by
+hand.
+
+On a website it is worse than an outage, because nothing looks wrong. The old process
+goes on answering Caddy, so the site stays up, while the panel reports it stopped and
+every deploy lands on a process still running the code it was built from.
+
+WinPanel checks for this every minute, and again whenever you press Start, Restart or
+Stop, whenever a site is deployed, and before an update replaces any files. It ends the
+leftover and starts the app properly.
+
+It will not, ever, end a program that is not its own. Only a process holding one of the
+service's own ports **and** running one of its own executables is touched — anything else
+is named in the error so you can deal with it. And a stopped service with nothing
+squatting on its port is left alone, because you stopped it on purpose.
 
 ---
 
@@ -497,6 +520,13 @@ edit the DNS records yourself, wherever they live.
 
 No. Caddy and each app are separate Windows Services. The panel configures and supervises
 them; it is not in the request path. Restarting or updating it does not interrupt traffic.
+
+### What happens if an app crashes or gets stuck?
+
+Each app is a supervised Windows Service, so a crash restarts it. The harder case — the
+supervisor dying and leaving the app running, so the service reads as stopped and can
+never start again because its own old process still holds the port — is checked for every
+minute and cleared automatically. See [Apps that fix themselves](#apps-that-fix-themselves).
 
 ### Does it support WebSockets and Socket.IO?
 
