@@ -98,6 +98,11 @@ Every website on the server, with its type, port, live status and 30 days of tra
 glance. Each card links straight to the parts of it you actually open: files, DNS, SSL,
 mailboxes, traffic, deployments.
 
+![Websites, as cards](docs/screenshots/websites.png)
+
+Switch to the table once there are more sites than fit on a screen — the same links, one
+row each.
+
 ![Websites, as a table](docs/screenshots/websites-table.png)
 
 Node and .NET sites get a second port and a standby slot, so a deploy that fails to start
@@ -128,6 +133,8 @@ built from Git use `release`, which *is* replaced on every deploy.
 Every website gets a **preview address**, `http://<your-server-ip>:<port>`,
 allocated from ports 7000–7999. It works the moment the site is created, with
 no domain and no DNS. A web address is optional and can be added at any time.
+
+![A website's overview, with its preview address](docs/screenshots/website.png)
 
 ### Files
 
