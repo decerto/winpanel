@@ -56,3 +56,13 @@ If you are not sure it is a bug, ask on [Discord](https://discord.gg/wT6mnfAnUD)
 
 Security issues do **not** go in the issue tracker, and not on Discord either. See
 [SECURITY.md](SECURITY.md).
+
+## Licence
+
+WinPanel is under [PolyForm Perimeter 1.0.1](LICENSE.md) — free to use and change,
+including commercially, but not to be sold or rebranded as a competing panel. By opening a
+pull request you agree your contribution is licensed on the same terms.
+
+A practical consequence for contributors: **do not paste in code under a licence that
+conflicts with that**, which includes anything GPL or AGPL. New dependencies need a
+permissive licence — MIT, BSD, ISC or Apache 2.0.

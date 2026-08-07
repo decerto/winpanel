@@ -7,7 +7,7 @@
 Websites, Node and .NET apps, Cloudflare DNS, self-hosted mailboxes, customer accounts
 and the Windows fixes that make it all work — in one panel, without IIS.
 
-[Features](#what-it-does) · [Websites](#websites) · [DNS](#dns-control) · [Email](#email-control) · [People](#user-control-and-management) · [Compare](#how-it-compares) · [Live sites](#sites-running-on-it) · [FAQ](#frequently-asked-questions) · [Install](#installing) · [Support](#support) · [Develop](#development)
+[Features](#what-it-does) · [Websites](#websites) · [DNS](#dns-control) · [Email](#email-control) · [People](#user-control-and-management) · [Compare](#how-it-compares) · [Live sites](#sites-running-on-it) · [FAQ](#frequently-asked-questions) · [Install](#installing) · [Support](#support) · [Licence](#licence) · [Develop](#development)
 
 [![Chat on Discord](https://img.shields.io/badge/Discord-Ask%20for%20help-5865F2?logo=discord&logoColor=white)](https://discord.gg/wT6mnfAnUD)
 
@@ -530,6 +530,20 @@ hosting.
 It runs real sites — [see which](#sites-running-on-it) — but it is young. Take backups,
 read the release notes before updating, and report anything that surprises you.
 
+### Can I use it for my business?
+
+Yes. Host your own sites on it, host your clients' sites on it, give those clients their
+own logins, and charge them whatever you like. None of that needs permission or a fee.
+
+What you may not do is sell WinPanel itself, or repackage it as your own control panel —
+even a free one. See [Licence](#licence).
+
+### Is it open source?
+
+The source is here, and you may read it, change it, run it and share it. But it is not
+open source in the OSI sense, because one use is withheld: building something that
+substitutes for WinPanel. The full terms are in [LICENSE.md](LICENSE.md).
+
 ---
 
 ## Development
@@ -571,6 +585,30 @@ include your WinPanel version, your Windows build and the exact wording the pane
 you.
 
 Security vulnerabilities go to neither. See [SECURITY.md](SECURITY.md).
+
+---
+
+## Licence
+
+[PolyForm Perimeter 1.0.1](LICENSE.md). Free to use, free to change, free to pass on —
+with one line drawn around it.
+
+| | |
+| --- | --- |
+| **Yes** | Run it on as many servers as you like, at home or at work |
+| **Yes** | Host your own sites on it, and your clients' sites, and charge them for it |
+| **Yes** | Change it, fork it, and share your changes |
+| **Yes** | Charge for setting it up, running it, or supporting it for someone else |
+| **No** | Sell WinPanel, or licence it, or bundle it into something you sell |
+| **No** | Rebrand it and offer it as your own control panel — free or paid |
+
+The short version: **you can make money *with* it, but not *from* it.** It is given away
+so that people who need it have it, not so that somebody else can put a price on it.
+
+This means WinPanel is source-available rather than open source: everything an open source
+licence permits is permitted here, except building a substitute for the thing itself.
+
+Contributions are accepted under the same terms.
 
 ---
 

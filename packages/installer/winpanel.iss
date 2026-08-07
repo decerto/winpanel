@@ -27,6 +27,10 @@ AppId={{8F3C1A94-2E7B-4D5A-9C61-7B2E4F8A1D33}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
+AppCopyright=Copyright 2026 Diminished Studios
+; The licence is not permissive, so it is shown and accepted rather than
+; buried in the install folder.
+LicenseFile=..\..\LICENSE.md
 DefaultDirName=C:\WinPanel
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
@@ -54,6 +58,8 @@ Source: "staging\bin\WinSW.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "staging\agent\*"; DestDir: "{app}\agent"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; The built panel interface.
 Source: "staging\panel\*"; DestDir: "{app}\panel"; Flags: ignoreversion recursesubdirs createallsubdirs
+; The licence travels with every copy, which its Notices clause requires.
+Source: "..\..\LICENSE.md"; DestDir: "{app}"; Flags: ignoreversion
 
 [Dirs]
 ; Permissions are deliberately not set here. Inno Setup's [Dirs] permissions

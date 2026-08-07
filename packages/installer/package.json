@@ -2,6 +2,7 @@
   "name": "@winpanel/installer",
   "version": "1.0.0",
   "private": true,
+  "license": "SEE LICENSE IN ../../LICENSE.md",
   "type": "module",
   "description": "Builds the self-contained Windows installer.",
   "scripts": {
