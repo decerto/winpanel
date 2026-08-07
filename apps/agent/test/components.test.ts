@@ -206,12 +206,12 @@ describe('component catalogue', () => {
 
   it('only allows an unpinned hash for Caddy, which is built per request', () => {
     for (const component of COMPONENT_CATALOGUE) {
-      if (component.sha256 === null) {
-        expect(
-          ['caddy', 'stalwart', 'git', 'node'],
-          `${component.id} must justify an unpinned hash`,
-        ).toContain(component.id);
-      }
+      if (component.id === 'caddy') continue;
+
+      // Everything here runs with high privilege once installed, so an
+      // unverified download is a route onto the server. Caddy is the sole
+      // exception because its endpoint compiles a binary per request.
+      expect(component.sha256, `${component.id} must pin a hash`).toMatch(/^[0-9a-f]{64}$/);
     }
     expect(findComponent('caddy')?.sha256).toBeNull();
   });

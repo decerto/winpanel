@@ -1,6 +1,6 @@
 import { TRPCError, initTRPC } from '@trpc/server';
 import type { CreateFastifyContextOptions } from '@trpc/server/adapters/fastify';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import superjson from 'superjson';
 import crypto from 'node:crypto';
 // Loads the declaration merging that adds `cookies`, `setCookie` and
@@ -174,6 +174,25 @@ export function scopeOf(input: unknown): { slug?: string; domain?: string } {
 export function domainCovers(owned: string, domain: string): boolean {
   const parent = owned.toLowerCase();
   return domain === parent || domain.endsWith(`.${parent}`);
+}
+
+/**
+ * Whether `user` may act on the website named by `slug`.
+ *
+ * The same rule `enforceSiteScope` applies, in a form the streamed file routes
+ * can call. Those are plain Fastify handlers rather than tRPC procedures, so no
+ * middleware runs for them and the check has to be made by hand.
+ */
+export function userMayAccessSite(app: AppContext, user: SessionUser, slug: string): boolean {
+  if (user.role !== 'user') return true;
+
+  return (
+    app.db.db
+      .select()
+      .from(app.schema.sites)
+      .where(and(eq(app.schema.sites.ownerUserId, user.id), eq(app.schema.sites.slug, slug)))
+      .all().length > 0
+  );
 }
 
 /**

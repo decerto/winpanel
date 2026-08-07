@@ -41,6 +41,8 @@ export const users = sqliteTable(
      */
     totpPendingSecret: text('totp_pending_secret'),
     totpEnrolled: integer('totp_enrolled', { mode: 'boolean' }).notNull().default(false),
+    /** The last one-time code step accepted, so none is accepted twice. */
+    lastTotpStep: integer('last_totp_step'),
     disabled: integer('disabled', { mode: 'boolean' }).notNull().default(false),
     /*
      * Null means no limit, which is what an admin and the owner always have.

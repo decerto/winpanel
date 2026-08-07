@@ -117,9 +117,11 @@ function closeStream(out: WriteStream): Promise<void> {
  * Registers the upload route.
  *
  * Guarded by the same session cookie and network allowlist as every other
- * call. What is written here is later run as SYSTEM, so an unauthenticated
- * write would be a complete takeover of the server; the checks happen before a
- * single byte of the body is read.
+ * call, and additionally reserved for the owner account, because `system.update`
+ * — the only thing that consumes this file — is. What is written here is later
+ * run as SYSTEM, so letting a lesser account leave a program at that path would
+ * hand it the whole server the moment the owner pressed Update. The checks
+ * happen before a single byte of the body is read.
  */
 export function registerInstallerUpload(server: FastifyInstance, app: AppContext): void {
   server.addContentTypeParser('application/octet-stream', (_request, payload, done) => {
@@ -136,6 +138,11 @@ export function registerInstallerUpload(server: FastifyInstance, app: AppContext
       return await reply
         .code(403)
         .send({ error: 'This panel does not accept connections from your network.' });
+    }
+    if (user.role !== 'superadmin') {
+      return await reply
+        .code(403)
+        .send({ error: 'Only the owner of this server can update WinPanel.' });
     }
 
     try {

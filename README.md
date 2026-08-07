@@ -651,8 +651,14 @@ if your plans need one.
 
 Contributions are accepted under the terms in [CONTRIBUTING.md](CONTRIBUTING.md), and the
 third-party components WinPanel uses are recorded in
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Nothing it ships or downloads is under a
-copyleft licence.
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Nothing bundled in the installer is
+under a copyleft licence; the two copyleft programs the panel can install for you —
+Stalwart and Git — are downloaded from their own publishers and run as separate
+processes, which that file explains.
+
+GitHub will not show a licence badge for this repository. PolyForm Perimeter is not an
+OSI-approved licence, so GitHub's detector reports it as "other" — that is expected, not a
+missing file.
 
 ---
 

@@ -17,6 +17,11 @@ import type { ComponentDefinition } from '@winpanel/shared';
  * binary per request so no stable hash can exist. That case is covered by
  * running the binary afterwards and checking it reports the expected version
  * and includes the Cloudflare module.
+ *
+ * Every other hash below was taken from the publisher's own record — the
+ * `SHASUMS256.txt` for a Node release, the asset digest GitHub computes for a
+ * release attachment — rather than from a file this machine happened to
+ * download. Bumping a version means fetching the new hash from the same place.
  */
 
 const CADDY_VERSION = 'latest';
@@ -72,7 +77,7 @@ export const COMPONENT_CATALOGUE: readonly ComponentDefinition[] = [
     url:
       `https://github.com/stalwartlabs/stalwart/releases/download/v${STALWART_VERSION}` +
       '/stalwart-x86_64-pc-windows-msvc.zip',
-    sha256: null,
+    sha256: '97d218605632bc149b5a95d8b5b20c9c9da9f839c1e25bbc07491fea4b02b943',
     args: [],
     serviceName: 'winpanel-stalwart',
     verifyArgs: ['--version'],
@@ -90,7 +95,7 @@ export const COMPONENT_CATALOGUE: readonly ComponentDefinition[] = [
     url:
       `https://github.com/git-for-windows/git/releases/download/v${GIT_VERSION}.windows.1` +
       `/MinGit-${GIT_VERSION}-64-bit.zip`,
-    sha256: null,
+    sha256: 'c2c955a21fa99889d83f485f24fa5d9a38fffc2d509d4022385510e11c26b250',
     args: [],
     serviceName: null,
     verifyArgs: ['--version'],
@@ -104,7 +109,7 @@ export const COMPONENT_CATALOGUE: readonly ComponentDefinition[] = [
     version: NODE_LTS_VERSION,
     kind: 'zip',
     url: `https://nodejs.org/dist/v${NODE_LTS_VERSION}/node-v${NODE_LTS_VERSION}-win-x64.zip`,
-    sha256: null,
+    sha256: '3c624e9fbe07e3217552ec52a0f84e2bdc2e6ffa7348f3fdfb9fbf8f42e23fcf',
     args: [],
     serviceName: null,
     verifyArgs: ['--version'],
@@ -176,10 +181,3 @@ export const COMPONENT_CATALOGUE: readonly ComponentDefinition[] = [
 export function findComponent(id: string): ComponentDefinition | undefined {
   return COMPONENT_CATALOGUE.find((component) => component.id === id);
 }
-
-/**
- * Node release hashes are published per version in SHASUMS256.txt. Fetching
- * and pinning them at build time is preferable to trusting the download, so
- * the installer's build step populates this map.
- */
-export const KNOWN_HASHES: Readonly<Record<string, string>> = Object.freeze({});

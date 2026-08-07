@@ -42,7 +42,7 @@ and repeatedly.
 On your development machine:
 
 ```powershell
-cd "F:\Repos\Windows Web Server"
+cd "C:\path\to\winpanel"
 pnpm install
 pnpm build
 pnpm --filter @winpanel/installer bundle
@@ -368,12 +368,22 @@ WinPanel doesn't yet back itself up. Until it does, copy these somewhere off the
 
 ## Known limitations
 
-Being straight about what hasn't been proven:
+Being straight about what isn't here. None of these are bugs — they're things that were
+left out, and you should know before you put a server behind this.
 
-- **The installer hasn't been run on a real Windows Server.** Its logic is tested, but
-  Inno Setup packaging and service registration are unverified until you try it.
-- **No live Cloudflare, certificate or mail calls have been made.** Those paths are
-  unit-tested against stubs, not against the real services.
-- **Backups and monitoring aren't built yet.** Handle backups manually, as above.
+- **Backups aren't built in.** There is no scheduled backup, no snapshot, no restore
+  button. Copy the paths listed above yourself, on a schedule you control.
+- **Monitoring stops at the Health page.** The panel will show you a failing service or a
+  full disk when you look at it. Nothing pages you, emails you or exports metrics, so at
+  three in the morning the panel is not what tells you.
+- **A panel update is not signature-checked.** The installer you apply is verified by HTTPS
+  transport, an optional SHA-256 you supply, and a check that it is a Windows executable —
+  not by Authenticode. Take the checksum from the release page and paste it in.
+- **No rollback of the panel itself.** Blue/green rollback covers *website* deploys. There
+  is no snapshot of the previous panel install; going back means installing the older
+  version. `C:\WinPanel\data` is left alone by an upgrade either way.
 - **Website builds run with the panel's permissions** if the restricted account couldn't be
-  created during install. The Health page will tell you.
+  created during install. The Health page will tell you. On a server where you host sites
+  for other people, treat that warning as blocking rather than cosmetic.
+- **One server.** There is no clustering, no failover and no shared state between machines.
+  A second server is a second, unrelated panel.

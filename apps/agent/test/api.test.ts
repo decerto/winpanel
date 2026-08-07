@@ -20,14 +20,21 @@ let app: AppContext;
 let server: FastifyInstance;
 let setupToken: string;
 
-function codeFor(secret: string): string {
+/**
+ * A code for the current time step, or a later one.
+ *
+ * Codes are single-use, so a test needing a second code from the same
+ * authenticator asks for the next step rather than repeating itself — which is
+ * what someone waiting for the app to tick over would be holding anyway.
+ */
+function codeFor(secret: string, stepsAhead = 0): string {
   return new TOTP({
     issuer: 'WinPanel',
     algorithm: 'SHA1',
     digits: 6,
     period: 30,
     secret: Secret.fromBase32(secret),
-  }).generate();
+  }).generate({ timestamp: Date.now() + stepsAhead * 30_000 });
 }
 
 /**
@@ -121,6 +128,33 @@ describe('security headers', () => {
     const response = await server.inject({ method: 'GET', url: '/api/health' });
     expect(response.headers['x-content-type-options']).toBe('nosniff');
     expect(response.headers['x-frame-options']).toBe('DENY');
+  });
+
+  it('refuses a write the browser says came from another site', async () => {
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/trpc/auth.login',
+      headers: { 'content-type': 'application/json', origin: 'https://evil.example' },
+      payload: {},
+    });
+
+    expect(response.statusCode).toBe(403);
+  });
+
+  it('allows a write from the panel own origin', async () => {
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/trpc/auth.login',
+      headers: {
+        'content-type': 'application/json',
+        host: 'panel.local',
+        origin: 'https://panel.local',
+      },
+      payload: {},
+    });
+
+    // Whatever the procedure makes of the body, the origin check let it past.
+    expect(response.statusCode).not.toBe(403);
   });
 });
 
@@ -308,7 +342,7 @@ describe('replacing an authenticator', () => {
     const { body } = await call('POST', 'auth.login', {
       username: 'owner',
       password: PASSWORD,
-      totp: codeFor(original),
+      totp: codeFor(original, 1),
     });
     expect(body.error).toBeUndefined();
   });
@@ -635,6 +669,20 @@ describe('sign-in', () => {
     expect(body.error).toBeUndefined();
     expect(body.result.data.user.username).toBe('owner');
     expect(cookies.find((c) => c.name === 'winpanel_session')).toBeDefined();
+  });
+
+  it('refuses a code that has already been used', async () => {
+    // A code stays valid for a minute and a half once the skew window is
+    // counted, so one read over a shoulder must not sign anyone in twice.
+    const code = codeFor(totpSecret);
+    const credentials = { username: 'owner', password: PASSWORD, totp: code };
+
+    const first = await call('POST', 'auth.login', credentials);
+    expect(first.body.error).toBeUndefined();
+
+    const second = await call('POST', 'auth.login', credentials);
+    expect(second.body.error).toBeDefined();
+    expect(second.body.error.message).toMatch(/code is not correct/i);
   });
 
   it('rejects requests with no session', async () => {

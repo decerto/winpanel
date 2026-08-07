@@ -262,6 +262,32 @@ describe('API authorisation', () => {
       expect(byName.get(name), `system.${name}`).toBe('superadminProcedure');
     }
   });
+
+  it('gates the streamed routes that sit outside tRPC', async () => {
+    // A download, an upload and an installer all move bytes that a browser
+    // will only hand to a stream, so each is a plain Fastify handler and gets
+    // none of the middleware above. Every guard has to be written out by hand,
+    // and nothing breaks visibly if one is left out — hence checking here.
+    const apiDir = path.join(import.meta.dirname, '..', 'src', 'api');
+    const siteFiles = await fs.readFile(path.join(apiDir, 'site-files.ts'), 'utf8');
+    const installer = await fs.readFile(path.join(apiDir, 'installer-upload.ts'), 'utf8');
+
+    for (const [name, source] of [
+      ['site-files.ts', siteFiles],
+      ['installer-upload.ts', installer],
+    ] as const) {
+      expect(source, `${name}: session`).toContain('resolveSession');
+      expect(source, `${name}: network`).toContain('isIpAllowed');
+    }
+
+    // A slug is guessable, so a session alone would let any customer read
+    // another's source code.
+    expect(siteFiles, 'site-files.ts: ownership').toContain('userMayAccessSite');
+
+    // What lands here is later run as SYSTEM by system.update, which is the
+    // owner's alone; anyone else able to write it would inherit that.
+    expect(installer, 'installer-upload.ts: owner only').toContain("user.role !== 'superadmin'");
+  });
 });
 
 describe('process execution', () => {

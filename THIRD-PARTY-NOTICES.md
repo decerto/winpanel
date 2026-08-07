@@ -4,8 +4,11 @@ WinPanel is licensed under [PolyForm Perimeter 1.0.1](LICENSE.md). This file rec
 third-party software it uses, and under what terms, so that the notice requirements of
 those licences are met.
 
-Nothing WinPanel ships or downloads is under a copyleft licence — no GPL, LGPL or AGPL —
-so none of it places conditions on how WinPanel itself is licensed.
+Nothing distributed *inside* the installer is under a copyleft licence, so none of it
+places conditions on how WinPanel itself is licensed. Two components the panel can
+download afterwards — Stalwart and Git for Windows — are copyleft; see [Downloaded by the
+panel, not distributed with it](#downloaded-by-the-panel-not-distributed-with-it) for what
+that does and does not mean here.
 
 ---
 
@@ -20,8 +23,14 @@ Distributed inside `WinPanel-Setup-x64.exe` and installed to `C:\WinPanel`.
 | The agent's npm dependencies | MIT, ISC, BSD, Apache-2.0 and Blue Oak 1.0.0 | Each package's own file under `agent\node_modules\` |
 | The panel's npm dependencies | MIT and ISC | This file — Vite minifies them into one bundle, so per-package files cannot travel with them |
 
-The panel bundle contains Vue, Vue Router, Pinia, TanStack Query, `lucide-vue-next`,
-`vue-demi` and `superjson`. All are MIT except `lucide-vue-next`, which is ISC.
+The panel bundle contains Vue (with `@vue/*` runtime, `vue-demi` and `csstype`), Vue Router,
+Pinia, TanStack Query (`@tanstack/vue-query`, `@tanstack/query-core`,
+`@tanstack/match-sorter-utils`, `remove-accents`), `@trpc/client`, `superjson` (with
+`copy-anything` and `is-what`), `zod`, `uqr`, `lucide-vue-next`, and the stylesheet
+Tailwind CSS generates. All are MIT except `lucide-vue-next`, which is ISC.
+
+That list is checked against `pnpm --filter @winpanel/panel licenses list --prod` when a
+dependency is added or removed, since a bundle nobody re-reads is how a notice goes stale.
 
 ### Dual-licensed packages, and the choice made
 

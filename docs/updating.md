@@ -9,7 +9,7 @@ happens underneath, and why.
 | --- | --- |
 | `system.update` (`superadminProcedure`) | `apps/agent/src/api/routers/system.ts` |
 | Job handler | `apps/agent/src/components/panel-update.ts` |
-| Upload endpoint `POST /api/panel-update/installer` | `apps/agent/src/api/installer-upload.ts` |
+| Upload endpoint `POST /api/panel-update/installer` | `apps/agent/src/api/installer-upload.ts`, owner only |
 | The UI | `apps/panel/src/pages/SettingsPage.vue`, owner only |
 
 `system.update` takes either a `url` or a `filePath`, never both, plus an optional
@@ -21,6 +21,11 @@ file's contents and never its path, and an installer is far too large to hold in
 while also serving the panel. It is written straight to
 `bin\.downloads\winpanel-upload.exe` — a fixed path, so an upload can only ever replace the
 last one — and refused past 400 MB or if the first two bytes are not `MZ`.
+
+Being outside tRPC, it gets none of the middleware, so the session, the network allowlist
+and the owner check are all written out by hand in that file. They have to be: what lands
+at that path is later run as SYSTEM, so anyone who could write it would inherit the server
+the next time the owner pressed Update.
 
 ## Order of operations
 

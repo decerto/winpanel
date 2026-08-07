@@ -104,19 +104,19 @@ describe('TOTP', () => {
       secret: Secret.fromBase32(secret),
     }).generate();
 
-    expect(verifyTotp(secret, code)).toBe(true);
+    expect(verifyTotp(secret, code)).toBe(Math.floor(Date.now() / 1000 / 30));
   });
 
   it('rejects wrong, malformed and empty codes', () => {
     const { secret } = createTotpEnrolment('owner');
-    expect(verifyTotp(secret, '000000')).toBe(false);
-    expect(verifyTotp(secret, 'abcdef')).toBe(false);
-    expect(verifyTotp(secret, '12345')).toBe(false);
-    expect(verifyTotp(secret, '')).toBe(false);
+    expect(verifyTotp(secret, '000000')).toBeNull();
+    expect(verifyTotp(secret, 'abcdef')).toBeNull();
+    expect(verifyTotp(secret, '12345')).toBeNull();
+    expect(verifyTotp(secret, '')).toBeNull();
   });
 
   it('rejects rather than throws on a corrupt secret', () => {
-    expect(verifyTotp('!!!not-base32!!!', '123456')).toBe(false);
+    expect(verifyTotp('!!!not-base32!!!', '123456')).toBeNull();
   });
 
   it('issues distinct recovery codes so device loss is survivable', () => {

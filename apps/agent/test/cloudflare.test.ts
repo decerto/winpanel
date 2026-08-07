@@ -526,7 +526,7 @@ describe('planWebsiteRecords', () => {
     const changes = planWebsiteRecords({
       ...base,
       existing: [
-        record({ id: 'apex', type: 'A', name: 'example.com', content: '51.89.153.91' }),
+        record({ id: 'apex', type: 'A', name: 'example.com', content: '192.0.2.20' }),
       ],
     });
 
@@ -542,8 +542,8 @@ describe('planWebsiteRecords', () => {
     const changes = planWebsiteRecords({
       ...base,
       existing: [
-        record({ id: 'a1', type: 'A', name: 'example.com', content: '51.89.153.91' }),
-        record({ id: 'a2', type: 'A', name: 'example.com', content: '51.89.153.92' }),
+        record({ id: 'a1', type: 'A', name: 'example.com', content: '192.0.2.20' }),
+        record({ id: 'a2', type: 'A', name: 'example.com', content: '192.0.2.21' }),
       ],
     });
 
@@ -580,7 +580,7 @@ describe('planWebsiteRecords', () => {
     const changes = planWebsiteRecords({
       ...base,
       existing: [
-        record({ id: 'w', type: 'A', name: 'www.example.com', content: '51.89.153.91' }),
+        record({ id: 'w', type: 'A', name: 'www.example.com', content: '192.0.2.20' }),
       ],
     });
 
@@ -592,9 +592,9 @@ describe('planWebsiteRecords', () => {
     const changes = planWebsiteRecords({
       ...base,
       existing: [
-        record({ id: 'apex', type: 'A', name: 'example.com', content: '51.89.153.91' }),
-        record({ id: 'mail', type: 'A', name: 'mail.example.com', content: '51.89.153.91' }),
-        record({ id: 'ftp', type: 'A', name: 'ftp.example.com', content: '51.89.153.91' }),
+        record({ id: 'apex', type: 'A', name: 'example.com', content: '192.0.2.20' }),
+        record({ id: 'mail', type: 'A', name: 'mail.example.com', content: '192.0.2.20' }),
+        record({ id: 'ftp', type: 'A', name: 'ftp.example.com', content: '192.0.2.20' }),
       ],
     });
 
@@ -610,8 +610,8 @@ describe('planWebsiteRecords', () => {
       ...base,
       repointStale: false,
       existing: [
-        record({ id: 'apex', type: 'A', name: 'example.com', content: '51.89.153.91' }),
-        record({ id: 'mail', type: 'A', name: 'mail.example.com', content: '51.89.153.91' }),
+        record({ id: 'apex', type: 'A', name: 'example.com', content: '192.0.2.20' }),
+        record({ id: 'mail', type: 'A', name: 'mail.example.com', content: '192.0.2.20' }),
       ],
     });
 
@@ -622,7 +622,7 @@ describe('planWebsiteRecords', () => {
     const changes = planWebsiteRecords({
       ...base,
       existing: [
-        record({ id: 'apex', type: 'A', name: 'example.com', content: '51.89.153.91' }),
+        record({ id: 'apex', type: 'A', name: 'example.com', content: '192.0.2.20' }),
         record({ id: 'crm', type: 'A', name: 'crm.example.com', content: '198.51.100.7' }),
       ],
     });

@@ -37,17 +37,21 @@ jobs:
     timeout-minutes: 25
 
     steps:
+      # Every action is pinned to a commit, not a tag. A tag can be moved to
+      # point at new code, and this job holds `contents: write` and produces
+      # the installer people run as Administrator. The comment after each is
+      # the tag that commit was, for whoever bumps them next.
       - name: Check out
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Set up pnpm
         # Version deliberately not pinned here: it comes from the
         # "packageManager" field in package.json, and specifying it in both
         # places is an error.
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
 
       - name: Set up Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           # Matches the runtime the installer bundles.
           node-version: 22
@@ -122,7 +126,7 @@ jobs:
 
       - name: Upload build artefacts
         # Available on every run, including manual ones that create no release.
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: winpanel-installer
           path: |
@@ -132,7 +136,7 @@ jobs:
 
       - name: Publish release
         if: steps.version.outputs.publish == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           # Named explicitly so a manual run works too: the tag does not have
           # to exist beforehand, and is created against the commit just built.

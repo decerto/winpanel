@@ -46,9 +46,19 @@ export function createTotpEnrolment(username: string): TotpEnrolment {
   return { secret: secret.base32, uri: totp.toString() };
 }
 
-export function verifyTotp(secretBase32: string, code: string): boolean {
+/**
+ * Checks a code, and says which time step it belonged to.
+ *
+ * The step is returned rather than a bare yes/no so the caller can record it
+ * and refuse the same one twice. A code is valid for its own 30 seconds plus
+ * the skew window either side, which is ample time for anyone who has watched
+ * it being typed, or read it out of an intercepted request, to use it again.
+ *
+ * Null means the code is not valid at all.
+ */
+export function verifyTotp(secretBase32: string, code: string): number | null {
   const normalised = code.replace(/\s+/g, '');
-  if (!/^\d{6}$/.test(normalised)) return false;
+  if (!/^\d{6}$/.test(normalised)) return null;
 
   try {
     const totp = new TOTP({
@@ -59,10 +69,13 @@ export function verifyTotp(secretBase32: string, code: string): boolean {
       secret: Secret.fromBase32(secretBase32),
     });
 
-    // Returns the time-step delta, or null when no match.
-    return totp.validate({ token: normalised, window: VALIDATION_WINDOW }) !== null;
+    // otpauth gives the delta from the current step, or null when no match.
+    const delta = totp.validate({ token: normalised, window: VALIDATION_WINDOW });
+    if (delta === null) return null;
+
+    return Math.floor(Date.now() / 1000 / PERIOD_SECONDS) + delta;
   } catch {
-    return false;
+    return null;
   }
 }
 

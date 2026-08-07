@@ -41,6 +41,18 @@ extra guard, because the fallback is the owner's data. `dns.ts` has `requireOwnS
 exactly this: a customer must name one of their own websites rather than be shown every
 zone in the server owner's Cloudflare account.
 
+### The routes that are not procedures
+
+Three routes cannot be tRPC procedures, because a browser will only hand a file's bytes to
+a stream: the site file download and upload in `api/site-files.ts`, and the installer
+upload in `api/installer-upload.ts`. No middleware runs for any of them, so each writes
+its own checks — session, network allowlist, and then `userMayAccessSite` for the two
+site-scoped ones, or an owner check for the installer.
+
+This is the weak spot in the arrangement above, since nothing visibly breaks when a guard
+is left out. `test/authorisation.test.ts` reads those two files and fails if the checks
+stop being there.
+
 ## Limits
 
 `AccountLimits` in `packages/shared/src/user.ts`:
@@ -62,6 +74,14 @@ answer too — an account that may hold no websites yet.
   recommendations.
 - TOTP: 6 digits, 30-second period, ±1 step validation window. The pending secret is held
   encrypted until the first correct code confirms enrolment.
+- A code is spendable once. `users.last_totp_step` records the step last accepted, and
+  anything at or below it is refused — otherwise the same six digits keep working for the
+  minute and a half the window spans, which is ample time for whoever read them over a
+  shoulder. The count resets when the secret does, since a step number means nothing
+  against a secret it was never issued for. Sign-in reports a spent code as simply wrong,
+  so nobody unauthenticated learns their guess was real; a signed-in caller being asked to
+  re-confirm is told to wait for the next code, because "that code is not correct" is a
+  dead end when you are looking straight at it.
 - Ten recovery codes are issued when two-factor is turned on, 64 bits each, spendable
   once. They are stored under a fast hash rather than Argon2 — the same as session tokens
   — so the entropy has to do the work. They are accepted in any case and with or without

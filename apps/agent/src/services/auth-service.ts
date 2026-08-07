@@ -478,7 +478,7 @@ export class AuthService {
     }
 
     const secret = this.vault.decrypt(user.totpPendingSecret, `totp:${user.id}`);
-    if (!verifyTotp(secret, code)) {
+    if (verifyTotp(secret, code) === null) {
       throw new AuthError(
         'That code is not correct. Check your authenticator app and try again.',
         'totp-invalid',
@@ -492,6 +492,8 @@ export class AuthService {
         totpSecret: user.totpPendingSecret,
         totpPendingSecret: null,
         totpEnrolled: true,
+        // The spent-code count belongs to the secret it was counting for.
+        lastTotpStep: null,
       })
       .where(eq(users.id, userId))
       .run();
@@ -578,18 +580,61 @@ export class AuthService {
       .run();
   }
 
+  /**
+   * Checks a code and spends the time step it belongs to.
+   *
+   * The same six digits stay valid for a minute and a half once the skew
+   * window either side is counted. Without recording the step, a code read
+   * over someone's shoulder — or lifted from a request — works a second time,
+   * which is most of what the second factor is supposed to prevent.
+   *
+   * The count is reset whenever the secret changes, since a step number means
+   * nothing against a secret it was never issued for.
+   */
+  private spendTotpCode(
+    userId: string,
+    secret: string,
+    code: string,
+    lastStep: number | null,
+  ): 'ok' | 'invalid' | 'reused' {
+    const step = verifyTotp(secret, code);
+    if (step === null) return 'invalid';
+    if (lastStep !== null && step <= lastStep) return 'reused';
+
+    this.handle.db.update(users).set({ lastTotpStep: step }).where(eq(users.id, userId)).run();
+    return 'ok';
+  }
+
   /** Verifies a code against the account's active secret. */
   verifyTotpFor(userId: string, code: string): boolean {
     const user = this.handle.db.select().from(users).where(eq(users.id, userId)).get();
     if (!user?.totpEnrolled || !user.totpSecret) return false;
-    return verifyTotp(this.vault.decrypt(user.totpSecret, `totp:${user.id}`), code);
+
+    const outcome = this.spendTotpCode(
+      user.id,
+      this.vault.decrypt(user.totpSecret, `totp:${user.id}`),
+      code,
+      user.lastTotpStep,
+    );
+
+    // Worth saying out loud here. The caller is already signed in, so nothing
+    // is given away, and "that code is not correct" is a dead end for someone
+    // looking straight at the digits their app is showing.
+    if (outcome === 'reused') {
+      throw new AuthError(
+        'That code has already been used. Wait for your authenticator app to show the next one.',
+        'totp-invalid',
+      );
+    }
+
+    return outcome === 'ok';
   }
 
   /** Turns two-factor authentication off, discarding the secret entirely. */
   disableTotp(userId: string): void {
     this.handle.db
       .update(users)
-      .set({ totpSecret: null, totpPendingSecret: null, totpEnrolled: false })
+      .set({ totpSecret: null, totpPendingSecret: null, totpEnrolled: false, lastTotpStep: null })
       .where(eq(users.id, userId))
       .run();
 
@@ -786,7 +831,9 @@ export class AuthService {
         }
 
         const secret = this.vault.decrypt(user.totpSecret, `totp:${user.id}`);
-        if (!verifyTotp(secret, input.totp)) {
+        // Deliberately the same message whether the code was wrong or already
+        // spent: nobody unauthenticated gets told their guess was a real code.
+        if (this.spendTotpCode(user.id, secret, input.totp, user.lastTotpStep) !== 'ok') {
           this.throttle.recordFailure(input.ip, input.username);
           throw new AuthError('That code is not correct.', 'totp-invalid');
         }

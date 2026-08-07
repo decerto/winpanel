@@ -13,7 +13,7 @@ pnpm install
 pnpm build         # build every package
 pnpm test          # run all tests
 pnpm typecheck     # type-check every package
-pnpm check         # typecheck + test
+pnpm check         # build + typecheck + test
 ```
 
 ## Running a local instance

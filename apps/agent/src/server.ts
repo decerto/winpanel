@@ -39,6 +39,36 @@ export async function createServer(app: AppContext): Promise<FastifyInstance> {
 
   await server.register(cookie);
 
+  /**
+   * Refuses a write that the browser itself says came from another site.
+   *
+   * The session cookie is already `SameSite=strict`, which is the real defence
+   * against a forged request. This is the second one, so that a single slip in
+   * cookie configuration is not the only thing standing between a signed-in
+   * administrator and a page on the open internet. Absence of the header is
+   * not treated as an attack: scripts and `curl` never send it, while a
+   * browser always does on a cross-origin write.
+   */
+  server.addHook('onRequest', async (request, reply) => {
+    if (request.method === 'GET' || request.method === 'HEAD' || request.method === 'OPTIONS') {
+      return;
+    }
+
+    const origin = request.headers.origin;
+    if (origin === undefined) return;
+
+    let originHost: string | null = null;
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      originHost = null;
+    }
+
+    if (originHost === null || originHost !== request.headers.host) {
+      await reply.code(403).send({ error: 'That request did not come from the panel.' });
+    }
+  });
+
   server.addHook('onSend', async (_request, reply, payload) => {
     reply.header('X-Content-Type-Options', 'nosniff');
     reply.header('X-Frame-Options', 'DENY');

@@ -6,7 +6,7 @@ import type { AppContext } from '../app-context.js';
 import { FileManager, FileOperationError } from '../files/file-manager.js';
 import { PathContainmentError } from '../files/path-containment.js';
 import { SiteService } from '../sites/site-service.js';
-import { SESSION_COOKIE } from './trpc.js';
+import { SESSION_COOKIE, userMayAccessSite } from './trpc.js';
 
 /**
  * Getting files in and out of a website's folder.
@@ -75,15 +75,30 @@ export function registerSiteFileRoutes(server: FastifyInstance, app: AppContext)
     });
   }
 
-  /** Same gate as every tRPC call: a session, from an allowed network. */
-  function denial(request: { cookies: Record<string, string | undefined>; ip: string }):
-    | { code: number; error: string }
-    | null {
-    if (!app.auth.resolveSession(request.cookies[SESSION_COOKIE])) {
+  /**
+   * Same gate as every tRPC call: a session, from an allowed network, and a
+   * website the account is actually allowed to touch.
+   *
+   * The ownership half matters more here than anywhere else. These two routes
+   * read and write a site's files directly, and a slug is guessable, so without
+   * it any signed-in customer could take another customer's source code.
+   */
+  function denial(
+    request: { cookies: Record<string, string | undefined>; ip: string },
+    slug: string,
+  ): { code: number; error: string } | null {
+    const user = app.auth.resolveSession(request.cookies[SESSION_COOKIE]);
+
+    if (!user) {
       return { code: 401, error: 'Please sign in.' };
     }
     if (!app.auth.isIpAllowed(request.ip)) {
       return { code: 403, error: 'This panel does not accept connections from your network.' };
+    }
+    // "Not found" rather than "not allowed", matching enforceSiteScope, so
+    // these routes cannot be used to discover which slugs exist.
+    if (!userMayAccessSite(app, user, slug)) {
+      return { code: 404, error: 'That website was not found.' };
     }
     return null;
   }
@@ -91,7 +106,7 @@ export function registerSiteFileRoutes(server: FastifyInstance, app: AppContext)
   server.get<{ Params: { slug: string }; Querystring: { path?: string } }>(
     FILE_DOWNLOAD_PATH,
     async (request, reply) => {
-      const refused = denial(request);
+      const refused = denial(request, request.params.slug);
       if (refused) return await reply.code(refused.code).send({ error: refused.error });
 
       const manager = managerFor(app, request.params.slug);
@@ -126,7 +141,7 @@ export function registerSiteFileRoutes(server: FastifyInstance, app: AppContext)
     FILE_UPLOAD_PATH,
     { bodyLimit: MAX_UPLOAD_BYTES },
     async (request, reply) => {
-      const refused = denial(request);
+      const refused = denial(request, request.params.slug);
       if (refused) return await reply.code(refused.code).send({ error: refused.error });
 
       const manager = managerFor(app, request.params.slug);
