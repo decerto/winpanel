@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
-import { createWriteStream } from 'node:fs';
+import { createReadStream, createWriteStream } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
@@ -174,6 +174,26 @@ async function resolveVersion(): Promise<string> {
   return manifest.version;
 }
 
+/**
+ * Writes the checksum beside the installer, in `sha256sum` format so it can be
+ * verified with the tool rather than by eye. The name matches what the README
+ * tells people to look for on the releases page.
+ *
+ * Published with the release because the download is an unsigned executable
+ * from a GitHub attachment: without a hash to check it against, "is this the
+ * file you built?" has no answer.
+ */
+async function writeChecksum(installer: string): Promise<string> {
+  const hash = crypto.createHash('sha256');
+  await pipeline(createReadStream(installer), hash);
+
+  const digest = hash.digest('hex');
+  const sums = path.join(path.dirname(installer), 'SHA256SUMS.txt');
+  await fs.writeFile(sums, `${digest}  ${path.basename(installer)}\n`, 'utf8');
+
+  return digest;
+}
+
 async function main(): Promise<void> {
   process.stdout.write('\nCompiling the WinPanel installer\n\n');
 
@@ -196,8 +216,16 @@ async function main(): Promise<void> {
     { maxBuffer: 32 * 1024 * 1024 },
   );
 
-  const output = /Resulting Setup program filename is:\s*\r?\n(.+)/.exec(stdout)?.[1]?.trim();
-  process.stdout.write(`\nInstaller built:\n  ${output ?? path.join(REPO_ROOT, 'dist')}\n\n`);
+  const output =
+    /Resulting Setup program filename is:\s*\r?\n(.+)/.exec(stdout)?.[1]?.trim() ??
+    path.join(REPO_ROOT, 'dist', 'WinPanel-Setup-x64.exe');
+
+  const digest = await writeChecksum(output);
+
+  process.stdout.write(
+    `\nInstaller built:\n  ${output}\n  ${path.join(path.dirname(output), 'SHA256SUMS.txt')}\n` +
+      `\nSHA-256:\n  ${digest}\n\n`,
+  );
 }
 
 main().catch((error: unknown) => {
