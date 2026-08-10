@@ -2,7 +2,7 @@
 
 # WinPanel
 
-**A self-hosted control panel for websites, DNS, email and users on Windows Server 2025.**
+**A self-hosted control panel for websites, DNS, email and users on Windows Server 2022/2025.**
 
 Websites, Node and .NET apps, Cloudflare DNS, self-hosted mailboxes, customer accounts
 and the Windows fixes that make it all work — in one panel, without IIS.
