@@ -113,6 +113,12 @@ export const loginAttempts = sqliteTable(
     at: integer('at', { mode: 'timestamp_ms' })
       .notNull()
       .default(sql`(unixepoch() * 1000)`),
+    /**
+     * Set when a failure stops counting towards the throttle — a later success
+     * from the same address, or the owner unblocking it. The row stays put so
+     * the sign-in activity trail still shows the attempt happened.
+     */
+    clearedAt: integer('cleared_at', { mode: 'timestamp_ms' }),
   },
   (table) => [index('login_attempts_ip_at_idx').on(table.ip, table.at)],
 );

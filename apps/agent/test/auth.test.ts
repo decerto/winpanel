@@ -258,7 +258,23 @@ describe('sign-in activity', () => {
 
     expect(throttle.liftBan(ip)).toBe(true);
     expect(throttle.check(ip, new Date(base + 62_000)).allowed).toBe(true);
-    expect(throttle.recentAttempts(10, true)).toEqual([]);
+    // Cleared for throttling, but still on the record.
+    expect(throttle.recentAttempts(10, true)).toHaveLength(2);
+  });
+
+  it('keeps failed attempts on the record after a successful sign-in', () => {
+    const throttle = new LoginThrottle(handle, 8, 15);
+    const ip = '203.0.113.55';
+    const base = Date.now();
+
+    throttle.recordFailure(ip, 'owner', new Date(base));
+    throttle.recordFailure(ip, 'owner', new Date(base + 1000));
+    throttle.recordSuccess(ip, 'owner', new Date(base + 2000));
+
+    const failures = throttle.recentAttempts(10, true);
+    expect(failures).toHaveLength(2);
+    expect(failures.every((row) => row.clearedAt !== null)).toBe(true);
+    expect(throttle.failureStats(new Date(base - 60_000)).failures).toBe(2);
   });
 
   it('reports an address that was never blocked', () => {

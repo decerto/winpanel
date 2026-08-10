@@ -1,0 +1,1 @@
+ALTER TABLE `login_attempts` ADD `cleared_at` integer;

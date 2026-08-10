@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, gte, isNull, sql } from 'drizzle-orm';
 import type { DatabaseHandle } from '../db/index.js';
 import { ipBans, loginAttempts } from '../db/schema.js';
 
@@ -58,7 +58,13 @@ export class LoginThrottle {
       const lastAttempt = this.handle.db
         .select()
         .from(loginAttempts)
-        .where(eq(loginAttempts.ip, ip))
+        .where(
+          and(
+            eq(loginAttempts.ip, ip),
+            eq(loginAttempts.succeeded, false),
+            isNull(loginAttempts.clearedAt),
+          ),
+        )
         .orderBy(desc(loginAttempts.at))
         .limit(1)
         .get();
@@ -106,9 +112,26 @@ export class LoginThrottle {
     // in place, so someone who fat-fingers their password a few times and then
     // succeeds would still be throttled on their next sign-in.
     this.handle.db.delete(ipBans).where(eq(ipBans.ip, ip)).run();
+    this.clearFailures(ip, now);
+  }
+
+  /**
+   * Stops past failures counting, without erasing them. Deleting them was the
+   * old behaviour and it quietly ate the evidence: a bad password followed by
+   * a good one left no trace at all on the sign-in activity page, which is
+   * exactly the sequence worth seeing.
+   */
+  private clearFailures(ip: string, now: Date): void {
     this.handle.db
-      .delete(loginAttempts)
-      .where(and(eq(loginAttempts.ip, ip), eq(loginAttempts.succeeded, false)))
+      .update(loginAttempts)
+      .set({ clearedAt: now })
+      .where(
+        and(
+          eq(loginAttempts.ip, ip),
+          eq(loginAttempts.succeeded, false),
+          isNull(loginAttempts.clearedAt),
+        ),
+      )
       .run();
   }
 
@@ -121,6 +144,7 @@ export class LoginThrottle {
         and(
           eq(loginAttempts.ip, ip),
           eq(loginAttempts.succeeded, false),
+          isNull(loginAttempts.clearedAt),
           gte(loginAttempts.at, since),
         ),
       )
@@ -173,16 +197,13 @@ export class LoginThrottle {
   }
 
   /** Lets a blocked address back in. Returns false if it was not blocked. */
-  liftBan(ip: string): boolean {
+  liftBan(ip: string, now = new Date()): boolean {
     const result = this.handle.db.delete(ipBans).where(eq(ipBans.ip, ip)).run();
 
     // The failure counter has to go too. Leaving it behind would drop the
     // address straight back into the escalating delay, and then re-ban it on
     // the next mistake, so "unblock" would not visibly do anything.
-    this.handle.db
-      .delete(loginAttempts)
-      .where(and(eq(loginAttempts.ip, ip), eq(loginAttempts.succeeded, false)))
-      .run();
+    this.clearFailures(ip, now);
 
     return result.changes > 0;
   }

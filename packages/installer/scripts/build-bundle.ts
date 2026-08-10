@@ -105,9 +105,30 @@ async function stageNode(): Promise<void> {
   const inner = path.join(extractTo, `node-v${NODE_VERSION}-win-x64`);
   await fs.rm(target, { recursive: true, force: true });
   await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.rename(inner, target);
+  await moveDirectory(inner, target);
 
   await log(`Staged Node runtime.`);
+}
+
+/**
+ * Moves a freshly extracted folder, retrying on EPERM.
+ *
+ * Windows hands out the error when something still holds a handle on the
+ * files tar has only just written — a virus scanner or a file sync client
+ * looking at a few hundred new files. It clears on its own within a moment,
+ * and failing the whole release build over it is not worth it.
+ */
+async function moveDirectory(from: string, to: string): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await fs.rename(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if ((code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') || attempt === 5) throw error;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
+    }
+  }
 }
 
 async function stageWinsw(): Promise<void> {
