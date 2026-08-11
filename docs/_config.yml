@@ -1,0 +1,25 @@
+title: WinPanel
+description: >-
+  Free control panel for hosting websites and Node.js apps on Windows Server
+  2022/2025 - HTTPS, DNS, email and customer logins, without IIS.
+
+url: https://decerto.github.io
+baseurl: /winpanel
+
+theme: jekyll-theme-cayman
+
+plugins:
+  - jekyll-seo-tag
+  - jekyll-sitemap
+  - jekyll-relative-links
+
+# README.md stays the index of the docs folder on github.com; index.md is the
+# index of the published site.
+exclude:
+  - README.md
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default

@@ -1,3 +1,10 @@
+---
+title: How to put a website on your own Windows server
+description: >-
+  What hosting a website on your own Windows Server involves, what it costs and what
+  the words mean - written for people who are not sysadmins. No command line needed.
+---
+
 # How to put a website on your own Windows server
 
 Written for people who are not sysadmins. If you have rented a Windows server — or you
@@ -29,7 +36,8 @@ Add email, backups, and a way to let a client into their own site without lettin
 into everyone else's, and you have described a **hosting control panel**. It is a website
 you sign in to that does all of the above with buttons instead of commands.
 
-[WinPanel](../README.md) is one, it is free, and it runs on Windows Server.
+[WinPanel](https://github.com/decerto/winpanel#readme) is one, it is free, and it runs on
+Windows Server.
 
 ---
 
@@ -173,5 +181,5 @@ will tell you to read the source code.
 
 ---
 
-Related: [the full feature list](../README.md) ·
+Related: [the full feature list](https://github.com/decerto/winpanel#readme) ·
 [the technical version of this page](nodejs-hosting-on-windows-server.md)
