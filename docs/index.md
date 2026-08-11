@@ -3,7 +3,10 @@ title: Hosting Node.js and websites on Windows Server
 description: >-
   How to host Node.js apps, .NET apps and websites on Windows Server 2022/2025
   without IIS or iisnode - plus WinPanel, a free control panel that does it for you.
+image: /winpanel/banner.png
 ---
+
+![WinPanel - a free control panel for hosting websites, Node.js apps and email on Windows Server](banner.png)
 
 # Hosting websites and Node.js apps on Windows Server
 

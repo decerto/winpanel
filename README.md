@@ -1,5 +1,7 @@
 <div align="center">
 
+![WinPanel — a free control panel for hosting websites, Node.js apps and email on Windows Server](docs/banner.png)
+
 # WinPanel
 
 **A free control panel for hosting websites on Windows Server 2022/2025 — Node.js apps,
@@ -12,8 +14,6 @@ without IIS and without touching the command line.
 [Features](#what-it-does) · [Start here](#new-here) · [Websites](#websites) · [DNS](#dns-control) · [Email](#email-control) · [People](#user-control-and-management) · [Compare](#how-it-compares) · [Live sites](#sites-running-on-it) · [FAQ](#frequently-asked-questions) · [Install](#installing) · [Support](#support) · [Licence](#licence) · [Develop](#development)
 
 [![Chat on Discord](https://img.shields.io/badge/Discord-Ask%20for%20help-5865F2?logo=discord&logoColor=white)](https://discord.gg/wT6mnfAnUD)
-
-![The websites list](docs/screenshots/websites.png)
 
 </div>
 

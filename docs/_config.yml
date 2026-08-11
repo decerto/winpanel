@@ -6,6 +6,9 @@ description: >-
 url: https://decerto.github.io
 baseurl: /winpanel
 
+# social card for pages that do not set their own
+image: /winpanel/banner.png
+
 theme: jekyll-theme-cayman
 
 plugins:
