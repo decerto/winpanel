@@ -1,12 +1,12 @@
 <div align="center">
 
-![WinPanel — a free control panel for hosting websites, Node.js apps and email on Windows Server](docs/banner.png)
+![WinPanel — a free control panel for hosting websites, Node.js apps and email on Windows](docs/banner.png)
 
 # WinPanel
 
-**A free control panel for hosting websites on Windows — Server 2025/2022 or a Windows 11
-PC. Node.js apps, .NET apps and plain HTML sites, with HTTPS, DNS, email and customer
-logins.**
+**A free control panel for hosting websites on Windows — Server 2022 and 2025, or
+Windows 11 Home and Pro. Node.js apps, .NET apps and plain HTML sites, with HTTPS, DNS,
+email and customer logins.**
 
 Put a website online on your own Windows machine, keep it running, give it a domain and a
 padlock, host the mailboxes for it, and hand a client their own login — from one web page,
@@ -20,7 +20,7 @@ without IIS and without touching the command line.
 
 ---
 
-WinPanel is a free, self-hosted **web hosting control panel for Windows Server** — an
+WinPanel is a free, self-hosted **web hosting control panel for Windows** — an
 alternative to IIS, Plesk and cPanel for people running Node.js, ASP.NET Core and static
 sites on Windows. Your apps run as ordinary Windows Services on loopback ports, and
 **Caddy** sits in front handling HTTPS, domains and traffic. Mail is served by
@@ -72,7 +72,7 @@ Almost every modern hosting panel is Linux-only. That is the gap this fills.
 
 | Panel | Runs on Windows | Node.js apps | Email | DNS | Cost |
 | --- | --- | --- | --- | --- | --- |
-| **WinPanel** | Server 2022 / 2025 | Supervised Windows Services, blue/green deploys | Stalwart, built in | Cloudflare, built in | Free, self-hosted |
+| **WinPanel** | Windows Server 2022 / 2025 and Windows 11 | Supervised Windows Services, blue/green deploys | Stalwart, built in | Cloudflare, built in | Free, self-hosted |
 | **IIS** | Built into Windows | Only through `iisnode`, unmaintained | No | No | Included |
 | **Plesk for Windows** | Yes | Yes | Yes | Yes | Paid, per server |
 | **aaPanel** | No — Linux only | Yes, on Linux | Yes | Yes | Free, paid Pro tier |
@@ -343,7 +343,7 @@ are handled rather than assumed.
 
 ## Requirements
 
-- Windows Server 2025 or 2022 — or Windows 11, see [Which Windows](#which-windows) below
+- Windows Server 2022 or 2025 — or Windows 11 Home or Pro, see [Which Windows](#which-windows) below
 - Administrator access
 - A Cloudflare account, if you want managed DNS and automatic certificates
 
@@ -359,10 +359,9 @@ edition check in the installer or the agent.
 
 | | |
 | --- | --- |
-| **Windows Server 2025 / 2022** | What it is developed and run on, and where the live sites listed below are hosted. |
-| **Windows 11** (Pro or Home) | Same code paths, and IIS is absent by default so the commonest port conflict cannot happen. Less widely exercised — tell us if something differs. |
-| **Windows 10** | Should behave identically, but it left support in October 2025, so it is not a sensible thing to expose to the internet. |
-| **Windows Server 2019** | Untested. |
+| **Windows Server 2022 / 2025** | Supported Windows editions. The panel is developed and run on Server 2025 and 2022, and the live sites listed below are hosted there. |
+| **Windows 11** (Home or Pro) | Supported desktop Windows editions. Same code paths, and IIS is absent by default so the commonest port conflict cannot happen. |
+| **Windows 10** | Not tested or supported. Windows 10 reached end of support in October 2025. |
 
 ### Hosting from home
 
@@ -630,7 +629,7 @@ down.
 
 ### What Windows versions does it need?
 
-Windows Server 2025 or 2022, or Windows 11. It is not restricted to Server editions —
+Windows Server 2022 or 2025, or Windows 11 Home or Pro. It is not restricted to Server editions —
 there is no edition check anywhere, and everything it relies on exists on desktop Windows
 too. Server is simply what it is developed on and where it has the most hours. See
 [Which Windows](#which-windows).

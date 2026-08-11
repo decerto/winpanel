@@ -1,11 +1,11 @@
 ---
-title: How to put a website on your own Windows server
+title: How to put a website on your own Windows PC or server
 description: >-
-  What hosting a website on your own Windows Server involves, what it costs and what
+  What hosting a website on your own Windows PC or server involves, what it costs and what
   the words mean - written for people who are not sysadmins. No command line needed.
 ---
 
-# How to put a website on your own Windows server
+# How to put a website on your own Windows PC or server
 
 Written for people who are not sysadmins. If you have a Windows machine — a rented server,
 a box under a desk, or a spare PC at home — and you want your website, your customers'
@@ -38,7 +38,7 @@ into everyone else's, and you have described a **hosting control panel**. It is 
 you sign in to that does all of the above with buttons instead of commands.
 
 [WinPanel](https://github.com/decerto/winpanel#readme) is one, it is free, and it runs on
-Windows Server.
+Windows.
 
 ---
 
@@ -130,7 +130,7 @@ You will want a developer for the site itself if it is an application rather tha
 pages, because somebody has to have written it. But the hosting, the domains, the
 certificates, the mailboxes and the day-to-day are all yours.
 
-If you got as far as installing Windows Server, you are already past the hard part.
+If you got as far as installing Windows, you are already past the hard part.
 
 ---
 

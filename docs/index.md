@@ -1,23 +1,23 @@
 ---
 title: Hosting Node.js and websites on Windows
 description: >-
-  How to host Node.js apps, .NET apps and websites on Windows Server 2025/2022 or
-  Windows 11 without IIS or iisnode - plus WinPanel, a free control panel that does it for you.
+  How to host Node.js apps, .NET apps and websites on Windows Server 2022/2025 or
+  Windows 11 Home and Pro without IIS or iisnode - plus WinPanel, a free control panel that does it for you.
 image: /winpanel/banner.png
 ---
 
-![WinPanel - a free control panel for hosting websites, Node.js apps and email on Windows Server](banner.png)
+![WinPanel - a free control panel for hosting websites, Node.js apps and email on Windows](banner.png)
 
-# Hosting websites and Node.js apps on Windows Server
+# Hosting websites and Node.js apps on Windows
 
-**You can host Node.js on Windows Server. You do not need IIS, you do not need `iisnode`,
+**You can host Node.js on Windows. You do not need IIS, you do not need `iisnode`,
 and you do not need a `web.config`.** Run each app as a Windows Service on a loopback port,
 and put a reverse proxy in front of it for the domain and the HTTPS certificate. That is
 the same architecture every Linux host uses — only the names of the parts differ.
 
 These pages explain how to do that by hand, and how
 **[WinPanel](https://github.com/decerto/winpanel)** — a free, self-hosted control panel for
-Windows Server 2025/2022 and Windows 11 — does it for you, per site, from a web page.
+Windows Server 2022/2025 and Windows 11 Home or Pro — does it for you, per site, from a web page.
 
 <p>
   <a href="https://github.com/decerto/winpanel/releases">Download the installer</a> ·
@@ -30,14 +30,14 @@ Windows Server 2025/2022 and Windows 11 — does it for you, per site, from a we
 
 ## The guides
 
-### [How to host a Node.js app on Windows Server](nodejs-hosting-on-windows-server.html)
+### [How to host a Node.js app on Windows](nodejs-hosting-on-windows-server.html)
 
 For developers and sysadmins. Why the "it's impossible" and "use `iisnode`" answers are
 wrong, the four ways to do it ranked, a by-hand walkthrough with WinSW and Caddy, and the
 eight Windows-specific failures that catch everybody — `EADDRINUSE :443`, the orphaned
 process that keeps a stopped service's port, long paths, `spawn EINVAL`.
 
-### [How to put a website on your own Windows server](hosting-a-website-on-windows-server.html)
+### [How to put a website on your own Windows PC or server](hosting-a-website-on-windows-server.html)
 
 For everyone else. What hosting a website actually involves, what it costs, what each word
 means, and what goes wrong — with no jargon and no command line.
@@ -49,8 +49,8 @@ means, and what goes wrong — with no jargon and no command line.
 A free control panel for Windows that manages websites, HTTPS, DNS, email and
 customer accounts from one interface. Static sites, Node.js apps and ASP.NET Core apps are
 all first-class; each runs as a supervised Windows Service, with [Caddy](https://caddyserver.com/)
-in front handling domains, certificates and traffic. It needs Server 2025/2022 or
-Windows 11 — there is no Server-edition requirement.
+in front handling domains, certificates and traffic. It supports Windows Server
+2022/2025 and Windows 11 Home or Pro — there is no Server-edition requirement.
 
 - **Websites** — from Git or managed by hand, with builds that swap in only if they start
 - **HTTPS** — free certificates, renewed automatically, over the DNS challenge
