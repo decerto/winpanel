@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import type { Server as HttpsServer } from 'node:https';
 import cookie from '@fastify/cookie';
 import fastifyStatic from '@fastify/static';
 import { fastifyTRPCPlugin } from '@trpc/server/adapters/fastify';
@@ -9,7 +10,7 @@ import { registerInstallerUpload } from './api/installer-upload.js';
 import { registerSiteFileRoutes } from './api/site-files.js';
 import { createContextFactory } from './api/trpc.js';
 import { paths } from './config.js';
-import { loadOrCreatePanelCertificate } from './tls/panel-certificate.js';
+import { resolvePanelTls, type PanelTls } from './tls/panel-certificate.js';
 
 /**
  * The panel's HTTP server.
@@ -21,10 +22,16 @@ import { loadOrCreatePanelCertificate } from './tls/panel-certificate.js';
  */
 export async function createServer(app: AppContext): Promise<FastifyInstance> {
   let https: { key: string; cert: string } | null = null;
+  let panelTls: PanelTls | null = null;
 
   if (app.config.httpsEnabled) {
-    const certificate = await loadOrCreatePanelCertificate(paths.panelCert(), paths.panelKey());
-    https = { key: certificate.keyPem, cert: certificate.certPem };
+    panelTls = await resolvePanelTls(
+      app.db,
+      app.config.caddyDir,
+      paths.panelCert(),
+      paths.panelKey(),
+    );
+    https = { key: panelTls.keyPem, cert: panelTls.certPem };
   }
 
   const server = Fastify({
@@ -119,6 +126,37 @@ export async function createServer(app: AppContext): Promise<FastifyInstance> {
       void reply.sendFile('index.html');
     });
   }
+
+  /*
+   * Swapping the panel's certificate without dropping the listener.
+   *
+   * The panel is the thing being restarted, so "restart to pick up the new
+   * certificate" would mean signing the administrator out in the middle of
+   * setting one up — and on the very connection that is waiting for the
+   * answer. `setSecureContext` replaces the material for new handshakes only,
+   * so existing connections finish on the old one and nothing is interrupted.
+   */
+  app.refreshPanelCertificate = async () => {
+    if (!app.config.httpsEnabled) return null;
+
+    const next = await resolvePanelTls(
+      app.db,
+      app.config.caddyDir,
+      paths.panelCert(),
+      paths.panelKey(),
+    );
+
+    if (panelTls && next.fingerprint === panelTls.fingerprint) return panelTls;
+
+    (server.server as HttpsServer).setSecureContext({ key: next.keyPem, cert: next.certPem });
+    panelTls = next;
+    server.log.info(
+      { source: next.source, hostname: next.hostname },
+      'panel certificate installed',
+    );
+
+    return next;
+  };
 
   return server;
 }

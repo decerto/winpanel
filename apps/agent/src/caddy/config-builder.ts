@@ -94,6 +94,20 @@ export interface CaddyConfigInput {
    */
   mailHost?: { hostnames: readonly string[]; port: number };
   /**
+   * The panel's own domain name, and the port the panel listens on.
+   *
+   * Listed here for one reason: naming it is what gets it a certificate of its
+   * own. The panel is deliberately *not* proxied through Caddy — it keeps its
+   * own listener, so a web server configuration that will not load can never
+   * lock the user out of the one tool able to fix it. All Caddy does is
+   * redirect the name to that port; the panel serves the certificate itself.
+   *
+   * This is entirely separate from the websites' certificates. The panel's
+   * name belongs to no website, gets its own certificate, and no website's
+   * certificate is ever served on the panel's port.
+   */
+  panelHost?: { hostname: string; port: number };
+  /**
    * The admin block exactly as the running server has it.
    *
    * Caddy binds the new admin listener *before* releasing the old one, so a
@@ -117,6 +131,8 @@ export function routeIdFor(slug: string): string {
 export function previewServerIdFor(slug: string): string {
   return `preview_${slug}`;
 }
+
+export const PANEL_ROUTE_ID = 'panel_route';
 
 /** The route that answers for a name no website on this server claims. */
 export const UNCLAIMED_HOST_ROUTE_ID = 'unclaimed_host';
@@ -431,6 +447,32 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
         {
           handler: 'reverse_proxy',
           upstreams: [{ dial: `127.0.0.1:${input.mailHost.port}` }],
+        },
+      ],
+      terminal: true,
+    });
+  }
+
+  if (input.panelHost) {
+    const { hostname, port } = input.panelHost;
+    allDomains.add(hostname);
+
+    /*
+     * First, so it cannot be shadowed.
+     *
+     * A website that also claims this name is refused when the panel domain is
+     * set, but a name can be added to a website afterwards — and the outcome of
+     * that must not be that the administrator loses the address they sign in
+     * at. Redirect rather than proxy: see `panelHost`.
+     */
+    routes.unshift({
+      '@id': PANEL_ROUTE_ID,
+      match: [{ host: [hostname] }],
+      handle: [
+        {
+          handler: 'static_response',
+          status_code: 308,
+          headers: { Location: [`https://${hostname}:${port}{http.request.uri}`] },
         },
       ],
       terminal: true,

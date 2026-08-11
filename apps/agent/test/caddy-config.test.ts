@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SiteManifest } from '@winpanel/shared';
 import {
+  PANEL_ROUTE_ID,
   UNCLAIMED_HOST_ROUTE_ID,
   buildCaddyConfig,
   previewServerIdFor,
@@ -605,5 +606,70 @@ describe('mail routing', () => {
     expect(config.apps.http.servers.main.routes.map((r: any) => r['@id'])).toEqual([
       UNCLAIMED_HOST_ROUTE_ID,
     ]);
+  });
+});
+
+/*
+ * The panel's own name.
+ *
+ * It is here for one reason only: naming it is what gets it a certificate.
+ * Everything about how the websites are served is unchanged by it.
+ */
+describe('the panel\u2019s own address', () => {
+  it('asks for a certificate for the panel name', () => {
+    const config = buildCaddyConfig({
+      sites: [],
+      panelHost: { hostname: 'panel.example.com', port: 8443 },
+    }) as any;
+
+    expect(config.apps.tls.automation.policies[0].subjects).toContain('panel.example.com');
+  });
+
+  it('redirects the name to the panel rather than proxying it', () => {
+    // Proxied, a web server configuration that will not load would take the
+    // one tool able to fix it down with it.
+    const config = buildCaddyConfig({
+      sites: [],
+      panelHost: { hostname: 'panel.example.com', port: 8443 },
+    }) as any;
+
+    const route = findRoute(config, PANEL_ROUTE_ID);
+    expect(route.match[0].host).toEqual(['panel.example.com']);
+    expect(route.handle[0].handler).toBe('static_response');
+    expect(route.handle[0].headers.Location).toEqual([
+      'https://panel.example.com:8443{http.request.uri}',
+    ]);
+  });
+
+  it('cannot be shadowed by a website that later claims the same name', () => {
+    const config = buildCaddyConfig({
+      sites: [site({ slug: 'live', domains: ['panel.example.com'] })],
+      panelHost: { hostname: 'panel.example.com', port: 8443 },
+    }) as any;
+
+    // Losing the address every administrator signs in at is not an acceptable
+    // outcome of somebody adding a domain to a website.
+    expect(config.apps.http.servers.main.routes[0]['@id']).toBe(PANEL_ROUTE_ID);
+  });
+
+  it('leaves the websites alone', () => {
+    const withPanel = buildCaddyConfig({
+      sites: [site()],
+      panelHost: { hostname: 'panel.example.com', port: 8443 },
+    }) as any;
+    const withoutPanel = buildCaddyConfig({ sites: [site()] }) as any;
+
+    expect(findRoute(withPanel, routeIdFor('example'))).toEqual(
+      findRoute(withoutPanel, routeIdFor('example')),
+    );
+    expect(withPanel.apps.tls.automation.policies[0].subjects).toEqual(
+      expect.arrayContaining(['example.com', 'www.example.com']),
+    );
+  });
+
+  it('adds nothing when the panel has no name of its own', () => {
+    const config = buildCaddyConfig({ sites: [] }) as any;
+
+    expect(findRoute(config, PANEL_ROUTE_ID)).toBeUndefined();
   });
 });

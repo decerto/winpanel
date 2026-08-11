@@ -345,9 +345,17 @@ Security page.
 ![Adding a second step](docs/screenshots/setup-2fa.png)
 
 Your browser will warn about the certificate the first time. That is expected: the
-panel uses a self-signed certificate because it is reached by IP address rather than a
+panel starts on a self-signed certificate because it is reached by IP address rather than a
 domain name. The panel shows you the certificate's fingerprint so you can confirm you
 are trusting the right one.
+
+To get rid of the warning, give the panel a domain of its own — **Settings → Panel address
+and certificate**. Point a name at the server, save it, and WinPanel obtains an ordinary
+certificate for that one name and serves it on port 8443. A subdomain such as
+`panel.example.com` is the usual choice, but a root domain such as `example.com` works just
+as well if you are not hosting a website on it. Either way the name is the panel's alone:
+it belongs to no website, and your websites' own certificates are obtained and renewed
+exactly as before.
 
 ---
 

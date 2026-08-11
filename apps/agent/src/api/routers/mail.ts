@@ -24,7 +24,7 @@ import {
   testOutboundMail,
 } from '../../mail/readiness.js';
 import { MailServerError, StalwartClient, probeMailServer } from '../../mail/stalwart-client.js';
-import { findIssuedCertificate, waitForIssuedCertificate } from '../../mail/certificate.js';
+import { findIssuedCertificate, waitForIssuedCertificate } from '../../tls/issued-certificates.js';
 import { storeMailDomains } from '../../mail/domains.js';
 import { syncMailCertificates, syncMailEnvironment } from '../../mail/service.js';
 import {

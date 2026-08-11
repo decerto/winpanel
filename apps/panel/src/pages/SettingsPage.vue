@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue';
-import { CloudCog, Download, ExternalLink, FolderSearch, Info, Power, RefreshCw, Server } from 'lucide-vue-next';
+import { computed, onUnmounted, ref } from 'vue';
+import { CloudCog, Download, ExternalLink, FolderSearch, Info, Lock, Power, RefreshCw, Server } from 'lucide-vue-next';
 import { CLOUDFLARE_PERMISSION_SUMMARY } from '@winpanel/shared';
 import { api, describeError } from '../lib/api';
 import { LOG_LEVEL_CLASS, useJobLog } from '../lib/job-log';
 import PageHeader from '../components/PageHeader.vue';
 import AlertMessage from '../components/AlertMessage.vue';
 import ComponentsPanel from '../components/ComponentsPanel.vue';
+import HowTo from '../components/HowTo.vue';
 import ServerPathPicker from '../components/ServerPathPicker.vue';
 
 /**
@@ -21,6 +22,7 @@ type SystemInfo = Awaited<ReturnType<typeof api.system.info.query>>;
 type MailStatus = Awaited<ReturnType<typeof api.mail.serverStatus.query>>;
 type BackgroundServices = Awaited<ReturnType<typeof api.system.backgroundServices.query>>;
 type ShutdownResult = Awaited<ReturnType<typeof api.system.shutdown.mutate>>;
+type PanelCertificate = Awaited<ReturnType<typeof api.system.panelCertificate.query>>;
 
 const info = ref<SystemInfo | null>(null);
 
@@ -54,6 +56,99 @@ const shutdownResult = ref<ShutdownResult | null>(null);
 
 const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
+
+/**
+ * The panel's own address and certificate.
+ *
+ * Separate from the websites' certificates in every respect: this is the name
+ * the administrator signs in at, it belongs to no website, and setting it
+ * changes nothing about how the websites are served or how their certificates
+ * are obtained.
+ */
+const panelCertificate = ref<PanelCertificate | null>(null);
+const panelHostname = ref('');
+const panelHostnameBusy = ref(false);
+/**
+ * The web server obtains the certificate seconds after the name is saved, so
+ * the page polls rather than telling the user to come back and look again.
+ */
+const awaitingPanelCertificate = ref(false);
+let panelPoll: ReturnType<typeof setInterval> | null = null;
+let panelPollsLeft = 0;
+
+function stopPanelPoll(): void {
+  if (panelPoll) clearInterval(panelPoll);
+  panelPoll = null;
+  awaitingPanelCertificate.value = false;
+}
+
+onUnmounted(stopPanelPoll);
+
+async function loadPanelCertificate({ adoptHostname = false } = {}): Promise<void> {
+  try {
+    const result = await api.system.panelCertificate.query();
+    panelCertificate.value = result;
+    if (adoptHostname) panelHostname.value = result.hostname ?? '';
+    // Nothing left to wait for once it is in place.
+    if (result.source === 'issued') stopPanelPoll();
+  } catch {
+    // An administrator who is not the owner still sees the rest of the page.
+  }
+}
+
+function startPanelPoll(): void {
+  stopPanelPoll();
+  awaitingPanelCertificate.value = true;
+  // Two minutes. Beyond that it is a DNS or firewall problem, not slowness.
+  panelPollsLeft = 40;
+  panelPoll = setInterval(() => {
+    if (panelPollsLeft-- <= 0) {
+      stopPanelPoll();
+      return;
+    }
+    void loadPanelCertificate();
+  }, 3000);
+}
+
+async function savePanelHostname(): Promise<void> {
+  panelHostnameBusy.value = true;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    const wanted = panelHostname.value.trim();
+    const result = await api.system.setPanelHostname.mutate({ hostname: wanted || null });
+
+    if (result.hostname === null) {
+      stopPanelPoll();
+      notice.value =
+        'The panel is back to being reached by IP address, on the certificate it signed ' +
+        'itself. Your websites are unaffected.';
+    } else if (result.webServerWarning) {
+      error.value = result.webServerWarning;
+    } else {
+      // Saved either way. Whether the name resolves here is reported below,
+      // where it can be phrased as the thing to go and fix rather than as a
+      // failure of the save.
+      notice.value =
+        result.dnsPointsHere === true
+          ? `Saved. Getting a certificate for ${result.hostname}\u2026`
+          : `Saved ${result.hostname} as the panel\u2019s address.`;
+      startPanelPoll();
+    }
+
+    await loadPanelCertificate();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    panelHostnameBusy.value = false;
+  }
+}
+
+async function removePanelHostname(): Promise<void> {
+  panelHostname.value = '';
+  await savePanelHostname();
+}
 
 /**
  * Updating the panel from the panel.
@@ -164,6 +259,7 @@ async function refresh(): Promise<void> {
 }
 
 void refresh();
+void loadPanelCertificate({ adoptHostname: true });
 
 async function connectCloudflare(): Promise<void> {
   cloudflareBusy.value = true;
@@ -790,6 +886,157 @@ async function installUpdate(): Promise<void> {
         This panel is being served without encryption. Anyone on the network between you and it
         can read your password and session.
       </AlertMessage>
+    </section>
+
+    <!--
+      The panel's own certificate. Deliberately its own section, and worded so
+      it cannot be mistaken for the websites' certificates: those live on each
+      website's SSL tab and nothing here touches them.
+    -->
+    <section v-if="panelCertificate?.httpsEnabled" class="card mt-4 p-6">
+      <div class="flex items-start gap-3">
+        <span
+          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border
+                 border-line bg-elevated text-ink-muted"
+          aria-hidden="true"
+        >
+          <Lock :size="19" />
+        </span>
+
+        <div class="min-w-0 flex-1">
+          <h2 class="text-base font-semibold text-ink">Panel address and certificate</h2>
+          <p class="mt-1 text-sm text-ink-muted">
+            The address you sign in at, and the certificate this page is served with. Your
+            websites keep their own certificates &mdash; nothing here changes them.
+          </p>
+        </div>
+      </div>
+
+      <div class="mt-5 rounded-lg border border-line bg-black/20 p-4">
+        <div class="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+          <p class="text-sm font-medium text-ink">
+            {{
+              panelCertificate.source === 'issued'
+                ? 'Signed by ' + (panelCertificate.issuer ?? 'a certificate authority')
+                : 'Signed by this panel itself'
+            }}
+          </p>
+          <p class="font-mono text-xs text-ink-faint">
+            {{
+              panelCertificate.expiresAt
+                ? 'Expires ' + new Date(panelCertificate.expiresAt).toLocaleDateString()
+                : ''
+            }}
+          </p>
+        </div>
+
+        <p class="mt-1 text-sm text-ink-muted">
+          {{
+            panelCertificate.source === 'issued'
+              ? 'Browsers trust it, so this page loads without a warning.'
+              : 'A certificate authority will not issue one for a bare IP address, so until the panel has a domain name of its own, browsers show a warning here. Your connection is still encrypted.'
+          }}
+        </p>
+
+        <p
+          v-if="panelCertificate.source === 'self-signed' && panelCertificate.fingerprint"
+          class="mt-3 break-all font-mono text-xs text-ink-faint"
+        >
+          Fingerprint {{ panelCertificate.fingerprint }}
+        </p>
+      </div>
+
+      <form class="mt-5 space-y-4" @submit.prevent="savePanelHostname">
+        <div>
+          <label for="panel-hostname" class="label">Panel domain</label>
+          <div class="mt-1 flex flex-wrap gap-2">
+            <input
+              id="panel-hostname"
+              v-model="panelHostname"
+              class="field min-w-56 flex-1"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="panel.example.com"
+            />
+            <button
+              type="submit"
+              class="btn btn-primary"
+              :disabled="panelHostnameBusy || panelHostname.trim() === (panelCertificate.hostname ?? '')"
+            >
+              {{ panelHostnameBusy ? 'Saving\u2026' : 'Save' }}
+            </button>
+            <button
+              v-if="panelCertificate.hostname"
+              type="button"
+              class="btn btn-ghost"
+              :disabled="panelHostnameBusy"
+              @click="removePanelHostname"
+            >
+              Remove
+            </button>
+          </div>
+          <p class="mt-1.5 text-xs text-ink-faint">
+            A subdomain such as <span class="font-mono">panel.example.com</span>, or a root
+            domain such as <span class="font-mono">example.com</span> if you have one spare
+            &mdash; whichever you prefer. The only rule is that no website on this server
+            serves it. Leave it empty to go back to signing in by IP address.
+          </p>
+        </div>
+      </form>
+
+      <AlertMessage
+        v-if="panelCertificate.hostname && panelCertificate.dnsPointsHere === false"
+        tone="warning"
+        class="mt-4"
+      >
+        {{ panelCertificate.hostname }} answers with an address that is not this server, so no
+        certificate can be issued for it. On Cloudflare, that usually means the orange cloud is
+        on &mdash; turn it off for this record. If you have only just changed it, this
+        server&rsquo;s own lookups may show the old answer for a while yet.
+      </AlertMessage>
+
+      <AlertMessage
+        v-else-if="panelCertificate.hostname && panelCertificate.dnsPointsHere === null"
+        tone="warning"
+        class="mt-4"
+      >
+        Nothing answers for {{ panelCertificate.hostname }} yet, so no certificate can be issued
+        for it. Add an <strong>A</strong> record for it pointing at
+        <strong class="font-mono">{{ panelCertificate.suggestedIpv4 ?? 'this server' }}</strong
+        >.
+      </AlertMessage>
+
+      <AlertMessage v-else-if="awaitingPanelCertificate" tone="info" class="mt-4">
+        Getting a certificate for {{ panelCertificate.hostname }}. This usually takes under a
+        minute; you can leave this page.
+      </AlertMessage>
+
+      <AlertMessage
+        v-else-if="panelCertificate.url && panelCertificate.source === 'issued'"
+        tone="success"
+        class="mt-4"
+      >
+        Sign in at
+        <a :href="panelCertificate.url" class="font-mono">{{ panelCertificate.url }}</a>
+        from now on. The IP address still works, with the warning.
+      </AlertMessage>
+
+      <HowTo v-if="!panelCertificate.hostname" title="Giving the panel its own name" class="mt-4">
+        <li>
+          Pick a name no website on this server serves. A subdomain such as
+          <strong>panel.example.com</strong> is the usual choice, but a root domain such as
+          <strong>example.com</strong> works just as well if you are not hosting a website on
+          it.
+        </li>
+        <li>
+          At your DNS provider, add an <strong>A</strong> record for it pointing at
+          <strong class="font-mono">{{ panelCertificate.suggestedIpv4 ?? 'this server' }}</strong
+          >. On Cloudflare, turn the orange cloud <strong>off</strong> &mdash; the panel is not
+          on port 443, so the proxy cannot reach it.
+        </li>
+        <li>Put the name in the box above and save. The certificate arrives on its own.</li>
+      </HowTo>
     </section>
 
     <section v-if="isOwner" class="card mt-4 p-6">

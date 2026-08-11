@@ -20,6 +20,7 @@ import {
 } from './components/installer.js';
 import { createPanelUpdateHandler } from './components/panel-update.js';
 import { resolveToolInvocation } from './sites/tool-paths.js';
+import type { PanelTls } from './tls/panel-certificate.js';
 
 /**
  * Composition root.
@@ -42,6 +43,13 @@ export interface AppContext {
   sites: SiteService;
   /** Counts the web server's access logs into per-website traffic figures. */
   traffic: TrafficCollector;
+  /**
+   * Re-reads the panel's own certificate and swaps it into the live listener.
+   *
+   * Set by `createServer`, so it is absent in tests that never start one and
+   * null when the panel is running without HTTPS.
+   */
+  refreshPanelCertificate?: () => Promise<PanelTls | null>;
   shutdown: () => Promise<void>;
 }
 

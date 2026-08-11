@@ -98,7 +98,8 @@ Open `https://<your-server-ip>:8443` from your own machine.
 > **Your browser will warn about the certificate.** This is expected. The panel is reached
 > by IP address rather than a domain name, so its certificate is self-signed. Click through
 > the warning — the panel shows you the certificate fingerprint so you can confirm you're
-> trusting the right one.
+> trusting the right one. Once you're in, **Settings → Panel address and certificate** lets
+> you give the panel a domain of its own, which gets it a certificate browsers trust.
 
 Then:
 

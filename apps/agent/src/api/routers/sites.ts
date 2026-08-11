@@ -24,6 +24,7 @@ import { GitClient, validateGitRef, validateRepositoryUrl } from '../../sites/gi
 import { generateDeployKey, isSshUrl } from '../../sites/ssh-keys.js';
 import { serviceIdFor } from '../../sites/deploy-handler.js';
 import { localAddresses } from '../../tls/panel-certificate.js';
+import { panelHostnameAmong } from '../../tls/panel-hostname.js';
 import { accessLogExists, logFilesFor } from '../../traffic/collector.js';
 import { scanFailures } from '../../traffic/failures.js';
 import {
@@ -458,6 +459,16 @@ export const sitesRouter = router({
         });
       }
 
+      const panelClash = panelHostnameAmong(ctx.app.db, input.domains);
+      if (panelClash) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message:
+            `${panelClash} is the address this panel is reached at. Give the website a ` +
+            'different name, or change the panel\u2019s own address in Settings first.',
+        });
+      }
+
       const detected = input.manifest ?? defaultManifestFor(input.runtime, input.spaFallback);
 
       const manifest: SiteManifest = input.packageManager
@@ -590,6 +601,16 @@ export const sitesRouter = router({
         throw new TRPCError({
           code: 'BAD_REQUEST',
           message: `${clash} is already used by another website on this server.`,
+        });
+      }
+
+      const panelClash = panelHostnameAmong(ctx.app.db, input.domains);
+      if (panelClash) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message:
+            `${panelClash} is the address this panel is reached at. Give the website a ` +
+            'different name, or change the panel\u2019s own address in Settings first.',
         });
       }
 

@@ -227,6 +227,24 @@ async function main(): Promise<void> {
       server.log.info('Website configuration applied.');
     }
 
+    /*
+     * The panel's own certificate, once the web server has been given the
+     * configuration that asks for it. On a timer for the same reason as the
+     * mail server's: it is renewed roughly every sixty days, and the panel has
+     * to pick the new one up without being restarted underneath whoever is
+     * signed in.
+     */
+    const refreshPanelCertificate = async (): Promise<void> => {
+      try {
+        await app.refreshPanelCertificate?.();
+      } catch (error) {
+        server.log.warn({ err: error }, 'Could not update the panel\u2019s own certificate.');
+      }
+    };
+
+    await refreshPanelCertificate();
+    setInterval(() => void refreshPanelCertificate(), 6 * 60 * 60 * 1000).unref();
+
     // Starting up is, for an update that worked, the moment the installer
     // finished. Nothing it needed should still be lying around.
     await cleanUpAfterUpdate(config.binDir);

@@ -3,19 +3,29 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import selfsigned from 'selfsigned';
+import type { DatabaseHandle } from '../db/index.js';
+import { findIssuedCertificate } from './issued-certificates.js';
+import { readPanelHostname } from './panel-hostname.js';
 
 /**
- * The panel's own certificate.
+ * The panel's own certificate. Nothing to do with the websites' certificates.
  *
- * The panel is reached at https://<server-ip>:8443 with no domain name, so a
- * publicly-trusted certificate is not on the table without extra machinery.
- * A self-signed certificate costs the user nothing beyond clicking through one
- * browser warning, and it keeps the password, session cookie and TOTP code off
- * the wire in plaintext — which matters a great deal for a box on a public IP.
+ * Two states, and the panel moves between them without anything being taken
+ * away from a website:
  *
- * The certificate carries the machine's IP addresses as SANs, so the warning
- * is purely "unknown issuer" rather than "wrong host", and pinning the
- * fingerprint in the browser works properly.
+ *  - No panel domain. The panel is reached at https://<server-ip>:8443, and a
+ *    certificate authority will not issue for a bare IP, so it serves one it
+ *    signed itself. That costs one browser warning and still keeps the
+ *    password, session cookie and TOTP code off the wire — which matters a
+ *    great deal for a box on a public IP. The certificate carries the
+ *    machine's IP addresses as SANs, so the warning is "unknown issuer" rather
+ *    than "wrong host", and pinning the fingerprint works properly.
+ *
+ *  - A panel domain, e.g. panel.example.com. The web server obtains an
+ *    ordinary certificate for that one name — its own, issued for nothing else
+ *    — and the panel serves it here. Website certificates are untouched: a
+ *    website's certificate is never served on the panel's port, and the panel's
+ *    is never served for a website.
  */
 
 export interface PanelCertificate {
@@ -113,4 +123,70 @@ export async function loadOrCreatePanelCertificate(
   await fs.writeFile(certPath, certificate.certPem, { mode: 0o600 });
   await fs.writeFile(keyPath, certificate.keyPem, { mode: 0o600 });
   return certificate;
+}
+
+/** What the panel is serving on its own port, and where it came from. */
+export interface PanelTls {
+  certPem: string;
+  keyPem: string;
+  fingerprint: string;
+  /**
+   * `issued` means a certificate authority signed it and browsers trust it;
+   * `self-signed` means the panel made it and they will not.
+   */
+  source: 'issued' | 'self-signed';
+  /** The panel's domain name, or null while it is reached by IP. */
+  hostname: string | null;
+  /** Who signed it. Null for the self-signed one. */
+  issuer: string | null;
+  expiresAt: Date | null;
+}
+
+/**
+ * The certificate the panel should be serving right now.
+ *
+ * The issued one is only ever the certificate obtained for the panel's own
+ * name (`exactSubject`), never a website's wildcard that happens to cover it:
+ * the panel must not start serving something whose renewal, replacement or
+ * deletion belongs to a website.
+ *
+ * Falls back to the self-signed certificate whenever there is no panel domain
+ * or its certificate has not arrived yet, so the panel is never unreachable
+ * while a name is being set up.
+ */
+export async function resolvePanelTls(
+  db: DatabaseHandle,
+  caddyDir: string,
+  certPath: string,
+  keyPath: string,
+): Promise<PanelTls> {
+  const hostname = readPanelHostname(db);
+
+  if (hostname) {
+    const issued = await findIssuedCertificate(caddyDir, hostname, { exactSubject: true });
+
+    if (issued) {
+      return {
+        certPem: issued.certificate,
+        keyPem: issued.privateKey,
+        fingerprint: fingerprintOf(issued.certificate),
+        source: 'issued',
+        hostname,
+        issuer: issued.issuer,
+        expiresAt: issued.expiresAt,
+      };
+    }
+  }
+
+  const fallback = await loadOrCreatePanelCertificate(certPath, keyPath);
+
+  return {
+    certPem: fallback.certPem,
+    keyPem: fallback.keyPem,
+    fingerprint: fallback.fingerprint,
+    source: 'self-signed',
+    hostname,
+    issuer: null,
+    expiresAt: fallback.expiresAt,
+  };
 }

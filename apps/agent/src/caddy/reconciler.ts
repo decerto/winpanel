@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { STALWART_HTTP_PORT, mailHostnameFor, type SiteManifest } from '@winpanel/shared';
+import { PANEL_PORT, STALWART_HTTP_PORT, mailHostnameFor, type SiteManifest } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
 import { sites } from '../db/schema.js';
 import { cloudflareTokenGroups } from '../dns/token.js';
@@ -12,6 +12,7 @@ import {
   readCustomCertificate,
   writeCustomCertificateFiles,
 } from '../tls/custom-certificates.js';
+import { readPanelHostname } from '../tls/panel-hostname.js';
 import type { CaddyClient } from './client.js';
 import { CaddyError } from './client.js';
 import {
@@ -132,6 +133,12 @@ export class CaddyReconciler {
 
     const manualCertificates = this.manualCertificates();
 
+    /*
+     * The panel's own name. It belongs to no website, so it is not in
+     * `siteInputs` and would otherwise never be asked for a certificate.
+     */
+    const panelHostname = readPanelHostname(this.db);
+
     // The only token that can obtain a certificate for a mail hostname is
     // whichever one covers the domain it sits under.
     for (const group of dnsChallenges) {
@@ -139,6 +146,21 @@ export class CaddyReconciler {
         group.domains.some((domain) => mailHostname === mailHostnameFor(domain)),
       );
       if (owned.length > 0) group.domains = [...group.domains, ...owned];
+    }
+
+    /*
+     * Same for the panel: the challenge has to be answered by the token whose
+     * account holds the zone the name sits in. Without this the panel's name
+     * falls through to the no-issuer policy, which cannot work behind
+     * Cloudflare's proxy.
+     */
+    if (panelHostname) {
+      const group = dnsChallenges.find((entry) =>
+        entry.domains.some(
+          (domain) => panelHostname === domain || panelHostname.endsWith(`.${domain}`),
+        ),
+      );
+      if (group) group.domains = [...group.domains, panelHostname];
     }
 
     return buildCaddyConfig({
@@ -167,6 +189,7 @@ export class CaddyReconciler {
       ...(mailNames.length > 0
         ? { mailHost: { hostnames: mailNames, port: STALWART_HTTP_PORT } }
         : {}),
+      ...(panelHostname ? { panelHost: { hostname: panelHostname, port: PANEL_PORT } } : {}),
     });
   }
 

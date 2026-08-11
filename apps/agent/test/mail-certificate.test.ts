@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import selfsigned from 'selfsigned';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { findIssuedCertificate, waitForIssuedCertificate } from '../src/mail/certificate.js';
+import { findIssuedCertificate, waitForIssuedCertificate } from '../src/tls/issued-certificates.js';
 import { caddyDataDir } from '../src/tls/site-certificates.js';
 
 /**

@@ -1,22 +1,21 @@
 import { X509Certificate } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { caddyDataDir } from '../tls/site-certificates.js';
+import { caddyDataDir } from './site-certificates.js';
 
 /**
- * Giving the mail server the same certificate the web server already has.
+ * Reading a certificate the web server already obtained.
  *
- * Stalwart generates its own self-signed certificate on first start and serves
- * it on 993, 995 and 465. That is fine for the panel's webmail, which reaches
- * the mail server over loopback and validates nothing, and fatal for every
- * real mail client: Outlook, Apple Mail and the phone clients all refuse to
- * sign in rather than offering to continue. The symptom is exactly the one
- * people report — webmail works, Outlook says "something went wrong".
+ * Caddy is the only thing on the machine that talks to a certificate
+ * authority, and everything else that needs a publicly-trusted certificate —
+ * the mail server on 993/995/465, the panel on its own port — takes a copy of
+ * one Caddy already holds. There is nothing to obtain here: the file exists on
+ * disk under Caddy's storage and only has to be found.
  *
- * Caddy already holds a publicly-trusted certificate for `mail.<domain>`,
- * because the reconciler adds that name to the site's DNS challenge. So there
- * is nothing to obtain here: the certificate exists on disk and only has to be
- * copied into the mail server's own store.
+ * For the mail server this is the difference between Outlook signing in and
+ * Outlook saying "something went wrong": Stalwart generates its own
+ * self-signed certificate on first start, which webmail (loopback, validates
+ * nothing) is happy with and no real mail client will accept.
  */
 
 export interface IssuedCertificate {
@@ -32,15 +31,29 @@ export interface IssuedCertificate {
 /**
  * Caddy's own certificate authority, used for internal names.
  *
- * Skipped: a certificate from it is no more trusted by Outlook than the one
- * the mail server made for itself, so installing it would replace a useless
- * certificate with a different useless certificate and report success.
+ * Skipped: a certificate from it is no more trusted by a browser or by Outlook
+ * than a self-signed one, so installing it would replace a useless certificate
+ * with a different useless certificate and report success.
  */
 const UNTRUSTED_ISSUER = /^local$/i;
 
 function issuerNameOf(certificate: X509Certificate): string {
   const match = /^O=(.+)$/m.exec(certificate.issuer);
   return match?.[1]?.trim() ?? certificate.issuer.split('\n')[0] ?? 'Unknown';
+}
+
+export interface FindIssuedOptions {
+  /**
+   * Only accept the certificate obtained for this exact name.
+   *
+   * The panel wants this. Its certificate is its own: a wildcard a website
+   * holds may well cover `panel.example.com`, but serving a website's
+   * certificate on the panel's port ties the two together, so that renewing,
+   * replacing or deleting the website silently changes what the panel serves.
+   * Off by default, because the mail server genuinely does want whatever
+   * covers `mail.<domain>`.
+   */
+  exactSubject?: boolean;
 }
 
 /**
@@ -53,6 +66,7 @@ function issuerNameOf(certificate: X509Certificate): string {
 export async function findIssuedCertificate(
   caddyDir: string,
   hostname: string,
+  options: FindIssuedOptions = {},
 ): Promise<IssuedCertificate | null> {
   const root = path.join(caddyDataDir(caddyDir), 'certificates');
 
@@ -78,6 +92,8 @@ export async function findIssuedCertificate(
     }
 
     for (const subject of subjects) {
+      if (options.exactSubject && subject !== hostname) continue;
+
       const folder = path.join(root, issuer, subject);
 
       try {
@@ -107,9 +123,7 @@ export async function findIssuedCertificate(
     }
   }
 
-  return (
-    found.sort((a, b) => b.expiresAt.getTime() - a.expiresAt.getTime())[0] ?? null
-  );
+  return found.sort((a, b) => b.expiresAt.getTime() - a.expiresAt.getTime())[0] ?? null;
 }
 
 /**
@@ -125,11 +139,12 @@ export async function waitForIssuedCertificate(
   hostname: string,
   timeoutMs = 60_000,
   intervalMs = 2_000,
+  options: FindIssuedOptions = {},
 ): Promise<IssuedCertificate | null> {
   const deadline = Date.now() + timeoutMs;
 
   for (;;) {
-    const issued = await findIssuedCertificate(caddyDir, hostname);
+    const issued = await findIssuedCertificate(caddyDir, hostname, options);
     if (issued) return issued;
     if (Date.now() + intervalMs >= deadline) return null;
 

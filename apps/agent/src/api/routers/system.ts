@@ -1,11 +1,20 @@
 import fs from 'node:fs';
+import dns from 'node:dns/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { CADDY_ADMIN_PORT, PANEL_PORT, STALWART_HTTP_PORT } from '@winpanel/shared';
 import { adminProcedure, router, superadminProcedure } from '../trpc.js';
-import { localAddresses } from '../../tls/panel-certificate.js';
+import { localAddresses, resolvePanelTls } from '../../tls/panel-certificate.js';
+import {
+  PanelHostnameError,
+  normalisePanelHostname,
+  readPanelHostname,
+  storePanelHostname,
+} from '../../tls/panel-hostname.js';
+import { paths } from '../../config.js';
+import { sites } from '../../db/schema.js';
 import { discoverNodeVersions } from '../../sites/node-versions.js';
 import {
   AGENT_SERVICE_ID,
@@ -65,6 +74,40 @@ function readVersion(): string {
 
 const version = readVersion();
 
+/**
+ * Whether the panel's name actually resolves to this machine.
+ *
+ * The single reason a panel certificate does not arrive. Answered from the
+ * machine's own resolver, so a change made minutes ago may still show the old
+ * answer until it expires — worth saying in the UI rather than hiding.
+ */
+async function panelHostnamePointsHere(hostname: string): Promise<boolean | null> {
+  const mine = new Set(localAddresses());
+
+  try {
+    const answers = await dns.resolve4(hostname);
+    return answers.some((address) => mine.has(address));
+  } catch {
+    return null;
+  }
+}
+
+/** The website, if any, already serving this name. */
+function siteClaiming(db: DatabaseHandle, hostname: string): string | null {
+  const rows = db.db
+    .select({ displayName: sites.displayName, domains: sites.domains })
+    .from(sites)
+    .all();
+
+  for (const row of rows) {
+    if ((row.domains as string[]).some((domain) => domain.toLowerCase() === hostname)) {
+      return row.displayName;
+    }
+  }
+
+  return null;
+}
+
 export const systemRouter = router({
   info: adminProcedure.query(({ ctx }) => {
     const addresses = localAddresses();
@@ -106,6 +149,118 @@ export const systemRouter = router({
   nodeVersions: adminProcedure.query(async ({ ctx }) => {
     return await discoverNodeVersions(ctx.app.config.binDir);
   }),
+
+  /**
+   * The panel's own certificate, and the name it belongs to.
+   *
+   * Nothing to do with the websites' certificates, which live on the SSL tab
+   * of each website and are unaffected by anything here.
+   *
+   * Asking also installs: the web server obtains the certificate in the
+   * background some seconds after the name is set, and this is the panel
+   * polling for it, so the swap happens the moment it lands rather than at the
+   * next restart.
+   */
+  panelCertificate: adminProcedure.query(async ({ ctx }) => {
+    const hostname = readPanelHostname(ctx.app.db);
+
+    const current =
+      (await ctx.app.refreshPanelCertificate?.()) ??
+      (ctx.app.config.httpsEnabled
+        ? await resolvePanelTls(
+            ctx.app.db,
+            ctx.app.config.caddyDir,
+            paths.panelCert(),
+            paths.panelKey(),
+          )
+        : null);
+
+    return {
+      httpsEnabled: ctx.app.config.httpsEnabled,
+      hostname,
+      /** Where to sign in once the certificate is in place. */
+      url: hostname ? `https://${hostname}:${PANEL_PORT}` : null,
+      source: current?.source ?? null,
+      issuer: current?.issuer ?? null,
+      expiresAt: current?.expiresAt ?? null,
+      fingerprint: current?.fingerprint ?? null,
+      /** Null when the name does not resolve at all yet. */
+      dnsPointsHere: hostname ? await panelHostnamePointsHere(hostname) : null,
+      suggestedIpv4: localAddresses().find((address) => !address.includes(':')) ?? null,
+    };
+  }),
+
+  /**
+   * Gives the panel a domain name of its own, or takes it away.
+   *
+   * This is the only way the panel can have a certificate a browser trusts: a
+   * certificate authority will not issue for `https://<ip>:8443`, so without a
+   * name the best available is one the panel signed itself and every sign-in
+   * begins with a full-page warning.
+   *
+   * The name is the panel's alone. It is not added to any website, no website
+   * certificate is reused for it, and the websites' own certificates carry on
+   * being obtained and renewed exactly as before. Nor is the panel proxied
+   * through the web server — the name is redirected to the panel's own port,
+   * so a web server that will not start still cannot lock anyone out.
+   *
+   * Owner only: it changes the address every administrator signs in at.
+   */
+  setPanelHostname: superadminProcedure
+    .input(z.object({ hostname: z.string().max(253).nullable() }))
+    .mutation(async ({ ctx, input }) => {
+      let hostname: string | null = null;
+
+      if (input.hostname !== null && input.hostname.trim().length > 0) {
+        try {
+          hostname = normalisePanelHostname(input.hostname);
+        } catch (error) {
+          if (error instanceof PanelHostnameError) {
+            throw new TRPCError({ code: 'BAD_REQUEST', message: error.message });
+          }
+          throw error;
+        }
+
+        const claimed = siteClaiming(ctx.app.db, hostname);
+        if (claimed) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message:
+              `The website \u201c${claimed}\u201d already serves ${hostname}. Give the panel a ` +
+              'name of its own, such as panel.example.com \u2014 sharing one would mean the ' +
+              'website and the panel fighting over the same address.',
+          });
+        }
+
+        if (!ctx.app.config.httpsEnabled) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              'The panel is running without HTTPS, so there is nothing for a certificate to ' +
+              'be served on. Turn HTTPS back on first.',
+          });
+        }
+      }
+
+      storePanelHostname(ctx.app.db, hostname);
+
+      /*
+       * Naming it in the web server's configuration is what starts the
+       * certificate being obtained. A web server that is not running is not a
+       * failure here: the name is stored, and the next reconcile asks for it.
+       */
+      const routingError = await ctx.app.routing.tryApply();
+
+      return {
+        hostname,
+        url: hostname ? `https://${hostname}:${PANEL_PORT}` : null,
+        dnsPointsHere: hostname ? await panelHostnamePointsHere(hostname) : null,
+        webServerWarning: routingError
+          ? 'The name is saved, but the web server would not accept the new configuration, ' +
+            'so the certificate cannot be obtained yet.'
+          : null,
+      };
+    }),
 
   /**
    * What the panel is running on this machine, headlessly.

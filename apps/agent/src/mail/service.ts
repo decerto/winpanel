@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type { DatabaseHandle } from '../db/index.js';
 import type { SecretVault } from '../security/vault.js';
 import type { ServiceManager } from '../windows/service-manager.js';
-import { findIssuedCertificate } from './certificate.js';
+import { findIssuedCertificate } from '../tls/issued-certificates.js';
 import { mailHostnames, storeMailDomains } from './domains.js';
 import {
   loadMailAdminCredentials,
