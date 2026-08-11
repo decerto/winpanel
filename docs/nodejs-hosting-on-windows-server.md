@@ -1,9 +1,9 @@
 ---
 title: How to host a Node.js app on Windows Server
 description: >-
-  Host Node.js on Windows Server 2022/2025 without IIS, iisnode or a web.config -
-  run the app as a Windows Service behind a reverse proxy. Step by step, plus the
-  Windows-specific errors that catch everyone.
+  Host Node.js on Windows Server 2025/2022 or Windows 11 without IIS, iisnode or a
+  web.config - run the app as a Windows Service behind a reverse proxy. Step by step,
+  plus the Windows-specific errors that catch everyone.
 ---
 
 # How to host a Node.js app on Windows Server
@@ -14,7 +14,8 @@ and put a reverse proxy in front of it for the domain and the HTTPS certificate.
 the whole pattern. This page explains it, shows you how to do it by hand, and then shows
 what [WinPanel](https://github.com/decerto/winpanel#readme) automates.
 
-Applies to Windows Server 2022 and 2025. The same approach works for Express, Fastify,
+Applies to Windows Server 2025 and 2022, and to Windows 11 — none of this needs a Server
+edition. The same approach works for Express, Fastify,
 Next.js, Nuxt, NestJS, Astro, SvelteKit, Remix, Strapi, Socket.IO, Bun-style servers and
 anything else that listens on a port.
 
@@ -247,6 +248,13 @@ code, not by the platform. File-system-heavy work (large `npm install` runs, tho
 small files) is measurably slower on NTFS with Defender scanning it — excluding your sites
 folder and your Node installation from real-time scanning is the single biggest win
 available.
+
+### What Windows versions does it need?
+
+Windows Server 2025 or 2022, or Windows 11. A Windows Service, a firewall rule and a
+reverse proxy are not Server features — the architecture on this page works on any modern
+Windows. Desktop editions even avoid the commonest problem, since IIS is not installed by
+default.
 
 ### Should I just use Linux?
 

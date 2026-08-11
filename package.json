@@ -2,7 +2,7 @@
   "name": "winpanel",
   "version": "1.2.1",
   "private": true,
-  "description": "Free control panel for hosting websites and Node.js apps on Windows Server 2022/2025, without IIS",
+  "description": "Free control panel for hosting websites and Node.js apps on Windows Server 2025/2022 and Windows 11, without IIS",
   "license": "SEE LICENSE IN LICENSE.md",
   "packageManager": "pnpm@10.30.2",
   "engines": {

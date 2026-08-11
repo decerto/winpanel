@@ -1,8 +1,8 @@
 ---
-title: Hosting Node.js and websites on Windows Server
+title: Hosting Node.js and websites on Windows
 description: >-
-  How to host Node.js apps, .NET apps and websites on Windows Server 2022/2025
-  without IIS or iisnode - plus WinPanel, a free control panel that does it for you.
+  How to host Node.js apps, .NET apps and websites on Windows Server 2025/2022 or
+  Windows 11 without IIS or iisnode - plus WinPanel, a free control panel that does it for you.
 image: /winpanel/banner.png
 ---
 
@@ -17,7 +17,7 @@ the same architecture every Linux host uses — only the names of the parts diff
 
 These pages explain how to do that by hand, and how
 **[WinPanel](https://github.com/decerto/winpanel)** — a free, self-hosted control panel for
-Windows Server 2022 and 2025 — does it for you, per site, from a web page.
+Windows Server 2025/2022 and Windows 11 — does it for you, per site, from a web page.
 
 <p>
   <a href="https://github.com/decerto/winpanel/releases">Download the installer</a> ·
@@ -46,10 +46,11 @@ means, and what goes wrong — with no jargon and no command line.
 
 ## What WinPanel is
 
-A free control panel for Windows Server that manages websites, HTTPS, DNS, email and
+A free control panel for Windows that manages websites, HTTPS, DNS, email and
 customer accounts from one interface. Static sites, Node.js apps and ASP.NET Core apps are
 all first-class; each runs as a supervised Windows Service, with [Caddy](https://caddyserver.com/)
-in front handling domains, certificates and traffic.
+in front handling domains, certificates and traffic. It needs Server 2025/2022 or
+Windows 11 — there is no Server-edition requirement.
 
 - **Websites** — from Git or managed by hand, with builds that swap in only if they start
 - **HTTPS** — free certificates, renewed automatically, over the DNS challenge

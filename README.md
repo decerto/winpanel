@@ -4,10 +4,11 @@
 
 # WinPanel
 
-**A free control panel for hosting websites on Windows Server 2022/2025 — Node.js apps,
-.NET apps and plain HTML sites, with HTTPS, DNS, email and customer logins.**
+**A free control panel for hosting websites on Windows — Server 2025/2022 or a Windows 11
+PC. Node.js apps, .NET apps and plain HTML sites, with HTTPS, DNS, email and customer
+logins.**
 
-Put a website online on your own Windows server, keep it running, give it a domain and a
+Put a website online on your own Windows machine, keep it running, give it a domain and a
 padlock, host the mailboxes for it, and hand a client their own login — from one web page,
 without IIS and without touching the command line.
 
@@ -26,10 +27,10 @@ sites on Windows. Your apps run as ordinary Windows Services on loopback ports, 
 **Stalwart**, DNS is driven through **Cloudflare**, and everything — websites,
 certificates, mailboxes, customers and Windows itself — is managed from one web interface.
 
-It is for anyone with a Windows Server box or VPS who wants to host their own websites on
-it, or their clients' websites, instead of renting space on somebody else's: agencies,
-developers, IT departments and people who simply have a server sitting there. Node.js
-hosting on Windows is treated as the normal case rather than the exception.
+It is for anyone with a Windows machine they want to host on — a rented Windows Server VPS,
+a box in the office, or a spare PC at home. Agencies, developers, IT departments and people
+who simply have a computer sitting there. Node.js hosting on Windows is treated as the
+normal case rather than the exception.
 
 You reach the panel at **`https://<your-server-ip>:8443`** — no domain required.
 
@@ -342,12 +343,45 @@ are handled rather than assumed.
 
 ## Requirements
 
-- Windows Server 2025 (or Windows Server 2022)
+- Windows Server 2025 or 2022 — or Windows 11, see [Which Windows](#which-windows) below
 - Administrator access
 - A Cloudflare account, if you want managed DNS and automatic certificates
 
 Nothing else needs to be installed first. The installer bundles its own Node runtime,
 and the panel downloads everything else itself.
+
+### Which Windows
+
+WinPanel is **not** limited to Server editions. Nothing it does needs one: your sites run
+as ordinary Windows Services, and the machine-level work is `sc.exe`, `netsh advfirewall`,
+a registry value and a scheduled task — all present on desktop Windows. There is no
+edition check in the installer or the agent.
+
+| | |
+| --- | --- |
+| **Windows Server 2025 / 2022** | What it is developed and run on, and where the live sites listed below are hosted. |
+| **Windows 11** (Pro or Home) | Same code paths, and IIS is absent by default so the commonest port conflict cannot happen. Less widely exercised — tell us if something differs. |
+| **Windows 10** | Should behave identically, but it left support in October 2025, so it is not a sensible thing to expose to the internet. |
+| **Windows Server 2019** | Untested. |
+
+### Hosting from home
+
+A PC at home works, and the panel is genuinely useful there — but your internet connection
+is the limiting factor, not Windows:
+
+- **Stop it sleeping.** A sleep/wake cycle is the usual cause of the orphaned-process
+  failure described in [Apps that fix themselves](#apps-that-fix-themselves). WinPanel
+  clears that automatically, but a machine that is asleep is a website that is down.
+  Set the power plan to never sleep, and disable automatic restarts after updates.
+- **Your IP address probably moves.** Use a dynamic DNS updater, or Cloudflare's API, to
+  keep the record pointing at you.
+- **You may have no inbound ports at all.** Many broadband providers use CGNAT, and most
+  block inbound 80 and 443 on residential lines. Check before you plan around it.
+- **Certificates still work without port 80.** Connect Cloudflare and WinPanel issues over
+  the DNS challenge, which needs nothing inbound at all.
+- **Email from home is a different matter.** Residential IPs are blocked outbound on port
+  25 almost universally, and are on blocklists besides. Host the websites at home if you
+  like; put the mailboxes somewhere with a clean IP.
 
 ---
 
@@ -596,7 +630,17 @@ down.
 
 ### What Windows versions does it need?
 
-Windows Server 2025 or 2022. It has not been tested on 2019 or on desktop Windows.
+Windows Server 2025 or 2022, or Windows 11. It is not restricted to Server editions —
+there is no edition check anywhere, and everything it relies on exists on desktop Windows
+too. Server is simply what it is developed on and where it has the most hours. See
+[Which Windows](#which-windows).
+
+### Can I run it on a PC at home?
+
+Yes, and it is a reasonable way to host a personal site or a staging box. Windows is not
+the obstacle; your broadband is. Stop the machine sleeping, expect your IP address to
+move, check whether your provider gives you inbound ports at all, and do not plan on
+sending email from a residential connection. See [Hosting from home](#hosting-from-home).
 
 ### Do I need a domain name to start?
 

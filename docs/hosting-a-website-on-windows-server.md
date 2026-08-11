@@ -7,9 +7,10 @@ description: >-
 
 # How to put a website on your own Windows server
 
-Written for people who are not sysadmins. If you have rented a Windows server — or you
-have one under a desk — and you want your website, your customers' websites or your
-company's email running on it, this page explains what is involved, in plain words.
+Written for people who are not sysadmins. If you have a Windows machine — a rented server,
+a box under a desk, or a spare PC at home — and you want your website, your customers'
+websites or your company's email running on it, this page explains what is involved, in
+plain words.
 
 No command line is needed for any of it. Where a technical word is unavoidable it is
 explained the first time, and there is a [glossary](#glossary-of-the-words-people-use) at
@@ -61,12 +62,36 @@ website than most people build today. The gap is what a control panel fills.
 
 | | |
 | --- | --- |
-| **The server** | Whatever you already pay. A small Windows VPS is typically £15–£40 a month; a machine in your office is free apart from electricity. |
-| **Windows Server licence** | Included if you rent; otherwise bought once. |
+| **The server** | Whatever you already pay. A small Windows VPS is typically £15–£40 a month; a machine in your office is free apart from electricity; a PC you already own costs nothing. |
+| **Windows licence** | Included if you rent; bought once if you own the hardware; already paid for if you are reusing a PC. |
 | **WinPanel** | Free. No per-site fee, no per-customer fee, no licence key. |
 | **Plesk, the paid alternative** | Roughly £10–£60 per server per month depending on edition. |
 | **Certificates (the padlock)** | Free, issued and renewed automatically. |
 | **Your domain name** | £8–£15 a year, from wherever you bought it. |
+
+---
+
+## Does it have to be Windows *Server*?
+
+No. A Windows 11 PC will do — nothing here needs a Server edition, and a desktop machine
+avoids the commonest problem of all, because IIS is not installed on it to fight over the
+ports.
+
+If that PC lives at home, the computer is rarely what limits you. Your internet connection
+is. Three things to know before you rely on it:
+
+- **It must not go to sleep.** A sleeping computer is an offline website. Set the power
+  plan to never sleep, and turn off automatic restarts after updates.
+- **Your address probably changes.** Home connections are usually given a new IP address
+  from time to time, so the domain has to be updated when it does. A dynamic DNS service
+  does that for you.
+- **Some connections cannot host at all.** Many providers block the ports websites use, or
+  share one address between many customers, in which case nothing from outside can reach
+  you. Test it before planning around it.
+
+Email is the one thing not to do from home: residential connections are blocked from
+sending mail directly and are distrusted by other mail servers, so those messages will not
+arrive whatever you configure.
 
 ---
 
