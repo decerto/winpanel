@@ -1,7 +1,19 @@
-# WinPanel developer documentation
+# WinPanel documentation
 
-Written for people changing the code, not for people running the panel. The
-[README](../README.md) covers what WinPanel does and how to install it.
+The [README](../README.md) covers what WinPanel does and how to install it.
+
+## Guides for people running a server
+
+These two answer the questions people arrive with, and need no knowledge of the codebase.
+
+| Guide | Who it is for |
+| --- | --- |
+| [nodejs-hosting-on-windows-server.md](nodejs-hosting-on-windows-server.md) | How to host a Node.js app on Windows Server without IIS or `iisnode` — as a Windows Service behind a reverse proxy, by hand or with the panel |
+| [hosting-a-website-on-windows-server.md](hosting-a-website-on-windows-server.md) | The same subject with no jargon: what hosting a website on your own Windows server involves, what it costs, and what the words mean |
+
+## Developer documentation
+
+Written for people changing the code, not for people running the panel.
 
 | Document | What is in it |
 | --- | --- |

@@ -2,12 +2,14 @@
 
 # WinPanel
 
-**A self-hosted control panel for websites, DNS, email and users on Windows Server 2022/2025.**
+**A free control panel for hosting websites on Windows Server 2022/2025 — Node.js apps,
+.NET apps and plain HTML sites, with HTTPS, DNS, email and customer logins.**
 
-Websites, Node and .NET apps, Cloudflare DNS, self-hosted mailboxes, customer accounts
-and the Windows fixes that make it all work — in one panel, without IIS.
+Put a website online on your own Windows server, keep it running, give it a domain and a
+padlock, host the mailboxes for it, and hand a client their own login — from one web page,
+without IIS and without touching the command line.
 
-[Features](#what-it-does) · [Websites](#websites) · [DNS](#dns-control) · [Email](#email-control) · [People](#user-control-and-management) · [Compare](#how-it-compares) · [Live sites](#sites-running-on-it) · [FAQ](#frequently-asked-questions) · [Install](#installing) · [Support](#support) · [Licence](#licence) · [Develop](#development)
+[Features](#what-it-does) · [Start here](#new-here) · [Websites](#websites) · [DNS](#dns-control) · [Email](#email-control) · [People](#user-control-and-management) · [Compare](#how-it-compares) · [Live sites](#sites-running-on-it) · [FAQ](#frequently-asked-questions) · [Install](#installing) · [Support](#support) · [Licence](#licence) · [Develop](#development)
 
 [![Chat on Discord](https://img.shields.io/badge/Discord-Ask%20for%20help-5865F2?logo=discord&logoColor=white)](https://discord.gg/wT6mnfAnUD)
 
@@ -24,10 +26,27 @@ sites on Windows. Your apps run as ordinary Windows Services on loopback ports, 
 **Stalwart**, DNS is driven through **Cloudflare**, and everything — websites,
 certificates, mailboxes, customers and Windows itself — is managed from one web interface.
 
+It is for anyone with a Windows Server box or VPS who wants to host their own websites on
+it, or their clients' websites, instead of renting space on somebody else's: agencies,
+developers, IT departments and people who simply have a server sitting there. Node.js
+hosting on Windows is treated as the normal case rather than the exception.
+
 You reach the panel at **`https://<your-server-ip>:8443`** — no domain required.
 
 > The screenshots on this page come from a real instance running the code in this
 > repository. The domains, mailboxes, customers and traffic in them are invented.
+
+---
+
+## New here?
+
+Two guides, depending on what you already know. Both are worth reading before installing
+anything, and neither assumes you will use this panel.
+
+| Guide | For |
+| --- | --- |
+| **[How to host a Node.js app on Windows Server](docs/nodejs-hosting-on-windows-server.md)** | Developers and sysadmins. Why the "it's impossible" and "use `iisnode`" answers are wrong, the four ways to do it ranked, how to build it by hand with WinSW and Caddy, and the eight Windows-specific failures that catch everyone. |
+| **[How to put a website on your own Windows server](docs/hosting-a-website-on-windows-server.md)** | Everyone else. What hosting a website actually involves, what it costs, what the words mean, and what goes wrong — with no jargon and no command line. |
 
 ---
 
@@ -40,6 +59,9 @@ WinPanel runs each app as a supervised Windows Service and puts Caddy in front o
 A practical consequence: **you never need a `web.config`.** That file is an IIS
 artifact. The equivalent configuration here is generated for you — see
 [Site configuration](#site-configuration) below.
+
+The long version, including how to do it by hand without this panel, is in
+[docs/nodejs-hosting-on-windows-server.md](docs/nodejs-hosting-on-windows-server.md).
 
 ---
 
@@ -469,6 +491,32 @@ Port 8443 is permanently reserved, so a site can never be given it.
 
 ## Frequently asked questions
 
+### What is a hosting control panel?
+
+A website you sign in to that manages a server for you: adding websites, pointing domains
+at them, getting the padlock in the address bar, creating mailboxes, uploading files and
+giving other people limited logins. cPanel and Plesk are the names most people know. This
+is one of those, for Windows, free. There is a
+[plain-English introduction](docs/hosting-a-website-on-windows-server.md) if that whole
+subject is new.
+
+### I have a Windows server. How do I get my website onto it?
+
+Run the installer, sign in with the code it gives you, add a website, and either upload
+your files or connect the repository they live in. The site is reachable straight away on
+a temporary address, so you can check it before pointing your domain at it. Nothing else
+has to be installed first.
+
+### Can I host my own website instead of paying a hosting company?
+
+Yes — that is what this is for. One server holds as many sites as it has room for, with no
+per-site charge, no per-mailbox charge and no licence key.
+
+### Do I need to know the command line?
+
+No. Installing WinPanel is a normal Windows installer, and everything after that is a web
+page you click around in. No configuration files, no PowerShell, no `web.config`.
+
 ### Can I host a Node.js app on Windows Server without IIS?
 
 Yes — that is the point of it. Each app runs as a supervised Windows Service on a
@@ -481,6 +529,32 @@ It has not had a release in nine years and still lists Windows Server 2012 as a
 prerequisite. If you are starting something today, run Node as a service behind a reverse
 proxy instead. That is what WinPanel automates.
 
+### How do I keep a Node app running after a reboot or logout?
+
+It has to be a Windows Service — a scheduled task or an open terminal window will not
+survive. WinPanel registers one per site, starts it at boot, restarts it if it crashes,
+and clears the nastier case where the supervisor dies but the app underneath keeps holding
+the port. Doing it yourself is
+[described here](docs/nodejs-hosting-on-windows-server.md#step-2--run-it-as-a-windows-service).
+
+### Can I run several Node apps on one Windows Server?
+
+Yes. Each gets its own port and its own service, and the reverse proxy routes by domain
+name. WinPanel allocates the ports and keeps the routing in step, so adding the tenth site
+is the same amount of work as the first.
+
+### What about pm2?
+
+`pm2` runs on Windows but does not survive a reboot on its own, and the packages that used
+to register it as a service are unmaintained. If you are registering a Windows Service
+anyway, register the app itself and drop the extra layer.
+
+### Is Windows slower than Linux for hosting Node?
+
+For real applications the difference is dominated by your database, your I/O and your
+code. The one measurable Windows penalty is file-heavy work such as a large `npm install`,
+and excluding your sites folder from Defender's real-time scanning removes most of it.
+
 ### Do I have to uninstall IIS?
 
 No. IIS only has to stop holding ports 80 and 443. The Health page detects that and offers
@@ -491,6 +565,12 @@ first, so a machine that genuinely used IIS can be put back the way it was.
 
 That is what this is. It covers the same ground — websites, domains, SSL, mail, file
 manager, customer accounts — self-hosted, with no licence fee.
+
+### What does it cost?
+
+Nothing. There is no paid tier, no per-server licence, no site or mailbox limit and no
+key to activate. You pay for the server and the domain, as you would anyway. Plesk for
+Windows, the closest paid equivalent, is charged per server per month.
 
 ### Does aaPanel work on Windows?
 
@@ -609,6 +689,8 @@ scratch folder instead — [docs/development.md](docs/development.md) walks thro
 
 | Document | What is in it |
 | --- | --- |
+| [docs/nodejs-hosting-on-windows-server.md](docs/nodejs-hosting-on-windows-server.md) | Hosting Node.js on Windows Server, with or without this panel |
+| [docs/hosting-a-website-on-windows-server.md](docs/hosting-a-website-on-windows-server.md) | The same, written for people who are not sysadmins |
 | [docs/architecture.md](docs/architecture.md) | How the agent, panel, Caddy and Stalwart fit together |
 | [docs/development.md](docs/development.md) | Running the panel locally, environment variables, gotchas |
 | [docs/dns.md](docs/dns.md) | Cloudflare tokens, the record planner, certificate issuance |
