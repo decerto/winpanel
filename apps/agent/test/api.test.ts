@@ -262,6 +262,62 @@ describe('first-run setup', () => {
   });
 });
 
+describe('batched requests', () => {
+  /*
+   * The client packs every query a page fires in one tick into a single
+   * request, and the procedure names all go into one URL path segment.
+   * Fastify caps that at 100 characters by default, and going over is not a
+   * tidy per-query failure: it answers 414 with its own error body before tRPC
+   * sees the request, so every panel on the page fails at once with "Unable to
+   * transform response from server".
+   *
+   * That is exactly what shipped in 1.2.0. The Settings page had grown to 90
+   * characters of procedure names, and one more query took it to 114. Guarding
+   * it here rather than trusting a comment, because the failure is invisible
+   * until a page happens to cross the line, and then it takes the whole page.
+   */
+  it('accepts a batch far longer than one page could ask for', async () => {
+    const cookie = await completeSetup();
+
+    const procedures = [
+      'auth.me',
+      'system.info',
+      'system.backgroundServices',
+      'system.panelCertificate',
+      'system.nodeVersions',
+      'dns.status',
+      'mail.serverStatus',
+      'components.list',
+      'sites.list',
+      'ssl.overview',
+      'users.list',
+      'access.summary',
+      'access.sessions',
+      'access.attempts',
+      'access.blockedAddresses',
+      'auth.recoveryCodeStatus',
+    ];
+
+    expect(procedures.join(',').length).toBeGreaterThan(200);
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/api/trpc/${procedures.join(',')}?batch=1`,
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(200);
+
+    // One entry per procedure, and none of them an error. A short response is
+    // the shape that makes the client throw rather than report a real problem.
+    const entries = JSON.parse(response.body);
+    expect(entries).toHaveLength(procedures.length);
+    for (const [index, entry] of entries.entries()) {
+      expect(entry.error, `${procedures[index]}: ${JSON.stringify(entry.error)}`).toBeUndefined();
+    }
+  });
+});
+
 describe('two-factor enrolment', () => {
   let cookie: string;
 

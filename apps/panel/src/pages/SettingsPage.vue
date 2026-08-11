@@ -26,16 +26,11 @@ type PanelCertificate = Awaited<ReturnType<typeof api.system.panelCertificate.qu
 
 const info = ref<SystemInfo | null>(null);
 
-/*
- * Replacing or stopping the panel is the owner's alone, so an administrator
- * is not shown a button that will only ever refuse them. The server enforces
- * it either way.
- */
+/** Owner-only sections. Re-read by every refresh, not fetched once at setup. */
 const isOwner = ref(false);
-void api.auth.me
-  .query()
-  .then((user) => (isOwner.value = user?.role === 'superadmin'))
-  .catch(() => undefined);
+
+/** The hostname box is only filled from the server before the user touches it. */
+let firstLoad = true;
 
 const cloudflare = ref<{ connected: boolean; message: string } | null>(null);
 const cloudflareToken = ref('');
@@ -241,25 +236,48 @@ function cancelUpload(): void {
   upload?.abort();
 }
 
+/**
+ * Reloads every panel on the page.
+ *
+ * Settled rather than all: these are independent sections, and one of them
+ * failing should cost the user that section rather than the whole page. It
+ * also has to cover *everything* the page shows, including who is signed in —
+ * anything fetched once at setup and never again turns a momentary failure
+ * into a section that stays missing until the page is reloaded, with a Refresh
+ * button sitting there that cannot bring it back.
+ */
 async function refresh(): Promise<void> {
-  try {
-    const [systemInfo, dnsStatus, mailStatus, background] = await Promise.all([
-      api.system.info.query(),
-      api.dns.status.query(),
-      api.mail.serverStatus.query(),
-      api.system.backgroundServices.query(),
-    ]);
-    info.value = systemInfo;
-    cloudflare.value = dnsStatus;
-    mail.value = mailStatus;
-    services.value = background;
-  } catch (err) {
-    error.value = describeError(err);
-  }
+  error.value = null;
+
+  const results = await Promise.allSettled([
+    api.system.info.query(),
+    api.dns.status.query(),
+    api.mail.serverStatus.query(),
+    api.system.backgroundServices.query(),
+    api.auth.me.query(),
+  ]);
+
+  const [systemInfo, dnsStatus, mailStatus, background, me] = results;
+
+  if (systemInfo.status === 'fulfilled') info.value = systemInfo.value;
+  if (dnsStatus.status === 'fulfilled') cloudflare.value = dnsStatus.value;
+  if (mailStatus.status === 'fulfilled') mail.value = mailStatus.value;
+  if (background.status === 'fulfilled') services.value = background.value;
+  /*
+   * Replacing or stopping the panel is the owner's alone, so an administrator
+   * is not shown a button that will only ever refuse them. The server enforces
+   * it either way.
+   */
+  if (me.status === 'fulfilled') isOwner.value = me.value?.role === 'superadmin';
+
+  await loadPanelCertificate({ adoptHostname: firstLoad });
+  firstLoad = false;
+
+  const failure = results.find((result) => result.status === 'rejected');
+  if (failure) error.value = describeError(failure.reason);
 }
 
 void refresh();
-void loadPanelCertificate({ adoptHostname: true });
 
 async function connectCloudflare(): Promise<void> {
   cloudflareBusy.value = true;

@@ -1,6 +1,6 @@
 {
   "name": "winpanel",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "description": "Server and website control panel for Windows Server 2025",
   "license": "SEE LICENSE IN LICENSE.md",

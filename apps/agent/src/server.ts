@@ -42,6 +42,21 @@ export async function createServer(app: AppContext): Promise<FastifyInstance> {
     // X-Forwarded-For and defeat both the IP allowlist and the login throttle.
     trustProxy: false,
     bodyLimit: 25 * 1024 * 1024,
+    /*
+     * The client batches the queries a page fires in one tick into a single
+     * request, and every procedure name goes into one URL path segment:
+     * `/api/trpc/auth.me,system.info,dns.status,...`. Fastify's default cap on
+     * that is 100 characters, which the Settings page had quietly grown to
+     * within ten of. Going over is not a tidy per-query failure — Fastify
+     * answers 414 with its own error body before tRPC sees the request, so the
+     * whole batch fails at once and every panel on the page reports "Unable to
+     * transform response from server".
+     *
+     * Raising it is what the tRPC Fastify adapter documents. Nothing here
+     * routes on a parameter, so the length of the path costs nothing beyond
+     * the 404 an unrecognised one already gets.
+     */
+    routerOptions: { maxParamLength: 5000 },
   });
 
   await server.register(cookie);
