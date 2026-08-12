@@ -26,6 +26,7 @@ import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
 import EmptyState from '../../components/EmptyState.vue';
 import FileEditorDialog from '../../components/FileEditorDialog.vue';
+import LoadingBlock from '../../components/LoadingBlock.vue';
 import SiteStorageDialog from '../../components/SiteStorageDialog.vue';
 
 /**
@@ -584,9 +585,7 @@ watch(
         <span class="w-[86px] shrink-0" aria-hidden="true" />
       </div>
 
-      <div v-if="loading" class="space-y-2 p-4">
-        <div v-for="n in 6" :key="n" class="h-9 animate-pulse rounded-md bg-elevated/60" />
-      </div>
+      <LoadingBlock v-if="loading" class="h-64" />
 
       <EmptyState
         v-else-if="entries.length === 0"

@@ -7,6 +7,7 @@ import { api, describeError } from '../../lib/api';
 import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
 import HowTo from '../../components/HowTo.vue';
+import LoadingBlock from '../../components/LoadingBlock.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 
 /**
@@ -265,7 +266,7 @@ watch(slug, load, { immediate: true });
 
 <template>
   <div class="space-y-4">
-    <div v-if="loading" class="h-40 animate-pulse rounded-card bg-surface" />
+    <LoadingBlock v-if="loading" class="h-40 rounded-card bg-surface" />
 
     <template v-else>
       <AlertMessage v-if="error">{{ error }}</AlertMessage>

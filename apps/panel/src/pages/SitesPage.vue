@@ -16,6 +16,7 @@ import {
 } from 'lucide-vue-next';
 import EmptyState from '../components/EmptyState.vue';
 import AlertMessage from '../components/AlertMessage.vue';
+import LoadingBlock from '../components/LoadingBlock.vue';
 import PageHeader from '../components/PageHeader.vue';
 import PaginationBar from '../components/PaginationBar.vue';
 import ViewToggle from '../components/ViewToggle.vue';
@@ -151,9 +152,7 @@ onMounted(load);
 
     <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
 
-    <div v-if="loading" class="space-y-4">
-      <div v-for="n in 3" :key="n" class="h-64 animate-pulse rounded-card bg-surface" />
-    </div>
+    <LoadingBlock v-if="loading" class="h-64 rounded-card bg-surface" />
 
     <EmptyState
       v-else-if="sites.length === 0"

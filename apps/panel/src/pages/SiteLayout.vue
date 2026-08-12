@@ -22,6 +22,7 @@ import { siteContextKey, type SiteDetail } from '../lib/site-context';
 import { LOG_LEVEL_CLASS, useJobLog } from '../lib/job-log';
 import StatusBadge from '../components/StatusBadge.vue';
 import AlertMessage from '../components/AlertMessage.vue';
+import LoadingBlock from '../components/LoadingBlock.vue';
 
 /**
  * One website, and everything you can do to it.
@@ -145,7 +146,7 @@ provide(siteContextKey, { site, reload: load, deploy, deploying });
       <ArrowLeft :size="15" aria-hidden="true" /> All websites
     </RouterLink>
 
-    <div v-if="loading && !site" class="h-40 animate-pulse rounded-card bg-surface" />
+    <LoadingBlock v-if="loading && !site" class="h-40 rounded-card bg-surface" />
 
     <AlertMessage v-else-if="error && !site">{{ error }}</AlertMessage>
 

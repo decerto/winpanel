@@ -8,6 +8,7 @@ import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
 import EmptyState from '../../components/EmptyState.vue';
 import HowTo from '../../components/HowTo.vue';
+import LoadingBlock from '../../components/LoadingBlock.vue';
 
 /**
  * DNS for this website, through Cloudflare.
@@ -268,7 +269,7 @@ onUnmounted(() => clearTimeout(planTimer));
 
 <template>
   <div class="space-y-4">
-    <div v-if="loading" class="h-40 animate-pulse rounded-card bg-surface" />
+    <LoadingBlock v-if="loading" class="h-40 rounded-card bg-surface" />
 
     <template v-else>
       <AlertMessage v-if="error">{{ error }}</AlertMessage>
@@ -463,7 +464,7 @@ onUnmounted(() => clearTimeout(planTimer));
             -->
             <AlertMessage v-if="planError" tone="warning">{{ planError }}</AlertMessage>
 
-            <div v-else-if="planning" class="h-16 animate-pulse rounded-lg bg-sunken" />
+            <LoadingBlock v-else-if="planning" class="h-16 rounded-lg bg-sunken" :icon-size="16" />
 
             <p v-else-if="plan && pending.length === 0" class="text-sm text-ok">
               Nothing to change &mdash; this domain already points at this server.

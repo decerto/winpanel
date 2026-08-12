@@ -6,6 +6,7 @@ import { SHARED_DIR, SHARED_URL_PREFIX } from '@winpanel/shared';
 import { api, describeError } from '../../lib/api';
 import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
+import LoadingBlock from '../../components/LoadingBlock.vue';
 
 /**
  * Settings for one website: what it runs on, its secrets, and the way out.
@@ -218,9 +219,7 @@ watch(
         Stored encrypted on this server and never written into your project files.
       </p>
 
-      <div v-if="loading" class="mt-4 space-y-2">
-        <div v-for="n in 3" :key="n" class="h-10 animate-pulse rounded-md bg-elevated/60" />
-      </div>
+      <LoadingBlock v-if="loading" class="mt-4 h-36" />
 
       <div v-else class="mt-4 space-y-2">
         <div v-for="(row, index) in rows" :key="index" class="flex gap-2">

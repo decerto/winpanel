@@ -5,6 +5,7 @@ import { Activity, ArrowDownToLine, ArrowUpFromLine, Gauge, RefreshCw } from 'lu
 import { api, describeError } from '../../lib/api';
 import { formatBytes, formatCount, timeAgo } from '../../lib/format';
 import AlertMessage from '../../components/AlertMessage.vue';
+import LoadingBlock from '../../components/LoadingBlock.vue';
 
 /**
  * What this website has actually served.
@@ -322,7 +323,7 @@ function whenMonth(value: Date): string {
         </div>
       </div>
 
-      <p v-if="loading && !traffic" class="h-40 animate-pulse rounded-lg bg-sunken" />
+      <LoadingBlock v-if="loading && !traffic" class="h-40 rounded-lg bg-sunken" />
 
       <template v-else>
         <div class="flex h-40 items-end gap-px" role="img" :aria-label="`Traffic over the last ${range}`">
@@ -428,7 +429,7 @@ function whenMonth(value: Date): string {
 
       <AlertMessage v-if="failuresError">{{ failuresError }}</AlertMessage>
 
-      <p v-else-if="failuresLoading" class="h-24 animate-pulse rounded-lg bg-sunken" />
+      <LoadingBlock v-else-if="failuresLoading" class="h-24 rounded-lg bg-sunken" :icon-size="16" />
 
       <template v-else-if="failures">
         <p class="mb-3 text-xs text-ink-faint">

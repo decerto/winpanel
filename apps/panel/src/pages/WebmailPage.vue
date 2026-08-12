@@ -20,6 +20,7 @@ import { api, describeError } from '../lib/api';
 import { formatBytes } from '../lib/format';
 import AlertMessage from '../components/AlertMessage.vue';
 import EmptyState from '../components/EmptyState.vue';
+import LoadingBlock from '../components/LoadingBlock.vue';
 import PageHeader from '../components/PageHeader.vue';
 
 /**
@@ -697,7 +698,7 @@ onMounted(() => {
           </form>
         </div>
 
-        <div v-if="loading" class="h-40 animate-pulse bg-surface" />
+        <LoadingBlock v-if="loading" class="h-40 bg-surface" />
 
         <EmptyState
           v-else-if="messages.length === 0"

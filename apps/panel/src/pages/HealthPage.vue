@@ -7,6 +7,7 @@ import { api, describeError } from '../lib/api';
 import CheckCard from '../components/CheckCard.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import AlertMessage from '../components/AlertMessage.vue';
+import LoadingBlock from '../components/LoadingBlock.vue';
 
 /**
  * Server health.
@@ -141,10 +142,7 @@ onMounted(load);
 
     <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
 
-    <!-- Skeletons rather than a spinner: the shape of the page stays stable. -->
-    <div v-if="loading" class="space-y-3">
-      <div v-for="n in 5" :key="n" class="h-24 animate-pulse rounded-card bg-surface" />
-    </div>
+    <LoadingBlock v-if="loading" class="h-96 rounded-card bg-surface" />
 
     <div v-else class="space-y-3">
       <CheckCard

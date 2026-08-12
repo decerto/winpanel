@@ -17,6 +17,7 @@ import { deployKeyPageFor, hostLabelFor, toHttpsUrl, toSshUrl } from '../../lib/
 import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
 import HowTo from '../../components/HowTo.vue';
+import LoadingBlock from '../../components/LoadingBlock.vue';
 
 /**
  * The repository behind this website.
@@ -116,13 +117,13 @@ async function load(): Promise<void> {
   error.value = null;
 
   try {
-    info.value = await api.sites.git.info.query({ slug: slug.value });
+    await refreshInfo();
     form.value = {
-      url: info.value.url,
-      branch: info.value.branch,
-      subdirectory: info.value.subdirectory,
+      url: info.value!.url,
+      branch: info.value!.branch,
+      subdirectory: info.value!.subdirectory,
       token: '',
-      access: info.value.authMethod === 'deploy-key' ? 'key' : info.value.authMethod === 'token' ? 'token' : 'public',
+      access: info.value!.authMethod === 'deploy-key' ? 'key' : info.value!.authMethod === 'token' ? 'token' : 'public',
     };
     await refresh();
   } catch (err) {
@@ -130,6 +131,11 @@ async function load(): Promise<void> {
   } finally {
     loading.value = false;
   }
+}
+
+/** Re-reads the deployment record without blanking the page. */
+async function refreshInfo(): Promise<void> {
+  info.value = await api.sites.git.info.query({ slug: slug.value });
 }
 
 /** Talks to the remote, so it is only ever done on purpose. */
@@ -193,6 +199,17 @@ function when(value: Date | string | null | undefined): string {
   return new Date(value).toLocaleString();
 }
 
+/*
+ * The "Deployed" badge and the footer read this tab's own copy of the
+ * deployment record, and the layout finishing a pull does not reach into it.
+ * Refetch when the deploy spinner stops so the badge moves to the commit that
+ * just went live instead of waiting for a page refresh. A failed refetch
+ * leaves the old record in place rather than blanking the page.
+ */
+watch(deploying, (now, was) => {
+  if (was && !now) refreshInfo().catch(() => {});
+});
+
 watch(slug, load, { immediate: true });
 </script>
 
@@ -201,7 +218,7 @@ watch(slug, load, { immediate: true });
     <AlertMessage v-if="error">{{ error }}</AlertMessage>
     <AlertMessage v-if="notice" tone="success">{{ notice }}</AlertMessage>
 
-    <div v-if="loading" class="h-72 animate-pulse rounded-card bg-surface" />
+    <LoadingBlock v-if="loading" class="h-72 rounded-card bg-surface" />
 
     <section v-else-if="info" class="card overflow-hidden">
       <header class="flex flex-wrap items-center gap-3 border-b border-line px-5 py-3.5">

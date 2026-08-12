@@ -26,6 +26,7 @@ import { formatBytes } from '../../lib/format';
 import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
 import EmptyState from '../../components/EmptyState.vue';
+import LoadingBlock from '../../components/LoadingBlock.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
 
 /**
@@ -541,7 +542,7 @@ watch(() => site.value?.slug, load, { immediate: true });
 
 <template>
   <div class="space-y-5">
-    <div v-if="loading" class="h-40 animate-pulse rounded-card bg-surface" />
+    <LoadingBlock v-if="loading" class="h-40 rounded-card bg-surface" />
 
     <template v-else>
       <AlertMessage v-if="error">{{ error }}</AlertMessage>

@@ -8,6 +8,7 @@ import { formatBytes } from '../lib/format';
 import PageHeader from '../components/PageHeader.vue';
 import AlertMessage from '../components/AlertMessage.vue';
 import EmptyState from '../components/EmptyState.vue';
+import LoadingBlock from '../components/LoadingBlock.vue';
 import PaginationBar from '../components/PaginationBar.vue';
 
 /**
@@ -160,9 +161,7 @@ void load();
 
     <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
 
-    <div v-if="loading" class="space-y-3">
-      <div v-for="n in 3" :key="n" class="h-20 animate-pulse rounded-card bg-surface" />
-    </div>
+    <LoadingBlock v-if="loading" class="h-64 rounded-card bg-surface" />
 
     <template v-else>
       <section class="card mb-5 flex flex-wrap items-center gap-x-8 gap-y-4 p-5">

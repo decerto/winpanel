@@ -20,6 +20,7 @@ import {
 import { api, describeError } from '../lib/api';
 import { formatBytes, formatCount } from '../lib/format';
 import { RUNTIME_LABEL, siteStatus } from '../lib/site-status';
+import LoadingBlock from './LoadingBlock.vue';
 
 /**
  * One website, as a full-width card.
@@ -87,6 +88,7 @@ const usageError = ref<string | null>(null);
 
 type Traffic = Awaited<ReturnType<typeof api.sites.traffic.query>>;
 const traffic = ref<Traffic | null>(null);
+const trafficLoading = ref(true);
 
 /*
  * Measured on mount rather than sent with the list.
@@ -109,6 +111,8 @@ onMounted(async () => {
     traffic.value = await api.sites.traffic.query({ slug: props.site.slug, range: '30d' });
   } catch {
     // A card is not the place to explain that a chart is unavailable.
+  } finally {
+    trafficLoading.value = false;
   }
 });
 
@@ -363,35 +367,40 @@ const contentPath = computed(() => (isGit.value ? 'release' : 'public'));
             </span>
           </div>
 
-          <div v-if="spark.length > 0" class="mt-2.5 flex h-8 items-end gap-px" aria-hidden="true">
-            <span
-              v-for="bar in spark"
-              :key="bar.key"
-              class="min-w-px flex-1 rounded-t-[1px]"
-              :class="bar.height === 0 ? 'bg-line/50' : 'bg-brand/60'"
-              :style="{ height: `${Math.max(bar.height, 3)}%` }"
-            />
-          </div>
+          <!-- Dashes mean "no answer"; while the answer is coming, say so. -->
+          <LoadingBlock v-if="trafficLoading" class="mt-2.5 h-24" :icon-size="16" />
 
-          <dl class="mt-2.5 grid grid-cols-2 gap-x-4 gap-y-2 text-sm lg:grid-cols-1">
-            <div class="min-w-0">
-              <dt class="text-xs text-ink-faint">Requests</dt>
-              <dd class="mt-0.5 text-ink" :title="String(trafficSummary?.requests ?? 0)">
-                {{ trafficSummary === null ? '\u2014' : formatCount(trafficSummary.requests) }}
-              </dd>
+          <template v-else>
+            <div v-if="spark.length > 0" class="mt-2.5 flex h-8 items-end gap-px" aria-hidden="true">
+              <span
+                v-for="bar in spark"
+                :key="bar.key"
+                class="min-w-px flex-1 rounded-t-[1px]"
+                :class="bar.height === 0 ? 'bg-line/50' : 'bg-brand/60'"
+                :style="{ height: `${Math.max(bar.height, 3)}%` }"
+              />
             </div>
-            <div class="min-w-0">
-              <dt class="text-xs text-ink-faint">Out &#183; In</dt>
-              <dd class="mt-0.5 truncate text-ink">
-                <template v-if="trafficSummary === null">&#8212;</template>
-                <template v-else>
-                  {{ formatBytes(trafficSummary.bytesOut) }}
-                  <span class="text-ink-faint">&#183;</span>
-                  {{ formatBytes(trafficSummary.bytesIn) }}
-                </template>
-              </dd>
-            </div>
-          </dl>
+
+            <dl class="mt-2.5 grid grid-cols-2 gap-x-4 gap-y-2 text-sm lg:grid-cols-1">
+              <div class="min-w-0">
+                <dt class="text-xs text-ink-faint">Requests</dt>
+                <dd class="mt-0.5 text-ink" :title="String(trafficSummary?.requests ?? 0)">
+                  {{ trafficSummary === null ? '\u2014' : formatCount(trafficSummary.requests) }}
+                </dd>
+              </div>
+              <div class="min-w-0">
+                <dt class="text-xs text-ink-faint">Out &#183; In</dt>
+                <dd class="mt-0.5 truncate text-ink">
+                  <template v-if="trafficSummary === null">&#8212;</template>
+                  <template v-else>
+                    {{ formatBytes(trafficSummary.bytesOut) }}
+                    <span class="text-ink-faint">&#183;</span>
+                    {{ formatBytes(trafficSummary.bytesIn) }}
+                  </template>
+                </dd>
+              </div>
+            </dl>
+          </template>
         </RouterLink>
       </div>
 

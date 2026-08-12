@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { Save, X } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
+import LoadingBlock from './LoadingBlock.vue';
 
 /**
  * Editing a text file in place.
@@ -129,7 +130,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
 
       <p v-if="error" class="mt-3 text-sm text-danger">{{ error }}</p>
 
-      <div v-if="loading" class="mt-4 flex-1 animate-pulse rounded-card bg-elevated/60" />
+      <LoadingBlock v-if="loading" class="mt-4 flex-1 rounded-card bg-elevated/60" />
       <textarea
         v-else
         v-model="content"

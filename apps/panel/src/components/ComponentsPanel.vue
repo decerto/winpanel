@@ -3,6 +3,7 @@ import { computed, onUnmounted, ref } from 'vue';
 import { Boxes, Play, RefreshCw, Square, Trash2 } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
 import AlertMessage from './AlertMessage.vue';
+import LoadingBlock from './LoadingBlock.vue';
 
 /**
  * The programs the panel drives: web server, mail server, git.
@@ -174,9 +175,7 @@ onUnmounted(stopPolling);
 
     <AlertMessage v-if="error" class="mt-4">{{ error }}</AlertMessage>
 
-    <div v-if="loading" class="mt-5 space-y-2">
-      <div v-for="n in 3" :key="n" class="h-16 animate-pulse rounded-lg bg-elevated/60" />
-    </div>
+    <LoadingBlock v-if="loading" class="mt-5 h-52" />
 
     <ul v-else class="mt-5 divide-y divide-line">
       <li v-for="component in components" :key="component.id" class="flex flex-wrap gap-4 py-4">
