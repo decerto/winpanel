@@ -27,6 +27,7 @@ const ALGORITHM = 'aes-256-gcm';
 const KEY_BYTES = 32;
 const IV_BYTES = 12;
 const AUTH_TAG_BYTES = 16;
+const DPAPI_TIMEOUT_MS = 120_000;
 
 export class VaultError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -50,7 +51,7 @@ async function dpapiProtect(plaintext: Buffer): Promise<Buffer> {
     exe: 'powershell.exe',
     args: ['-NoProfile', '-NonInteractive', '-Command', script],
     stdin: plaintext.toString('base64'),
-    timeoutMs: 30_000,
+    timeoutMs: DPAPI_TIMEOUT_MS,
   });
 
   if (result.exitCode !== 0) {
@@ -74,7 +75,7 @@ async function dpapiUnprotect(ciphertext: Buffer): Promise<Buffer> {
     exe: 'powershell.exe',
     args: ['-NoProfile', '-NonInteractive', '-Command', script],
     stdin: ciphertext.toString('base64'),
-    timeoutMs: 30_000,
+    timeoutMs: DPAPI_TIMEOUT_MS,
   });
 
   if (result.exitCode !== 0) {
