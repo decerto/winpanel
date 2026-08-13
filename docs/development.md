@@ -81,6 +81,48 @@ accept the banner in a scratch environment.
 **Mail tests.** `test/mail-service.test.ts` fails on a machine without the
 `winpanel-stalwart` WinSW wrapper registered. That is environmental, not a regression.
 
+## Releasing
+
+A release is made by hand, not by an action. The notes a release carries — what
+changed, and why someone should care — are written by a person, and an action cannot
+know them from a commit list. The GitHub **Build installer** workflow still runs, but
+only to compile a clean installer from a fresh checkout as a cross-check on the one
+built locally; it publishes nothing.
+
+1. **Check and tag.** Bump the version in every `package.json` (root, `apps/agent`,
+   `apps/panel`, `packages/shared`, `packages/installer`), run `pnpm check`, commit,
+   then tag:
+
+   ```powershell
+   git tag -a v1.2.3 -m "Short note on what this release is"
+   git push origin main --tags
+   ```
+
+2. **Build the installer.** Either run it locally —
+
+   ```powershell
+   pnpm installer
+   ```
+
+   — or run the **Build installer** workflow from the Actions tab with the version, and
+   download the artefacts it uploads. Both produce `dist\WinPanel-Setup-x64.exe` and
+   print its SHA-256.
+
+3. **Write the release.** Create the GitHub release yourself, titled
+   `v1.2.3 - What this release is`, and write what changed in plain terms — lead with
+   the headline, then the detail, then a "Fixed along the way" list. Embed the SHA-256
+   in the verifying block (the build printed it) and end with the compare link:
+
+   ```powershell
+   gh release create v1.2.3 `
+     --title "v1.2.3 - What this release is" `
+     --notes-file notes.md `
+     dist\WinPanel-Setup-x64.exe dist\SHA256SUMS.txt
+   ```
+
+   The compare link at the foot of the notes is
+   `https://github.com/decerto/winpanel/compare/<previous-tag>...v1.2.3`.
+
 ## Screenshots
 
 The images in `docs/screenshots/` are captured from a local instance seeded with invented

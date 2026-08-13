@@ -1,37 +1,30 @@
-name: Release
+name: Build installer
 
-# Builds the installer and publishes it.
+# Builds the Windows installer and nothing else.
+#
+# Releases are published by hand: the notes a release should carry — what
+# changed and why someone should care — are written by a person, not derived
+# from a commit list, so the GitHub Release is created separately. This
+# workflow's only job is to produce a clean installer built from a fresh
+# checkout, as a cross-check on a locally built one. Download it from the
+# run's artefacts.
 #
 # Deliberately does NOT run the test suite: `pnpm check` is the gate before
 # tagging, and repeating it here would double the wait for a commit already
 # known to be good.
-#
-# Two ways in. Push a `v1.2.3` tag, or run it from the Actions tab and give it
-# a version — the manual run tags the commit it built and publishes the same
-# release, so a release never has to be assembled by hand.
 
 on:
-  push:
-    tags:
-      - 'v*'
+  # Run it from the Actions tab. No automatic trigger: building is cheap to
+  # ask for when you want it and pointless on every push.
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release, e.g. 1.2.3. Leave empty to build without publishing.'
+        description: 'Version stamped into the installer, e.g. 1.2.3. Leave empty for a dev build.'
         required: false
         type: string
-      title:
-        description: 'Release title after the version, e.g. "Database browser sign-in fixed"'
-        required: false
-        type: string
-      prerelease:
-        description: 'Mark the release as a pre-release'
-        required: false
-        default: false
-        type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -42,9 +35,9 @@ jobs:
 
     steps:
       # Every action is pinned to a commit, not a tag. A tag can be moved to
-      # point at new code, and this job holds `contents: write` and produces
-      # the installer people run as Administrator. The comment after each is
-      # the tag that commit was, for whoever bumps them next.
+      # point at new code, and this job produces the installer people run as
+      # Administrator. The comment after each is the tag that commit was, for
+      # whoever bumps them next.
       - name: Check out
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
@@ -81,49 +74,16 @@ jobs:
         # into a shell would run whatever it contained.
         env:
           INPUT_VERSION: ${{ inputs.version }}
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
         run: |
-          if ($env:INPUT_VERSION) {
-            $version = $env:INPUT_VERSION -replace '^v', ''
-          } elseif ($env:REF_TYPE -eq 'tag') {
-            # Tags are written v1.2.3; the installer wants 1.2.3.
-            $version = $env:REF_NAME -replace '^v', ''
-          } else {
-            $version = '0.0.0-dev'
-          }
+          $version = if ($env:INPUT_VERSION) { $env:INPUT_VERSION -replace '^v', '' } else { '0.0.0-dev' }
 
           if ($version -ne '0.0.0-dev' -and
               $version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$') {
             throw "Version '$version' is not a version number like 1.2.3."
           }
 
-          $publish = if ($version -eq '0.0.0-dev') { 'false' } else { 'true' }
-
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "publish=$publish" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "Building version $version (publishing: $publish)"
-
-      - name: Work out the title and the previous tag
-        id: meta
-        # The release reads consistently with the ones before it: a `vX.X.X`
-        # title with a short description after it, and a compare link against
-        # the release that came before. Both are computed here so a tag push
-        # and a manual run produce the same shape.
-        env:
-          INPUT_TITLE: ${{ inputs.title }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          $previous = git tag --list 'v*' --sort=-v:refname |
-            Where-Object { $_ -ne $env:TAG } |
-            Select-Object -First 1
-
-          $title = if ($env:INPUT_TITLE) { "$env:TAG - $env:INPUT_TITLE" } else { $env:TAG }
-
-          "title=$title" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "previous=$previous" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          Write-Host "Title: $title (compare from $previous)"
+          Write-Host "Building version $version"
 
       - name: Compile the installer
         # No separate compiler install step: the build script fetches a pinned
@@ -141,18 +101,15 @@ jobs:
 
       - name: Generate checksum
         # Published alongside the installer so anyone can confirm the file they
-        # downloaded is the one this workflow produced, and embedded in the
-        # release notes so it can be checked without downloading a second file.
-        id: checksum
+        # downloaded is the one this workflow produced. The build script also
+        # prints it, so it can be lifted straight into the release notes.
         run: |
           $file = "dist\WinPanel-Setup-x64.exe"
           $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
           "$hash  WinPanel-Setup-x64.exe" | Out-File -Encoding ascii "dist\SHA256SUMS.txt"
-          "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "SHA-256: $hash"
 
       - name: Upload build artefacts
-        # Available on every run, including manual ones that create no release.
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: winpanel-installer
@@ -160,52 +117,3 @@ jobs:
             dist/WinPanel-Setup-x64.exe
             dist/SHA256SUMS.txt
           retention-days: 30
-
-      - name: Publish release
-        if: steps.version.outputs.publish == 'true'
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          # Named explicitly so a manual run works too: the tag does not have
-          # to exist beforehand, and is created against the commit just built.
-          tag_name: ${{ steps.version.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          # Titled like the releases before it: vX.X.X, with the short
-          # description when one was given. Auto-generated notes are off — the
-          # curated body below is the release, and GitHub's "What's Changed"
-          # section would sit on top of it.
-          name: ${{ steps.meta.outputs.title }}
-          prerelease: ${{ inputs.prerelease || false }}
-          files: |
-            dist/WinPanel-Setup-x64.exe
-            dist/SHA256SUMS.txt
-          generate_release_notes: false
-          body: |
-            ## Installing
-
-            1. Download `WinPanel-Setup-x64.exe` below and copy it to your server.
-            2. Run it as administrator.
-            3. Open the address it shows you and enter the setup code.
-
-            It upgrades in place: your websites, mailboxes, certificates and
-            settings are kept, and everything is started again afterwards. You
-            can also update from the panel itself, under **Settings → Update
-            WinPanel**. Nothing needs to be installed first — the installer
-            carries its own Node runtime.
-
-            ### Verifying the download
-
-            ```powershell
-            (Get-FileHash .\WinPanel-Setup-x64.exe -Algorithm SHA256).Hash.ToLower()
-            ```
-
-            should print:
-
-            ```
-            ${{ steps.checksum.outputs.sha256 }}  WinPanel-Setup-x64.exe
-            ```
-
-            ### Getting help
-
-            Ask on [Discord](https://discord.gg/wT6mnfAnUD).
-
-            **Full changelog:** https://github.com/decerto/winpanel/compare/${{ steps.meta.outputs.previous }}...${{ steps.version.outputs.tag }}
