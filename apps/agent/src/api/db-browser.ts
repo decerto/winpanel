@@ -34,6 +34,12 @@ const HOP_BY_HOP = new Set([
   'upgrade',
   'host',
   'content-length',
+  // fetch() transparently decompresses the upstream body, so these must not be
+  // forwarded: the bytes the browser receives no longer match either the
+  // encoding the header claims or the length it records, and the browser fails
+  // with ERR_CONTENT_DECODING_FAILED.
+  'content-encoding',
+  'content-length',
 ]);
 
 /**
@@ -87,6 +93,10 @@ async function proxyToBrowser(
     if (HOP_BY_HOP.has(lower) || typeof value !== 'string') continue;
     headers[lower] = value;
   }
+  // Ask the upstream for an uncompressed body, so the bytes forwarded match
+  // what is sent on. fetch() would otherwise decompress a gzipped response and
+  // leave the browser holding bytes that no longer match the headers.
+  headers['accept-encoding'] = 'identity';
 
   const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
   const response = await fetch(`${BROWSER_ORIGIN}${upstreamPath}`, {
