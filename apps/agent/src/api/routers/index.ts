@@ -11,6 +11,7 @@ import { dnsRouter } from './dns.js';
 import { sslRouter } from './ssl.js';
 import { mailRouter } from './mail.js';
 import { webmailRouter } from './webmail.js';
+import { databasesRouter } from './databases.js';
 import { systemRouter } from './system.js';
 import { componentsRouter } from './components.js';
 import { usersRouter } from './users.js';
@@ -119,6 +120,7 @@ export const appRouter = router({
   ssl: sslRouter,
   mail: mailRouter,
   webmail: webmailRouter,
+  databases: databasesRouter,
   system: systemRouter,
   components: componentsRouter,
   jobs: jobsRouter,

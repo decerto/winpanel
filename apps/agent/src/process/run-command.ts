@@ -258,3 +258,28 @@ export function runDetached(options: Pick<RunOptions, 'exe' | 'args' | 'cwd' | '
 
   child.unref();
 }
+
+/**
+ * Spawns a long-lived child that a supervisor will manage itself.
+ *
+ * `runCommand` and `runDetached` both collect or abandon the child; neither
+ * fits a process pool, which has to hold the child, watch it exit, and start
+ * another. This keeps the same guarantees as the rest of the module — no
+ * shell, arguments as an array, the inherited environment — but hands the
+ * live process back. The caller owns its lifetime from that point.
+ */
+export function spawnManaged(
+  options: Pick<RunOptions, 'exe' | 'args' | 'cwd' | 'env'>,
+): import('node:child_process').ChildProcess {
+  assertSafeArgs(options.args);
+
+  return spawn(options.exe, [...options.args], {
+    cwd: options.cwd,
+    env: buildEnv(options.env),
+    // Never true. See the module comment.
+    shell: false,
+    windowsHide: true,
+    // Inherited so a worker's own log lines reach the service's log file.
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+}

@@ -4,6 +4,9 @@ import {
   APP_PORT_RANGE_START,
   DOTNET_PORT_RANGE_END,
   DOTNET_PORT_RANGE_START,
+  PHP_PORT_RANGE_END,
+  PHP_PORT_RANGE_START,
+  PHP_PORT_STRIDE,
   PREVIEW_PORT_RANGE_END,
   PREVIEW_PORT_RANGE_START,
   validateAssignablePort,
@@ -144,7 +147,7 @@ export class PortAllocator {
    */
   async allocatePair(
     siteId: string,
-    runtime: 'node' | 'dotnet' | 'static' | 'proxy' = 'node',
+    runtime: 'node' | 'dotnet' | 'static' | 'proxy' | 'php' = 'node',
   ): Promise<AllocatedPair> {
     const existing = this.handle.db
       .select()
@@ -156,6 +159,16 @@ export class PortAllocator {
     const alreadyGreen = existing.find((row) => row.colour === 'green');
     if (alreadyBlue && alreadyGreen) {
       return { blue: alreadyBlue.port, green: alreadyGreen.port };
+    }
+
+    /*
+     * PHP is different: one php-cgi worker handles one request at a time, so
+     * a site runs a small pool of them on consecutive ports. Each colour is
+     * allocated a *block* of `PHP_PORT_STRIDE` ports and the recorded blue /
+     * green number is the block's base; the pool uses base .. base+stride-1.
+     */
+    if (runtime === 'php') {
+      return this.allocatePhpPair(siteId);
     }
 
     const [start, end] =
@@ -182,6 +195,64 @@ export class PortAllocator {
     }
 
     const [blue, green] = found as [number, number];
+
+    this.handle.db.transaction((tx) => {
+      tx.delete(portAllocations)
+        .where(
+          and(
+            eq(portAllocations.siteId, siteId),
+            inArray(portAllocations.colour, ['blue', 'green']),
+          ),
+        )
+        .run();
+      tx.insert(portAllocations).values([
+        { port: blue, siteId, colour: 'blue' },
+        { port: green, siteId, colour: 'green' },
+      ]).run();
+    });
+
+    return { blue, green };
+  }
+
+  /**
+   * Allocates both colour blocks for a PHP site. See the note in
+   * `allocatePair`: the stored port is each block's base and the pool spans
+   * `PHP_PORT_STRIDE` consecutive ports above it.
+   */
+  private async allocatePhpPair(siteId: string): Promise<AllocatedPair> {
+    const taken = this.takenPorts();
+    const excluded = await excludedPortRanges();
+
+    const findFreeBase = async (): Promise<number | null> => {
+      for (
+        let base = PHP_PORT_RANGE_START;
+        base + PHP_PORT_STRIDE - 1 <= PHP_PORT_RANGE_END;
+        base += PHP_PORT_STRIDE
+      ) {
+        let blockFree = true;
+        for (let offset = 0; offset < PHP_PORT_STRIDE && blockFree; offset++) {
+          const port = base + offset;
+          if (!validateAssignablePort(port, taken).ok) blockFree = false;
+          else if (isPortExcluded(port, excluded)) blockFree = false;
+          else if (!(await isPortFree(port, '127.0.0.1'))) blockFree = false;
+        }
+        if (blockFree) return base;
+      }
+      return null;
+    };
+
+    const blue = await findFreeBase();
+    // Reserve the blue block provisionally so the green block cannot overlap it.
+    if (blue !== null) {
+      for (let offset = 0; offset < PHP_PORT_STRIDE; offset++) taken.add(blue + offset);
+    }
+    const green = await findFreeBase();
+
+    if (blue === null || green === null) {
+      throw new PortAllocationError(
+        'There are no free ports left for a new website. Remove an unused site and try again.',
+      );
+    }
 
     this.handle.db.transaction((tx) => {
       tx.delete(portAllocations)

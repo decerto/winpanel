@@ -20,6 +20,11 @@ export const ComponentId = z.enum([
   'bun',
   'dotnet',
   'vcredist',
+  'php',
+  'mariadb',
+  'composer',
+  /** The single-file database browser, served only through the panel itself. */
+  'adminer',
 ]);
 export type ComponentId = z.infer<typeof ComponentId>;
 
@@ -36,6 +41,11 @@ export const ComponentKind = z.enum([
   'exe',
   /** Run a PowerShell script (used only for the official dotnet-install). */
   'script',
+  /**
+   * A single PHP archive (`.phar`) run with the installed PHP. Composer is
+   * published this way and has no standalone program for Windows.
+   */
+  'php-script',
   /**
    * The download is a single JavaScript file run with Node. Yarn 1 is
    * published this way and has no standalone program for Windows.

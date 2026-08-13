@@ -6,6 +6,8 @@ import {
   ArrowLeft,
   AtSign,
   Boxes,
+  Code2,
+  Database,
   ExternalLink,
   FolderOpen,
   Gauge,
@@ -88,6 +90,8 @@ const deployLabel = computed(() => {
  */
 const TABS = computed(() => {
   const runsAProcess = site.value?.runtime === 'node' || site.value?.runtime === 'dotnet';
+  const isPhp = site.value?.runtime === 'php';
+  const hasDatabases = isPhp || site.value?.preset === 'wordpress';
 
   return [
     { name: 'site-detail', label: 'Overview', icon: Gauge, show: true },
@@ -99,6 +103,8 @@ const TABS = computed(() => {
       icon: Boxes,
       show: runsAProcess,
     },
+    { name: 'site-php', label: 'PHP', icon: Code2, show: isPhp },
+    { name: 'site-databases', label: 'Databases', icon: Database, show: hasDatabases },
     { name: 'site-traffic', label: 'Traffic', icon: Activity, show: true },
     { name: 'site-dns', label: 'DNS', icon: Globe2, show: true },
     { name: 'site-ssl', label: 'SSL', icon: ShieldCheck, show: true },

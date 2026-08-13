@@ -32,6 +32,9 @@ import {
 const RUNTIME_IMAGES: Record<string, readonly string[]> = {
   node: ['node.exe'],
   dotnet: ['dotnet.exe'],
+  // The pool supervisor runs on Node, but it is the php-cgi workers that hold
+  // the site's ports — and they are what a stopped service must let go of.
+  php: ['php-cgi.exe'],
 };
 
 /**

@@ -58,6 +58,22 @@ describe('preview listeners', () => {
     expect(preview.automatic_https.disable).toBe(true);
   });
 
+  it('strips the headers that break a plain-HTTP preview', () => {
+    // An app sending upgrade-insecure-requests (a common framework default)
+    // makes its own preview unusable: the browser upgrades every asset to
+    // HTTPS on a port that only speaks HTTP, and the page arrives broken.
+    const config = buildCaddyConfig({ sites: [site({ previewPort: 7001 })] }) as any;
+    const handlers = config.apps.http.servers[previewServerIdFor('example')].routes[0].handle;
+
+    // The headers handler runs first, before the site's content handler.
+    const headers = handlers[0];
+    expect(headers.handler).toBe('headers');
+    expect(headers.response.deferred).toBe(true);
+    expect(headers.response.delete).toContain('Strict-Transport-Security');
+    const csp = headers.response.replace['Content-Security-Policy'];
+    expect(csp[0].search_regexp).toContain('upgrade-insecure-requests');
+  });
+
   it('serves a site that has no domain at all', () => {
     const config = buildCaddyConfig({
       sites: [site({ domains: [], previewPort: 7002 })],
@@ -559,7 +575,9 @@ describe('the shared folder', () => {
     const config = buildCaddyConfig({ sites: [site({ siteDir, previewPort: 7001 })] }) as any;
     const preview = config.apps.http.servers[previewServerIdFor('example')];
 
-    expect(preview.routes[0].handle[0].routes[1].handle[0].root).toBe(siteDir);
+    // handle[0] is the preview header adjustments; the site's subroute is
+    // handle[1], and its second route is the /shared file server.
+    expect(preview.routes[0].handle[1].routes[1].handle[0].root).toBe(siteDir);
   });
 });
 

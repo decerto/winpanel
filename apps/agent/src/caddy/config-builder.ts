@@ -25,6 +25,12 @@ export interface CaddySiteInput {
   /** Absolute path served directly, for static sites. */
   staticRoot?: string;
   /**
+   * Absolute path to the folder PHP runs from — the web root. Only set for
+   * `runtime: 'php'`; Caddy serves its static files and hands its `.php`
+   * requests to the FastCGI pool, both rooted here.
+   */
+  documentRoot?: string;
+  /**
    * Absolute path to the site's folder, when its `shared` subfolder should be
    * published at `/shared`. Set for sites the panel rebuilds on every deploy,
    * which are the only ones that need somewhere permanent to put a file.
@@ -35,6 +41,12 @@ export interface CaddySiteInput {
    * reached at `http://<server-ip>:<port>` before any domain exists.
    */
   previewPort?: number | null;
+  /**
+   * The loopback ports the PHP worker pool is listening on, for `runtime:
+   * 'php'`. More than one because a single php-cgi handles one request at a
+   * time on Windows, so several run side by side and share the load.
+   */
+  phpWorkers?: readonly number[];
   enabled: boolean;
 }
 
@@ -332,6 +344,130 @@ function buildSubroute(site: CaddySiteInput, proxyId: string): unknown {
   };
 }
 
+/** Picks the subroute a site is served through, by runtime. */
+function siteSubroute(site: CaddySiteInput, proxyId: string): unknown {
+  if (site.manifest.runtime === 'php') return buildPhpSubroute(site, proxyId);
+  return buildSubroute(site, proxyId);
+}
+
+/**
+ * Adjusts preview responses so they work over plain HTTP.
+ *
+ * Previews are HTTP by design — there is no certificate for a bare IP
+ * address. An app whose framework sends `upgrade-insecure-requests` (a common
+ * security-header default) breaks its own preview: the browser upgrades every
+ * stylesheet and script to HTTPS on a port that only speaks HTTP, so the page
+ * arrives unstyled or blank. That one directive is stripped on previews; the
+ * rest of the policy, and the site's real domain, are untouched. HSTS is also
+ * removed defensively — a browser that cached it from an app's header would
+ * force every preview port on the host onto HTTPS for a year.
+ */
+function previewResponseHeaders(): unknown {
+  return {
+    handler: 'headers',
+    response: {
+      // Deferred so the changes apply on the way out, after the proxy or file
+      // server has set its own headers — without it the deletions run before
+      // the headers exist and change nothing.
+      deferred: true,
+      delete: ['Strict-Transport-Security'],
+      replace: {
+        'Content-Security-Policy': [
+          { search_regexp: '\\s*upgrade-insecure-requests;?', replace: '' },
+        ],
+      },
+    },
+  };
+}
+
+/**
+ * The subroute a PHP site is served through.
+ *
+ * This is the JSON equivalent of Caddy's own `php_fastcgi` directive, written
+ * out longhand because the panel builds JSON, not a Caddyfile. The order is
+ * the whole behaviour and matches that directive's expanded form:
+ *
+ *   1. `/shared` routes, so a site's shared folder still wins over PHP.
+ *   2. A rewrite that resolves each request to a real file if one exists, and
+ *      otherwise to `index.php` (the front-controller pattern WordPress and
+ *      every modern framework use). Gating the rewrite on the file matcher is
+ *      also what closes CVE-2019-11043: a path that does not map to a real
+ *      script is never handed to PHP.
+ *   3. `*.php` requests are proxied to the FastCGI pool with the `fastcgi`
+ *      transport; several workers are dialed so concurrent requests are
+ *      served in parallel.
+ *   4. Anything else — images, CSS, JS — is served straight from disk.
+ */
+function buildPhpSubroute(site: CaddySiteInput, proxyId: string): unknown {
+  const sharedRoutes = site.siteDir ? buildSharedFolderRoutes(site.siteDir) : [];
+
+  // Without a web root or a pool to run it, answer honestly rather than
+  // serving the panel's own folder or leaving a route that resets.
+  if (!site.documentRoot || !site.phpWorkers || site.phpWorkers.length === 0) {
+    return {
+      handler: 'subroute',
+      routes: [
+        ...sharedRoutes,
+        {
+          handle: [
+            {
+              handler: 'static_response',
+              status_code: 503,
+              body: 'This website has not been deployed yet.',
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  const root = site.documentRoot;
+
+  return {
+    handler: 'subroute',
+    routes: [
+      ...sharedRoutes,
+      {
+        // Resolve to the real file when one exists, else to the front
+        // controller. `try_policy: first_exist_fallback` makes the last
+        // candidate the fallback rather than a 404.
+        match: [
+          {
+            file: {
+              root,
+              try_files: ['{http.request.uri.path}', '{http.request.uri.path}/index.php', 'index.php'],
+              try_policy: 'first_exist_fallback',
+              split_path: ['.php'],
+            },
+          },
+        ],
+        handle: [{ handler: 'rewrite', uri: '{http.matchers.file.relative}' }],
+      },
+      {
+        match: [{ path: ['*.php'] }],
+        handle: [
+          {
+            '@id': proxyId,
+            handler: 'reverse_proxy',
+            upstreams: site.phpWorkers.map((port) => ({ dial: `127.0.0.1:${port}` })),
+            transport: {
+              protocol: 'fastcgi',
+              root,
+              split_path: ['.php'],
+              // A PHP warning on stderr is worth seeing; it lands in Caddy's
+              // log instead of vanishing.
+              capture_stderr: true,
+            },
+          },
+        ],
+      },
+      {
+        handle: [{ handler: 'file_server', root }],
+      },
+    ],
+  };
+}
+
 /**
  * The two certificate authorities, both answering by DNS challenge.
  *
@@ -415,7 +551,9 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
     if (site.previewPort) {
       servers[previewServerIdFor(site.slug)] = {
         listen: [`:${site.previewPort}`],
-        routes: [{ handle: [buildSubroute(site, previewProxyIdFor(site.slug))] }],
+        routes: [
+          { handle: [previewResponseHeaders(), siteSubroute(site, previewProxyIdFor(site.slug))] },
+        ],
         // No automatic HTTPS: the request arrives by IP, so there is nothing
         // to issue a certificate for and Caddy must not try.
         automatic_https: { disable: true },
@@ -433,7 +571,7 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
     routes.push({
       '@id': routeIdFor(site.slug),
       match: [{ host: [...site.domains] }],
-      handle: [buildSubroute(site, proxyIdFor(site.slug))],
+      handle: [siteSubroute(site, proxyIdFor(site.slug))],
       terminal: true,
     });
   }

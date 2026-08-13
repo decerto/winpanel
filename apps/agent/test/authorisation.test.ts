@@ -90,6 +90,9 @@ const UNSCOPED_FOR_CUSTOMERS = new Set([
   'deployKey',
   'testRepository',
   'inspect',
+  // Whether PHP and MariaDB are installed — two booleans the create-site
+  // wizard needs before offering those kinds. No names, paths, or secrets.
+  'runtimeStatus',
   // Webmail, which authenticates against the mail server with its own
   // password and hands back a token that scopes everything after it.
   'signOut',
@@ -294,6 +297,11 @@ describe('process execution', () => {
   it('spawns processes from exactly one module', async () => {
     // Everything else must route through the safe executor, which forbids a
     // shell and takes arguments as an array.
+    //
+    // One deliberate exception: php-pool-standalone.ts. It is copied out of
+    // the agent and run from the PHP component's folder as a site's service,
+    // where it cannot import the executor — so it must be self-contained and
+    // spawn the workers itself. Its header comment says as much.
     const srcDir = path.join(import.meta.dirname, '..', 'src');
     const importers: string[] = [];
 
@@ -313,7 +321,10 @@ describe('process execution', () => {
 
     await walk(srcDir);
 
-    expect(importers).toEqual([path.join('process', 'run-command.ts')]);
+    expect(importers.sort()).toEqual([
+      path.join('process', 'run-command.ts'),
+      path.join('sites', 'php-pool-standalone.ts'),
+    ]);
   });
 
   it('never enables a shell', async () => {

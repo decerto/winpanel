@@ -70,6 +70,62 @@ function starterPage(displayName: string): string {
 `;
 }
 
+/**
+ * The PHP starter page. Served by the worker pool rather than straight off
+ * disk, so it also proves the pool is answering — and prints the PHP version
+ * as a quiet confirmation that the right runtime is in front of the site.
+ */
+function phpStarterPage(displayName: string): string {
+  const name = escapeHtml(displayName);
+
+  return `<?php
+// WinPanel starter page. Replace index.php with your own files — you can do
+// that from the Files tab in the control panel.
+$name = '${name}';
+?><!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title><?= htmlspecialchars($name) ?></title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: #0d1117;
+        color: #e6edf3;
+      }
+      main { max-width: 32rem; padding: 2rem; text-align: center; }
+      h1 { margin: 0 0 0.5rem; font-size: 1.75rem; letter-spacing: -0.02em; }
+      p { margin: 0.5rem 0; color: #9198a1; }
+      code {
+        font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+        font-size: 0.875em;
+        background: rgba(255, 255, 255, 0.06);
+        padding: 0.15em 0.4em;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1><?= htmlspecialchars($name) ?></h1>
+      <p>Your PHP website is up and running on PHP <?= PHP_MAJOR_VERSION . '.' . PHP_MINOR_VERSION ?>.</p>
+      <p>
+        Replace <code>index.php</code> in this site&rsquo;s <code>public</code>
+        folder with your own files. You can do that from the Files tab in the
+        control panel.
+      </p>
+    </main>
+  </body>
+</html>
+`;
+}
+
 const STARTER_SERVER = `const http = require('node:http');
 
 // WinPanel supplies the port. Do not hard-code one: the panel assigns a free
@@ -130,6 +186,10 @@ export async function scaffoldSite(options: {
           2,
         )}\n`,
       );
+      break;
+
+    case 'php':
+      await add('index.php', phpStarterPage(options.displayName));
       break;
 
     // A proxy site points at something already running, and a .NET site is

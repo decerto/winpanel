@@ -45,4 +45,5 @@ export const RUNTIME_LABEL: Record<string, string> = {
   static: 'Static files',
   dotnet: '.NET app',
   proxy: 'Proxied elsewhere',
+  php: 'PHP website',
 };

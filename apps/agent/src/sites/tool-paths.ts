@@ -136,6 +136,10 @@ export async function resolveTool(command: string, nodeVersion?: string): Promis
       path.join(config.binDir, 'dotnet', 'dotnet.exe'),
       'C:\\Program Files\\dotnet\\dotnet.exe',
     ],
+    // PHP itself, resolved the same way as the other downloaded runtimes.
+    php: [path.join(config.binDir, 'php', 'php.exe')],
+    // Composer is a PHP archive, not a program; it is run through PHP.
+    composer: [path.join(config.binDir, 'composer', 'composer.phar')],
   };
 
   const options = candidates[command];
@@ -247,6 +251,12 @@ export async function resolveToolInvocation(
   // Yarn 1 is published as one JavaScript file, so there is nothing to unwrap.
   if (/\.(c|m)?js$/i.test(direct)) {
     return { exe: await resolveTool('node', nodeVersion), args: [direct] };
+  }
+
+  // Composer is a PHP archive, run through the PHP the panel installed. The
+  // same trick as the JavaScript shims: the interpreter leads, the file follows.
+  if (/\.phar$/i.test(direct)) {
+    return { exe: await resolveTool('php'), args: [direct] };
   }
 
   if (!/\.(cmd|bat)$/i.test(direct)) return { exe: direct, args: [] };

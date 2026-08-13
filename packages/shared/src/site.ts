@@ -144,6 +144,8 @@ export const Site = z.object({
   /** Human-friendly name shown in the UI. */
   displayName: z.string().min(1).max(120),
   runtime: Runtime,
+  /** The flavour the site was created from, if any (drives UI hints only). */
+  preset: z.enum(['wordpress']).nullable().default(null),
   domains: z.array(Hostname).max(50).default([]),
   source: SiteSource,
   manifest: SiteManifest,

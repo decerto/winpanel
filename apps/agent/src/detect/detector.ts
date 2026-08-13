@@ -359,6 +359,32 @@ export async function detectApp(rootDir: string): Promise<DetectionResult> {
   const rootRole = await classifyFolder(rootDir, '');
   const nodeVersion = await detectNodeVersion(rootDir);
 
+  /*
+   * A PHP entry point settles it before the Node layouts get a say. Plenty of
+   * PHP projects also carry a package.json — a theme build, a frontend
+   * toolchain — so checking only after the Node branches would misread every
+   * one of them as a Node app. An index.php is the signal no Node app has.
+   */
+  const php = await detectPhp(rootDir);
+  if (php) {
+    notes.push(...php.notes);
+    return {
+      shape: 'single-app',
+      confidence: php.confidence,
+      summary: php.summary,
+      folders: [{ path: '', kind: 'server', framework: 'php', packageManager: null, buildOutput: null }],
+      manifest: SiteManifestSchema.parse({
+        runtime: 'php',
+        app: { cwd: php.documentRoot },
+        steps: php.steps,
+        // PHP is never an SPA in the Node sense; its own index.php routes.
+        spaFallback: false,
+      }),
+      notes,
+      fromManifestFile: false,
+    };
+  }
+
   const serverFolders = folders.filter((f) => f.kind === 'server');
   const frontendFolders = folders.filter((f) => f.kind === 'frontend');
 
@@ -767,6 +793,79 @@ export async function detectApp(rootDir: string): Promise<DetectionResult> {
         'details yourself on the next screen.',
     ],
     fromManifestFile: false,
+  };
+}
+
+interface PhpDetection {
+  /** The web root relative to the repository root. '' or 'public'. */
+  documentRoot: string;
+  confidence: number;
+  summary: string;
+  steps: BuildStep[];
+  notes: string[];
+}
+
+/**
+ * Works out whether a repository is a PHP website and, if so, where its web
+ * root is.
+ *
+ * Returns null for anything that is not plainly PHP. The layouts recognised
+ * are the two that cover nearly everything: a `public/index.php` (Laravel and
+ * most frameworks keep their web root in `public`), and an `index.php` at the
+ * root (WordPress, classic sites). A `composer.json` without either index is
+ * treated as PHP only when there is no competing Node signal, which the
+ * caller has already ruled out by the time this runs.
+ */
+export async function detectPhp(rootDir: string): Promise<PhpDetection | null> {
+  const notes: string[] = [];
+  const steps: BuildStep[] = [];
+
+  const rootIndex = await exists(path.join(rootDir, 'index.php'));
+  const publicIndex = await exists(path.join(rootDir, 'public', 'index.php'));
+  const composerJson = await readJson<{ require?: Record<string, string> }>(
+    path.join(rootDir, 'composer.json'),
+  );
+
+  if (!rootIndex && !publicIndex && !composerJson) return null;
+
+  // WordPress is recognised so the wizard can offer the WordPress preset,
+  // which sets up its database and config instead of treating it as plain PHP.
+  const isWordPress =
+    (await exists(path.join(rootDir, 'wp-config-sample.php'))) ||
+    (await exists(path.join(rootDir, 'wp-content')));
+  if (isWordPress) {
+    notes.push(
+      'This looks like WordPress. Choosing WordPress when you add the site sets up ' +
+        'its database and configuration for you.',
+    );
+  }
+
+  // Framework convention wins over the root: a `public` folder with its own
+  // index.php is the web root, and serving the repository root instead would
+  // expose the app's config and vendor files.
+  const documentRoot = publicIndex ? 'public' : '';
+
+  // Composer packages are installed on deploy when the project asks for them,
+  // so a fresh checkout has its dependencies in place before it runs.
+  if (composerJson) {
+    steps.push({
+      name: 'Install Composer packages',
+      cwd: '',
+      command: 'composer',
+      args: ['install', '--no-dev', '--no-interaction', '--prefer-dist'],
+      optional: false,
+      env: {},
+    });
+  }
+
+  return {
+    documentRoot,
+    confidence: rootIndex || publicIndex ? 0.85 : 0.6,
+    summary: isWordPress
+      ? 'This looks like a WordPress site.'
+      : 'This looks like a PHP website.',
+    steps,
+    notes,
   };
 }
 

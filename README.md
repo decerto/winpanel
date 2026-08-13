@@ -5,8 +5,8 @@
 # WinPanel
 
 **A free control panel for hosting websites on Windows — Server 2022 and 2025, or
-Windows 11 Home and Pro. Node.js apps, .NET apps and plain HTML sites, with HTTPS, DNS,
-email and customer logins.**
+Windows 11 Home and Pro. Node.js apps, .NET apps, PHP sites and WordPress, with HTTPS,
+DNS, email and customer logins.**
 
 Put a website online on your own Windows machine, keep it running, give it a domain and a
 padlock, host the mailboxes for it, and hand a client their own login — from one web page,
@@ -21,9 +21,10 @@ without IIS and without touching the command line.
 ---
 
 WinPanel is a free, self-hosted **web hosting control panel for Windows** — an
-alternative to IIS, Plesk and cPanel for people running Node.js, ASP.NET Core and static
-sites on Windows. Your apps run as ordinary Windows Services on loopback ports, and
-**Caddy** sits in front handling HTTPS, domains and traffic. Mail is served by
+alternative to IIS, Plesk and cPanel for people running Node.js, ASP.NET Core, PHP and
+static sites on Windows. Your apps run as ordinary Windows Services on loopback ports, and
+**Caddy** sits in front handling HTTPS, domains and traffic. WordPress is a one-click
+install backed by a bundled **MariaDB** database. Mail is served by
 **Stalwart**, DNS is driven through **Cloudflare**, and everything — websites,
 certificates, mailboxes, customers and Windows itself — is managed from one web interface.
 
@@ -70,14 +71,14 @@ The long version, including how to do it by hand without this panel, is in
 
 Almost every modern hosting panel is Linux-only. That is the gap this fills.
 
-| Panel | Runs on Windows | Node.js apps | Email | DNS | Cost |
-| --- | --- | --- | --- | --- | --- |
-| **WinPanel** | Windows Server 2022 / 2025 and Windows 11 | Supervised Windows Services, blue/green deploys | Stalwart, built in | Cloudflare, built in | Free, self-hosted |
-| **IIS** | Built into Windows | Only through `iisnode`, unmaintained | No | No | Included |
-| **Plesk for Windows** | Yes | Yes | Yes | Yes | Paid, per server |
-| **aaPanel** | No — Linux only | Yes, on Linux | Yes | Yes | Free, paid Pro tier |
-| **Webmin / Virtualmin** | No — Linux and Unix | By hand | Yes | Yes | Free, paid tiers |
-| **CyberPanel, CloudPanel, HestiaCP** | No — Linux only | Varies | Varies | Varies | Free |
+| Panel | Runs on Windows | Node.js apps | PHP & WordPress | Email | DNS | Cost |
+| --- | --- | --- | --- | --- | --- | --- |
+| **WinPanel** | Windows Server 2022 / 2025 and Windows 11 | Supervised Windows Services, blue/green deploys | Yes — one-click WordPress, MariaDB built in | Stalwart, built in | Cloudflare, built in | Free, self-hosted |
+| **IIS** | Built into Windows | Only through `iisnode`, unmaintained | PHP only, by hand | No | No | Included |
+| **Plesk for Windows** | Yes | Yes | Yes | Yes | Yes | Paid, per server |
+| **aaPanel** | No — Linux only | Yes, on Linux | Yes, on Linux | Yes | Yes | Free, paid Pro tier |
+| **Webmin / Virtualmin** | No — Linux and Unix | By hand | By hand | Yes | Yes | Free, paid tiers |
+| **CyberPanel, CloudPanel, HestiaCP** | No — Linux only | Varies | Yes, on Linux | Varies | Varies | Free |
 
 **IIS** is still the right answer for a plain ASP.NET application, and WinPanel leaves it
 alone as long as it is not holding ports 80 and 443. What it does not give you is a way to
@@ -102,7 +103,8 @@ Windows equivalent.
 
 | Area | Capability |
 | --- | --- |
-| **Websites** | Static files, Node and .NET apps, from Git or managed by hand |
+| **Websites** | Static files, Node, .NET and PHP apps, from Git or managed by hand — plus one-click WordPress |
+| **Databases** | MariaDB with per-site databases and a built-in browser, each database limited to its own site |
 | **Releases** | Builds off to one side and swaps it in, so a failed build never touches the live site |
 | **HTTPS** | Free certificates, renewed automatically, using the DNS challenge |
 | **DNS** | Cloudflare records per website, including the proxy toggle and a one-click "point this domain here" |
@@ -143,8 +145,10 @@ everything after it.
 | Kind | What it does |
 | --- | --- |
 | **A simple website** | Creates the folder and a starter page. Edit or replace the files from the Files tab; changes are live immediately. |
+| **WordPress** | Downloads WordPress, gives it a database and writes its configuration in front of you — then you finish the one-minute setup in the browser. |
+| **A PHP website** | Runs your PHP code on a pool of PHP workers behind the web server. Start from a starter page, or connect a repository that has one. |
 | **I already have the files** | The same, starting empty. |
-| **From a Git repository** | Clones your repository, works out how to build it, and publishes it to the site's `release` folder. |
+| **From a Git repository** | Clones your repository, works out how to build it, and publishes it to the site's `release` folder. PHP projects are recognised too, including Composer installs. |
 | **A Node app from scratch** | Writes a small working Node server you can edit here. |
 
 The first two, and the last, keep their files in the site's `public` folder.
@@ -618,8 +622,12 @@ and its modules configure Linux services, so a Windows box is not a supported ta
 
 ### Does it support PHP or WordPress?
 
-Not yet. WinPanel hosts static sites, Node.js apps and .NET apps today. PHP support is
-planned, and WordPress with it.
+Yes. A PHP site runs on a pool of PHP workers behind the web server, and a repository
+with an `index.php` is recognised automatically — including a Composer install on each
+deploy when the project asks for it. WordPress is a one-click install: the panel downloads
+the current WordPress, creates a MariaDB database for it and writes its configuration,
+then you finish the one-minute setup in the browser. Each site gets its own databases,
+and a database browser is built into the panel.
 
 ### Does it work with ASP.NET Core?
 

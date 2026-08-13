@@ -32,6 +32,20 @@ const PNPM_VERSION = '11.20.0';
 const YARN_VERSION = '1.22.22';
 const BUN_VERSION = '1.3.14';
 
+/*
+ * PHP is the Non-Thread-Safe build: PHP's own guidance is that NTS is the
+ * correct build for FastCGI, which is the only way the panel runs it. The
+ * hash is the one php.net publishes beside the download. It requires the
+ * VC++ 2015-2022 x64 redistributable, which is why `vcredist` is a
+ * dependency — the panel installs it first rather than letting a missing DLL
+ * surface as a cryptic php-cgi crash.
+ */
+const PHP_VERSION = '8.5.9';
+const VCREDIST_VERSION = '14.44.35211.0';
+const MARIADB_VERSION = '12.3.2';
+const COMPOSER_VERSION = '2.8.12';
+const ADMINER_VERSION = '6.0.0';
+
 /**
  * Caddy's official download service builds a binary with the plugins you ask
  * for. Using it avoids installing a Go toolchain on the server purely to run
@@ -175,6 +189,105 @@ export const COMPONENT_CATALOGUE: readonly ComponentDefinition[] = [
     verifyArgs: ['--version'],
     verifyExpect: BUN_VERSION,
     requires: [],
+  },
+  {
+    /*
+     * The VC++ 2015-2022 runtime PHP is built against. Microsoft's
+     * `aka.ms/vs/17/release/vc_redist.x64.exe` is a permalink whose bytes
+     * change in place, so it cannot be hashed; instead the version-pinned URL
+     * it redirects to is used, whose bytes are stable. The hash is the one
+     * embedded in that URL (Microsoft puts it in the path) and is verified
+     * against the download.
+     */
+    id: 'vcredist',
+    name: 'Visual C++ Runtime',
+    description:
+      'The Microsoft runtime library PHP is built against. PHP will not start without it.',
+    version: VCREDIST_VERSION,
+    kind: 'exe',
+    url: 'https://download.visualstudio.microsoft.com/download/pr/9d270333-8b7b-4f96-9458-6fcdb2ec0b25/CC0FF0EB1DC3F5188AE6300FAEF32BF5BEEBA4BDD6E8E445A9184072096B713B/VC_redist.x64.exe',
+    sha256: 'cc0ff0eb1dc3f5188ae6300faef32bf5beeba4bdd6e8e445a9184072096b713b',
+    args: ['/install', '/quiet', '/norestart'],
+    serviceName: null,
+    // A runtime library has no `--version`; a silent install's exit code says it worked.
+    verifyArgs: [],
+    verifyExpect: null,
+    requires: [],
+  },
+  {
+    id: 'php',
+    name: 'PHP',
+    description: 'Runs websites written in PHP, including WordPress.',
+    version: PHP_VERSION,
+    kind: 'zip',
+    url: `https://downloads.php.net/~windows/releases/archives/php-${PHP_VERSION}-nts-Win32-vs17-x64.zip`,
+    sha256: '516c2d72231bd035c8a910120834add0ad208098b790b4909b2cbeb93ce135fc',
+    args: [],
+    serviceName: null,
+    verifyArgs: ['--version'],
+    verifyExpect: `PHP ${PHP_VERSION.split('.').slice(0, 2).join('.')}`,
+    requires: ['vcredist'],
+  },
+  {
+    id: 'mariadb',
+    name: 'Database server (MariaDB)',
+    description:
+      'Stores data for WordPress and other apps that need a MySQL-compatible database.',
+    version: MARIADB_VERSION,
+    kind: 'zip',
+    url: `https://archive.mariadb.org/mariadb-${MARIADB_VERSION}/winx64-packages/mariadb-${MARIADB_VERSION}-winx64.zip`,
+    // From the release's own sha256sums.txt on archive.mariadb.org.
+    sha256: '67347c129eb9c5923d002ea34fbfa27c60eb95d36dd73b85af2651cdeceecac5',
+    args: [],
+    serviceName: 'winpanel-mariadb',
+    verifyArgs: ['--version'],
+    verifyExpect: 'mariadb',
+    requires: [],
+  },
+  {
+    /*
+     * Composer is a single PHP archive with no Windows program of its own, so
+     * it is run through the PHP the panel installed. The SHA-256 is published
+     * on getcomposer.org beside the download.
+     */
+    id: 'composer',
+    name: 'Composer',
+    description:
+      'Installs the packages a PHP project asks for. Needed when a site has a composer.json file.',
+    version: COMPOSER_VERSION,
+    kind: 'php-script',
+    url: 'https://getcomposer.org/download/latest-stable/composer.phar',
+    // From the published composer.phar.sha256 on getcomposer.org.
+    sha256: '5ee7125f8a30a34d246cefdc0bc85b8a783b28f2aec968994118512350d28027',
+    args: [],
+    serviceName: null,
+    verifyArgs: ['--version', '--no-ansi'],
+    verifyExpect: 'Composer',
+    requires: ['php'],
+  },
+  {
+    /*
+     * Adminer is one PHP file. It is NOT served from any website — the panel
+     * runs it behind its own sign-in so the database browser is never exposed
+     * on a public domain, which is exactly what Adminer's own security notes
+     * insist on.
+     */
+    id: 'adminer',
+    name: 'Database browser (Adminer)',
+    description:
+      'A single-file page for browsing and editing a site\'s database, opened from the panel.',
+    version: ADMINER_VERSION,
+    kind: 'php-script',
+    url: `https://github.com/vrana/adminer/releases/download/v${ADMINER_VERSION}/adminer-${ADMINER_VERSION}-mysql-en.php`,
+    // The single-file build has no published checksum; computed from the pinned
+    // release asset on github.com/vrana/adminer.
+    sha256: '1582527dadc7f6733c299abc82d64440f62f493387e75593c61db182cf1bc074',
+    args: [],
+    serviceName: null,
+    // It is a web page, not a CLI program; there is nothing meaningful to run.
+    verifyArgs: [],
+    verifyExpect: null,
+    requires: ['php', 'mariadb'],
   },
 ];
 

@@ -71,6 +71,13 @@
       "when": 1786355595590,
       "tag": "0009_add_login_attempt_cleared_at",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1786611933382,
+      "tag": "0010_add_php_preset_db_limit",
+      "breakpoints": true
     }
   ]
 }

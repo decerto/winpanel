@@ -18,6 +18,7 @@ import {
 import { api, describeError } from '../../lib/api';
 import { siteContextKey } from '../../lib/site-context';
 import { LOG_LEVEL_CLASS, useJobLog } from '../../lib/job-log';
+import { useRuntimeStatus } from '../../lib/runtime-status';
 import AlertMessage from '../../components/AlertMessage.vue';
 import LoadingBlock from '../../components/LoadingBlock.vue';
 import PathPicker from '../../components/PathPicker.vue';
@@ -62,6 +63,36 @@ const commandArgs = ref('');
 
 const PACKAGE_MANAGERS = ['npm', 'pnpm', 'yarn', 'bun'] as const;
 type PackageManager = (typeof PACKAGE_MANAGERS)[number];
+
+/*
+ * Only offer the package managers that are actually installed. pnpm, yarn and
+ * bun are optional downloads; offering one that is not there would fail the
+ * moment it was pressed. npm is always present because it ships with Node.
+ */
+const { has } = useRuntimeStatus();
+const availableManagers = computed<PackageManager[]>(() => {
+  const installed: Record<string, boolean> = {
+    npm: true,
+    pnpm: has('pnpm'),
+    yarn: has('yarn'),
+    bun: has('bun'),
+  };
+  return PACKAGE_MANAGERS.filter((manager) => installed[manager]);
+});
+
+/** The one-off commands that exist to run. Same rule as the package managers. */
+const availableCommands = computed(() => {
+  const installed: Record<string, boolean> = {
+    npm: true,
+    npx: true,
+    node: true,
+    pnpm: has('pnpm'),
+    yarn: has('yarn'),
+    bun: has('bun'),
+    dotnet: true,
+  };
+  return COMMANDS.filter((name) => installed[name]);
+});
 
 /** A one-off choice: installing with something else does not change the site. */
 const installWith = ref<PackageManager>('npm');
@@ -332,7 +363,7 @@ watch(slug, load, { immediate: true });
               class="field w-24 py-1.5 text-[0.8125rem]"
               aria-label="Package manager to install with"
             >
-              <option v-for="manager in PACKAGE_MANAGERS" :key="manager" :value="manager">
+              <option v-for="manager in availableManagers" :key="manager" :value="manager">
                 {{ manager }}
               </option>
             </select>
@@ -474,7 +505,7 @@ watch(slug, load, { immediate: true });
                 class="field max-w-64 py-1.5"
                 aria-label="Package manager"
               >
-                <option v-for="manager in PACKAGE_MANAGERS" :key="manager" :value="manager">
+                <option v-for="manager in availableManagers" :key="manager" :value="manager">
                   {{ manager }}
                 </option>
               </select>
@@ -667,7 +698,7 @@ watch(slug, load, { immediate: true });
           <div>
             <label for="command" class="label">Command</label>
             <select id="command" v-model="command" class="field w-32 py-1.5">
-              <option v-for="name in COMMANDS" :key="name" :value="name">{{ name }}</option>
+              <option v-for="name in availableCommands" :key="name" :value="name">{{ name }}</option>
             </select>
           </div>
           <div class="min-w-64 flex-1">

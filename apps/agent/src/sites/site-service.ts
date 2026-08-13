@@ -66,6 +66,8 @@ export interface CreateSiteInput {
   /** OpenSSH private key of a deploy key, for a private repository. */
   gitSshKey?: { privateKey: string; publicKey: string };
   diskQuotaBytes?: number;
+  /** The flavour the site was created from, if any. */
+  preset?: 'wordpress' | null;
   /** Whose website this is. Null leaves it belonging to the server. */
   ownerUserId?: string | null;
 }
@@ -308,6 +310,7 @@ export class SiteService {
         slug,
         displayName: input.displayName,
         runtime: input.manifest.runtime,
+        preset: input.preset ?? input.manifest.preset ?? null,
         domains: input.domains,
         source: input.source,
         manifest: input.manifest,

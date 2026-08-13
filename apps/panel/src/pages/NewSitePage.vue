@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { RouterLink, useRouter } from 'vue-router';
 import {
   ArrowLeft,
@@ -11,12 +11,18 @@ import {
   GitBranch,
   KeyRound,
   Loader,
+  Lock,
   Plus,
   Server,
   Trash2,
   Upload,
+  Globe,
+  LayoutGrid,
 } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
+import { useJobLog, LOG_LEVEL_CLASS } from '../lib/job-log';
+import { useRuntimeStatus } from '../lib/runtime-status';
+import LoadingBlock from '../components/LoadingBlock.vue';
 import {
   deployKeyPageFor,
   hostLabelFor,
@@ -41,7 +47,58 @@ import HowTo from '../components/HowTo.vue';
 
 const router = useRouter();
 
-type Kind = 'static' | 'upload' | 'git' | 'node';
+type Kind = 'static' | 'upload' | 'git' | 'node' | 'php' | 'wordpress';
+
+/*
+ * PHP and WordPress are only offerable when PHP is installed — and only the
+ * server owner can install it. So the wizard learns both up front: whether
+ * the runtime is there, and whether the person looking at the page is allowed
+ * to add it. The two read differently, which is the point — an owner is told
+ * to install it, everyone else is simply told it is not available.
+ */
+const { has } = useRuntimeStatus();
+const isOwner = ref(false);
+
+onMounted(async () => {
+  try {
+    const me = await api.auth.me.query();
+    isOwner.value = me?.role === 'superadmin';
+  } catch {
+    // Leave it false; the install-yourself hint simply is not shown.
+  }
+});
+
+/** Why a kind is unavailable, worded for whoever is looking. */
+function unavailableReason(kind: Kind): string | null {
+  // WordPress needs PHP *and* the database server; PHP sites need PHP.
+  if (kind === 'php' || kind === 'wordpress') {
+    if (!has('php')) {
+      return isOwner.value
+        ? 'PHP is not installed yet. Install it from Settings → Programs, then come back.'
+        : 'PHP is not available on this server yet. Ask your hosting provider to set it up.';
+    }
+    if (kind === 'wordpress' && !has('mariadb')) {
+      return isOwner.value
+        ? 'WordPress needs the database server. Install it from Settings → Programs, then come back.'
+        : 'WordPress is not available on this server yet. Ask your hosting provider to set it up.';
+    }
+    return null;
+  }
+
+  // A Node app needs a Node runtime, which the panel finds rather than installs.
+  if (kind === 'node' && !has('node')) {
+    return 'No Node.js runtime was found on this server, so a Node app cannot run yet.';
+  }
+
+  // A git site needs git to clone the repository.
+  if (kind === 'git' && !has('git')) {
+    return isOwner.value
+      ? 'Git is not installed yet. Install it from Settings → Programs, then come back.'
+      : 'Deploying from a repository is not available on this server yet.';
+  }
+
+  return null;
+}
 
 const KINDS = [
   {
@@ -50,6 +107,20 @@ const KINDS = [
     title: 'A simple website',
     blurb:
       'HTML, CSS and images. We create the folder and a starter page for you to edit or replace.',
+  },
+  {
+    key: 'wordpress' as const,
+    icon: LayoutGrid,
+    title: 'WordPress',
+    blurb:
+      'The website builder behind a third of the web. Downloaded, given a database, and set up for you.',
+  },
+  {
+    key: 'php' as const,
+    icon: Globe,
+    title: 'A PHP website',
+    blurb:
+      'A site written in PHP. Start from a starter page, or connect a repository that has one.',
   },
   {
     key: 'upload' as const,
@@ -74,15 +145,19 @@ const KINDS = [
   },
 ];
 
-type Step = 'kind' | 'source' | 'confirm' | 'domain' | 'secrets';
+type Step = 'kind' | 'source' | 'confirm' | 'domain' | 'secrets' | 'installing';
 const step = ref<Step>('kind');
 const kind = ref<Kind>('static');
 
 /** Everything except git is created from a folder rather than a build. */
 const isGit = computed(() => kind.value === 'git');
+/** WordPress is downloaded and set up by the panel rather than built from a repo. */
+const isWordPress = computed(() => kind.value === 'wordpress');
 /** Only these run a process, so only these can have secrets. */
-const hasSecrets = computed(() => kind.value === 'git' || kind.value === 'node');
-/** Only these are served by the web server directly. */
+const hasSecrets = computed(
+  () => kind.value === 'git' || kind.value === 'node' || kind.value === 'php',
+);
+/** Only these are served by the web server directly, with no runtime in front. */
 const servesFiles = computed(() => kind.value === 'static' || kind.value === 'upload');
 
 const repoUrl = ref('');
@@ -171,6 +246,17 @@ const credentials = computed(() => ({
 const busy = ref(false);
 const error = ref<string | null>(null);
 const testResult = ref<{ ok: boolean; message: string } | null>(null);
+
+/*
+ * WordPress setup runs as a job once the site exists, and this page streams
+ * it. `useJobLog` polls the job and hands back its lines as they arrive.
+ */
+const {
+  lines: installLines,
+  status: installStatus,
+  watchJob,
+} = useJobLog();
+const wordpressSlug = ref<string | null>(null);
 
 type Inspection = Awaited<ReturnType<typeof api.sites.inspect.mutate>>;
 const inspection = ref<Inspection | null>(null);
@@ -285,7 +371,7 @@ async function inspectRepository(): Promise<void> {
 /** The source and runtime each choice on the first step maps to. */
 function payloadFor(): {
   source: Record<string, unknown> & { kind: 'git' | 'upload' | 'blank' };
-  runtime: 'static' | 'node';
+  runtime: 'static' | 'node' | 'php';
 } {
   switch (kind.value) {
     case 'git':
@@ -303,6 +389,10 @@ function payloadFor(): {
       return { source: { kind: 'upload' }, runtime: 'static' };
     case 'node':
       return { source: { kind: 'blank' }, runtime: 'node' };
+    case 'php':
+    case 'wordpress':
+      // WordPress forces a blank PHP site; the panel downloads and fills it.
+      return { source: { kind: 'blank' }, runtime: 'php' };
     default:
       return { source: { kind: 'blank' }, runtime: 'static' };
   }
@@ -342,10 +432,23 @@ async function createSite(): Promise<void> {
       // else the server writes one that matches the runtime.
       ...(isGit.value && inspection.value ? { manifest: manifestToCreate() } : {}),
       ...(isGit.value ? { packageManager: packageManager.value } : {}),
+      ...(isWordPress.value ? { preset: 'wordpress' as const } : {}),
       spaFallback: spaFallback.value,
       envVars,
       deployNow: true,
     });
+
+    /*
+     * WordPress is set up by a job that downloads and configures it, so the
+     * page stays put and streams that job to the user instead of leaving for
+     * a site that is not ready yet. Everything else goes straight to the site.
+     */
+    if (isWordPress.value && created.jobId) {
+      wordpressSlug.value = created.slug;
+      step.value = 'installing';
+      watchJob(created.jobId);
+      return;
+    }
 
     await router.push(`/sites/${created.slug}`);
   } catch (err) {
@@ -476,8 +579,14 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
             v-for="option in KINDS"
             :key="option.key"
             type="button"
+            :disabled="unavailableReason(option.key) !== null"
             class="flex w-full gap-3 rounded-lg border border-line bg-black/20 p-4 text-left
-                   transition-colors hover:border-brand hover:bg-brand-soft"
+                   transition-colors"
+            :class="
+              unavailableReason(option.key) !== null
+                ? 'cursor-not-allowed opacity-60'
+                : 'hover:border-brand hover:bg-brand-soft'
+            "
             @click="chooseKind(option.key)"
           >
             <component
@@ -489,6 +598,13 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
             <span>
               <span class="block text-sm font-medium text-ink">{{ option.title }}</span>
               <span class="mt-0.5 block text-sm text-ink-muted">{{ option.blurb }}</span>
+              <span
+                v-if="unavailableReason(option.key)"
+                class="mt-1.5 flex items-center gap-1.5 text-xs text-warn"
+              >
+                <Lock :size="12" aria-hidden="true" />
+                {{ unavailableReason(option.key) }}
+              </span>
             </span>
           </button>
         </div>
@@ -1025,6 +1141,48 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
             <Loader v-if="busy" :size="14" class="animate-spin" aria-hidden="true" />
             {{ busy ? 'Creating\u2026' : isGit ? 'Create and deploy' : 'Create website' }}
           </button>
+        </div>
+      </template>
+
+      <!-- WordPress only: the panel is downloading and setting it up. -->
+      <template v-else-if="step === 'installing'">
+        <h2 class="text-lg font-semibold tracking-tight text-ink">Setting up WordPress</h2>
+        <p class="mt-1 text-sm text-ink-muted">
+          Downloading WordPress, giving it a database, and writing its configuration. This
+          usually takes under a minute.
+        </p>
+
+        <div
+          v-if="installLines.length > 0"
+          class="mt-5 overflow-hidden rounded-lg border border-line"
+        >
+          <pre
+            class="max-h-64 overflow-y-auto bg-black/25 p-4 font-mono text-xs leading-relaxed"
+          ><span
+            v-for="line in installLines"
+            :key="line.seq"
+            class="block"
+            :class="LOG_LEVEL_CLASS[line.level] ?? 'text-ink'"
+          >{{ line.message }}</span></pre>
+        </div>
+        <LoadingBlock v-else class="mt-5 h-40" label="Starting…" />
+
+        <AlertMessage v-if="installStatus === 'failed'" tone="danger" class="mt-4">
+          WordPress could not be set up. The website was created — open it and press
+          Deploy on its page to try the setup again.
+        </AlertMessage>
+
+        <div v-if="installStatus === 'succeeded'" class="mt-5">
+          <AlertMessage tone="success" class="mb-4">
+            WordPress is installed. The last step — naming the site and making your login —
+            happens in WordPress itself.
+          </AlertMessage>
+          <RouterLink
+            :to="`/sites/${wordpressSlug}`"
+            class="btn btn-primary w-full justify-center"
+          >
+            Continue to your website
+          </RouterLink>
         </div>
       </template>
     </div>

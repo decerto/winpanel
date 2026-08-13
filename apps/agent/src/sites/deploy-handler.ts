@@ -30,6 +30,9 @@ import { previewProxyIdFor, proxyIdFor } from '../caddy/config-builder.js';
 import type { ServiceManager } from '../windows/service-manager.js';
 import { siteServiceId } from '../windows/panel-services.js';
 import { clearStrayListeners, describeHolder } from '../windows/stray-processes.js';
+import { findExecutable } from '../components/archive.js';
+import { writePhpIni, waitForPhpPool } from './php.js';
+import { PHP_POOL_SIZE } from '@winpanel/shared';
 
 /**
  * The deployment, start to finish.
@@ -58,6 +61,8 @@ export interface DeployDependencies {
   tools: ToolPaths;
   gitPath: string;
   sitesRoot: string;
+  /** The panel's own program folder, where installed components live. */
+  binDir: string;
   /** Resolves a site's secrets from the vault. */
   loadEnv: (siteId: string) => Promise<Record<string, string>>;
   /** Git token for private repositories, if configured. */
@@ -129,8 +134,66 @@ async function resolveRuntimeExecutable(
     return { exe: dotnet.exe, args: [...dotnet.args, entry] };
   }
 
+  if (manifest.runtime === 'php') {
+    /*
+     * PHP sites are run by the pool supervisor, a small Node script, rather
+     * than by php-cgi directly: one php-cgi serves one request at a time, so
+     * the supervisor keeps a pool of them alive and the web server shares
+     * requests across them. The script ships inside the PHP component, so
+     * this fails with a clear message until PHP is installed.
+     */
+    const poolScript = path.join(deps.binDir, 'php', 'pool.js');
+    if (!(await isFile(poolScript))) {
+      throw new DeploymentError(
+        'PHP is not installed on this server yet. Install it from the Programs section of Settings, then deploy again.',
+      );
+    }
+    const node = await deps.tools.resolve('node');
+    return { exe: node.exe, args: [...node.args, poolScript] };
+  }
+
   const node = await deps.tools.resolve('node', manifest.nodeVersion ?? undefined);
   return { exe: node.exe, args: [...node.args, entry ?? 'index.js'] };
+}
+
+/**
+ * The environment a site's service runs with.
+ *
+ * Node and .NET get the production defaults a hosted app expects. PHP does
+ * not: `NODE_ENV` means nothing to it, and its pool is configured through its
+ * own variables instead — where php-cgi is, which port to start from, and the
+ * web root. The site's own variables reach both kinds.
+ */
+export async function phpServiceEnv(
+  deps: Pick<DeployDependencies, 'binDir' | 'sitesRoot'>,
+  site: { slug: string },
+  basePort: number,
+  documentRoot: string,
+  env: Record<string, string>,
+): Promise<Record<string, string>> {
+  const phpDir = path.join(deps.binDir, 'php');
+  const cgiExe = await findExecutable(phpDir, ['php-cgi.exe']);
+  if (!cgiExe) {
+    throw new DeploymentError(
+      'PHP is not installed on this server yet. Install it from the Programs section of Settings, then deploy again.',
+    );
+  }
+
+  // A php.ini written per site, pointing at the extensions beside the
+  // php-cgi.exe that will actually run — derived from the exe's own location,
+  // so the zip's folder layout (which puts everything under `bin`) cannot
+  // leave it pointing at the wrong place.
+  const iniPath = path.join(deps.sitesRoot, site.slug, 'logs', 'php.ini');
+  await writePhpIni(iniPath, path.dirname(cgiExe));
+
+  return {
+    ...env,
+    PHP_CGI_EXE: cgiExe,
+    PHP_BASE_PORT: String(basePort),
+    PHP_DOC_ROOT: documentRoot,
+    PHP_INI: iniPath,
+    PHP_POOL_SIZE: String(PHP_POOL_SIZE),
+  };
 }
 
 /**
@@ -147,8 +210,9 @@ export async function entryFileProblem(
 ): Promise<string | null> {
   const appDir = path.join(stagingDir, manifest.app.cwd);
   const configured = configuredEntry(manifest);
-  // .NET without an entry is reported by resolveRuntimeExecutable instead.
-  const entry = configured ?? (manifest.runtime === 'dotnet' ? null : 'index.js');
+  // .NET reports a missing entry elsewhere; PHP has no startup file at all —
+  // its front controller is always index.php, so there is nothing to validate.
+  const entry = configured ?? (manifest.runtime === 'node' ? 'index.js' : null);
   if (!entry) return null;
 
   try {
@@ -547,6 +611,16 @@ export function createDeployHandler(deps: DeployDependencies) {
 
         await claimPort(targetPort, runtimeExe.exe, ctx);
 
+        const serviceEnv =
+          manifest.runtime === 'php'
+            ? await phpServiceEnv(deps, site, targetPort, appDir, env)
+            : {
+                ...env,
+                [manifest.app.portEnvVar]: String(targetPort),
+                NODE_ENV: 'production',
+                HOST: '127.0.0.1',
+              };
+
         await deps.services.install({
           id: serviceId,
           displayName: site.displayName,
@@ -554,12 +628,7 @@ export function createDeployHandler(deps: DeployDependencies) {
           executable: runtimeExe.exe,
           args: runtimeExe.args,
           workingDirectory: appDir,
-          env: {
-            ...env,
-            [manifest.app.portEnvVar]: String(targetPort),
-            NODE_ENV: 'production',
-            HOST: '127.0.0.1',
-          },
+          env: serviceEnv,
           logPath: path.join(siteDir, 'logs'),
         });
 
@@ -568,12 +637,23 @@ export function createDeployHandler(deps: DeployDependencies) {
         setStatus('healthchecking');
         ctx.progress(80);
 
-        await waitForHealthy({
-          port: targetPort,
-          path: manifest.app.healthCheckPath,
-          timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
-          ctx,
-        });
+        // PHP workers speak FastCGI, not HTTP, so the HTTP health check can
+        // never pass against them; a TCP connect per worker is the proof the
+        // pool came up.
+        if (manifest.runtime === 'php') {
+          await waitForPhpPool({
+            basePort: targetPort,
+            timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
+            log: (message) => ctx.log(message),
+          });
+        } else {
+          await waitForHealthy({
+            port: targetPort,
+            path: manifest.app.healthCheckPath,
+            timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
+            ctx,
+          });
+        }
       } catch (error) {
         if (await rollBack(deps, { folders, serviceId, ctx })) liveIsPrevious = true;
 
@@ -756,7 +836,11 @@ async function publishManagedSite(
   try {
     await fs.mkdir(publicDir, { recursive: true });
 
-    if (manifest.runtime === 'node' || manifest.runtime === 'dotnet') {
+    if (
+      manifest.runtime === 'node' ||
+      manifest.runtime === 'dotnet' ||
+      manifest.runtime === 'php'
+    ) {
       const port = site.activeColour === 'blue' ? site.portBlue : site.portGreen;
       if (port === null) {
         fail('This website has no port assigned yet. Remove and re-create it to fix this.');
@@ -778,31 +862,46 @@ async function publishManagedSite(
 
       await claimPort(port, runtimeExe.exe, ctx);
 
+      const documentRoot = path.join(publicDir, manifest.app.cwd);
+      const serviceEnv =
+        manifest.runtime === 'php'
+          ? await phpServiceEnv(deps, site, port, documentRoot, env)
+          : {
+              ...env,
+              [manifest.app.portEnvVar]: String(port),
+              NODE_ENV: 'production',
+              HOST: '127.0.0.1',
+            };
+
       await deps.services.install({
         id: serviceId,
         displayName: site.displayName,
         description: `Website: ${site.displayName}`,
         executable: runtimeExe.exe,
         args: runtimeExe.args,
-        workingDirectory: path.join(publicDir, manifest.app.cwd),
-        env: {
-          ...env,
-          [manifest.app.portEnvVar]: String(port),
-          NODE_ENV: 'production',
-          HOST: '127.0.0.1',
-        },
+        workingDirectory: documentRoot,
+        env: serviceEnv,
         logPath: path.join(siteDir, 'logs'),
       });
 
       await deps.services.start(serviceId);
       ctx.progress(60);
 
-      await waitForHealthy({
-        port,
-        path: manifest.app.healthCheckPath,
-        timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
-        ctx,
-      });
+      // PHP speaks FastCGI, not HTTP — a TCP connect per worker, not a page fetch.
+      if (manifest.runtime === 'php') {
+        await waitForPhpPool({
+          basePort: port,
+          timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
+          log: (message) => ctx.log(message),
+        });
+      } else {
+        await waitForHealthy({
+          port,
+          path: manifest.app.healthCheckPath,
+          timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
+          ctx,
+        });
+      }
     }
 
     ctx.progress(85);

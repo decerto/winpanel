@@ -78,6 +78,16 @@ export const router = createRouter({
           component: () => import('./pages/site/SiteAppPage.vue'),
         },
         {
+          path: 'php',
+          name: 'site-php',
+          component: () => import('./pages/site/SitePhpPage.vue'),
+        },
+        {
+          path: 'databases',
+          name: 'site-databases',
+          component: () => import('./pages/site/SiteDatabasesPage.vue'),
+        },
+        {
           path: 'traffic',
           name: 'site-traffic',
           component: () => import('./pages/site/SiteTrafficPage.vue'),

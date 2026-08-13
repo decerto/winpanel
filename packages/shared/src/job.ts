@@ -30,6 +30,8 @@ export const JobKind = z.enum([
   'run-command',
   /** Installing a newer WinPanel over the running one. */
   'update-panel',
+  /** Downloading WordPress, creating its database and writing wp-config.php. */
+  'install-wordpress',
 ]);
 export type JobKind = z.infer<typeof JobKind>;
 

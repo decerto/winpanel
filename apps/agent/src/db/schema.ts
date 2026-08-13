@@ -168,7 +168,14 @@ export const sites = sqliteTable(
      * is treated as; only admins and the owner ever see those.
      */
     ownerUserId: text('owner_user_id').references(() => users.id, { onDelete: 'set null' }),
-    runtime: text('runtime', { enum: ['node', 'static', 'dotnet', 'proxy'] }).notNull(),
+    runtime: text('runtime', { enum: ['node', 'static', 'dotnet', 'proxy', 'php'] }).notNull(),
+    /** The flavour the site was created from, if any. Drives UI hints only. */
+    preset: text('preset', { enum: ['wordpress'] }),
+    /**
+     * How many databases this website may have. Null means no limit — the
+     * same convention as the per-user site limit.
+     */
+    databaseLimit: integer('database_limit'),
     /** JSON array of hostnames. */
     domains: text('domains', { mode: 'json' }).notNull().default(sql`'[]'`),
     /** JSON, discriminated on `kind`. */

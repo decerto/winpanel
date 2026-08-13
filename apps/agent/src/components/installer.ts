@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ComponentDefinition } from '@winpanel/shared';
@@ -5,7 +6,9 @@ import type { DatabaseHandle } from '../db/index.js';
 import type { SecretVault } from '../security/vault.js';
 import type { JobContext } from '../jobs/queue.js';
 import type { ServiceManager } from '../windows/service-manager.js';
-import { runCommand } from '../process/run-command.js';
+import { runCommand, spawnManaged } from '../process/run-command.js';
+import { writeSecret } from '../security/secret-store.js';
+import { sqlStringLiteral } from '../sites/databases.js';
 import { buildStalwartBootstrap } from '../mail/stalwart-config.js';
 import { ensureMailAdminCredentials, mailServiceEnv } from '../mail/service.js';
 import { storeMailDomains } from '../mail/domains.js';
@@ -34,12 +37,54 @@ export interface InstallerDependencies {
   dataDir: string;
   logDir: string;
   caddyDir: string;
+  /** The agent's own compiled folder, where the PHP pool script is found. */
+  agentDistDir: string;
   /** The name this mail server calls itself. Usually `mail.<first domain>`. */
   mailHostname: () => string;
 }
 
 export interface InstallComponentPayload {
   componentId: string;
+}
+
+/** Vault key the MariaDB root password is stored under. */
+const MARIADB_ROOT_KEY = 'mariadb.rootPassword';
+
+/** Reads a secret that may not exist yet, returning null instead of throwing. */
+async function readSecretOrNull(
+  db: DatabaseHandle,
+  vault: SecretVault,
+  key: string,
+): Promise<string | null> {
+  const { readSecret } = await import('../security/secret-store.js');
+  return readSecret(db, vault, key);
+}
+
+/**
+ * True when a component's program is already on disk. Used to skip a
+ * dependency that is already present, so installing PHP on a machine that
+ * already has the VC++ runtime does not reinstall it.
+ */
+async function isInstalled(
+  deps: InstallerDependencies,
+  component: ComponentDefinition,
+): Promise<boolean> {
+  const installDir = path.join(deps.binDir, component.id);
+
+  if (component.kind === 'node-script' || component.kind === 'php-script') {
+    // Adminer is a web page renamed to adminer.php; the other php-scripts keep
+    // their .phar name. The two kinds name their file differently.
+    const filename =
+      component.kind === 'php-script'
+        ? component.id === 'adminer'
+          ? 'adminer.php'
+          : `${component.id}.phar`
+        : `${component.id}.js`;
+    const target = path.join(installDir, filename);
+    return await fs.access(target).then(() => true, () => false);
+  }
+
+  return (await findExecutable(installDir, executableNames(component))) !== null;
 }
 
 /**
@@ -52,6 +97,10 @@ export interface InstallComponentPayload {
 function executableNames(component: ComponentDefinition): string[] {
   const alternates: Record<string, string[]> = {
     stalwart: ['stalwart.exe', 'stalwart-mail.exe'],
+    php: ['php-cgi.exe', 'php.exe'],
+    mariadb: ['mariadbd.exe', 'mysqld.exe'],
+    composer: ['composer.phar'],
+    adminer: ['adminer.php'],
   };
 
   return alternates[component.id] ?? [`${component.id}.exe`];
@@ -116,18 +165,275 @@ async function prepareMailServer(
   ctx.log(`Wrote ${configPath}`);
 }
 
-export function createInstallComponentHandler(deps: InstallerDependencies) {
-  return async (payload: unknown, ctx: JobContext): Promise<void> => {
-    const { componentId } = payload as InstallComponentPayload;
-    const component = findComponent(componentId);
+/**
+ * Everything MariaDB needs before it will serve: a data directory with the
+ * system tables created, and a root password the panel can provision
+ * databases with.
+ *
+ * The data directory is created by MariaDB's own `mysql_install_db.exe`, never
+ * assumed to exist, and an existing one is left exactly as it is — reinstalling
+ * the program must not wipe the databases people have stored in it.
+ *
+ * The root password is generated here, kept in the vault, and set through the
+ * `mysql` client over a socket that only ever listens on loopback. It never
+ * appears in a log.
+ */
+async function prepareDatabaseServer(
+  deps: InstallerDependencies,
+  installDir: string,
+  ctx: JobContext,
+): Promise<void> {
+  const dbData = path.join(deps.dataDir, 'database');
+  const mariadbExe = await findExecutable(installDir, ['mysql_install_db.exe']);
+  const clientExe = await findExecutable(installDir, ['mariadb.exe', 'mysql.exe']);
 
-    if (!component) throw new Error(`There is no component called "${componentId}".`);
-    if (component.id === 'node') {
-      throw new Error(
-        'Node.js is provided by the server itself and is not installed by the panel.',
-      );
+  if (!mariadbExe || !clientExe) {
+    throw new Error(
+      'The MariaDB download did not contain the programs needed to set it up ' +
+        '(mysql_install_db.exe and the client). Nothing was started.',
+    );
+  }
+
+  await fs.mkdir(dbData, { recursive: true });
+
+  // The system tables are only created once; an existing data directory means
+  // this is a reinstall and the databases must be left alone.
+  const alreadyInitialised = await fs
+    .access(path.join(dbData, 'mysql'))
+    .then(() => true, () => false);
+
+  if (!alreadyInitialised) {
+    ctx.log('Creating the database data directory…');
+    await runCommand({
+      exe: mariadbExe,
+      args: [`--datadir=${dbData}`, '--password='],
+      timeoutMs: 120_000,
+    });
+  } else {
+    ctx.log('Keeping the existing databases.');
+  }
+
+  /*
+   * The root password the panel uses for every later change. It is generated
+   * once, stored in the vault, and — crucially — actually set on the server.
+   * Generating it without applying it would leave every subsequent database
+   * operation unable to sign in, which is exactly the failure this step exists
+   * to prevent. The password is applied by starting a throwaway server with
+   * grant tables off (so no password is needed yet), setting it, and stopping
+   * again — all before the real service ever starts.
+   */
+  let rootPassword = await readSecretOrNull(deps.db, deps.vault, MARIADB_ROOT_KEY);
+  if (!rootPassword) {
+    rootPassword = crypto.randomBytes(24).toString('base64url');
+    await setDatabaseRootPassword(installDir, dbData, rootPassword, ctx);
+    writeSecret(deps.db, deps.vault, MARIADB_ROOT_KEY, rootPassword);
+    ctx.log('Set and stored a database root password.');
+  }
+}
+
+/**
+ * Sets the MariaDB root password before the server ever serves traffic.
+ *
+ * A fresh data directory has an empty root password, so a one-off server is
+ * started against it with grant tables skipped, the password is set for every
+ * root account shape MariaDB creates, and the server is stopped again. The
+ * password travels in the SQL text, which is fine here — it is generated by
+ * us, used once, and the temporary server is gone a moment later.
+ */
+async function setDatabaseRootPassword(
+  installDir: string,
+  dbData: string,
+  password: string,
+  ctx: JobContext,
+): Promise<void> {
+  const serverExe = await findExecutable(installDir, ['mariadbd.exe', 'mysqld.exe']);
+  const clientExe = await findExecutable(installDir, ['mariadb.exe', 'mysql.exe']);
+  if (!serverExe || !clientExe) {
+    throw new Error('The MariaDB download did not contain the server and client programs.');
+  }
+
+  // The generated password is base64url, so it has no characters that could
+  // break the SQL string — but escape it properly anyway, because a literal
+  // that cannot be trusted must never be interpolated raw.
+  const literal = sqlStringLiteral(password);
+
+  const server = spawnManaged({
+    exe: serverExe,
+    args: [
+      `--datadir=${dbData}`,
+      '--skip-grant-tables',
+      '--skip-networking=0',
+      '--bind-address=127.0.0.1',
+      '--port=3307',
+      '--console',
+    ],
+    cwd: path.dirname(serverExe),
+    env: {},
+  });
+
+  try {
+    // Wait for the temporary server to accept a connection before speaking SQL.
+    let ready = false;
+    for (let attempt = 0; attempt < 50 && !ready; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const probe = await runCommand({
+        exe: clientExe,
+        args: ['--host=127.0.0.1', '--port=3307', '--user=root', '--execute', 'SELECT 1'],
+        timeoutMs: 5_000,
+      });
+      ready = probe.exitCode === 0;
+    }
+    if (!ready) throw new Error('The database server did not start so its password could be set.');
+
+    /*
+     * Under --skip-grant-tables the account-management statements (ALTER USER,
+     * CREATE USER, GRANT, even SET PASSWORD) are refused — that is the whole
+     * point of the mode. The way to set a password there is to write the
+     * privilege table directly and then FLUSH PRIVILEGES, which reloads it.
+     * `mysql.global_priv` holds each account as a JSON privileges object; the
+     * install creates root at localhost, 127.0.0.1, ::1 and the machine name,
+     * all with no password, so a single UPDATE by user covers every shape.
+     * Verified against MariaDB 12.3.2 on Windows: set under skip-grant, then a
+     * normal-restart login with the password succeeds.
+     */
+    const result = await runCommand({
+      exe: clientExe,
+      args: [
+        '--host=127.0.0.1',
+        '--port=3307',
+        '--user=root',
+        '--execute',
+        // PASSWORD() produces the mysql_native_password hash MariaDB checks
+        // against; JSON_SET writes it (and the plugin) into each root row.
+        `UPDATE mysql.global_priv SET Priv = JSON_SET(Priv, '$.authentication_string', PASSWORD(${literal}), '$.plugin', 'mysql_native_password') WHERE User = 'root'; ` +
+          'FLUSH PRIVILEGES;',
+      ],
+      timeoutMs: 15_000,
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(`The database root password could not be set: ${result.stderr.trim()}`);
+    }
+    ctx.log('Secured the database root account.');
+  } finally {
+    server.kill();
+    // Give it a moment to release the data directory before the service starts.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
+/**
+ * Drops the pool supervisor next to php-cgi.exe.
+ *
+ * The supervisor is a small Node script that starts and restarts the site's
+ * php-cgi workers. It is compiled into the agent (as
+ * `dist/sites/php-pool-standalone.js`) and copied into the PHP component on
+ * install, so a website's service points at a file that lives with the runtime
+ * it drives rather than inside the agent's own folder — reinstalling the agent
+ * then never pulls a running site's supervisor out from under it. The script
+ * is self-contained on purpose: from the component's folder it cannot resolve
+ * any of the agent's modules.
+ */
+async function installPhpPool(
+  deps: InstallerDependencies,
+  installDir: string,
+  ctx: JobContext,
+): Promise<void> {
+  const source = path.join(deps.agentDistDir, 'sites', 'php-pool-standalone.js');
+  const target = path.join(installDir, 'pool.js');
+
+  try {
+    await fs.copyFile(source, target);
+    ctx.log('Installed the PHP worker pool.');
+  } catch {
+    throw new Error(
+      'The agent could not find its PHP pool script to install. ' +
+        'The panel may need reinstalling.',
+    );
+  }
+}
+
+export function createInstallComponentHandler(deps: InstallerDependencies) {
+  /*
+   * `skipIfPresent` is true only for dependencies pulled in to satisfy a
+   * `requires`. The component the user actually asked for is always
+   * (re)installed, because Install and Reinstall are the same button and
+   * replacing the files is the whole point of pressing it again.
+   */
+  const installWithRequires = async (
+    component: ComponentDefinition,
+    ctx: JobContext,
+    installing: ReadonlySet<string>,
+    skipIfPresent: boolean,
+  ): Promise<void> => {
+    for (const requiredId of component.requires) {
+      if (installing.has(requiredId)) continue;
+      const required = findComponent(requiredId);
+      if (!required) continue;
+      if (await isInstalled(deps, required)) continue;
+
+      ctx.log(`${component.name} needs ${required.name} — installing that first.`);
+      await installWithRequires(required, ctx, new Set([...installing, component.id]), true);
     }
 
+    if (skipIfPresent && (await isInstalled(deps, component))) {
+      ctx.log(`${component.name} is already installed.`);
+      return;
+    }
+
+    await installOne(component, ctx);
+  };
+
+  /**
+   * Undoes a half-finished install, so a failed download or a service that
+   * would not start does not leave a program half-present — showing as
+   * installed, but missing the piece that failed.
+   *
+   * Deliberately conservative: only the downloaded archive and the panel's
+   * own install folder are removed, never the program's data. A reinstall of
+   * the database server must not delete the databases.
+   */
+  const cleanupFailedInstall = async (
+    component: ComponentDefinition,
+    ctx: JobContext,
+  ): Promise<void> => {
+    try {
+      // A service that was registered but never started cleanly comes off, or
+      // the next install finds a broken registration in the way.
+      if (component.serviceName && (await deps.services.isInstalled(component.serviceName))) {
+        await deps.services.uninstall(component.serviceName);
+      }
+
+      await fs.rm(path.join(deps.binDir, component.id), {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 250,
+      });
+
+      ctx.log('Cleared away the unfinished install.');
+    } catch (error) {
+      // A cleanup that itself fails is logged, not thrown — the original
+      // error is the one the user needs.
+      ctx.log(
+        `Could not clear the unfinished install: ${error instanceof Error ? error.message : String(error)}`,
+        'warn',
+      );
+    }
+  };
+
+  const installOne = async (component: ComponentDefinition, ctx: JobContext): Promise<void> => {
+    ctx.log(`Installing ${component.name} ${component.version}`);
+    ctx.progress(5);
+
+    try {
+      await installOneInner(component, ctx);
+    } catch (error) {
+      await cleanupFailedInstall(component, ctx);
+      throw error;
+    }
+  };
+
+  const installOneInner = async (component: ComponentDefinition, ctx: JobContext): Promise<void> => {
     ctx.log(`Installing ${component.name} ${component.version}`);
     ctx.progress(5);
 
@@ -142,7 +448,9 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
     }
 
     const downloadDir = path.join(deps.binDir, '.downloads');
-    const archivePath = path.join(downloadDir, `${component.id}-${component.version}.zip`);
+    const extension =
+      component.kind === 'php-script' ? '.phar' : component.kind === 'exe' ? '.exe' : '.zip';
+    const archivePath = path.join(downloadDir, `${component.id}-${component.version}${extension}`);
 
     ctx.log(`Downloading from ${new URL(component.url).host}\u2026`);
 
@@ -192,6 +500,72 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
       return;
     }
 
+    if (component.kind === 'php-script') {
+      // A single PHP archive, run through the PHP the panel installed. The
+      // Adminer download is the full tool but is not named `adminer.php`, so
+      // it is renamed to the name the panel serves it by.
+      await fs.mkdir(installDir, { recursive: true });
+      const filename = component.id === 'adminer' ? 'adminer.php' : `${component.id}.phar`;
+      const target = path.join(installDir, filename);
+
+      ctx.log(`Installing into ${target}…`);
+      await fs.copyFile(archivePath, target);
+      await fs.rm(archivePath, { force: true });
+
+      ctx.progress(70);
+      if (component.id === 'composer') {
+        // Composer is verified by asking it what it is, through PHP.
+        const phpExe = await findExecutable(path.join(deps.binDir, 'php'), ['php.exe']);
+        if (phpExe) await verifyBinary(component, phpExe, ctx, [target]);
+      }
+
+      ctx.log(`${component.name} is installed.`);
+      ctx.progress(100);
+      return;
+    }
+
+    if (component.kind === 'exe') {
+      /*
+       * The download is a self-contained installer, not an archive to unpack.
+       * The VC++ runtime is the one case: it is run with silent flags and
+       * installs itself system-wide, leaving nothing in the panel's own
+       * folders. A zero exit code is the whole success signal — a runtime
+       * library has no `--version` to check afterwards.
+       */
+      ctx.log('Running the installer…');
+      const result = await runCommand({
+        exe: archivePath,
+        args: component.args,
+        timeoutMs: 5 * 60_000,
+      });
+      await fs.rm(archivePath, { force: true });
+
+      /*
+       * The Windows Installer exit codes that all mean "it is on the machine":
+       *   0    installed
+       *   3010 installed, a reboot is pending
+       *   1638 a newer or identical version is already installed — which is
+       *        success for a dependency, not a failure. The VC++ runtime is
+       *        present on most servers already, so treating 1638 as an error
+       *        blocked PHP from installing on a machine that was ready for it.
+       */
+      const ok = [0, 3010, 1638];
+      if (!ok.includes(result.exitCode)) {
+        throw new Error(
+          `The ${component.name.toLowerCase()} installer reported a failure ` +
+            `(exit code ${result.exitCode}). Nothing else was installed.`,
+        );
+      }
+
+      ctx.log(
+        result.exitCode === 1638
+          ? `${component.name} is already on this server (a newer or matching version).`
+          : `${component.name} is installed.`,
+      );
+      ctx.progress(100);
+      return;
+    }
+
     const downloaded = await sniffPayload(archivePath);
 
     if (downloaded === 'unknown') {
@@ -229,11 +603,21 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
     }
 
     ctx.progress(70);
-    await verifyBinary(component, executable, ctx);
+    // A component with nothing to verify (a runtime library, a web page) is
+    // taken on the strength of its checksum and a clean unpack.
+    if (component.verifyExpect !== null || component.verifyArgs.length > 0) {
+      await verifyBinary(component, executable, ctx);
+    }
     ctx.throwIfCancelled();
 
     if (component.id === 'stalwart') {
       await prepareMailServer(deps, ctx);
+    }
+    if (component.id === 'mariadb') {
+      await prepareDatabaseServer(deps, installDir, ctx);
+    }
+    if (component.id === 'php') {
+      await installPhpPool(deps, installDir, ctx);
     }
 
     if (!component.serviceName) {
@@ -247,7 +631,11 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
     const args =
       component.id === 'stalwart'
         ? ['--config', path.join(deps.dataDir, 'mail', 'config.json')]
-        : [...component.args];
+        : component.id === 'mariadb'
+          ? // Loopback only: the databases are reached by sites on this machine,
+            // never from the network, so there is no reason to listen on it.
+            [`--datadir=${path.join(deps.dataDir, 'database')}`, '--bind-address=127.0.0.1', '--port=3306']
+          : [...component.args];
 
     // Caddy needs its data directory and, once Cloudflare is connected, the
     // token it answers the certificate challenge with. Reading it here means a
@@ -280,6 +668,29 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
 
     ctx.log(`${component.name} is installed and running.`);
     ctx.progress(100);
+  };
+
+  return async (payload: unknown, ctx: JobContext): Promise<void> => {
+    const { componentId } = payload as InstallComponentPayload;
+    const component = findComponent(componentId);
+
+    if (!component) throw new Error(`There is no component called "${componentId}".`);
+    if (component.id === 'node') {
+      throw new Error(
+        'Node.js is provided by the server itself and is not installed by the panel.',
+      );
+    }
+
+    /*
+     * Dependencies first. A component can declare others it needs (PHP needs
+     * the VC++ runtime; the database browser needs PHP and MariaDB), and the
+     * field was always part of the definition but never enforced — so a user
+     * could install PHP onto a machine where it would not start. Any that are
+     * missing are installed here, depth-first, before the one that was asked
+     * for. The `installing` set guards against the dependency graph ever
+     * pointing back at itself.
+     */
+    await installWithRequires(component, ctx, new Set(), false);
   };
 }
 

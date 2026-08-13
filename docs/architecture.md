@@ -27,6 +27,13 @@
   file by hand: it builds a whole JSON config and POSTs it to Caddy's admin API on
   `127.0.0.1:2019`.
 - **Stalwart** is the mail server, managed only over JMAP on `127.0.0.1:8080`.
+- **PHP** sites run as a small pool of `php-cgi` workers, supervised by a Node script
+  (`sites/php-pool.ts`) that WinSW owns; Caddy talks to the pool with its built-in
+  FastCGI transport.
+- **MariaDB** is the database server, on loopback only. Per-site databases and users are
+  provisioned by `sites/databases.ts`; the browser-based editor is Adminer, run on a
+  private loopback-only PHP server and proxied by the panel at `/db/…`
+  (`api/db-browser.ts`) behind the panel's own sign-in, never on a public domain.
 
 ## Composition root
 
@@ -54,7 +61,7 @@ const app = await createAppContext({ databasePath, vaultKeyPath, setupTokenPath 
 | `caddy/reconciler.ts` | Pushes that config into Caddy and retries while it is starting |
 | `detect/` | Works out how to build a project, producing `winpanel.json` |
 | `jobs/queue.ts` | Runs deployments, installs and other long tasks |
-| `sites/` | Site lifecycle, deployments, port allocation, command running |
+| `sites/` | Site lifecycle, deployments, port allocation, command running; also `php-pool.ts` (the PHP worker supervisor), `databases.ts` (MariaDB provisioning) and `wordpress.ts` (the WordPress install job) |
 | `traffic/` | Reads Caddy's access logs into hourly per-site counters |
 | `mail/` | Stalwart client, readiness probes, certificate sync |
 | `dns/` | Cloudflare client and the record planner |

@@ -36,6 +36,8 @@ import {
 } from '../../traffic/queries.js';
 import { siteGitRouter } from './site-git.js';
 import { siteAppRouter } from './site-app.js';
+import { sitePhpRouter } from './site-php.js';
+import { isComponentInstalled } from './components.js';
 import { FileManager } from '../../files/file-manager.js';
 
 /**
@@ -136,6 +138,7 @@ function knownHostsPathFor(dataDir: string): string {
 export const sitesRouter = router({
   git: siteGitRouter,
   app: siteAppRouter,
+  php: sitePhpRouter,
 
   list: protectedProcedure.query(({ ctx }) => {
     const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
@@ -153,6 +156,7 @@ export const sitesRouter = router({
         slug: site.slug,
         displayName: site.displayName,
         runtime: site.runtime,
+        preset: site.preset,
         sourceKind: (site.source as SiteSource).kind,
         domains: site.domains as string[],
         enabled: site.enabled,
@@ -163,6 +167,45 @@ export const sitesRouter = router({
         updatedAt: site.updatedAt,
       };
     });
+  }),
+
+  /**
+   * Which optional pieces are installed, so the panel can offer only what the
+   * server can actually do.
+   *
+   * The wizard and several site pages gate choices on this — a customer
+   * picking "WordPress" or a PHP site needs to know before they get their
+   * hopes up, and a Node site's page should not offer a package manager that
+   * is not there. Node is the one the panel never installs: it reports
+   * whether a runtime was *found* on the machine, not whether the panel put
+   * one there. Only installed-states are exposed, never versions or paths.
+   */
+  runtimeStatus: protectedProcedure.query(async ({ ctx }) => {
+    const binDir = ctx.app.config.binDir;
+    const [php, mariadb, composer, adminer, git, pnpm, yarn, bun, nodeVersions] =
+      await Promise.all([
+        isComponentInstalled(binDir, 'php'),
+        isComponentInstalled(binDir, 'mariadb'),
+        isComponentInstalled(binDir, 'composer'),
+        isComponentInstalled(binDir, 'adminer'),
+        isComponentInstalled(binDir, 'git'),
+        isComponentInstalled(binDir, 'pnpm'),
+        isComponentInstalled(binDir, 'yarn'),
+        isComponentInstalled(binDir, 'bun'),
+        discoverNodeVersions(binDir).catch(() => []),
+      ]);
+
+    return {
+      php,
+      mariadb,
+      composer,
+      adminer,
+      git,
+      pnpm,
+      yarn,
+      bun,
+      node: nodeVersions.length > 0,
+    };
   }),
 
   get: protectedProcedure
@@ -177,6 +220,8 @@ export const sitesRouter = router({
         domains: site.domains as string[],
         sourceKind: (site.source as SiteSource).kind,
         previewUrl: previewUrlFor(site.previewPort),
+        /** How many databases this website may have; null means no limit. */
+        databaseLimit: site.databaseLimit,
         /** Folder the user should put files in, relative to the site root. */
         contentFolder: (site.source as SiteSource).kind === 'git' ? RELEASE_DIR : PUBLIC_DIR,
         deployments: service.deploymentsFor(site.id, 10),
@@ -428,6 +473,12 @@ export const sitesRouter = router({
         manifest: SiteManifest.optional(),
         /** Overrides whatever the repository's lockfile implied. */
         packageManager: PackageManager.optional(),
+        /**
+         * The flavour to set the site up from. `'wordpress'` downloads and
+         * configures WordPress after the site is created; it always means a
+         * blank PHP site, whatever the form sent.
+         */
+        preset: z.enum(['wordpress']).optional(),
         spaFallback: z.boolean().default(false),
         envVars: z.record(z.string(), z.string()).default({}),
         deployNow: z.boolean().default(true),
@@ -459,6 +510,23 @@ export const sitesRouter = router({
         });
       }
 
+      /*
+       * PHP and WordPress need the PHP runtime installed, and only the owner
+       * can install it. The wizard disables those choices up front; this is
+       * the same rule on the server, so it holds no matter what the client
+       * sends. The wording differs by who is asking, matching the wizard.
+       */
+      const wantsPhp = input.preset === 'wordpress' || input.runtime === 'php';
+      if (wantsPhp && !(await isComponentInstalled(ctx.app.config.binDir, 'php'))) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message:
+            ctx.user?.role === 'superadmin'
+              ? 'PHP is not installed yet. Install it from Settings → Programs, then try again.'
+              : 'PHP is not available on this server yet. Ask your hosting provider to set it up.',
+        });
+      }
+
       const panelClash = panelHostnameAmong(ctx.app.db, input.domains);
       if (panelClash) {
         throw new TRPCError({
@@ -469,25 +537,34 @@ export const sitesRouter = router({
         });
       }
 
-      const detected = input.manifest ?? defaultManifestFor(input.runtime, input.spaFallback);
+      // A preset fixes the runtime and source: WordPress is always a blank
+      // PHP site that the installer then fills, whatever the form happened to send.
+      const runtime = input.preset === 'wordpress' ? 'php' : input.runtime;
 
-      const manifest: SiteManifest = input.packageManager
-        ? {
-            ...detected,
-            packageManager: input.packageManager,
-            steps: retargetSteps(detected.steps, input.packageManager).steps,
-          }
-        : detected;
+      const detected = input.manifest ?? defaultManifestFor(runtime, input.spaFallback);
+
+      const manifest: SiteManifest = {
+        ...(input.packageManager
+          ? {
+              ...detected,
+              packageManager: input.packageManager,
+              steps: retargetSteps(detected.steps, input.packageManager).steps,
+            }
+          : detected),
+        preset: input.preset ?? null,
+      };
 
       const source: SiteSource =
-        input.source.kind === 'git'
-          ? {
-              kind: 'git',
-              url: input.source.url,
-              branch: input.source.branch,
-              subdirectory: input.source.subdirectory,
-            }
-          : { kind: input.source.kind };
+        input.preset === 'wordpress'
+          ? { kind: 'blank' }
+          : input.source.kind === 'git'
+            ? {
+                kind: 'git',
+                url: input.source.url,
+                branch: input.source.branch,
+                subdirectory: input.source.subdirectory,
+              }
+            : { kind: input.source.kind };
 
       try {
         const deployKey =
@@ -499,6 +576,7 @@ export const sitesRouter = router({
           source,
           manifest,
           envVars: input.envVars,
+          preset: input.preset ?? null,
           ownerUserId: ctx.user?.role === 'user' ? ctx.user.id : null,
           ...(owner?.siteDiskQuotaBytes != null
             ? { diskQuotaBytes: owner.siteDiskQuotaBytes }
@@ -522,7 +600,20 @@ export const sitesRouter = router({
          * is exactly the step that used to be missing.
          */
         let jobId: string | null = null;
-        if (input.deployNow) {
+        if (input.preset === 'wordpress') {
+          /*
+           * WordPress is downloaded, given a database and configured as its
+           * own job, so the whole thing streams to whoever asked for it. The
+           * ordinary deploy runs at the end of that job, once there is
+           * something to serve.
+           */
+          jobId = ctx.app.jobs.enqueue({
+            kind: 'install-wordpress',
+            title: `Setting up WordPress for ${input.displayName}`,
+            payload: { siteId: created.id },
+            siteId: created.id,
+          });
+        } else if (input.deployNow) {
           jobId = ctx.app.jobs.enqueue({
             kind: 'deploy',
             title:

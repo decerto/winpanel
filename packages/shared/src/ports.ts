@@ -54,6 +54,23 @@ export const DOTNET_PORT_RANGE_START = 5000;
 export const DOTNET_PORT_RANGE_END = 5999;
 
 /**
+ * PHP sites get their own band. Each site colour is allocated a BLOCK of
+ * ports, not a single one: php-cgi.exe handles one request at a time on
+ * Windows (PHP_FCGI_CHILDREN is ignored there), so the panel runs a small
+ * pool of workers on consecutive ports and Caddy load-balances across them.
+ */
+export const PHP_PORT_RANGE_START = 9001;
+export const PHP_PORT_RANGE_END = 9999;
+/** Ports reserved per PHP site colour. Must evenly divide the range size. */
+export const PHP_PORT_STRIDE = 10;
+/**
+ * How many php-cgi workers actually run per site. Deliberately smaller than
+ * the stride: the stride leaves room to grow the pool later without a site
+ * ever straying into its neighbour's ports.
+ */
+export const PHP_POOL_SIZE = 4;
+
+/**
  * Every site also gets a "preview" port on the public interface.
  *
  * Without one, a site is only reachable once a domain exists and DNS has

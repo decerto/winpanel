@@ -23,7 +23,7 @@ export const SCHEMA_VERSION = 1;
  * resolves each of these to an absolute path itself; the manifest can never
  * specify a path to a binary.
  */
-export const StepCommand = z.enum(['npm', 'pnpm', 'yarn', 'bun', 'node', 'npx', 'dotnet']);
+export const StepCommand = z.enum(['npm', 'pnpm', 'yarn', 'bun', 'node', 'npx', 'dotnet', 'composer']);
 export type StepCommand = z.infer<typeof StepCommand>;
 
 export const PackageManager = z.enum(['npm', 'pnpm', 'yarn', 'bun']);
@@ -38,6 +38,11 @@ export const Runtime = z.enum([
   'dotnet',
   /** An externally managed process; the panel only routes traffic to it. */
   'proxy',
+  /**
+   * PHP, executed by a small pool of php-cgi FastCGI workers the panel
+   * supervises; Caddy talks to them with its built-in FastCGI transport.
+   */
+  'php',
 ]);
 export type Runtime = z.infer<typeof Runtime>;
 
@@ -107,6 +112,13 @@ export const SiteManifest = z.object({
 
   /** Folder served directly by Caddy. Only meaningful for `runtime: 'static'`. */
   staticRoot: RelativePath.optional(),
+
+  /**
+   * The site's flavour, when it was created from one. `'wordpress'` drives
+   * the badge and setup hints in the panel; it never changes how files are
+   * served — WordPress is just a PHP site once installed.
+   */
+  preset: z.enum(['wordpress']).nullable().default(null),
 
   /**
    * Names of environment variables the app expects. Values are never stored

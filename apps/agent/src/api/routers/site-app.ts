@@ -16,7 +16,7 @@ import { protectedProcedure, router } from '../trpc.js';
 import { appRootFor, SiteService } from '../../sites/site-service.js';
 import { retargetSteps } from '../../sites/package-manager.js';
 import { deployments, sites, type SiteRow } from '../../db/schema.js';
-import { serviceIdFor, normaliseEntry } from '../../sites/deploy-handler.js';
+import { serviceIdFor, normaliseEntry, phpServiceEnv } from '../../sites/deploy-handler.js';
 import { discoverNodeVersions, matchVersion } from '../../sites/node-versions.js';
 import type { AppContext } from '../../app-context.js';
 
@@ -156,12 +156,26 @@ async function applyRuntimeEnvironment(
 
   const env = await service.getEnv(site.id);
 
-  return await app.services.setEnvironment(serviceIdFor(site.slug, site.activeColour), {
-    ...env,
-    [manifest.app.portEnvVar]: String(port),
-    NODE_ENV: 'production',
-    HOST: '127.0.0.1',
-  });
+  // PHP's pool is configured through its own variables, not NODE_ENV — the
+  // same composition the deploy uses, so a restart and a deploy cannot
+  // disagree about what the app runs with.
+  const composed =
+    manifest.runtime === 'php'
+      ? await phpServiceEnv(
+          { binDir: app.config.binDir, sitesRoot: app.config.sitesRoot },
+          site,
+          port,
+          appRootFor(app.config.sitesRoot, site),
+          env,
+        )
+      : {
+          ...env,
+          [manifest.app.portEnvVar]: String(port),
+          NODE_ENV: 'production',
+          HOST: '127.0.0.1',
+        };
+
+  return await app.services.setEnvironment(serviceIdFor(site.slug, site.activeColour), composed);
 }
 
 /** Arguments for a run: the executable is chosen by us, never by the caller. */

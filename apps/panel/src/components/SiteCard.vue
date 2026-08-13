@@ -5,6 +5,8 @@ import {
   Activity,
   AtSign,
   Boxes,
+  Code2,
+  Database,
   ExternalLink,
   FolderOpen,
   GitBranch,
@@ -82,6 +84,7 @@ const isGit = computed(() => props.site.sourceKind === 'git');
 const runsAProcess = computed(
   () => props.site.runtime === 'node' || props.site.runtime === 'dotnet',
 );
+const isPhp = computed(() => props.site.runtime === 'php');
 
 const usedBytes = ref<number | null>(null);
 const usageError = ref<string | null>(null);
@@ -206,6 +209,16 @@ const devTiles = computed<Tile[]>(() => {
     });
   }
 
+  if (isPhp.value) {
+    tiles.push({
+      label: 'PHP',
+      detail: 'Version and restart',
+      icon: Code2,
+      to: `/sites/${props.site.slug}/php`,
+      tint: 'text-ok',
+    });
+  }
+
   return tiles;
 });
 
@@ -233,6 +246,16 @@ const domainTiles = computed<Tile[]>(() => {
       tint: 'text-brand-bright',
     },
   ];
+
+  if (isPhp.value) {
+    tiles.push({
+      label: 'Databases',
+      detail: 'Where the site stores data',
+      icon: Database,
+      to: `/sites/${props.site.slug}/databases`,
+      tint: 'text-info',
+    });
+  }
 
   if (props.site.previewUrl) {
     tiles.push({

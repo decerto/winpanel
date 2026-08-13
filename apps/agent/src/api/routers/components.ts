@@ -6,6 +6,7 @@ import { adminProcedure, router, superadminProcedure } from '../trpc.js';
 import { COMPONENT_CATALOGUE, findComponent } from '../../components/catalogue.js';
 import { findExecutable } from '../../components/archive.js';
 import { discoverNodeVersions } from '../../sites/node-versions.js';
+import { runCommand } from '../../process/run-command.js';
 import type { ComponentDefinition } from '@winpanel/shared';
 
 /**
@@ -17,11 +18,25 @@ import type { ComponentDefinition } from '@winpanel/shared';
  * nobody chose. The panel finds the versions that exist and uses one of them.
  */
 
-const PANEL_MANAGED = new Set(['caddy', 'stalwart', 'git', 'pnpm', 'yarn', 'bun']);
+const PANEL_MANAGED = new Set([
+  'caddy',
+  'stalwart',
+  'git',
+  'pnpm',
+  'yarn',
+  'bun',
+  'vcredist',
+  'php',
+  'mariadb',
+  'composer',
+  'adminer',
+]);
 
 /** Names each program may go by, matching the installer's own list. */
 const EXECUTABLES: Record<string, string[]> = {
   stalwart: ['stalwart.exe', 'stalwart-mail.exe'],
+  php: ['php-cgi.exe', 'php.exe'],
+  mariadb: ['mariadbd.exe', 'mysqld.exe'],
 };
 
 function executablesFor(id: string): string[] {
@@ -37,7 +52,41 @@ async function locate(binDir: string, component: ComponentDefinition): Promise<s
     return await fs.access(script).then(() => script, () => null);
   }
 
+  if (component.kind === 'php-script') {
+    // Composer keeps its `.phar` name; Adminer is renamed to `adminer.php`.
+    const filename = component.id === 'adminer' ? 'adminer.php' : `${component.id}.phar`;
+    const script = path.join(installDir, filename);
+    return await fs.access(script).then(() => script, () => null);
+  }
+
   return await findExecutable(installDir, executablesFor(component.id));
+}
+
+/** True when a component's program is on disk. Shared with the site wizard. */
+export async function isComponentInstalled(binDir: string, id: string): Promise<boolean> {
+  const component = findComponent(id);
+  if (!component) return false;
+  return (await locate(binDir, component)) !== null;
+}
+
+/**
+ * The VC++ runtime installs itself system-wide and leaves nothing in the
+ * panel's folders, so "is it there" is answered by the registry key Windows
+ * keeps for installed redistributables, not by looking for a file.
+ */
+async function isVcredistInstalled(): Promise<boolean> {
+  const result = await runCommand({
+    exe: 'reg.exe',
+    args: [
+      'query',
+      'HKLM\\SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64',
+      '/v',
+      'Installed',
+    ],
+    timeoutMs: 15_000,
+  });
+
+  return result.exitCode === 0 && /Installed\s+REG_DWORD\s+0x1/i.test(result.stdout);
 }
 
 export const componentsRouter = router({
@@ -56,6 +105,14 @@ export const componentsRouter = router({
 
         const managed = PANEL_MANAGED.has(component.id);
 
+        // The VC++ runtime leaves no file for `locate` to find; its presence
+        // is answered by the registry instead.
+        const installed = managed
+          ? component.id === 'vcredist'
+            ? await isVcredistInstalled()
+            : executable !== null
+          : nodeVersions.length > 0;
+
         return {
           id: component.id,
           name: component.name,
@@ -63,7 +120,7 @@ export const componentsRouter = router({
           version: managed
             ? component.version
             : (nodeVersions.map((entry) => entry.version).join(', ') || component.version),
-          installed: managed ? executable !== null : nodeVersions.length > 0,
+          installed,
           executable,
           serviceName: component.serviceName,
           serviceState,

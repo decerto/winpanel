@@ -19,6 +19,7 @@ import {
   createUninstallComponentHandler,
 } from './components/installer.js';
 import { createPanelUpdateHandler } from './components/panel-update.js';
+import { createWordPressHandler } from './sites/wordpress.js';
 import { resolveToolInvocation } from './sites/tool-paths.js';
 import type { PanelTls } from './tls/panel-certificate.js';
 
@@ -108,6 +109,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
         tools: { resolve: resolveToolInvocation },
         gitPath: path.join(config.binDir, 'git', 'cmd', 'git.exe'),
         sitesRoot: config.sitesRoot,
+        binDir: config.binDir,
         loadEnv: (siteId) => sites.getEnv(siteId),
         loadGitToken: (siteId) => sites.getGitToken(siteId),
         loadGitSshKey: (siteId) => sites.getGitSshKey(siteId),
@@ -133,6 +135,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
       dataDir: config.dataDir,
       logDir: config.logDir,
       caddyDir: config.caddyDir,
+      agentDistDir: import.meta.dirname,
       // The mail server has to call itself something before any domain is
       // pointed at it, so it starts as the machine's own name.
       mailHostname: () => {
@@ -144,6 +147,24 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
 
     jobs.register('install-component', createInstallComponentHandler(installerDeps));
     jobs.register('uninstall-component', createUninstallComponentHandler(installerDeps));
+    jobs.register(
+      'install-wordpress',
+      createWordPressHandler({
+        db,
+        vault,
+        routing,
+        binDir: config.binDir,
+        sitesRoot: config.sitesRoot,
+        publish: (siteId) => {
+          jobs.enqueue({
+            kind: 'deploy',
+            title: 'Publishing your website',
+            payload: { siteId },
+            siteId,
+          });
+        },
+      }),
+    );
     jobs.register(
       'update-panel',
       createPanelUpdateHandler({ binDir: config.binDir, logDir: config.logDir }),

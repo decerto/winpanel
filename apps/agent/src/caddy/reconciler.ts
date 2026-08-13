@@ -1,11 +1,17 @@
 import path from 'node:path';
-import { PANEL_PORT, STALWART_HTTP_PORT, mailHostnameFor, type SiteManifest } from '@winpanel/shared';
+import {
+  PANEL_PORT,
+  PHP_POOL_SIZE,
+  STALWART_HTTP_PORT,
+  mailHostnameFor,
+  type SiteManifest,
+} from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
 import { sites } from '../db/schema.js';
 import { cloudflareTokenGroups } from '../dns/token.js';
 import { mailHostnames } from '../mail/domains.js';
 import type { SecretVault } from '../security/vault.js';
-import { contentRootFor } from '../sites/site-service.js';
+import { appRootFor, contentRootFor } from '../sites/site-service.js';
 import {
   coveredDomains,
   customCertificateFiles,
@@ -41,6 +47,18 @@ export interface ReconcileOptions {
   acmeEmail?: string;
 }
 
+/**
+ * The loopback ports a PHP site's worker pool listens on.
+ *
+ * The site's recorded port is the pool's base; the workers run on the
+ * consecutive ports above it, so a site is dialed on `base .. base+size-1`.
+ * Kept in one place so the config builder and the supervisor agree on which
+ * ports a site owns.
+ */
+export function phpWorkerPorts(basePort: number): number[] {
+  return Array.from({ length: PHP_POOL_SIZE }, (_, i) => basePort + i);
+}
+
 /** Turns the sites table into the shape the config builder expects. */
 export function siteInputsFrom(db: DatabaseHandle, sitesRoot: string): CaddySiteInput[] {
   return db.db
@@ -58,6 +76,17 @@ export function siteInputsFrom(db: DatabaseHandle, sitesRoot: string): CaddySite
         // path is meaningless and passing one would be misleading.
         ...(manifest.runtime === 'static'
           ? { staticRoot: contentRootFor(sitesRoot, site) }
+          : {}),
+        // PHP is served by Caddy too, but through a FastCGI pool rather than
+        // straight off disk. The pool's base port is the site's active port;
+        // the workers occupy the consecutive block above it. The web root is
+        // the app root (release + app.cwd), NOT the static content root: a
+        // framework's web root is its `public` folder, which app.cwd holds.
+        ...(manifest.runtime === 'php' && activePort !== null
+          ? {
+              documentRoot: appRootFor(sitesRoot, site),
+              phpWorkers: phpWorkerPorts(activePort),
+            }
           : {}),
         // Omitted, not falsy: a site with the shared folder switched off gets
         // no `/shared` routes at all, so the path is the app's own again.
