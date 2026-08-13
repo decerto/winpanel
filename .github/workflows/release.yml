@@ -20,6 +20,10 @@ on:
         description: 'Version to release, e.g. 1.2.3. Leave empty to build without publishing.'
         required: false
         type: string
+      title:
+        description: 'Release title after the version, e.g. "Database browser sign-in fixed"'
+        required: false
+        type: string
       prerelease:
         description: 'Mark the release as a pre-release'
         required: false
@@ -101,6 +105,26 @@ jobs:
           "publish=$publish" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Building version $version (publishing: $publish)"
 
+      - name: Work out the title and the previous tag
+        id: meta
+        # The release reads consistently with the ones before it: a `vX.X.X`
+        # title with a short description after it, and a compare link against
+        # the release that came before. Both are computed here so a tag push
+        # and a manual run produce the same shape.
+        env:
+          INPUT_TITLE: ${{ inputs.title }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          $previous = git tag --list 'v*' --sort=-v:refname |
+            Where-Object { $_ -ne $env:TAG } |
+            Select-Object -First 1
+
+          $title = if ($env:INPUT_TITLE) { "$env:TAG - $env:INPUT_TITLE" } else { $env:TAG }
+
+          "title=$title" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "previous=$previous" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Title: $title (compare from $previous)"
+
       - name: Compile the installer
         # No separate compiler install step: the build script fetches a pinned
         # Inno Setup, checks it against a recorded hash and its Authenticode
@@ -117,11 +141,14 @@ jobs:
 
       - name: Generate checksum
         # Published alongside the installer so anyone can confirm the file they
-        # downloaded is the one this workflow produced.
+        # downloaded is the one this workflow produced, and embedded in the
+        # release notes so it can be checked without downloading a second file.
+        id: checksum
         run: |
           $file = "dist\WinPanel-Setup-x64.exe"
           $hash = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
           "$hash  WinPanel-Setup-x64.exe" | Out-File -Encoding ascii "dist\SHA256SUMS.txt"
+          "sha256=$hash" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "SHA-256: $hash"
 
       - name: Upload build artefacts
@@ -142,12 +169,16 @@ jobs:
           # to exist beforehand, and is created against the commit just built.
           tag_name: ${{ steps.version.outputs.tag }}
           target_commitish: ${{ github.sha }}
-          name: WinPanel ${{ steps.version.outputs.version }}
+          # Titled like the releases before it: vX.X.X, with the short
+          # description when one was given. Auto-generated notes are off — the
+          # curated body below is the release, and GitHub's "What's Changed"
+          # section would sit on top of it.
+          name: ${{ steps.meta.outputs.title }}
           prerelease: ${{ inputs.prerelease || false }}
           files: |
             dist/WinPanel-Setup-x64.exe
             dist/SHA256SUMS.txt
-          generate_release_notes: true
+          generate_release_notes: false
           body: |
             ## Installing
 
@@ -155,11 +186,11 @@ jobs:
             2. Run it as administrator.
             3. Open the address it shows you and enter the setup code.
 
-            Nothing needs to be installed first — the installer carries its own
-            Node runtime.
-
-            Full instructions, including the parts your hosting provider has to
-            do, are in [DEPLOYMENT.md](DEPLOYMENT.md).
+            It upgrades in place: your websites, mailboxes, certificates and
+            settings are kept, and everything is started again afterwards. You
+            can also update from the panel itself, under **Settings → Update
+            WinPanel**. Nothing needs to be installed first — the installer
+            carries its own Node runtime.
 
             ### Verifying the download
 
@@ -167,8 +198,14 @@ jobs:
             (Get-FileHash .\WinPanel-Setup-x64.exe -Algorithm SHA256).Hash.ToLower()
             ```
 
-            Compare with `SHA256SUMS.txt`.
+            should print:
+
+            ```
+            ${{ steps.checksum.outputs.sha256 }}  WinPanel-Setup-x64.exe
+            ```
 
             ### Getting help
 
             Ask on [Discord](https://discord.gg/wT6mnfAnUD).
+
+            **Full changelog:** https://github.com/decerto/winpanel/compare/${{ steps.meta.outputs.previous }}...${{ steps.version.outputs.tag }}
