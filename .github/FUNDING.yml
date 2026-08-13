@@ -1,0 +1,4 @@
+# GitHub Sponsors configuration for WinPanel.
+# Buy Me a Coffee is not a first-class GitHub funding platform, so it is listed
+# as a custom link — this makes the "Sponsor" button appear on the repo page.
+custom: ['https://buymeacoffee.com/decerto']
