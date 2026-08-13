@@ -209,22 +209,32 @@ onMounted(load);
       <AlertMessage v-if="revealed" tone="success" class="mt-4">
         <div class="space-y-2">
           <p>
-            The password for <span class="font-mono">{{ revealed.name }}</span>
-            {{ revealed.generated ? ' was generated' : '' }}:
+            {{ revealed.generated ? 'A password was generated' : 'The password was set' }}
+            for this database. Wherever you sign in with it — the database browser,
+            WordPress, another app — the username is the same as the database name.
           </p>
-          <div class="flex items-center gap-2">
-            <code class="flex-1 rounded-md bg-black/30 px-2 py-1 font-mono text-xs">
-              {{ revealed.password }}
-            </code>
-            <button type="button" class="btn btn-ghost btn-sm" @click="copyPassword">
-              <Copy :size="13" aria-hidden="true" /> {{ copied ? 'Copied' : 'Copy' }}
-            </button>
-          </div>
-          <p class="text-xs">
-            Keep it somewhere safe. Wherever you sign in with it — the database browser,
-            WordPress, another app — the username is the database's own name,
-            <span class="font-mono">{{ revealed.name }}</span>.
-          </p>
+          <dl class="space-y-1.5 text-sm">
+            <div class="flex items-baseline gap-2">
+              <dt class="w-20 shrink-0 text-ink-muted">Database</dt>
+              <dd class="font-mono text-ink">{{ revealed.name }}</dd>
+            </div>
+            <div class="flex items-baseline gap-2">
+              <dt class="w-20 shrink-0 text-ink-muted">Username</dt>
+              <dd class="font-mono text-ink">{{ revealed.name }}</dd>
+            </div>
+            <div class="flex items-center gap-2">
+              <dt class="w-20 shrink-0 text-ink-muted">Password</dt>
+              <dd class="min-w-0 flex-1">
+                <code class="block truncate rounded-md bg-black/30 px-2 py-1 font-mono text-xs">
+                  {{ revealed.password }}
+                </code>
+              </dd>
+              <button type="button" class="btn btn-ghost btn-sm" @click="copyPassword">
+                <Copy :size="13" aria-hidden="true" /> {{ copied ? 'Copied' : 'Copy' }}
+              </button>
+            </div>
+          </dl>
+          <p class="text-xs">Keep the password somewhere safe — it is not shown again.</p>
         </div>
       </AlertMessage>
 
