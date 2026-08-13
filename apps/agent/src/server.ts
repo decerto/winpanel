@@ -62,15 +62,35 @@ export async function createServer(app: AppContext): Promise<FastifyInstance> {
 
   await server.register(cookie);
 
+  /*
+   * Plain HTML form posts, accepted as the raw string the browser sent.
+   * Without a parser Fastify answers 415 before the route ever runs, which is
+   * what the proxied database browser's sign-in form was hitting. The proxy
+   * forwards the bytes untouched, so parsing into an object would be pure
+   * risk and no benefit.
+   */
+  server.addContentTypeParser(
+    'application/x-www-form-urlencoded',
+    { parseAs: 'string' },
+    (_request, body, done) => {
+      done(null, body);
+    },
+  );
+
   /**
    * Refuses a write that the browser itself says came from another site.
    *
    * The session cookie is already `SameSite=strict`, which is the real defence
    * against a forged request. This is the second one, so that a single slip in
    * cookie configuration is not the only thing standing between a signed-in
-   * administrator and a page on the open internet. Absence of the header is
-   * not treated as an attack: scripts and `curl` never send it, while a
-   * browser always does on a cross-origin write.
+   * administrator and a page on the open internet.
+   *
+   * Absence of the header is not treated as an attack: scripts and `curl`
+   * never send it, while a browser always does on a cross-origin write. The
+   * literal `null` is not an attack either — it is the opaque origin a browser
+   * reports for its own top-level form-post navigations, and the database
+   * browser's sign-in is exactly one of those. A genuinely cross-site post
+   * carries the attacking page's real origin, which is still refused below.
    */
   server.addHook('onRequest', async (request, reply) => {
     if (request.method === 'GET' || request.method === 'HEAD' || request.method === 'OPTIONS') {
@@ -78,7 +98,7 @@ export async function createServer(app: AppContext): Promise<FastifyInstance> {
     }
 
     const origin = request.headers.origin;
-    if (origin === undefined) return;
+    if (origin === undefined || origin === 'null') return;
 
     let originHost: string | null = null;
     try {

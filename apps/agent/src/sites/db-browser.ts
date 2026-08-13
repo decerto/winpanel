@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { runDetached } from '../process/run-command.js';
 import { findExecutable } from '../components/archive.js';
+import { findStrayListeners, killProcessTree } from '../windows/stray-processes.js';
 import type { DatabaseHandle } from '../db/index.js';
 import type { SecretVault } from '../security/vault.js';
 import { readDatabasePassword } from './databases.js';
@@ -34,21 +35,30 @@ const BROWSER_SECRET_KEY = 'dbBrowser.secret';
 /** The plugin is written once, next to Adminer, and left alone after that. */
 const PLUGIN_NAME = 'winpanel-login.php';
 
+/** The file Adminer 6 actually loads plugin lists from. */
+const LOADER_NAME = 'adminer-plugins.php';
+
 /** How long a one-shot sign-in ticket lives. */
 const TICKET_TTL_MS = 60_000;
 
 /**
  * The Adminer plugin that turns a ticket into a sign-in.
  *
- * Adminer's `login` hook receives whatever the form posted; the panel posts
- * the ticket instead of a password, and this looks the ticket up. The password
- * file is written by the agent at ticket time and deleted by the first read,
- * so it exists on disk for seconds at most and only ever on loopback behind
- * the panel's own sign-in.
+ * The swap happens in `login()`, the hook Adminer calls on the request after
+ * the sign-in post, with the session's stored password — the ticket — in
+ * hand. Swapping it for the real password there is what keeps the ticket out
+ * of any stored state: Adminer opens the connection with the ticket, which
+ * the database refuses, but the hook still runs, and returning true keeps the
+ * signed-in session that the panel just established.
+ *
+ * Declared inside Adminer's own namespace so the plugin can call
+ * `get_password()`/`set_password()` and read `SERVER`/`DRIVER` unqualified.
  */
 const PLUGIN_PHP = `<?php
 // Written by WinPanel. Lets the panel sign you in to one database with a
 // one-shot ticket instead of you typing the password.
+namespace Adminer;
+
 class WinpanelLogin {
   private $dir;
 
@@ -59,27 +69,43 @@ class WinpanelLogin {
     $this->dir = $dir;
   }
 
+  /**
+   * Turns the one-shot ticket into the real sign-in.
+   *
+   * Adminer passes the session's stored password — the ticket — and expects
+   * true to keep the session. Anything that is not a ticket is passed
+   * through untouched, so a resumed or manual session is unaffected.
+   */
   function login($login, $password) {
-    // The "password" field carries the ticket.
-    if (!preg_match('/^wpt_[a-f0-9]+$/', $password)) {
-      return false;
+    if (is_string($password) && preg_match('/^wpt_[a-f0-9]+$/', $password)) {
+      $file = $this->dir . DIRECTORY_SEPARATOR . $password . '.json';
+      if (is_file($file)) {
+        $data = json_decode(file_get_contents($file), true);
+        // One-shot: the ticket is spent the moment it is read.
+        unlink($file);
+        if ($data && !empty($data['password']) && ($data['expires'] ?? 0) >= time()) {
+          set_password(DRIVER, SERVER, $_GET['username'], $data['password']);
+        }
+      }
     }
-    $file = $this->dir . DIRECTORY_SEPARATOR . $password . '.json';
-    if (!is_file($file)) {
-      return false;
-    }
-    $data = json_decode(file_get_contents($file), true);
-    // One-shot: the ticket is spent the moment it is read.
-    unlink($file);
-    if (!$data || empty($data['password']) || ($data['expires'] ?? 0) < time()) {
-      return false;
-    }
-    $_POST['auth']['password'] = $data['password'];
     return true;
   }
 }
+`;
 
-return new WinpanelLogin();
+/**
+ * How Adminer 6 finds the plugin.
+ *
+ * A plugin file sitting next to adminer.php is never loaded on its own —
+ * Adminer looks for an adminer-plugins directory or this file, and takes the
+ * returned array as the plugin list. Returning the configured instance here
+ * is also what excuses the constructor's required argument, which Adminer
+ * could not fill by itself.
+ */
+const LOADER_PHP = `<?php
+// Written by WinPanel. Loads the sign-in plugin and hands it to Adminer.
+require __DIR__ . '/${PLUGIN_NAME}';
+return array(new \\Adminer\\WinpanelLogin(TICKET_DIR));
 `;
 
 /** The signing secret, created on first use. Kept so a restart invalidates nothing. */
@@ -128,19 +154,51 @@ export async function ensureDbBrowser(
   // written with that path baked in, so it reads tickets from nowhere else.
   const ticketDir = path.join(dataDir, 'db-tickets');
   await fs.mkdir(ticketDir, { recursive: true });
-  const plugin = PLUGIN_PHP.replace(
-    "new WinpanelLogin()",
-    `new WinpanelLogin(${JSON.stringify(ticketDir)})`,
+  await fs.writeFile(path.join(adminerDir, PLUGIN_NAME), PLUGIN_PHP);
+  await fs.writeFile(
+    path.join(adminerDir, LOADER_NAME),
+    LOADER_PHP.replace('TICKET_DIR', JSON.stringify(ticketDir)),
   );
-  await fs.writeFile(path.join(adminerDir, PLUGIN_NAME), plugin);
+  await fs.writeFile(path.join(adminerDir, PROBE_NAME), PROBE_PHP);
 
-  // Already running? A cheap probe beats tracking a pid.
+  /*
+   * PHP loads no extensions at all without a php.ini, and Adminer needs
+   * mysqli to reach MariaDB — the per-site pools each get an ini for the
+   * same reason. The browser's is minimal: mysqli, and nothing a hosted
+   * page would want.
+   */
+  const iniPath = path.join(adminerDir, 'php.ini');
+  const extensionDir = path.join(path.dirname(php), 'ext').replace(/\\/g, '/');
+  await fs.writeFile(
+    iniPath,
+    [
+      '; Written by WinPanel for the database browser.',
+      `extension_dir="${extensionDir}"`,
+      'extension=mysqli',
+      '',
+    ].join('\r\n'),
+  );
+
+  // Already running and healthy? A cheap probe beats tracking a pid. The
+  // probe page is (re)written alongside the plugin on every call, so a server
+  // answering it is running the current code; one that cannot — a server an
+  // older agent started, which the detached process model leaves running
+  // across upgrades — is replaced.
   if (await probe()) return;
+
+  /*
+   * Whatever holds the port but fails the probe is a server an older agent
+   * started. Only php.exe is ever touched: the port is the panel's own, and
+   * anything else on it is not ours to kill.
+   */
+  for (const stray of await findStrayListeners([BROWSER_PORT], ['php.exe'])) {
+    await killProcessTree(stray.pid);
+  }
 
   await fs.mkdir(logDir, { recursive: true });
   runDetached({
     exe: php,
-    args: ['-S', `127.0.0.1:${BROWSER_PORT}`, '-t', adminerDir],
+    args: ['-S', `127.0.0.1:${BROWSER_PORT}`, '-t', adminerDir, '-c', iniPath],
     cwd: adminerDir,
     env: {},
   });
@@ -152,13 +210,37 @@ export async function ensureDbBrowser(
   }
 }
 
+/**
+ * A page only this server can serve, answering the one question a running
+ * process cannot answer for itself from outside: whether the PHP that is
+ * actually running is the current one. The version marker is bumped whenever
+ * the server, plugin or ini changes in a way a running process cannot pick
+ * up — PHP's built-in server never reloads either — so an older agent's
+ * still-running server is detected and replaced.
+ *
+ * v1: the first probe, which checked only that mysqli was loaded.
+ * v2: the plugin moved to the login() hook Adminer actually calls, gained the
+ *     loader Adminer 6 requires, and the server got its own mysqli php.ini.
+ */
+const PROBE_NAME = 'winpanel-probe.php';
+
+const PROBE_VERSION = 2;
+
+const PROBE_PHP = `<?php
+// Written by WinPanel. Reports whether this server can reach MariaDB at all,
+// and which generation of the browser it is running.
+header('Content-Type: application/json');
+echo json_encode(array('mysqli' => extension_loaded('mysqli'), 'v' => ${PROBE_VERSION}));
+`;
+
 async function probe(): Promise<boolean> {
   try {
-    const response = await fetch(`http://127.0.0.1:${BROWSER_PORT}/`, {
+    const response = await fetch(`http://127.0.0.1:${BROWSER_PORT}/${PROBE_NAME}`, {
       signal: AbortSignal.timeout(1_000),
     });
-    // Any HTTP answer at all means the server is up, even a 404.
-    return response.status > 0;
+    if (!response.ok) return false;
+    const health = (await response.json()) as { mysqli?: boolean; v?: number };
+    return health.mysqli === true && health.v === PROBE_VERSION;
   } catch {
     return false;
   }

@@ -156,6 +156,21 @@ describe('security headers', () => {
     // Whatever the procedure makes of the body, the origin check let it past.
     expect(response.statusCode).not.toBe(403);
   });
+
+  it('allows a write whose origin the browser reports as null', async () => {
+    // A top-level form-post navigation — the database browser's sign-in is
+    // one — carries the literal header `Origin: null`. That is an opaque
+    // origin, not a foreign one: a cross-site post would carry the attacking
+    // page's real origin, which the test above shows is still refused.
+    const response = await server.inject({
+      method: 'POST',
+      url: '/api/trpc/auth.login',
+      headers: { 'content-type': 'application/json', origin: 'null' },
+      payload: {},
+    });
+
+    expect(response.statusCode).not.toBe(403);
+  });
 });
 
 const PASSWORD = 'a-sufficiently-long-password';

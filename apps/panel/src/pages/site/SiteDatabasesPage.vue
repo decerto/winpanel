@@ -197,6 +197,7 @@ onMounted(load);
           <h2 class="text-base font-semibold text-ink">Databases</h2>
           <p class="mt-1 text-sm text-ink-muted">
             Databases this website can use. WordPress and other apps store their content here.
+            A database's username is the same as its name.
           </p>
         </div>
       </div>
@@ -219,7 +220,11 @@ onMounted(load);
               <Copy :size="13" aria-hidden="true" /> {{ copied ? 'Copied' : 'Copy' }}
             </button>
           </div>
-          <p class="text-xs">Keep it somewhere safe</p>
+          <p class="text-xs">
+            Keep it somewhere safe. Wherever you sign in with it — the database browser,
+            WordPress, another app — the username is the database's own name,
+            <span class="font-mono">{{ revealed.name }}</span>.
+          </p>
         </div>
       </AlertMessage>
 

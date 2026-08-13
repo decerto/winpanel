@@ -74,6 +74,24 @@ function authorise(
 }
 
 /**
+ * Re-scopes a cookie Adminer set for the path it believes it lives at.
+ *
+ * Adminer answers sign-in with `Set-Cookie: adminer_sid=…; path=/adminer.php`
+ * — and a browser returns a cookie only to paths under its own, so through
+ * the proxy the session cookie would never come back and every sign-in would
+ * look like the first visit. Everything Adminer serves sits under the
+ * database's own prefix, which is what the path is rewritten to.
+ */
+function rewriteCookiePath(cookie: string, cookiePath: string): string {
+  if (/(^|;)\s*path=/i.test(cookie)) {
+    return cookie.replace(/(^|;)\s*path=[^;]*/i, (_match, separator: string) =>
+      separator ? `${separator} path=${cookiePath}` : `path=${cookiePath}`,
+    );
+  }
+  return `${cookie}; path=${cookiePath}`;
+}
+
+/**
  * Forwards one request to the loopback Adminer server and streams the answer
  * back.
  *
@@ -86,6 +104,7 @@ async function proxyToBrowser(
   request: FastifyRequest,
   reply: FastifyReply,
   upstreamPath: string,
+  cookiePath: string,
 ): Promise<void> {
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(request.headers)) {
@@ -110,17 +129,39 @@ async function proxyToBrowser(
     signal: AbortSignal.timeout(60_000),
   });
 
+  // The directory of the page this request went to, for resolving the
+  // page-relative redirects Adminer answers with.
+  const panelPath = request.url.split('?')[0] ?? request.url;
+
   reply.code(response.status);
   response.headers.forEach((value, name) => {
     const lower = name.toLowerCase();
     if (HOP_BY_HOP.has(lower)) return;
 
-    // Redirects that point at the loopback server are brought back onto the
-    // panel's path, so the visitor's browser never sees the private address.
-    if (lower === 'location' && value.startsWith('/')) {
-      reply.header('location', `${DB_BROWSER_PREFIX}${value}`);
+    if (lower === 'location') {
+      // Redirects that point at the loopback server are brought back onto the
+      // panel's path, so the visitor's browser never sees the private address.
+      if (value.startsWith('/')) {
+        reply.header('location', `${DB_BROWSER_PREFIX}${value}`);
+        return;
+      }
+      // `?sql=…` means "this same page, another query"; `adminer.php?…` is
+      // relative to the folder the page sits in. Re-anchor both on the panel
+      // path this request came in on, so the answer does not depend on how
+      // the visitor's client resolves a relative redirect.
+      if (value.startsWith('?')) {
+        reply.header('location', `${panelPath}${value}`);
+        return;
+      }
+      reply.header('location', `${panelPath.replace(/[^/]*$/, '')}${value}`);
       return;
     }
+
+    if (lower === 'set-cookie') {
+      reply.header(name, rewriteCookiePath(value, cookiePath));
+      return;
+    }
+
     reply.header(name, value);
   });
 
@@ -144,6 +185,25 @@ function encodeBody(request: FastifyRequest, body: unknown): string | Buffer {
     return new URLSearchParams(body as Record<string, string>).toString();
   }
   return JSON.stringify(body ?? {});
+}
+
+/**
+ * Where the visitor is sent after the server-side sign-in post.
+ *
+ * Adminer answers a sign-in with a page-relative Location —
+ * `?server=…&username=…` — and the query string is what carries the session
+ * into the next request: dropping it lands the visitor back on a signed-out
+ * login page, which is exactly what used to happen. Root-relative paths stay
+ * under the browser's prefix; anything unexpected falls back to its front
+ * page.
+ */
+function signInRedirect(slug: string, name: string, location: string | null): string {
+  const base = `${DB_BROWSER_PREFIX}/${encodeURIComponent(slug)}/${encodeURIComponent(name)}`;
+  if (location?.startsWith('?')) return `${base}/adminer.php${location}`;
+  if (location?.startsWith('/')) return `${base}${location}`;
+  // Page-relative: `adminer.php?server=…`, resolved against the browser root.
+  if (location) return `${base}/${location}`;
+  return `${base}/adminer.php`;
 }
 
 export function registerDbBrowserRoutes(server: FastifyInstance, app: AppContext): void {
@@ -210,18 +270,18 @@ export function registerDbBrowserRoutes(server: FastifyInstance, app: AppContext
       // passed through as-is: signing in by hand cannot work, but the page
       // explains itself better than a bare error would.
       const location = response.headers.get('location');
+      const cookiePath = `${DB_BROWSER_PREFIX}/${encodeURIComponent(slug)}/${encodeURIComponent(name)}`;
       reply.code(response.status);
       response.headers.forEach((value, header) => {
         const lower = header.toLowerCase();
         if (HOP_BY_HOP.has(lower) || lower === 'location') return;
+        if (lower === 'set-cookie') {
+          reply.header(header, rewriteCookiePath(value, cookiePath));
+          return;
+        }
         reply.header(header, value);
       });
-      reply.header(
-        'location',
-        location?.startsWith('/')
-          ? `${DB_BROWSER_PREFIX}/${encodeURIComponent(slug)}/${encodeURIComponent(name)}${location}`
-          : `${DB_BROWSER_PREFIX}/${encodeURIComponent(slug)}/${encodeURIComponent(name)}/adminer.php`,
-      );
+      reply.header('location', signInRedirect(slug, name, location));
 
       const body = await response.arrayBuffer();
       return await reply.send(Buffer.from(body));
@@ -235,7 +295,7 @@ export function registerDbBrowserRoutes(server: FastifyInstance, app: AppContext
   server.all<{ Params: { slug: string; name: string; '*': string } }>(
     `${DB_BROWSER_PREFIX}/:slug/:name/*`,
     async (request, reply) => {
-      const { slug } = request.params;
+      const { slug, name } = request.params;
       if (!authorise(request, reply, app, slug)) return;
 
       if (!(await dbBrowserAvailable(app.config.binDir))) {
@@ -246,7 +306,8 @@ export function registerDbBrowserRoutes(server: FastifyInstance, app: AppContext
 
       const rest = request.params['*'] ?? '';
       const query = request.url.includes('?') ? request.url.slice(request.url.indexOf('?')) : '';
-      await proxyToBrowser(request, reply, `/${rest}${query}`);
+      const cookiePath = `${DB_BROWSER_PREFIX}/${encodeURIComponent(slug)}/${encodeURIComponent(name)}`;
+      await proxyToBrowser(request, reply, `/${rest}${query}`, cookiePath);
     },
   );
 }
