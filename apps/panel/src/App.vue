@@ -262,7 +262,7 @@ function isCurrent(to: string): boolean {
         </nav>
       </header>
 
-      <main class="mx-auto w-full max-w-6xl px-4 py-6 md:px-8 md:py-8">
+      <main class="mx-auto w-full max-w-[160rem] px-4 py-6 md:px-8 md:py-8">
         <ServerReadyBanner />
         <RouterView />
       </main>

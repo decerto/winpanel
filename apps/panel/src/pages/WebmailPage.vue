@@ -17,7 +17,7 @@ import {
   Trash2,
 } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
-import { formatBytes } from '../lib/format';
+import { formatBytes, formatCount } from '../lib/format';
 import AlertMessage from '../components/AlertMessage.vue';
 import EmptyState from '../components/EmptyState.vue';
 import LoadingBlock from '../components/LoadingBlock.vue';
@@ -127,6 +127,14 @@ function nameOf(person: { name: string | null; email: string }): string {
 function peopleOf(list: Array<{ name: string | null; email: string }>): string {
   if (list.length === 0) return '(nobody)';
   return list.map(nameOf).join(', ');
+}
+
+/** A sender's initial, for the avatar on each row. Falls back to the address. */
+function initialOf(list: Array<{ name: string | null; email: string }>): string {
+  const first = list[0];
+  if (!first) return '?';
+  const source = (first.name ?? first.email).trim();
+  return (source[0] ?? '?').toUpperCase();
 }
 
 /** Today shows a time; this year shows a date; older shows the year too. */
@@ -437,7 +445,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-7xl space-y-5">
+  <div class="mx-auto w-full max-w-[110rem] space-y-5 px-2 sm:px-4">
     <PageHeader
       title="Webmail"
       :description="
@@ -521,20 +529,30 @@ onMounted(() => {
       </p>
     </section>
 
-    <div v-else class="grid gap-4 lg:grid-cols-[13rem_1fr]">
+    <div v-else class="grid items-start gap-5 lg:grid-cols-[15rem_minmax(0,1fr)] xl:grid-cols-[16rem_minmax(0,1fr)]">
       <!-- Folders -->
-      <nav class="card h-fit overflow-hidden" aria-label="Mail folders">
+      <nav class="card overflow-hidden lg:sticky lg:top-5" aria-label="Mail folders">
         <ul class="divide-y divide-line">
           <li v-for="folder in sortedFolders" :key="folder.id">
             <button
               type="button"
-              class="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-sm
-                     hover:bg-white/5"
-              :class="folder.id === folderId ? 'bg-white/5 text-ink' : 'text-ink-muted'"
+              class="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-sm
+                     transition-colors hover:bg-white/5"
+              :class="
+                folder.id === folderId
+                  ? 'bg-brand-soft/60 font-medium text-ink'
+                  : 'text-ink-muted'
+              "
               :aria-current="folder.id === folderId ? 'true' : undefined"
               @click="folderId = folder.id"
             >
-              <component :is="iconFor(folder)" :size="15" class="shrink-0" aria-hidden="true" />
+              <component
+                :is="iconFor(folder)"
+                :size="15"
+                class="shrink-0"
+                :class="folder.id === folderId ? 'text-brand-bright' : ''"
+                aria-hidden="true"
+              />
               <span class="min-w-0 flex-1 truncate">{{ folder.name }}</span>
               <span
                 v-if="folder.unread > 0"
@@ -549,29 +567,31 @@ onMounted(() => {
       </nav>
 
       <!-- Compose -->
-      <section v-if="composing" class="card p-5">
+      <section v-if="composing" class="card p-6">
         <div class="flex items-center justify-between gap-3">
-          <h2 class="text-sm font-semibold text-ink">New message</h2>
+          <h2 class="text-base font-semibold text-ink">New message</h2>
           <button type="button" class="btn btn-ghost btn-sm" @click="composing = false">
             <ArrowLeft :size="14" aria-hidden="true" /> Back
           </button>
         </div>
 
-        <form class="mt-4 space-y-3" @submit.prevent="send">
-          <div>
-            <label for="draft-to" class="label">To</label>
-            <input
-              id="draft-to"
-              v-model="draft.to"
-              class="field font-mono"
-              placeholder="someone@example.com, another@example.com"
-              required
-            />
-          </div>
+        <form class="mt-5 space-y-4" @submit.prevent="send">
+          <div class="grid gap-4 sm:grid-cols-2">
+            <div>
+              <label for="draft-to" class="label">To</label>
+              <input
+                id="draft-to"
+                v-model="draft.to"
+                class="field font-mono"
+                placeholder="someone@example.com, another@example.com"
+                required
+              />
+            </div>
 
-          <div>
-            <label for="draft-cc" class="label">Copy to (optional)</label>
-            <input id="draft-cc" v-model="draft.cc" class="field font-mono" />
+            <div>
+              <label for="draft-cc" class="label">Copy to (optional)</label>
+              <input id="draft-cc" v-model="draft.cc" class="field font-mono" />
+            </div>
           </div>
 
           <div>
@@ -581,7 +601,7 @@ onMounted(() => {
 
           <div>
             <label for="draft-text" class="label">Message</label>
-            <textarea id="draft-text" v-model="draft.text" rows="12" class="field font-sans" />
+            <textarea id="draft-text" v-model="draft.text" rows="16" class="field font-sans leading-relaxed" />
           </div>
 
           <button
@@ -596,7 +616,7 @@ onMounted(() => {
 
       <!-- One message -->
       <section v-else-if="open" class="card overflow-hidden">
-        <div class="flex flex-wrap items-center gap-2 border-b border-line px-5 py-3">
+        <div class="flex flex-wrap items-center gap-2 border-b border-line px-6 py-3.5">
           <button type="button" class="btn btn-ghost btn-sm" @click="open = null">
             <ArrowLeft :size="14" aria-hidden="true" /> Back
           </button>
@@ -614,7 +634,7 @@ onMounted(() => {
           </button>
         </div>
 
-        <header class="border-b border-line px-5 py-4">
+        <header class="border-b border-line px-6 py-5">
           <h2 class="text-base font-semibold text-ink">{{ open.subject }}</h2>
           <p class="mt-1 text-sm text-ink-muted">
             From <span class="text-ink">{{ peopleOf(open.from) }}</span>
@@ -668,37 +688,45 @@ onMounted(() => {
           :srcdoc="open.html"
           sandbox=""
           referrerpolicy="no-referrer"
-          class="h-[60vh] w-full bg-white"
+          class="h-[72vh] w-full bg-white"
           title="Message"
         />
         <pre
           v-else
-          class="max-h-[60vh] overflow-auto whitespace-pre-wrap break-words px-5 py-4 font-sans
-                 text-sm text-ink"
+          class="max-h-[72vh] overflow-auto whitespace-pre-wrap break-words px-6 py-5 font-sans
+                 text-sm leading-relaxed text-ink"
           >{{ open.text ?? open.preview }}</pre
         >
       </section>
 
       <!-- The list -->
       <section v-else class="card overflow-hidden">
-        <div class="flex flex-wrap items-center gap-3 border-b border-line px-5 py-3">
-          <h2 class="text-sm font-semibold text-ink">{{ currentFolder?.name ?? 'Mail' }}</h2>
+        <div class="flex flex-wrap items-center gap-3 border-b border-line px-6 py-4">
+          <h2 class="text-base font-semibold text-ink">{{ currentFolder?.name ?? 'Mail' }}</h2>
+          <span v-if="total > 0" class="text-xs text-ink-faint">
+            {{ formatCount(total) }} {{ total === 1 ? 'message' : 'messages' }}
+          </span>
 
           <form class="ml-auto flex items-center gap-2" @submit.prevent="goToPage(0)">
             <label for="webmail-search" class="sr-only">Search this folder</label>
-            <input
-              id="webmail-search"
-              v-model="search"
-              class="field w-48 py-1 text-xs"
-              placeholder="Search this folder"
-            />
-            <button type="submit" class="btn btn-ghost btn-sm">
-              <Search :size="14" aria-hidden="true" /> Search
-            </button>
+            <div class="relative">
+              <Search
+                :size="14"
+                class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint"
+                aria-hidden="true"
+              />
+              <input
+                id="webmail-search"
+                v-model="search"
+                class="field w-64 py-1.5 pl-9 text-sm"
+                placeholder="Search this folder"
+              />
+            </div>
+            <button type="submit" class="btn btn-ghost btn-sm">Search</button>
           </form>
         </div>
 
-        <LoadingBlock v-if="loading" class="h-40 bg-surface" />
+        <LoadingBlock v-if="loading" class="h-64 bg-surface" />
 
         <EmptyState
           v-else-if="messages.length === 0"
@@ -713,48 +741,73 @@ onMounted(() => {
         />
 
         <ul v-else class="divide-y divide-line">
-          <li
-            v-for="message in messages"
-            :key="message.id"
-            class="flex items-center gap-3 px-5 py-3 hover:bg-white/5"
-          >
-            <button
-              type="button"
-              class="rounded-md p-1 text-ink-faint hover:text-warn"
-              :class="message.flagged ? 'text-warn' : ''"
-              :aria-label="message.flagged ? 'Remove star' : 'Add star'"
-              @click.stop="toggleFlag(message)"
-            >
-              <Star :size="14" :fill="message.flagged ? 'currentColor' : 'none'" />
-            </button>
-
-            <button
-              type="button"
-              class="flex min-w-0 flex-1 items-baseline gap-3 text-left"
+          <li v-for="message in messages" :key="message.id">
+            <div
+              class="group flex cursor-pointer items-center gap-4 px-6 py-3.5 transition-colors
+                     hover:bg-white/[0.04]"
+              :class="message.seen ? '' : 'bg-brand-soft/10'"
               @click="openMessage(message)"
             >
+              <!-- Who it is from, as a glanceable initial. -->
               <span
-                class="w-40 shrink-0 truncate text-sm"
-                :class="message.seen ? 'text-ink-muted' : 'font-semibold text-ink'"
-              >
-                {{ peopleOf(message.from) }}
-              </span>
-              <span class="min-w-0 flex-1 truncate text-sm">
-                <span :class="message.seen ? 'text-ink-muted' : 'font-semibold text-ink'">
-                  {{ message.subject }}
-                </span>
-                <span class="text-ink-faint"> — {{ message.preview }}</span>
-              </span>
-              <Paperclip
-                v-if="message.hasAttachment"
-                :size="13"
-                class="shrink-0 text-ink-faint"
+                class="flex h-9 w-9 shrink-0 select-none items-center justify-center rounded-full
+                       text-xs font-semibold"
+                :class="
+                  message.seen
+                    ? 'bg-white/5 text-ink-muted'
+                    : 'bg-brand-soft text-brand-bright'
+                "
                 aria-hidden="true"
-              />
-              <span class="w-20 shrink-0 text-right text-xs text-ink-faint">
-                {{ when(message.receivedAt) }}
+              >
+                {{ initialOf(message.from) }}
               </span>
-            </button>
+
+              <div class="min-w-0 flex-1">
+                <div class="flex items-baseline justify-between gap-3">
+                  <span
+                    class="truncate text-sm"
+                    :class="message.seen ? 'text-ink-muted' : 'font-semibold text-ink'"
+                  >
+                    {{ peopleOf(message.from) }}
+                  </span>
+                  <span
+                    class="shrink-0 text-xs"
+                    :class="message.seen ? 'text-ink-faint' : 'font-medium text-ink-muted'"
+                  >
+                    {{ when(message.receivedAt) }}
+                  </span>
+                </div>
+                <p
+                  class="truncate text-sm"
+                  :class="message.seen ? 'text-ink-muted' : 'text-ink'"
+                >
+                  {{ message.subject }}
+                </p>
+                <p class="truncate text-xs text-ink-faint">{{ message.preview }}</p>
+              </div>
+
+              <div class="flex shrink-0 items-center gap-1">
+                <Paperclip
+                  v-if="message.hasAttachment"
+                  :size="14"
+                  class="text-ink-faint"
+                  aria-hidden="true"
+                />
+                <button
+                  type="button"
+                  class="rounded-md p-1.5 transition-colors"
+                  :class="
+                    message.flagged
+                      ? 'text-warn'
+                      : 'text-ink-faint opacity-0 hover:text-warn group-hover:opacity-100'
+                  "
+                  :aria-label="message.flagged ? 'Remove star' : 'Add star'"
+                  @click.stop="toggleFlag(message)"
+                >
+                  <Star :size="15" :fill="message.flagged ? 'currentColor' : 'none'" />
+                </button>
+              </div>
+            </div>
           </li>
         </ul>
 

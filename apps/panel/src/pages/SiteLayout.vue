@@ -144,7 +144,7 @@ provide(siteContextKey, { site, reload: load, deploy, deploying });
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-6xl">
+  <div class="mx-auto w-full max-w-7xl">
     <RouterLink
       to="/sites"
       class="mb-4 inline-flex items-center gap-1.5 text-sm text-ink-muted hover:text-ink"
