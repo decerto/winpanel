@@ -399,7 +399,7 @@ function describeMail(person: Person): string {
           <input
             id="person-username"
             v-model="form.username"
-            class="input"
+            class="field"
             autocomplete="off"
             spellcheck="false"
           />
@@ -407,7 +407,7 @@ function describeMail(person: Person): string {
 
         <div v-if="!form.editing" class="space-y-1">
           <label class="label" for="person-password">First password</label>
-          <input id="person-password" v-model="form.password" class="input font-mono" />
+          <input id="person-password" v-model="form.password" class="field font-mono" />
           <p class="text-xs text-ink-faint">
             Give this to them yourself. It is not shown again, and they can change it once they
             are in.
@@ -416,7 +416,7 @@ function describeMail(person: Person): string {
 
         <div class="space-y-1">
           <label class="label" for="person-role">Can reach</label>
-          <select id="person-role" v-model="form.role" class="input">
+          <select id="person-role" v-model="form.role" class="field">
             <option v-for="value in assignableRoles" :key="value" :value="value">
               {{ ROLE_LABELS[value].label }}
             </option>
@@ -430,7 +430,7 @@ function describeMail(person: Person): string {
             <input
               id="person-sites"
               v-model="form.siteLimit"
-              class="input"
+              class="field"
               inputmode="numeric"
               placeholder="No limit"
             />
@@ -441,7 +441,7 @@ function describeMail(person: Person): string {
             <input
               id="person-mail"
               v-model="form.mailQuotaGb"
-              class="input"
+              class="field"
               inputmode="decimal"
               placeholder="No limit"
             />
@@ -452,7 +452,7 @@ function describeMail(person: Person): string {
             <input
               id="person-disk"
               v-model="form.siteDiskQuotaGb"
-              class="input"
+              class="field"
               inputmode="decimal"
               placeholder="Server default"
             />
@@ -488,7 +488,7 @@ function describeMail(person: Person): string {
           New password for {{ resetting.person.username }}
         </h2>
 
-        <input v-model="resetting.password" class="input font-mono" aria-label="New password" />
+        <input v-model="resetting.password" class="field font-mono" aria-label="New password" />
 
         <p class="text-sm text-ink-muted">
           Setting this signs them out of every browser they are using. Copy it before you save

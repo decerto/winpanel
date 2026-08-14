@@ -301,4 +301,39 @@ describe('what only the owner can do', () => {
     expect(result.body.error).toBeUndefined();
     expect((await call('GET', 'sites.list', freyaCookie)).body.result.data).toEqual([]);
   });
+
+  it('moves a website on from one customer to another', async () => {
+    /*
+     * A handover is not one-way and never locks. The wrong account is easy
+     * to pick, and a site sometimes needs to follow the person actually
+     * paying for it, so whoever runs the server can take a site out of one
+     * customer's account and put it straight into another's. The new owner's
+     * limit is the only thing that can say no.
+     */
+    const sam = app.auth.listUsers().find((person) => person.username === 'sam')!;
+    const result = await call('POST', 'users.assignSite', ownerCookie, {
+      slug: 'freya-io',
+      userId: sam.id,
+    });
+
+    expect(result.body.error).toBeUndefined();
+    expect((await call('GET', 'sites.list', freyaCookie)).body.result.data).toEqual([]);
+    expect(
+      (await call('GET', 'sites.list', samCookie)).body.result.data.map(
+        (site: any) => site.slug,
+      ),
+    ).toEqual(['freya-io']);
+  });
+
+  it('lets an administrator move a website away from a customer too', async () => {
+    // Handing sites over is not reserved for the owner: an administrator
+    // answers the same "you gave it to the wrong person" ticket.
+    const result = await call('POST', 'users.assignSite', adminCookie, {
+      slug: 'freya-io',
+      userId: null,
+    });
+
+    expect(result.body.error).toBeUndefined();
+    expect((await call('GET', 'sites.list', freyaCookie)).body.result.data).toEqual([]);
+  });
 });

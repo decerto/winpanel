@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { Cpu, FolderOpen, KeyRound, Plus, Trash2 } from 'lucide-vue-next';
-import { SHARED_DIR, SHARED_URL_PREFIX } from '@winpanel/shared';
+import { ArrowLeftRight, Cpu, FolderOpen, KeyRound, Plus, Trash2 } from 'lucide-vue-next';
+import { roleAtLeast, SHARED_DIR, SHARED_URL_PREFIX, type UserRole } from '@winpanel/shared';
 import { api, describeError } from '../../lib/api';
 import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
@@ -67,6 +67,56 @@ async function saveSharedFolder(enabled: boolean): Promise<void> {
     error.value = describeError(err);
   } finally {
     sharedBusy.value = false;
+  }
+}
+
+/* --------------------------------------------------------- who it belongs to */
+
+type Person = Awaited<ReturnType<typeof api.users.list.query>>[number];
+
+const me = ref<{ id: string; role: UserRole } | null>(null);
+const people = ref<Person[]>([]);
+const handoverTo = ref('');
+const handoverBusy = ref(false);
+
+/**
+ * Only whoever runs the server may hand a website over. A customer asking
+ * would only ever be refused, so the section is not shown to them at all.
+ */
+const mayHandOver = computed(() => me.value !== null && roleAtLeast(me.value.role, 'admin'));
+
+async function loadPeople(): Promise<void> {
+  try {
+    const current = await api.auth.me.query();
+    me.value = current ? { id: current.id, role: current.role } : null;
+    if (!mayHandOver.value) return;
+
+    people.value = await api.users.list.query();
+    handoverTo.value = site.value?.ownerUserId ?? '';
+  } catch {
+    // The section simply stays hidden; handing a site over is not why most
+    // people open this page.
+  }
+}
+
+async function handOver(): Promise<void> {
+  handoverBusy.value = true;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    const userId = handoverTo.value === '' ? null : handoverTo.value;
+    await api.users.assignSite.mutate({ slug: slug(), userId });
+    const name = people.value.find((person) => person.id === userId)?.username ?? null;
+    await reload();
+    notice.value = name
+      ? `${site.value?.displayName ?? 'The website'} now belongs to ${name}. Nothing moves ` +
+        'and nothing restarts — they simply see it when they sign in, and you still do too.'
+      : `${site.value?.displayName ?? 'The website'} belongs to the server again.`;
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    handoverBusy.value = false;
   }
 }
 
@@ -156,6 +206,7 @@ watch(
   () => {
     void loadEnv();
     void loadNodeVersions();
+    void loadPeople();
   },
   { immediate: true },
 );
@@ -285,6 +336,45 @@ watch(
         />
         {{ sharedEnabled ? 'On' : 'Off' }}
       </label>
+    </section>
+
+    <section v-if="mayHandOver" class="card p-5">
+      <h3 class="flex items-center gap-2 text-sm font-semibold text-ink">
+        <ArrowLeftRight :size="15" class="text-ink-faint" aria-hidden="true" /> Who it belongs to
+      </h3>
+      <p class="mt-1 text-sm text-ink-muted">
+        Set a website up under your own account, then hand it over here when it is ready.
+        Nothing moves and nothing restarts &mdash; it simply appears in their account, and you
+        keep seeing it too, because owners and administrators can reach every website on the
+        server. It can move again whenever it needs to: to a different person, or back to the
+        server.
+      </p>
+
+      <div class="mt-4 flex flex-wrap items-end gap-3">
+        <div class="min-w-56">
+          <label for="handover-to" class="label">Belongs to</label>
+          <select id="handover-to" v-model="handoverTo" class="field">
+            <option value="">The server (nobody in particular)</option>
+            <option v-for="person in people" :key="person.id" :value="person.id">
+              {{ person.username }}
+            </option>
+          </select>
+        </div>
+
+        <button
+          type="button"
+          class="btn btn-primary mb-1"
+          :disabled="handoverBusy || handoverTo === (site?.ownerUserId ?? '')"
+          @click="handOver"
+        >
+          {{ handoverBusy ? 'Handing over…' : 'Hand it over' }}
+        </button>
+      </div>
+
+      <p class="mt-2 text-xs text-ink-faint">
+        Handing a website to a customer counts towards their website limit &mdash; raise it on
+        the People page first if they are already full.
+      </p>
     </section>
 
     <section class="card border-danger/30 p-5">
