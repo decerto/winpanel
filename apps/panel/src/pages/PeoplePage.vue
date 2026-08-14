@@ -281,7 +281,7 @@ function describeMail(person: Person): string {
         <thead>
           <tr class="border-b border-line text-left text-xs uppercase tracking-wide text-ink-faint">
             <th scope="col" class="px-5 py-3 font-medium">Account</th>
-            <th scope="col" class="px-5 py-3 font-medium">Can reach</th>
+            <th scope="col" class="px-5 py-3 font-medium">Role</th>
             <th scope="col" class="hidden px-5 py-3 font-medium sm:table-cell">Websites</th>
             <th scope="col" class="hidden px-5 py-3 font-medium lg:table-cell">Email</th>
             <th scope="col" class="hidden px-5 py-3 font-medium md:table-cell">Last signed in</th>
@@ -415,7 +415,7 @@ function describeMail(person: Person): string {
         </div>
 
         <div class="space-y-1">
-          <label class="label" for="person-role">Can reach</label>
+          <label class="label" for="person-role">Role</label>
           <select id="person-role" v-model="form.role" class="field">
             <option v-for="value in assignableRoles" :key="value" :value="value">
               {{ ROLE_LABELS[value].label }}
