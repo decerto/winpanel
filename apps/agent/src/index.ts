@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createAppContext } from './app-context.js';
 import { config, paths } from './config.js';
 import { createServer } from './server.js';
@@ -29,31 +30,56 @@ import { findStrayListeners, killProcessTree } from './windows/stray-processes.j
  * it can act is here, before it gives up. Only a process running this same
  * runtime and holding this same port is ended, which is the panel's own
  * orphan and nothing else.
+ *
+ * One attempt is not enough. An update stops the service and starts the new
+ * agent while the old one is still mid-shutdown: the stray can be between
+ * "killed" and "port released" for a moment, and a single retry that lands
+ * inside that window fails the boot for good — WinSW's restart budget is
+ * spent on the same race and the panel stays down until somebody clears the
+ * port by hand. So this loops for a while: killing the panel's own orphan is
+ * idempotent, and a port that frees a second late is no reason to die.
  */
 async function listenClearingStrays(
   server: Awaited<ReturnType<typeof createServer>>,
   port: number,
   host: string,
 ): Promise<void> {
-  try {
-    await server.listen({ port, host });
-    return;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
+  const deadline = Date.now() + 30_000;
+  let lastError: unknown;
 
-    const strays = await findStrayListeners([port], [path.basename(process.execPath)]);
-    if (strays.length === 0) throw error;
+  while (Date.now() < deadline) {
+    try {
+      await server.listen({ port, host });
+      return;
+    } catch (error) {
+      lastError = error;
+      if ((error as NodeJS.ErrnoException).code !== 'EADDRINUSE') throw error;
 
-    server.log.warn(
-      { strays },
-      `Port ${port} was still held by a previous copy of the panel. Ending it and retrying.`,
-    );
+      const strays = await findStrayListeners([port], [path.basename(process.execPath)]);
+      if (strays.length === 0) {
+        // A squatter that is not the panel's own runtime is a real collision,
+        // not an orphan, and is never ours to end.
+        throw error;
+      }
 
-    for (const pid of new Set(strays.map((stray) => stray.pid))) await killProcessTree(pid);
+      server.log.warn(
+        { strays },
+        `Port ${port} was still held by a previous copy of the panel. Ending it and retrying.`,
+      );
+
+      for (const pid of new Set(strays.map((stray) => stray.pid))) await killProcessTree(pid);
+
+      // Give the socket a beat to actually close before trying again.
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
   }
 
-  await server.listen({ port, host });
+  throw lastError;
 }
+
+// Exported for the tests; the retry loop above is the fix for a real outage
+// and has to be exercisable without booting the whole agent.
+export { listenClearingStrays };
 
 async function main(): Promise<void> {
   for (const dir of [config.dataDir, config.logDir, config.binDir, config.caddyDir, config.accessLogDir]) {
@@ -320,7 +346,11 @@ async function main(): Promise<void> {
   });
 }
 
-main().catch((error: unknown) => {
-  console.error('WinPanel failed to start:', error);
-  process.exit(1);
-});
+// Run only when executed directly. Importing this module — which the tests do
+// to reach listenClearingStrays — must not boot the panel.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error: unknown) => {
+    console.error('WinPanel failed to start:', error);
+    process.exit(1);
+  });
+}

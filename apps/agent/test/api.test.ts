@@ -112,6 +112,63 @@ describe('health', () => {
   });
 });
 
+describe('the panel files', () => {
+  /*
+   * An update replaces every panel file, and Vite content-hashes the assets,
+   * so the ONLY file that can point a browser at the new build is index.html.
+   * If it is ever served without a revalidation header, a browser can sit on
+   * a stale copy while the JS updates - new markup over an old stylesheet,
+   * which is exactly how a dropdown ends up unthemed after an upgrade.
+   */
+  let panelApp: AppContext;
+  let panelServer: FastifyInstance;
+
+  beforeEach(async () => {
+    const panelDir = path.join(tmpDir, 'panel');
+    await fs.mkdir(path.join(panelDir, 'assets'), { recursive: true });
+    await fs.writeFile(path.join(panelDir, 'index.html'), '<html></html>');
+    await fs.writeFile(path.join(panelDir, 'assets', 'index-ABC123.js'), '// js');
+
+    // config.ts reads env vars once at import, so this only works if the
+    // suite has not imported it yet... it has. Point the app's config at the
+    // fixture directly instead.
+    panelApp = await createAppContext({
+      databasePath: path.join(tmpDir, 'panel-2.db'),
+      vaultKeyPath: path.join(tmpDir, 'vault-2.key'),
+      setupTokenPath: path.join(tmpDir, 'setup-token-2.txt'),
+      migrationsFolder: MIGRATIONS,
+    });
+    (panelApp.config as { panelDir: string }).panelDir = panelDir;
+
+    panelServer = await createServer(panelApp);
+    await panelServer.ready();
+  });
+
+  afterEach(async () => {
+    await panelServer.close();
+    await panelApp.shutdown();
+  });
+
+  it('makes the browser revalidate index.html on every visit', async () => {
+    const response = await panelServer.inject({ method: 'GET', url: '/' });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-cache');
+  });
+
+  it('lets hashed assets be cached forever', async () => {
+    const response = await panelServer.inject({ method: 'GET', url: '/assets/index-ABC123.js' });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('immutable');
+  });
+
+  it('revalidates index.html on client-side routes too', async () => {
+    // The SPA fallback bypasses the static plugin, so it sets its own header.
+    const response = await panelServer.inject({ method: 'GET', url: '/people' });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers['cache-control']).toContain('no-cache');
+  });
+});
+
 describe('security headers', () => {
   it('sets a content security policy with no external origins', async () => {
     const response = await server.inject({ method: 'GET', url: '/api/health' });

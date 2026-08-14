@@ -149,9 +149,27 @@ export async function createServer(app: AppContext): Promise<FastifyInstance> {
 
   // The built panel SPA. Absent during development, when Vite serves it.
   if (fs.existsSync(app.config.panelDir)) {
+    /*
+     * Cache headers are what make an update actually reach the browser.
+     * With none, a browser heuristically caches EVERYTHING - including
+     * index.html - for a fraction of the file's age, which after an update
+     * means brand-new content-hashed JS running over a stale stylesheet: the
+     * panel redraws with new markup and old design. Hashed assets are safe to
+     * cache forever (a change is a new URL); index.html must revalidate every
+     * time, because it is the map to which hashed files are current.
+     */
     await server.register(fastifyStatic, {
       root: app.config.panelDir,
       index: ['index.html'],
+      setHeaders(reply, filePath) {
+        if (/[/\\]assets[/\\]/.test(filePath)) {
+          // Vite content-hashes everything in assets/, so it can never go stale.
+          reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+        } else {
+          // index.html and anything unhashed: cacheable, but re-check first.
+          reply.header('Cache-Control', 'no-cache');
+        }
+      },
     });
 
     server.setNotFoundHandler((request, reply) => {
@@ -159,8 +177,9 @@ export async function createServer(app: AppContext): Promise<FastifyInstance> {
         void reply.code(404).send({ error: 'Not found' });
         return;
       }
-      // Client-side routing: hand any other path back to the SPA.
-      void reply.sendFile('index.html');
+      // Client-side routing: hand any other path back to the SPA. The handler
+      // bypasses the static plugin, so its header has to be set here too.
+      void reply.header('Cache-Control', 'no-cache').sendFile('index.html');
     });
   }
 
