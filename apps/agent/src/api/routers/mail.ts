@@ -34,7 +34,7 @@ import {
 } from '../../mail/credentials.js';
 import { CloudflareClient, CloudflareError, type DnsChange } from '../../dns/cloudflare.js';
 import { planMailRecords, recommendedMailRecords } from '../../dns/mail-records.js';
-import { cloudflareTokenForSite, loadCloudflareToken } from '../../dns/token.js';
+import { cloudflareTokenForSite } from '../../dns/token.js';
 import { SiteService } from '../../sites/site-service.js';
 import { localAddresses } from '../../tls/panel-certificate.js';
 import type { AppContext } from '../../app-context.js';
@@ -118,17 +118,12 @@ function nearExpiry(probe: { certificateDaysRemaining: number | null }): boolean
  * hand instead, which is the only option for anyone not on Cloudflare.
  */
 function cloudflareFor(app: AppContext, slug?: string): CloudflareClient | null {
-  const site = slug
-    ? new SiteService(app.db, app.vault, app.config.sitesRoot).get(slug)
-    : undefined;
+  if (!slug) return null;
 
-  const resolved = site
-    ? cloudflareTokenForSite(app.db, app.vault, site.id)
-    : (() => {
-        const shared = loadCloudflareToken(app.db, app.vault);
-        return shared ? { token: shared, source: 'shared' as const } : null;
-      })();
+  const site = new SiteService(app.db, app.vault, app.config.sitesRoot).get(slug);
+  if (!site) return null;
 
+  const resolved = cloudflareTokenForSite(app.db, app.vault, site.id);
   return resolved ? new CloudflareClient(resolved.token) : null;
 }
 
@@ -733,7 +728,7 @@ export const mailRouter = router({
    * serve and there is no "issue this one now" endpoint — then copies it into
    * the mail server and restarts it.
    */
-  installCertificate: adminProcedure
+  installCertificate: protectedProcedure
     .input(z.object({ domain: Hostname }))
     .mutation(async ({ ctx, input }) => {
       const mailHostname = mailHostnameFor(input.domain);
@@ -870,6 +865,37 @@ export const mailRouter = router({
       reachable: result.reachable,
       manageable: result.manageable,
       message: result.message,
+    };
+  }),
+
+  /**
+   * Whether a customer can manage their own mailboxes, without the internals.
+   *
+   * `serverStatus` reports on the mail server itself — listeners, management
+   * API, whether it is installed — which is an administrator's picture. A
+   * customer only needs one bit: is there anything here for me to use. The
+   * answer deliberately omits how the server is configured, because a customer
+   * has no business knowing what the machine is or is not running.
+   */
+  available: protectedProcedure.query(async ({ ctx }) => {
+    const credentials = loadMailAdminCredentials(ctx.app.db, ctx.app.vault);
+
+    if (!credentials) {
+      return {
+        connected: false,
+        message:
+          'Email is not set up on this server yet. Ask whoever runs it to connect the mail ' +
+          'server in Settings.',
+      };
+    }
+
+    const result = await new StalwartClient(credentials.username, credentials.password).ping();
+
+    return {
+      connected: result.authorised && result.manageable,
+      message: result.authorised && result.manageable
+        ? ''
+        : 'The mail server is not answering right now. Ask whoever runs this server to check it.',
     };
   }),
 

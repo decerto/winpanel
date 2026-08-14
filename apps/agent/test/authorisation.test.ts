@@ -107,6 +107,10 @@ const UNSCOPED_FOR_CUSTOMERS = new Set([
   'send',
   // Reads a mailbox address back as IMAP/SMTP settings. No lookup involved.
   'clientSettings',
+  // One boolean — "can you manage your mailboxes" — with none of the mail
+  // server's internals. The detailed status stays on `serverStatus`, which is
+  // admin-only, precisely because it describes the machine.
+  'available',
 ]);
 
 /**

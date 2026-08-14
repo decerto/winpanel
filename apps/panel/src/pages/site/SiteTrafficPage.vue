@@ -28,6 +28,7 @@ const slug = computed(() => route.params['slug'] as string);
 
 type Traffic = Awaited<ReturnType<typeof api.sites.traffic.query>>;
 type Failures = Awaited<ReturnType<typeof api.sites.trafficErrors.query>>;
+type Requests = Awaited<ReturnType<typeof api.sites.trafficRequests.query>>;
 type Range = Traffic['range'];
 
 const RANGES = [
@@ -64,9 +65,33 @@ const failures = ref<Failures | null>(null);
 const failuresLoading = ref(false);
 const failuresError = ref<string | null>(null);
 
-/** Set by clicking a band in “what the server answered”. */
-const statusFilter = ref<'4xx' | '5xx' | null>(null);
-const failureView = ref<'grouped' | 'latest'>('grouped');
+/**
+ * The requests that succeeded, the other half of the picture.
+ *
+ * Fetched on the same trigger as the failures, so both lists describe the
+ * same window. A healthy site has plenty to show here and nothing to show in
+ * the failures, which is exactly the answer "is anything actually using this".
+ */
+const requests = ref<Requests | null>(null);
+const requestsLoading = ref(false);
+const requestsError = ref<string | null>(null);
+
+/*
+ * One list, not two. A visitor's request either worked or it didn't, and
+ * splitting those into separate boxes made the page answer "what happened" in
+ * two places. So both scans land in the same table, and the status classes
+ * become filters on it rather than separate sections.
+ */
+type ClassFilter = 'all' | '2xx' | '3xx' | '4xx' | '5xx';
+type View = 'grouped' | 'latest';
+type GroupSort = 'count' | 'address' | 'answer' | 'recent';
+type LatestSort = 'recent' | 'address' | 'answer';
+
+/** Set by clicking a band in “what the server answered”, or the class chips. */
+const classFilter = ref<ClassFilter>('all');
+const view = ref<View>('grouped');
+const groupSort = ref<GroupSort>('count');
+const latestSort = ref<LatestSort>('recent');
 
 async function loadFailures(): Promise<void> {
   failuresLoading.value = true;
@@ -84,6 +109,22 @@ async function loadFailures(): Promise<void> {
   }
 }
 
+async function loadRequests(): Promise<void> {
+  requestsLoading.value = true;
+  requestsError.value = null;
+
+  try {
+    requests.value = await api.sites.trafficRequests.query({
+      slug: slug.value,
+      range: range.value,
+    });
+  } catch (err) {
+    requestsError.value = describeError(err);
+  } finally {
+    requestsLoading.value = false;
+  }
+}
+
 async function load(): Promise<void> {
   loading.value = true;
   error.value = null;
@@ -96,6 +137,13 @@ async function load(): Promise<void> {
       await loadFailures();
     } else {
       failures.value = null;
+    }
+
+    const succeeded = totals.status2xx + totals.status3xx;
+    if (succeeded > 0) {
+      await loadRequests();
+    } else {
+      requests.value = null;
     }
   } catch (err) {
     error.value = describeError(err);
@@ -161,26 +209,104 @@ const statusBands = computed(() => {
     .map((band) => ({
       ...band,
       share: (band.count / totals.requests) * 100,
-      /** Only the two failing classes have anything to drill into. */
-      inspectable: band.key === '4xx' || band.key === '5xx',
+      /** Every class narrows the table below it now, not just the failures. */
+      inspectable: true,
     }));
 });
 
-/** Clicking a band narrows the list below it, and clicking it again undoes that. */
+/** The band under the chart narrows the table; clicking it again undoes that. */
 function inspect(key: string): void {
-  if (key !== '4xx' && key !== '5xx') return;
-  statusFilter.value = statusFilter.value === key ? null : key;
+  classFilter.value = classFilter.value === key ? 'all' : (key as ClassFilter);
+}
+
+function classOf(status: number): ClassFilter {
+  return (`${Math.floor(status / 100)}xx`) as ClassFilter;
 }
 
 function inFilter(status: number): boolean {
-  if (statusFilter.value === null) return true;
-  return statusFilter.value === '4xx' ? status < 500 : status >= 500;
+  return classFilter.value === 'all' || classOf(status) === classFilter.value;
 }
 
-const failureGroups = computed(() => (failures.value?.groups ?? []).filter((g) => inFilter(g.status)));
-const recentFailures = computed(() =>
-  (failures.value?.recent ?? []).filter((f) => inFilter(f.status)),
-);
+/** One row per grouped route, merging the failed and the successful scans. */
+interface Row {
+  status: number;
+  method: string;
+  path: string;
+  count: number;
+  lastAt: number;
+}
+
+const allGroups = computed<Row[]>(() => [
+  ...(failures.value?.groups ?? []),
+  ...(requests.value?.groups ?? []),
+]);
+
+const visibleGroups = computed<Row[]>(() => {
+  const rows = allGroups.value.filter((row) => inFilter(row.status));
+  const by = groupSort.value;
+
+  return [...rows].sort((a, b) => {
+    if (by === 'count') return b.count - a.count || b.lastAt - a.lastAt;
+    if (by === 'address') return a.path.localeCompare(b.path) || b.count - a.count;
+    if (by === 'answer') return a.status - b.status || b.count - a.count;
+    return b.lastAt - a.lastAt;
+  });
+});
+
+/** The individual requests behind the rows, newest first unless re-sorted. */
+interface Entry {
+  at: number;
+  status: number;
+  method: string;
+  uri: string;
+}
+
+const allRecent = computed<Entry[]>(() => [
+  ...(failures.value?.recent ?? []),
+  ...(requests.value?.recent ?? []),
+]);
+
+const visibleRecent = computed<Entry[]>(() => {
+  const rows = allRecent.value.filter((row) => inFilter(row.status));
+  const by = latestSort.value;
+
+  return [...rows].sort((a, b) => {
+    if (by === 'address') return a.uri.localeCompare(b.uri) || b.at - a.at;
+    if (by === 'answer') return a.status - b.status || b.at - a.at;
+    return b.at - a.at;
+  });
+});
+
+/** True while either scan is in flight, so the table shows one spinner. */
+const tableLoading = computed(() => failuresLoading.value || requestsLoading.value);
+
+/** The first scan failure, if any — one message rather than one per scan. */
+const tableError = computed(() => failuresError.value ?? requestsError.value);
+
+/** True once at least one scan has returned, so the table has something to render. */
+const tableReady = computed(() => failures.value !== null || requests.value !== null);
+
+const TABLE_SORTS: Record<View, { value: string; label: string }[]> = {
+  grouped: [
+    { value: 'count', label: 'Busiest' },
+    { value: 'address', label: 'Address' },
+    { value: 'answer', label: 'Answer' },
+    { value: 'recent', label: 'Most recent' },
+  ],
+  latest: [
+    { value: 'recent', label: 'Most recent' },
+    { value: 'address', label: 'Address' },
+    { value: 'answer', label: 'Answer' },
+  ],
+};
+
+const CLASS_FILTERS: { value: ClassFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: '2xx', label: 'Delivered' },
+  { value: '3xx', label: 'Redirected' },
+  { value: '4xx', label: 'Not found / refused' },
+  { value: '5xx', label: 'Errors' },
+];
 
 /**
  * What a status code means, without the jargon.
@@ -206,11 +332,15 @@ const STATUS_WORDS: Record<number, string> = {
 };
 
 function describeStatus(status: number): string {
-  return STATUS_WORDS[status] ?? (status >= 500 ? 'Website error' : 'Request refused');
+  if (STATUS_WORDS[status]) return STATUS_WORDS[status];
+  if (status >= 500) return 'Website error';
+  if (status >= 400) return 'Request refused';
+  if (status >= 300) return 'Redirect';
+  return 'Delivered';
 }
 
 function statusTint(status: number): string {
-  return status >= 500 ? 'text-danger' : 'text-warn';
+  return status >= 500 ? 'text-danger' : status >= 400 ? 'text-warn' : 'text-ok';
 }
 
 function whenExact(at: number): string {
@@ -218,7 +348,19 @@ function whenExact(at: number): string {
 }
 
 /** True when the logs no longer reach back as far as the selected range. */
-const partialFailures = computed(() => failures.value !== null && !failures.value.complete);
+const partialLog = computed(
+  () =>
+    (failures.value !== null && !failures.value.complete) ||
+    (requests.value !== null && !requests.value.complete),
+);
+
+/** The oldest entry either scan reached, for the "only goes back to" note. */
+const oldestLogAt = computed(() => {
+  const stamps = [failures.value?.oldestAt, requests.value?.oldestAt].filter(
+    (at): at is number => at !== null && at !== undefined,
+  );
+  return stamps.length > 0 ? Math.min(...stamps) : null;
+});
 
 /** Split out because a website erroring on its own account is worth saying. */
 const errorRate = computed(() => {
@@ -369,7 +511,7 @@ function whenMonth(value: Date): string {
           v-for="band in statusBands"
           :key="band.key"
           class="flex items-center gap-2 rounded-md text-sm"
-          :class="statusFilter === band.key ? 'bg-white/5 ring-1 ring-line' : ''"
+          :class="classFilter === band.key ? 'bg-white/5 ring-1 ring-line' : ''"
         >
           <span class="ml-2 h-2 w-2 shrink-0 rounded-full" :class="band.tint" aria-hidden="true" />
           <dt class="min-w-0 flex-1 truncate py-1 text-ink-muted">
@@ -377,7 +519,7 @@ function whenMonth(value: Date): string {
               v-if="band.inspectable"
               type="button"
               class="w-full truncate text-left underline decoration-dotted underline-offset-4 hover:text-ink"
-              :aria-pressed="statusFilter === band.key"
+              :aria-pressed="classFilter === band.key"
               @click="inspect(band.key)"
             >
               {{ band.label }}
@@ -389,59 +531,91 @@ function whenMonth(value: Date): string {
       </dl>
 
       <p class="mt-3 text-xs text-ink-faint">
-        Select a failing band to narrow the list below to just those requests.
+        Select a band to narrow the table below to just those requests.
       </p>
     </section>
 
-    <section v-if="failures || failuresLoading || failuresError" class="card p-5">
-      <div class="mb-1 flex flex-wrap items-center justify-between gap-3">
-        <h3 class="text-sm font-semibold text-ink">
-          Which requests failed
-          <span v-if="statusFilter" class="ml-1 font-normal text-ink-faint">
-            &#8212; {{ statusFilter === '4xx' ? 'not found or refused' : 'website errors' }}
-            <button type="button" class="ml-1 underline hover:text-ink" @click="statusFilter = null">
-              show all
-            </button>
-          </span>
-        </h3>
+    <section v-if="tableReady || tableLoading || tableError" class="card p-5">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <h3 class="text-sm font-semibold text-ink">Requests</h3>
 
-        <div class="inline-flex rounded-lg border border-line bg-black/20 p-0.5">
-          <button
-            v-for="option in [
-              { value: 'grouped', label: 'By address' },
-              { value: 'latest', label: 'Latest' },
-            ]"
-            :key="option.value"
-            type="button"
-            class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors"
-            :class="
-              failureView === option.value
-                ? 'bg-brand-soft text-brand-bright'
-                : 'text-ink-faint hover:text-ink'
-            "
-            :aria-pressed="failureView === option.value"
-            @click="failureView = option.value as 'grouped' | 'latest'"
-          >
-            {{ option.label }}
-          </button>
+        <div class="flex flex-wrap items-center gap-2">
+          <!-- Which status classes are on the table. -->
+          <div class="inline-flex rounded-lg border border-line bg-black/20 p-0.5">
+            <button
+              v-for="option in CLASS_FILTERS"
+              :key="option.value"
+              type="button"
+              class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors"
+              :class="
+                classFilter === option.value
+                  ? 'bg-brand-soft text-brand-bright'
+                  : 'text-ink-faint hover:text-ink'
+              "
+              :aria-pressed="classFilter === option.value"
+              @click="classFilter = option.value"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+
+          <!-- Grouped by route, or every request on its own line. -->
+          <div class="inline-flex rounded-lg border border-line bg-black/20 p-0.5">
+            <button
+              v-for="option in [
+                { value: 'grouped', label: 'By route' },
+                { value: 'latest', label: 'Every request' },
+              ]"
+              :key="option.value"
+              type="button"
+              class="rounded-md px-2.5 py-1 text-xs font-medium transition-colors"
+              :class="
+                view === option.value
+                  ? 'bg-brand-soft text-brand-bright'
+                  : 'text-ink-faint hover:text-ink'
+              "
+              :aria-pressed="view === option.value"
+              @click="view = option.value as View"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+
+          <label class="flex items-center gap-1.5 text-xs text-ink-faint">
+            Sort
+            <select
+              v-if="view === 'grouped'"
+              v-model="groupSort"
+              class="field !w-auto px-2 py-1 text-xs"
+            >
+              <option v-for="option in TABLE_SORTS.grouped" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+            <select v-else v-model="latestSort" class="field !w-auto px-2 py-1 text-xs">
+              <option v-for="option in TABLE_SORTS.latest" :key="option.value" :value="option.value">
+                {{ option.label }}
+              </option>
+            </select>
+          </label>
         </div>
       </div>
 
-      <AlertMessage v-if="failuresError">{{ failuresError }}</AlertMessage>
+      <AlertMessage v-if="tableError">{{ tableError }}</AlertMessage>
 
-      <LoadingBlock v-else-if="failuresLoading" class="h-24 rounded-lg bg-sunken" :icon-size="16" />
+      <LoadingBlock v-else-if="tableLoading && !tableReady" class="h-24 rounded-lg bg-sunken" :icon-size="16" />
 
-      <template v-else-if="failures">
+      <template v-else>
         <p class="mb-3 text-xs text-ink-faint">
           Read back from the web server&#8217;s own log.
-          <template v-if="partialFailures && failures.oldestAt">
-            It only reaches back to {{ whenExact(failures.oldestAt) }}, so older failures counted
-            above are not listed.
+          <template v-if="partialLog && oldestLogAt">
+            It only reaches back to {{ whenExact(oldestLogAt) }}, so older requests counted above
+            are not listed.
           </template>
         </p>
 
-        <div v-if="failureView === 'grouped'" class="overflow-x-auto">
-          <table v-if="failureGroups.length > 0" class="w-full text-sm">
+        <div v-if="view === 'grouped'" class="overflow-x-auto">
+          <table v-if="visibleGroups.length > 0" class="w-full text-sm">
             <thead>
               <tr class="border-b border-line text-left text-xs uppercase tracking-wide text-ink-faint">
                 <th class="py-1.5 pr-3 font-medium">Answer</th>
@@ -451,7 +625,11 @@ function whenMonth(value: Date): string {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="group in failureGroups" :key="`${group.status} ${group.method} ${group.path}`" class="border-b border-line/50 last:border-0">
+              <tr
+                v-for="group in visibleGroups"
+                :key="`${group.status} ${group.method} ${group.path}`"
+                class="border-b border-line/50 last:border-0"
+              >
                 <td class="whitespace-nowrap py-2 pr-3">
                   <span class="font-mono" :class="statusTint(group.status)">{{ group.status }}</span>
                   <span class="ml-1.5 text-ink-muted">{{ describeStatus(group.status) }}</span>
@@ -473,13 +651,11 @@ function whenMonth(value: Date): string {
             </tbody>
           </table>
 
-          <p v-else class="text-sm text-ink-muted">
-            Nothing matching is still in the log.
-          </p>
+          <p v-else class="text-sm text-ink-muted">Nothing matching is still in the log.</p>
         </div>
 
         <div v-else class="overflow-x-auto">
-          <table v-if="recentFailures.length > 0" class="w-full text-sm">
+          <table v-if="visibleRecent.length > 0" class="w-full text-sm">
             <thead>
               <tr class="border-b border-line text-left text-xs uppercase tracking-wide text-ink-faint">
                 <th class="py-1.5 pr-3 font-medium">When</th>
@@ -489,31 +665,29 @@ function whenMonth(value: Date): string {
             </thead>
             <tbody>
               <tr
-                v-for="(failure, index) in recentFailures"
-                :key="`${failure.at}-${index}`"
+                v-for="(entry, index) in visibleRecent"
+                :key="`${entry.at}-${index}`"
                 class="border-b border-line/50 last:border-0"
               >
                 <td
                   class="whitespace-nowrap py-2 pr-3 text-xs text-ink-faint"
-                  :title="whenExact(failure.at)"
+                  :title="whenExact(entry.at)"
                 >
-                  {{ timeAgo(failure.at) }}
+                  {{ timeAgo(entry.at) }}
                 </td>
                 <td class="whitespace-nowrap py-2 pr-3">
-                  <span class="font-mono" :class="statusTint(failure.status)">{{ failure.status }}</span>
-                  <span class="ml-1.5 text-ink-muted">{{ describeStatus(failure.status) }}</span>
+                  <span class="font-mono" :class="statusTint(entry.status)">{{ entry.status }}</span>
+                  <span class="ml-1.5 text-ink-muted">{{ describeStatus(entry.status) }}</span>
                 </td>
                 <td class="max-w-md py-2">
-                  <span class="mr-1.5 font-mono text-xs text-ink-faint">{{ failure.method }}</span>
-                  <span class="break-all font-mono text-xs text-ink">{{ failure.uri }}</span>
+                  <span class="mr-1.5 font-mono text-xs text-ink-faint">{{ entry.method }}</span>
+                  <span class="break-all font-mono text-xs text-ink">{{ entry.uri }}</span>
                 </td>
               </tr>
             </tbody>
           </table>
 
-          <p v-else class="text-sm text-ink-muted">
-            Nothing matching is still in the log.
-          </p>
+          <p v-else class="text-sm text-ink-muted">Nothing matching is still in the log.</p>
         </div>
       </template>
     </section>

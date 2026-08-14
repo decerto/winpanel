@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
 import { sites } from '../src/db/schema.js';
 import { SecretVault } from '../src/security/vault.js';
-import { storeCloudflareToken } from '../src/dns/token.js';
+import { storeSiteCloudflareToken } from '../src/dns/token.js';
 import { storeMailDomains } from '../src/mail/domains.js';
 import { CaddyReconciler, siteInputsFrom } from '../src/caddy/reconciler.js';
 import {
@@ -32,11 +32,12 @@ let db: DatabaseHandle;
 let vault: SecretVault;
 const sitesRoot = (): string => path.join(tmpDir, 'sites');
 
-function insertSite(overrides: Partial<typeof sites.$inferInsert> = {}): void {
+function insertSite(overrides: Partial<typeof sites.$inferInsert> = {}): string {
+  const id = crypto.randomUUID();
   db.db
     .insert(sites)
     .values({
-      id: crypto.randomUUID(),
+      id,
       slug: 'example',
       displayName: 'Example',
       runtime: 'node',
@@ -49,6 +50,8 @@ function insertSite(overrides: Partial<typeof sites.$inferInsert> = {}): void {
       ...overrides,
     })
     .run();
+
+  return id;
 }
 
 beforeEach(async () => {
@@ -131,7 +134,8 @@ describe('turning the database into a Caddy config', () => {
 
     expect(JSON.stringify(reconciler.buildConfig())).not.toContain('acme');
 
-    storeCloudflareToken(db, vault, 'cf-secret-token');
+    const siteId = db.db.select().from(sites).all()[0]!.id;
+    storeSiteCloudflareToken(db, vault, siteId, 'cf-secret-token');
 
     expect(JSON.stringify(reconciler.buildConfig())).toContain('acme');
   });
@@ -198,9 +202,9 @@ describe('turning the database into a Caddy config', () => {
   });
 
   it('puts a mail hostname under the token that can see its domain', () => {
-    insertSite();
+    const siteId = insertSite();
     storeMailDomains(db, ['example.com']);
-    storeCloudflareToken(db, vault, 'cf-secret-token');
+    storeSiteCloudflareToken(db, vault, siteId, 'cf-secret-token');
 
     const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
     const policy = config.apps.tls.automation.policies.find((p: any) => p.issuers);

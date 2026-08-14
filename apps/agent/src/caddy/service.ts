@@ -1,5 +1,5 @@
 import type { DatabaseHandle } from '../db/index.js';
-import { CLOUDFLARE_TOKEN_ENV_VAR, cloudflareTokenGroups } from '../dns/token.js';
+import { cloudflareTokenGroups } from '../dns/token.js';
 import { sites } from '../db/schema.js';
 import type { SecretVault } from '../security/vault.js';
 import type { ServiceManager } from '../windows/service-manager.js';
@@ -23,7 +23,6 @@ import type { ServiceManager } from '../windows/service-manager.js';
 
 export const CADDY_SERVICE_ID = 'winpanel-caddy';
 
-export { CLOUDFLARE_TOKEN_ENV_VAR };
 
 export function caddyServiceEnv(
   caddyDir: string,

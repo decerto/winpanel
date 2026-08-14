@@ -26,7 +26,7 @@ import { serviceIdFor } from '../../sites/deploy-handler.js';
 import { localAddresses } from '../../tls/panel-certificate.js';
 import { panelHostnameAmong } from '../../tls/panel-hostname.js';
 import { accessLogExists, logFilesFor } from '../../traffic/collector.js';
-import { scanFailures } from '../../traffic/failures.js';
+import { scanFailures, scanRequests } from '../../traffic/failures.js';
 import {
   TRAFFIC_RANGES,
   rangeStart,
@@ -217,6 +217,14 @@ export const sitesRouter = router({
 
       return {
         ...site,
+        /*
+         * Ownership is an administrator's concern. A customer is only ever
+         * handed their own website (the scope middleware saw to that), and
+         * telling them who the panel thinks it belongs to answers a question
+         * they have no use for — and would have to be kept out of the UI by
+         * agreement rather than by the payload simply not carrying it.
+         */
+        ownerUserId: ctx.user?.role === 'user' ? null : site.ownerUserId,
         domains: site.domains as string[],
         sourceKind: (site.source as SiteSource).kind,
         previewUrl: previewUrlFor(site.previewPort),
@@ -320,6 +328,33 @@ export const sitesRouter = router({
 
       const files = await logFilesFor(ctx.app.config.accessLogDir, site.slug);
       const scan = await scanFailures(files, { since: rangeStart(input.range) });
+
+      return { range: input.range, ...scan };
+    }),
+
+  /**
+   * The successful requests behind the headline figures.
+   *
+   * The counterpart to `trafficErrors`: where that one answers "what is
+   * broken", this answers "what is actually being used" — the routes visitors
+   * reach and get a real answer from. Read from the same logs on demand, for
+   * the same reason: a per-URL table would grow without limit. Site-scoped, so
+   * a customer sees their own traffic and nobody else's.
+   */
+  trafficRequests: protectedProcedure
+    .input(
+      z.object({
+        slug: z.string().min(1),
+        range: z.enum(TRAFFIC_RANGES).default('7d'),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
+      const site = service.get(input.slug);
+      if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
+
+      const files = await logFilesFor(ctx.app.config.accessLogDir, site.slug);
+      const scan = await scanRequests(files, { since: rangeStart(input.range) });
 
       return { range: input.range, ...scan };
     }),

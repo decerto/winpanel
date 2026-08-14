@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
 import { sites } from '../src/db/schema.js';
@@ -10,30 +11,31 @@ import { CaddyReconciler } from '../src/caddy/reconciler.js';
 import { CaddyClient } from '../src/caddy/client.js';
 import {
   CADDY_SERVICE_ID,
-  CLOUDFLARE_TOKEN_ENV_VAR,
   caddyServiceEnv,
   cloudflareTokenEnvironment,
   syncCaddyEnvironment,
 } from '../src/caddy/service.js';
 import {
-  clearCloudflareToken,
   clearSiteCloudflareToken,
+  cloudflareTokenEnvVar,
   cloudflareTokenForSite,
   cloudflareTokenGroups,
-  hasCloudflareToken,
-  loadCloudflareToken,
-  storeCloudflareToken,
+  loadSiteCloudflareToken,
   storeSiteCloudflareToken,
 } from '../src/dns/token.js';
 
 /**
  * The certificate token, end to end.
  *
- * The generated Caddy config refers to the token as `{env.CF_API_TOKEN}`
+ * The generated Caddy config refers to each token as `{env.CF_API_TOKEN_…}`
  * rather than embedding it, which means the config and the service environment
- * have to be kept in step by something. Nothing was: the token was stored in
- * the vault and never reached Caddy, so the DNS challenge could not run and no
- * certificate was ever issued. Nothing failed loudly at any point.
+ * have to be kept in step by something. When they are not, nothing fails
+ * loudly: Caddy starts, serves HTTP happily, and never manages to issue a
+ * certificate, which surfaces days later as an expired site.
+ *
+ * Every token belongs to one website. There is no shared token: a Cloudflare
+ * token only reaches the zones of the account that issued it, so a machine-wide
+ * one could manage exactly one account's domains and silently fail for the rest.
  */
 
 const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
@@ -105,57 +107,32 @@ async function pretendCaddyIsInstalled(env: Record<string, string> = {}): Promis
   return configPath;
 }
 
-describe('storing the token', () => {
+describe('a token per website', () => {
   it('round-trips through the vault and never stores it in the clear', () => {
-    storeCloudflareToken(db, vault, 'cf-secret-token');
+    const id = createSite('example.com');
+    storeSiteCloudflareToken(db, vault, id, 'cf-secret-token');
 
-    expect(loadCloudflareToken(db, vault)).toBe('cf-secret-token');
-    expect(hasCloudflareToken(db)).toBe(true);
+    expect(loadSiteCloudflareToken(db, vault, id)).toBe('cf-secret-token');
 
     const raw = db.db.all<{ ciphertext: string }>('SELECT ciphertext FROM secrets' as never);
     expect(JSON.stringify(raw)).not.toContain('cf-secret-token');
   });
 
-  it('reports no token once disconnected', () => {
-    storeCloudflareToken(db, vault, 'cf-secret-token');
-    clearCloudflareToken(db);
-
-    expect(loadCloudflareToken(db, vault)).toBeNull();
-    expect(hasCloudflareToken(db)).toBe(false);
-  });
-});
-
-describe('a token per website', () => {
-  it('prefers a website\u2019s own token over the shared one', () => {
-    const id = createSite('example.com');
-    storeCloudflareToken(db, vault, 'shared-token');
-    storeSiteCloudflareToken(db, vault, id, 'site-token');
-
-    expect(cloudflareTokenForSite(db, vault, id)).toEqual({
-      token: 'site-token',
-      source: 'site',
-    });
-  });
-
-  it('falls back to the shared token, and to nothing at all', () => {
+  it('resolves a website to its own token, and to nothing without one', () => {
     const id = createSite('example.com');
 
     expect(cloudflareTokenForSite(db, vault, id)).toBeNull();
 
-    storeCloudflareToken(db, vault, 'shared-token');
-    expect(cloudflareTokenForSite(db, vault, id)).toEqual({
-      token: 'shared-token',
-      source: 'shared',
-    });
+    storeSiteCloudflareToken(db, vault, id, 'site-token');
+    expect(cloudflareTokenForSite(db, vault, id)).toEqual({ token: 'site-token', source: 'site' });
   });
 
-  it('goes back to the shared token when a website\u2019s own is removed', () => {
+  it('reports nothing once the token is removed', () => {
     const id = createSite('example.com');
-    storeCloudflareToken(db, vault, 'shared-token');
     storeSiteCloudflareToken(db, vault, id, 'site-token');
     clearSiteCloudflareToken(db, id);
 
-    expect(cloudflareTokenForSite(db, vault, id)?.source).toBe('shared');
+    expect(cloudflareTokenForSite(db, vault, id)).toBeNull();
   });
 
   it('gives each account its own variable, and shares one between sites that share a token', () => {
@@ -169,7 +146,7 @@ describe('a token per website', () => {
     const second = createSite('other.example');
     const third = createSite('third.example');
 
-    storeCloudflareToken(db, vault, 'shared-token');
+    storeSiteCloudflareToken(db, vault, first, 'first-account-token');
     storeSiteCloudflareToken(db, vault, second, 'other-account-token');
     storeSiteCloudflareToken(db, vault, third, 'other-account-token');
 
@@ -181,13 +158,15 @@ describe('a token per website', () => {
 
     expect(groups).toHaveLength(2);
 
-    const shared = groups.find((group) => group.envVar === CLOUDFLARE_TOKEN_ENV_VAR);
-    expect(shared?.domains).toEqual(['example.com']);
-
-    const other = groups.find((group) => group.envVar !== CLOUDFLARE_TOKEN_ENV_VAR);
-    expect(other?.token).toBe('other-account-token');
+    // The two sites in the same account share one variable.
+    const other = groups.find((group) => group.token === 'other-account-token');
     expect(other?.domains).toEqual(['other.example', 'third.example']);
     expect(other?.envVar).toMatch(/^CF_API_TOKEN_[0-9A-F]{8}$/);
+    expect(other?.envVar).toBe(cloudflareTokenEnvVar('other-account-token'));
+
+    const firstGroup = groups.find((group) => group.token === 'first-account-token');
+    expect(firstGroup?.domains).toEqual(['example.com']);
+    expect(firstGroup?.envVar).toBe(cloudflareTokenEnvVar('first-account-token'));
   });
 
   it('leaves a website with no token out of the certificate policies entirely', () => {
@@ -240,8 +219,9 @@ describe('the environment Caddy is given', () => {
   });
 
   it('omits every token when there are none', () => {
-    expect(caddyServiceEnv('C:\\x')).not.toHaveProperty(CLOUDFLARE_TOKEN_ENV_VAR);
-    expect(caddyServiceEnv('C:\\x', {})).not.toHaveProperty(CLOUDFLARE_TOKEN_ENV_VAR);
+    expect(Object.keys(caddyServiceEnv('C:\\x')).some((k) => k.startsWith('CF_API_TOKEN'))).toBe(
+      false,
+    );
   });
 
   it('uses the same variable name the generated config asks for', () => {
@@ -252,22 +232,23 @@ describe('the environment Caddy is given', () => {
      * request fails against Cloudflare rather than here.
      */
     createSite('example.com');
-    storeCloudflareToken(db, vault, 'cf-secret-token');
+    const first = db.db.select().from(sites).all()[0]!;
+    storeSiteCloudflareToken(db, vault, first.id, 'cf-secret-token');
 
     const config = JSON.stringify(
       new CaddyReconciler(db, new CaddyClient(), path.join(tmpDir, 'sites'), vault).buildConfig(),
     );
 
     const referenced = /\{env\.([A-Z_0-9]+)\}/.exec(config)?.[1];
-    expect(referenced).toBe(CLOUDFLARE_TOKEN_ENV_VAR);
+    expect(referenced).toBe(cloudflareTokenEnvVar('cf-secret-token'));
     expect(cloudflareTokenEnvironment(db, vault)).toHaveProperty(referenced!, 'cf-secret-token');
   });
 
   it('keeps the token out of the config itself', () => {
     // It goes in the service environment instead, because Caddy autosaves its
     // running config to disk in a folder that is not the locked-down one.
-    createSite('example.com');
-    storeCloudflareToken(db, vault, 'cf-secret-token');
+    const keptOut = createSite('example.com');
+    storeSiteCloudflareToken(db, vault, keptOut, 'cf-secret-token');
 
     const config = JSON.stringify(
       new CaddyReconciler(db, new CaddyClient(), path.join(tmpDir, 'sites'), vault).buildConfig(),
@@ -279,8 +260,8 @@ describe('the environment Caddy is given', () => {
 
 describe('syncing the token into the service', () => {
   it('does nothing when the web server is not installed yet', async () => {
-    createSite('example.com');
-    storeCloudflareToken(db, vault, 'cf-secret-token');
+    const id = createSite('example.com');
+    storeSiteCloudflareToken(db, vault, id, 'cf-secret-token');
 
     const result = await syncCaddyEnvironment({ db, vault, services, caddyDir: caddyDir() });
     expect(result).toBe('not-installed');
@@ -288,22 +269,25 @@ describe('syncing the token into the service', () => {
 
   it('writes the token into the service configuration', async () => {
     const configPath = await pretendCaddyIsInstalled(caddyServiceEnv(caddyDir()));
-    createSite('example.com');
-    storeCloudflareToken(db, vault, 'cf-secret-token');
+    const id = createSite('example.com');
+    storeSiteCloudflareToken(db, vault, id, 'cf-secret-token');
 
     const result = await syncCaddyEnvironment({ db, vault, services, caddyDir: caddyDir() });
 
     expect(result).toBe('updated');
     expect(await fs.readFile(configPath, 'utf8')).toContain(
-      `<env name="${CLOUDFLARE_TOKEN_ENV_VAR}" value="cf-secret-token"/>`,
+      `<env name="${cloudflareTokenEnvVar('cf-secret-token')}" value="cf-secret-token"/>`,
     );
   });
 
-  it('takes the token back out when Cloudflare is disconnected', async () => {
+  it('takes the token back out when the website disconnects Cloudflare', async () => {
+    const id = createSite('example.com');
+    storeSiteCloudflareToken(db, vault, id, 'cf-secret-token');
     const configPath = await pretendCaddyIsInstalled(
-      caddyServiceEnv(caddyDir(), { [CLOUDFLARE_TOKEN_ENV_VAR]: 'cf-secret-token' }),
+      caddyServiceEnv(caddyDir(), { [cloudflareTokenEnvVar('cf-secret-token')]: 'cf-secret-token' }),
     );
 
+    clearSiteCloudflareToken(db, id);
     const result = await syncCaddyEnvironment({ db, vault, services, caddyDir: caddyDir() });
 
     expect(result).toBe('updated');
@@ -313,10 +297,10 @@ describe('syncing the token into the service', () => {
   it('is a no-op when nothing has changed', async () => {
     // Called on every panel start, so this is what stops the web server being
     // restarted — dropping connections — for no reason each time.
-    createSite('example.com');
-    storeCloudflareToken(db, vault, 'cf-secret-token');
+    const id = createSite('example.com');
+    storeSiteCloudflareToken(db, vault, id, 'cf-secret-token');
     await pretendCaddyIsInstalled(
-      caddyServiceEnv(caddyDir(), { [CLOUDFLARE_TOKEN_ENV_VAR]: 'cf-secret-token' }),
+      caddyServiceEnv(caddyDir(), { [cloudflareTokenEnvVar('cf-secret-token')]: 'cf-secret-token' }),
     );
 
     expect(await syncCaddyEnvironment({ db, vault, services, caddyDir: caddyDir() })).toBe(

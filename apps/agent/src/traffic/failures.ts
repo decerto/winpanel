@@ -112,20 +112,30 @@ async function readTail(filePath: string, maxBytes: number): Promise<Tail | null
   }
 }
 
+interface ScanCore {
+  groups: Map<string, FailureGroup>;
+  entries: FailedRequest[];
+  total: number;
+  oldestAt: number | null;
+  reachedStart: boolean;
+}
+
 /**
- * Finds the failed requests in a website's logs.
+ * Walks the logs newest-first and buckets every entry the predicate keeps.
  *
- * @param files the site's log files, oldest first, as the collector lists them.
+ * One walker serves both the failure list and the successful-routes list:
+ * they differ only in which statuses count, and reading the log twice would
+ * be twice the disk for the same bytes.
  */
-export async function scanFailures(
+async function scanLogs(
   files: readonly string[],
   options: FailureScanOptions,
-): Promise<FailureScan> {
-  const limit = options.limit ?? 50;
+  keep: (status: number) => boolean,
+): Promise<ScanCore> {
   let budget = options.maxBytes ?? MAX_SCAN_BYTES;
 
   const groups = new Map<string, FailureGroup>();
-  const failures: FailedRequest[] = [];
+  const entries: FailedRequest[] = [];
   let total = 0;
   let oldestAt: number | null = null;
 
@@ -137,7 +147,7 @@ export async function scanFailures(
   let reachedStart = false;
 
   for (const filePath of [...files].reverse()) {
-    if (reachedStart || budget <= 0 || failures.length >= MAX_FAILURES) break;
+    if (reachedStart || budget <= 0 || entries.length >= MAX_FAILURES) break;
 
     const tail = await readTail(filePath, budget);
     if (!tail) continue;
@@ -154,11 +164,11 @@ export async function scanFailures(
         continue;
       }
 
-      if (entry.status < 400) continue;
+      if (!keep(entry.status)) continue;
       total += 1;
 
-      if (failures.length < MAX_FAILURES) {
-        failures.push({
+      if (entries.length < MAX_FAILURES) {
+        entries.push({
           at: entry.at,
           status: entry.status,
           method: entry.method,
@@ -179,15 +189,48 @@ export async function scanFailures(
     }
   }
 
-  failures.sort((a, b) => b.at - a.at);
+  entries.sort((a, b) => b.at - a.at);
 
+  return { groups, entries, total, oldestAt, reachedStart };
+}
+
+function toScan(core: ScanCore, limit: number): FailureScan {
   return {
-    groups: [...groups.values()]
+    groups: [...core.groups.values()]
       .sort((a, b) => b.count - a.count || b.lastAt - a.lastAt)
       .slice(0, limit),
-    recent: failures.slice(0, limit),
-    total,
-    oldestAt,
-    complete: reachedStart,
+    recent: core.entries.slice(0, limit),
+    total: core.total,
+    oldestAt: core.oldestAt,
+    complete: core.reachedStart,
   };
+}
+
+/**
+ * Finds the failed requests in a website's logs.
+ *
+ * @param files the site's log files, oldest first, as the collector lists them.
+ */
+export async function scanFailures(
+  files: readonly string[],
+  options: FailureScanOptions,
+): Promise<FailureScan> {
+  const limit = options.limit ?? 50;
+  return toScan(await scanLogs(files, options, (status) => status >= 400), limit);
+}
+
+/**
+ * The successful requests in a website's logs, grouped the same way.
+ *
+ * The error list answers "what is broken"; this answers "what is actually
+ * being used", which is the question a traffic page that only shows errors
+ * leaves open. Same scan, opposite predicate — a 2xx or 3xx is what a healthy
+ * route is made of.
+ */
+export async function scanRequests(
+  files: readonly string[],
+  options: FailureScanOptions,
+): Promise<FailureScan> {
+  const limit = options.limit ?? 50;
+  return toScan(await scanLogs(files, options, (status) => status < 400), limit);
 }

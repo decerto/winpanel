@@ -2,11 +2,12 @@
 import { computed, inject, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeftRight, Cpu, FolderOpen, KeyRound, Plus, Trash2 } from 'lucide-vue-next';
-import { roleAtLeast, SHARED_DIR, SHARED_URL_PREFIX, type UserRole } from '@winpanel/shared';
+import { roleAtLeast, ROLE_LABELS, SHARED_DIR, SHARED_URL_PREFIX, type UserRole } from '@winpanel/shared';
 import { api, describeError } from '../../lib/api';
 import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
 import LoadingBlock from '../../components/LoadingBlock.vue';
+import SearchableSelect, { type SearchableOption } from '../../components/SearchableSelect.vue';
 
 /**
  * Settings for one website: what it runs on, its secrets, and the way out.
@@ -84,6 +85,19 @@ const handoverBusy = ref(false);
  * would only ever be refused, so the section is not shown to them at all.
  */
 const mayHandOver = computed(() => me.value !== null && roleAtLeast(me.value.role, 'admin'));
+
+/**
+ * The picker options, with the server itself first. An empty value hands the
+ * site back to no one, so it is offered as a real option rather than a blank.
+ */
+const handoverOptions = computed<SearchableOption[]>(() => [
+  { value: '', label: 'The server (nobody in particular)' },
+  ...people.value.map((person) => ({
+    value: person.id,
+    label: person.username,
+    hint: ROLE_LABELS[person.role].label,
+  })),
+]);
 
 async function loadPeople(): Promise<void> {
   try {
@@ -352,13 +366,13 @@ watch(
 
       <div class="mt-4 flex flex-wrap items-end gap-3">
         <div class="min-w-56">
-          <label for="handover-to" class="label">Belongs to</label>
-          <select id="handover-to" v-model="handoverTo" class="field">
-            <option value="">The server (nobody in particular)</option>
-            <option v-for="person in people" :key="person.id" :value="person.id">
-              {{ person.username }}
-            </option>
-          </select>
+          <label id="handover-to-label" class="label">Belongs to</label>
+          <SearchableSelect
+            v-model="handoverTo"
+            :options="handoverOptions"
+            placeholder="The server (nobody in particular)"
+            aria-labelledby="handover-to-label"
+          />
         </div>
 
         <button

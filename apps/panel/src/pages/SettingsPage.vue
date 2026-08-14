@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue';
-import { CloudCog, Download, ExternalLink, FolderSearch, Info, Lock, Power, RefreshCw, Server } from 'lucide-vue-next';
-import { CLOUDFLARE_PERMISSION_SUMMARY } from '@winpanel/shared';
+import { Download, FolderSearch, Info, Lock, Power, RefreshCw, Server } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
 import { LOG_LEVEL_CLASS, useJobLog } from '../lib/job-log';
 import PageHeader from '../components/PageHeader.vue';
@@ -31,10 +30,6 @@ const isOwner = ref(false);
 
 /** The hostname box is only filled from the server before the user touches it. */
 let firstLoad = true;
-
-const cloudflare = ref<{ connected: boolean; message: string } | null>(null);
-const cloudflareToken = ref('');
-const cloudflareBusy = ref(false);
 
 const mail = ref<MailStatus | null>(null);
 const mailUser = ref('admin');
@@ -251,16 +246,14 @@ async function refresh(): Promise<void> {
 
   const results = await Promise.allSettled([
     api.system.info.query(),
-    api.dns.status.query(),
     api.mail.serverStatus.query(),
     api.system.backgroundServices.query(),
     api.auth.me.query(),
   ]);
 
-  const [systemInfo, dnsStatus, mailStatus, background, me] = results;
+  const [systemInfo, mailStatus, background, me] = results;
 
   if (systemInfo.status === 'fulfilled') info.value = systemInfo.value;
-  if (dnsStatus.status === 'fulfilled') cloudflare.value = dnsStatus.value;
   if (mailStatus.status === 'fulfilled') mail.value = mailStatus.value;
   if (background.status === 'fulfilled') services.value = background.value;
   /*
@@ -278,41 +271,6 @@ async function refresh(): Promise<void> {
 }
 
 void refresh();
-
-async function connectCloudflare(): Promise<void> {
-  cloudflareBusy.value = true;
-  error.value = null;
-  notice.value = null;
-
-  try {
-    const result = await api.dns.connect.mutate({ token: cloudflareToken.value.trim() });
-    cloudflareToken.value = '';
-    // The token can verify against Cloudflare and still not be usable yet —
-    // if the web server is not installed, nothing can act on it.
-    notice.value = result.warning ? `${result.message} ${result.warning}` : result.message;
-    await refresh();
-  } catch (err) {
-    error.value = describeError(err);
-  } finally {
-    cloudflareBusy.value = false;
-  }
-}
-
-async function disconnectCloudflare(): Promise<void> {
-  cloudflareBusy.value = true;
-  error.value = null;
-  notice.value = null;
-
-  try {
-    await api.dns.disconnect.mutate();
-    notice.value = 'Cloudflare is disconnected. Your DNS records are untouched.';
-    await refresh();
-  } catch (err) {
-    error.value = describeError(err);
-  } finally {
-    cloudflareBusy.value = false;
-  }
-}
 
 async function connectMail(): Promise<void> {
   mailBusy.value = true;
@@ -643,88 +601,6 @@ async function installUpdate(): Promise<void> {
     <AlertMessage v-if="notice" tone="success" class="mb-4">{{ notice }}</AlertMessage>
 
     <ComponentsPanel class="mb-4" @changed="refresh" />
-
-    <section class="card p-6">
-      <div class="flex items-start gap-3">
-        <span
-          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border
-                 border-line bg-brand-soft/50 text-brand-bright"
-          aria-hidden="true"
-        >
-          <CloudCog :size="19" />
-        </span>
-
-        <div class="min-w-0 flex-1">
-          <h2 class="text-base font-semibold text-ink">Cloudflare (shared token)</h2>
-          <p class="mt-1 text-sm text-ink-muted">
-            Used by every website that has no token of its own, which is what you want when all
-            your domains live in one Cloudflare account. A token only reaches the domains of the
-            account that made it, so a website in a different account gets its own token on its
-            DNS tab instead. This one is optional.
-          </p>
-
-          <p v-if="cloudflare" class="mt-3 flex flex-wrap items-center gap-2 text-sm">
-            <span
-              class="h-1.5 w-1.5 rounded-full"
-              :class="cloudflare.connected ? 'bg-ok' : 'bg-idle'"
-              aria-hidden="true"
-            />
-            <span :class="cloudflare.connected ? 'text-ok' : 'text-ink-muted'">
-              {{ cloudflare.connected ? 'Connected' : 'Not connected yet' }}
-            </span>
-            <!-- The message only carries detail worth reading once a token is in. -->
-            <span v-if="cloudflare.connected" class="text-ink-faint">
-              {{ cloudflare.message }}
-            </span>
-          </p>
-        </div>
-      </div>
-
-      <form v-if="!cloudflare?.connected" class="mt-5 space-y-3" @submit.prevent="connectCloudflare">
-        <div>
-          <label for="cf-token" class="label">API token</label>
-          <input
-            id="cf-token"
-            v-model="cloudflareToken"
-            type="password"
-            autocomplete="off"
-            class="field font-mono"
-            placeholder="Paste your Cloudflare API token"
-          />
-          <p class="hint">
-            Create a token with {{ CLOUDFLARE_PERMISSION_SUMMARY }} permissions on the zones you
-            want the panel to manage. Each website&#8217;s DNS tab explains this step by step if
-            you would rather do it there.
-            <a
-              href="https://dash.cloudflare.com/profile/api-tokens"
-              target="_blank"
-              rel="noreferrer noopener"
-              class="inline-flex items-center gap-1 text-brand-bright underline underline-offset-2"
-            >
-              Create one <ExternalLink :size="11" aria-hidden="true" />
-            </a>
-          </p>
-        </div>
-
-        <button
-          type="submit"
-          class="btn btn-primary"
-          :disabled="cloudflareBusy || cloudflareToken.trim().length < 10"
-        >
-          {{ cloudflareBusy ? 'Checking\u2026' : 'Connect Cloudflare' }}
-        </button>
-      </form>
-
-      <button
-        v-else
-        type="button"
-        class="btn btn-ghost mt-5"
-        :disabled="cloudflareBusy"
-        @click="disconnectCloudflare"
-      >
-        {{ cloudflareBusy ? 'Working\u2026' : 'Disconnect' }}
-      </button>
-    </section>
 
     <section class="card mt-4 p-6">
       <div class="flex items-start gap-3">

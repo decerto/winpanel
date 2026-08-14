@@ -6,7 +6,7 @@ import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/
 import { sites, siteTraffic } from '../src/db/schema.js';
 import { bucketOf, parseAccessLine } from '../src/traffic/access-log.js';
 import { TrafficCollector, logFilesFor, readNewLines } from '../src/traffic/collector.js';
-import { scanFailures } from '../src/traffic/failures.js';
+import { scanFailures, scanRequests } from '../src/traffic/failures.js';
 import { trafficAllTime, trafficSeries, trafficThisMonth } from '../src/traffic/queries.js';
 import { buildCaddyConfig, accessLoggerNameFor } from '../src/caddy/config-builder.js';
 import { SiteManifest } from '@winpanel/shared';
@@ -343,5 +343,51 @@ describe('finding out what failed', () => {
     expect(result.total).toBe(0);
     expect(result.groups).toEqual([]);
     expect(result.oldestAt).toBeNull();
+  });
+});
+
+describe('finding out what succeeded', () => {
+  const HOUR = 3_600_000;
+
+  async function scan(since = Date.now() - 24 * HOUR) {
+    return scanRequests(await logFilesFor(logDir, 'example'), { since });
+  }
+
+  it('lists the addresses that served a visitor, busiest first', async () => {
+    await append('example', [
+      entry({ status: 200, request: { method: 'GET', host: 'example.com', uri: '/' } }),
+      entry({ status: 200, request: { method: 'GET', host: 'example.com', uri: '/' } }),
+      entry({ status: 301, request: { method: 'GET', host: 'example.com', uri: '/old' } }),
+      entry({ status: 404, request: { method: 'GET', host: 'example.com', uri: '/nope' } }),
+    ]);
+
+    const result = await scan();
+
+    // The error is the other scan's job; only the working routes count here.
+    expect(result.total).toBe(3);
+    expect(result.groups[0]).toMatchObject({ status: 200, path: '/', count: 2 });
+    expect(result.groups[1]).toMatchObject({ status: 301, path: '/old', count: 1 });
+    expect(result.groups.some((group) => group.status === 404)).toBe(false);
+  });
+
+  it('groups on the address without its query', async () => {
+    await append('example', [
+      entry({ status: 200, request: { method: 'GET', host: 'example.com', uri: '/a?x=1' } }),
+      entry({ status: 200, request: { method: 'GET', host: 'example.com', uri: '/a?x=2' } }),
+    ]);
+
+    const result = await scan();
+
+    expect(result.groups).toHaveLength(1);
+    expect(result.groups[0]).toMatchObject({ path: '/a', count: 2 });
+  });
+
+  it('has nothing to say when only errors are in the window', async () => {
+    await append('example', [entry({ status: 500 })]);
+
+    const result = await scan();
+
+    expect(result.total).toBe(0);
+    expect(result.groups).toEqual([]);
   });
 });

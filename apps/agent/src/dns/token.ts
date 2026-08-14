@@ -8,12 +8,11 @@ import type { SecretVault } from '../security/vault.js';
 /**
  * Where Cloudflare API tokens live.
  *
- * There are two kinds, and the difference is the point. A website may have its
- * own token, because one server can host domains belonging to different
- * people, and a Cloudflare token only ever reaches the zones of the account
- * that issued it. A website without one falls back to a shared token, because
- * the common case is several domains in a single account and re-pasting the
- * same value per site would be tedious for no gain.
+ * Each website holds its own token, because one server can host domains
+ * belonging to different people, and a Cloudflare token only ever reaches the
+ * zones of the account that issued it. There is deliberately no shared token:
+ * one machine-wide token can manage exactly one account's domains and silently
+ * fails for every other, while looking like it ought to work.
  *
  * Shared rather than private to the DNS router because three separate things
  * need these and they must agree: the router that manages them, the Caddy
@@ -22,36 +21,7 @@ import type { SecretVault } from '../security/vault.js';
  * those three disagree, the symptom is certificates that silently never issue.
  */
 
-/** The variable Caddy's Cloudflare DNS module reads the shared token from. */
-export const CLOUDFLARE_TOKEN_ENV_VAR = 'CF_API_TOKEN';
-
-export const CLOUDFLARE_TOKEN_KEY = 'cloudflare.token';
-
-export function siteCloudflareTokenKey(siteId: string): string {
-  return `site.cloudflareToken:${siteId}`;
-}
-
-export function loadCloudflareToken(db: DatabaseHandle, vault: SecretVault): string | null {
-  return readSecret(db, vault, CLOUDFLARE_TOKEN_KEY);
-}
-
-export function hasCloudflareToken(db: DatabaseHandle): boolean {
-  return (
-    db.db.select().from(secrets).where(eq(secrets.key, CLOUDFLARE_TOKEN_KEY)).get() !== undefined
-  );
-}
-
-export function storeCloudflareToken(
-  db: DatabaseHandle,
-  vault: SecretVault,
-  token: string,
-): void {
-  writeSecret(db, vault, CLOUDFLARE_TOKEN_KEY, token);
-}
-
-export function clearCloudflareToken(db: DatabaseHandle): void {
-  db.db.delete(secrets).where(eq(secrets.key, CLOUDFLARE_TOKEN_KEY)).run();
-}
+export const siteCloudflareTokenKey = (siteId: string) => `site.cloudflareToken:${siteId}`;
 
 export function loadSiteCloudflareToken(
   db: DatabaseHandle,
@@ -74,24 +44,21 @@ export function clearSiteCloudflareToken(db: DatabaseHandle, siteId: string): vo
   db.db.delete(secrets).where(eq(secrets.key, siteCloudflareTokenKey(siteId))).run();
 }
 
-export type TokenSource = 'site' | 'shared';
+export type TokenSource = 'site';
 
 export interface ResolvedToken {
   token: string;
   source: TokenSource;
 }
 
-/** The token a website should be managed with: its own, or the shared one. */
+/** The token a website should be managed with. There is no shared fallback. */
 export function cloudflareTokenForSite(
   db: DatabaseHandle,
   vault: SecretVault,
   siteId: string,
 ): ResolvedToken | null {
   const own = loadSiteCloudflareToken(db, vault, siteId);
-  if (own) return { token: own, source: 'site' };
-
-  const shared = loadCloudflareToken(db, vault);
-  return shared ? { token: shared, source: 'shared' } : null;
+  return own ? { token: own, source: 'site' } : null;
 }
 
 /**
@@ -105,11 +72,9 @@ export function cloudflareTokenForSite(
  * The suffix is a truncated hash of a high-entropy secret, which is not itself
  * a secret; it exists only to be a stable, legal variable name.
  */
-export function cloudflareTokenEnvVar(token: string, sharedToken: string | null): string {
-  if (sharedToken !== null && token === sharedToken) return CLOUDFLARE_TOKEN_ENV_VAR;
-
+export function cloudflareTokenEnvVar(token: string): string {
   const digest = crypto.createHash('sha256').update(token).digest('hex').slice(0, 8);
-  return `${CLOUDFLARE_TOKEN_ENV_VAR}_${digest.toUpperCase()}`;
+  return `CF_API_TOKEN_${digest.toUpperCase()}`;
 }
 
 /** One token, the variable it is passed in, and the domains it can issue for. */
@@ -131,7 +96,6 @@ export function cloudflareTokenGroups(
   vault: SecretVault,
   sites: readonly { id: string; domains: readonly string[] }[],
 ): CloudflareTokenGroup[] {
-  const shared = loadCloudflareToken(db, vault);
   const groups = new Map<string, CloudflareTokenGroup>();
 
   for (const site of sites) {
@@ -140,7 +104,7 @@ export function cloudflareTokenGroups(
     const resolved = cloudflareTokenForSite(db, vault, site.id);
     if (!resolved) continue;
 
-    const envVar = cloudflareTokenEnvVar(resolved.token, shared);
+    const envVar = cloudflareTokenEnvVar(resolved.token);
     const group = groups.get(envVar) ?? { envVar, token: resolved.token, domains: [] };
 
     for (const domain of site.domains) {

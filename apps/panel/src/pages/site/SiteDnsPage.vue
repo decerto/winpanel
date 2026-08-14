@@ -15,9 +15,8 @@ import LoadingBlock from '../../components/LoadingBlock.vue';
  *
  * The token lives here rather than in server settings because a token only
  * reaches the zones of the Cloudflare account that issued it, and one server
- * routinely hosts domains belonging to different people. Websites in the same
- * account can fall back to the shared token instead of pasting the same value
- * repeatedly.
+ * routinely hosts domains belonging to different people. Each website that
+ * needs one pastes its own.
  *
  * The common case is not "edit a record" but "make this domain reach this
  * server", so that is offered as one action. The record table is underneath
@@ -358,10 +357,6 @@ onUnmounted(() => clearTimeout(planTimer));
               class="field font-mono"
               placeholder="Paste the token you just created"
             />
-            <p v-if="connection?.sharedAvailable" class="hint">
-              Leave this empty to keep using the shared token from Settings &mdash; it just
-              cannot see this domain, or it would have worked already.
-            </p>
           </div>
 
           <button

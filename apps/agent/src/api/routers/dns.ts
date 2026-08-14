@@ -12,11 +12,8 @@ import {
   type DnsChange,
 } from '../../dns/cloudflare.js';
 import {
-  clearCloudflareToken,
   clearSiteCloudflareToken,
   cloudflareTokenForSite,
-  loadCloudflareToken,
-  storeCloudflareToken,
   storeSiteCloudflareToken,
   type TokenSource,
 } from '../../dns/token.js';
@@ -28,11 +25,11 @@ import type { AppContext } from '../../app-context.js';
 /**
  * DNS through Cloudflare.
  *
- * A token is held per website, falling back to a shared one. That is not a
- * refinement: a Cloudflare token only reaches the zones of the account that
- * issued it, and one server routinely hosts domains belonging to different
- * people. A single machine-wide token can manage exactly one account's
- * domains and silently fails for every other.
+ * A token is held per website, with no shared fallback: a Cloudflare token
+ * only reaches the zones of the account that issued it, and one server
+ * routinely hosts domains belonging to different people. A single machine-wide
+ * token can manage exactly one account's domains and silently fails for every
+ * other.
  *
  * Tokens are held in the vault and never leave the server, so the browser only
  * ever sees zone and record data.
@@ -53,10 +50,8 @@ function resolveToken(
   app: AppContext,
   slug?: string,
 ): { token: string; source: TokenSource } | null {
-  if (slug) return cloudflareTokenForSite(app.db, app.vault, siteFor(app, slug).id);
-
-  const shared = loadCloudflareToken(app.db, app.vault);
-  return shared ? { token: shared, source: 'shared' } : null;
+  if (!slug) return null;
+  return cloudflareTokenForSite(app.db, app.vault, siteFor(app, slug).id);
 }
 
 function clientFor(app: AppContext, slug?: string): CloudflareClient {
@@ -65,9 +60,7 @@ function clientFor(app: AppContext, slug?: string): CloudflareClient {
   if (!resolved) {
     throw new TRPCError({
       code: 'PRECONDITION_FAILED',
-      message: slug
-        ? 'This website has no Cloudflare token yet. Add one on its DNS tab.'
-        : 'Connect a Cloudflare account first, on the Settings page.',
+      message: 'This website has no Cloudflare token yet. Add one on its DNS tab.',
     });
   }
 
@@ -225,9 +218,7 @@ export const dnsRouter = router({
   /**
    * Whether Cloudflare can be used, and with whose token.
    *
-   * Given a website, answers for that website: its own token if it has one,
-   * otherwise the shared one. Without a website it answers for the shared
-   * token alone.
+   * Answers for the website named: its own token, or not connected.
    */
   status: protectedProcedure.input(SiteScope.optional()).query(async ({ ctx, input }) => {
     requireOwnSite(ctx, input?.slug);
@@ -237,7 +228,7 @@ export const dnsRouter = router({
       return {
         connected: false,
         source: null,
-        sharedAvailable: loadCloudflareToken(ctx.app.db, ctx.app.vault) !== null,
+        sharedAvailable: false,
         message: 'Not connected yet.',
       };
     }
@@ -247,32 +238,26 @@ export const dnsRouter = router({
     return {
       connected: result.valid,
       source: resolved.source,
-      sharedAvailable: loadCloudflareToken(ctx.app.db, ctx.app.vault) !== null,
+      sharedAvailable: false,
       message: result.message,
     };
   }),
 
   /**
-   * Stores a token, for one website or for every website without its own.
+   * Stores a token for one website.
    *
    * Verified before it is stored, so a wrong token fails while the user is
    * still looking at the field they pasted it into.
    */
   connect: protectedProcedure
-    .input(z.object({ token: z.string().min(10).max(512), slug: z.string().min(1).optional() }))
+    .input(z.object({ token: z.string().min(10).max(512), slug: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      requireOwnSite(ctx, input.slug);
-
       const result = await new CloudflareClient(input.token).verifyToken();
       if (!result.valid) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: result.message });
       }
 
-      if (input.slug) {
-        storeSiteCloudflareToken(ctx.app.db, ctx.app.vault, siteFor(ctx.app, input.slug).id, input.token);
-      } else {
-        storeCloudflareToken(ctx.app.db, ctx.app.vault, input.token);
-      }
+      storeSiteCloudflareToken(ctx.app.db, ctx.app.vault, siteFor(ctx.app, input.slug).id, input.token);
 
       const warning = await applyTokens(ctx.app);
 
@@ -283,17 +268,11 @@ export const dnsRouter = router({
       };
     }),
 
-  /** Forgets a website's own token, or the shared one. */
+  /** Forgets a website's own token. */
   disconnect: protectedProcedure
-    .input(SiteScope.optional())
+    .input(z.object({ slug: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      requireOwnSite(ctx, input?.slug);
-
-      if (input?.slug) {
-        clearSiteCloudflareToken(ctx.app.db, siteFor(ctx.app, input.slug).id);
-      } else {
-        clearCloudflareToken(ctx.app.db);
-      }
+      clearSiteCloudflareToken(ctx.app.db, siteFor(ctx.app, input.slug).id);
 
       // Take it back out of the web server too. Leaving a revoked token in a
       // service configuration is both useless and a secret kept for no reason.

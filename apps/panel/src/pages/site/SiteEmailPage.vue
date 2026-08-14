@@ -40,7 +40,7 @@ import StatusBadge from '../../components/StatusBadge.vue';
 
 const { site } = inject(siteContextKey)!;
 
-type ServerStatus = Awaited<ReturnType<typeof api.mail.serverStatus.query>>;
+type ServerStatus = Awaited<ReturnType<typeof api.mail.available.query>>;
 type Mailbox = Awaited<ReturnType<typeof api.mail.mailboxes.query>>[number];
 type Readiness = Awaited<ReturnType<typeof api.mail.readiness.query>>;
 type MailDns = Awaited<ReturnType<typeof api.mail.dnsStatus.query>>;
@@ -324,7 +324,7 @@ async function load(): Promise<void> {
   error.value = null;
 
   try {
-    status.value = await api.mail.serverStatus.query();
+    status.value = await api.mail.available.query();
     await loadMailboxes();
     void loadMailDns();
   } catch (err) {
@@ -560,21 +560,9 @@ watch(() => site.value?.slug, load, { immediate: true });
       <EmptyState
         v-else-if="!status?.connected"
         :icon="Server"
-        :title="
-          status?.reachable && !status.manageable
-            ? 'This mail server cannot be managed from the panel'
-            : 'The mail server is not connected'
-        "
+        title="Email is not available for this website yet"
         :description="status?.message ?? ''"
-      >
-        <RouterLink
-          v-if="!(status?.reachable && !status.manageable)"
-          to="/settings"
-          class="btn btn-primary mt-5"
-        >
-          Open Settings
-        </RouterLink>
-      </EmptyState>
+      />
 
       <template v-else>
         <!--

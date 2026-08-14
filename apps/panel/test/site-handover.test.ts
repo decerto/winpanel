@@ -96,34 +96,61 @@ beforeEach(() => {
   state.peopleAsked = 0;
 });
 
+/** The SearchableSelect, found by the component rather than the markup. */
+function selectControl(wrapper: any) {
+  return wrapper.findComponent({ name: 'SearchableSelect' });
+}
+
+/** Opens the picker and returns the option labels it offers. */
+async function openPicker(wrapper: any): Promise<string[]> {
+  (selectControl(wrapper).vm as any).open = true;
+  await flushPromises();
+  return wrapper.findAll('[role="option"]').map((option: any) =>
+    option.find('span.block').text(),
+  );
+}
+
+/** Opens the picker and picks the option whose label matches. */
+async function choose(wrapper: any, label: string): Promise<void> {
+  (selectControl(wrapper).vm as any).open = true;
+  await flushPromises();
+  const option = wrapper
+    .findAll('[role="option"]')
+    .find((o: any) => o.find('span.block').text() === label);
+  expect(option, `option "${label}" is offered`).toBeDefined();
+  await option!.trigger('click');
+  await flushPromises();
+}
+
+function handOverButton(wrapper: any) {
+  return wrapper.findAll('button').find((b: any) => b.text().includes('Hand it over'))!;
+}
+
 describe('handing a website over', () => {
   it('offers everybody on the server, with the server itself first', async () => {
     const { wrapper } = await render();
 
-    const options = wrapper.findAll('#handover-to option').map((option: any) => option.text());
-    expect(options).toEqual(['The server (nobody in particular)', 'owner', 'freya']);
+    expect(await openPicker(wrapper)).toEqual([
+      'The server (nobody in particular)',
+      'owner',
+      'freya',
+    ]);
   });
 
   it('starts on whoever the website belongs to now', async () => {
     const { wrapper } = await render('f');
 
-    expect((wrapper.find('#handover-to').element as HTMLSelectElement).value).toBe('f');
-    // Nothing to do while the choice matches reality.
-    expect(
-      wrapper.findAll('button').find((b: any) => b.text().includes('Hand it over'))!.attributes(
-        'disabled',
-      ),
-    ).toBeDefined();
+    // The closed control names the current owner, and there is nothing to do
+    // while the choice matches reality.
+    expect(selectControl(wrapper).props('modelValue')).toBe('f');
+    expect(handOverButton(wrapper).attributes('disabled')).toBeDefined();
   });
 
   it('hands the website to the chosen person', async () => {
     const { wrapper, reload } = await render();
 
-    await wrapper.find('#handover-to').setValue('f');
-    await wrapper
-      .findAll('button')
-      .find((b: any) => b.text().includes('Hand it over'))!
-      .trigger('click');
+    await choose(wrapper, 'freya');
+    await handOverButton(wrapper).trigger('click');
     await flushPromises();
 
     expect(state.assigned).toEqual([{ slug: 'demo', userId: 'f' }]);
@@ -134,11 +161,8 @@ describe('handing a website over', () => {
   it('gives the website back to the server when nobody is chosen', async () => {
     const { wrapper } = await render('f');
 
-    await wrapper.find('#handover-to').setValue('');
-    await wrapper
-      .findAll('button')
-      .find((b: any) => b.text().includes('Hand it over'))!
-      .trigger('click');
+    await choose(wrapper, 'The server (nobody in particular)');
+    await handOverButton(wrapper).trigger('click');
     await flushPromises();
 
     expect(state.assigned).toEqual([{ slug: 'demo', userId: null }]);
@@ -156,13 +180,10 @@ describe('handing a website over', () => {
     const { wrapper, reload } = await render('f');
 
     // It starts on the current owner and is free to move from there.
-    expect((wrapper.find('#handover-to').element as HTMLSelectElement).value).toBe('f');
+    expect(selectControl(wrapper).props('modelValue')).toBe('f');
 
-    await wrapper.find('#handover-to').setValue('g');
-    await wrapper
-      .findAll('button')
-      .find((b: any) => b.text().includes('Hand it over'))!
-      .trigger('click');
+    await choose(wrapper, 'greg');
+    await handOverButton(wrapper).trigger('click');
     await flushPromises();
 
     expect(state.assigned).toEqual([{ slug: 'demo', userId: 'g' }]);
@@ -175,7 +196,7 @@ describe('handing a website over', () => {
     const { wrapper } = await render('c');
 
     expect(wrapper.text()).not.toContain('Who it belongs to');
-    expect(wrapper.find('#handover-to').exists()).toBe(false);
+    expect(selectControl(wrapper).exists()).toBe(false);
     // Listing every account is admin-only information; the page must not ask.
     expect(state.peopleAsked).toBe(0);
   });
