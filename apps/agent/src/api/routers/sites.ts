@@ -289,12 +289,19 @@ export const sitesRouter = router({
       const runsAProcess = manifest.runtime !== 'static' && manifest.runtime !== 'proxy';
       const activePort = site.activeColour === 'blue' ? site.portBlue : site.portGreen;
 
-      const app =
-        site.enabled && runsAProcess && activePort !== null
-          ? await isPortAnswered(activePort)
-          : null;
       const preview =
         site.enabled && site.previewPort !== null ? await isPortAnswered(site.previewPort) : null;
+
+      // A static or proxied site is served by the web server, not its own
+      // process, so its liveness is read from the preview listener that serves
+      // the same files. `app` stays null only where there is nothing to ask.
+      const app = !site.enabled
+        ? null
+        : runsAProcess
+          ? activePort !== null
+            ? await isPortAnswered(activePort)
+            : null
+          : preview;
 
       return {
         enabled: site.enabled,
@@ -325,14 +332,27 @@ export const sitesRouter = router({
         const runsAProcess = manifest.runtime !== 'static' && manifest.runtime !== 'proxy';
         const activePort = site.activeColour === 'blue' ? site.portBlue : site.portGreen;
 
-        const app =
-          site.enabled && runsAProcess && activePort !== null
-            ? await isPortAnswered(activePort)
-            : null;
+        /*
+         * A static or proxied site has no app process of its own to probe —
+         * the web server serves its files straight off disk. Asking whether it
+         * is "up" means asking whether the web server is serving it, and the
+         * preview listener is exactly that: it serves the same files over
+         * plain HTTP on a port we can reach from here. So for those runtimes
+         * the live-site answer is read from the preview port, and "N/A" is
+         * reserved for a site that genuinely has nothing to answer on.
+         */
         const preview =
           site.enabled && site.previewPort !== null
             ? await isPortAnswered(site.previewPort)
             : null;
+
+        const app = !site.enabled
+          ? null
+          : runsAProcess
+            ? activePort !== null
+              ? await isPortAnswered(activePort)
+              : null
+            : preview; // static/proxy: the web server serving it is the app
 
         /*
          * One rolled-up answer for the table: down when the app is silent,

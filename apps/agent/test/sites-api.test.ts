@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -236,6 +237,38 @@ describe('creating a website', () => {
     });
     const body = JSON.parse(response.body);
     expect(body.error ?? body[0]?.error).toBeDefined();
+  }, 30_000);
+
+  it('reads a static site as up when its preview listener answers', async () => {
+    // A static site has no app process — the web server serves its files. Its
+    // "is it up" is read from the preview listener, which serves the same
+    // files. Stand a throwaway listener on the preview port to be that.
+    const created = await call('POST', 'sites.create', {
+      displayName: 'Just HTML',
+      domains: [],
+      source: { kind: 'blank' },
+      runtime: 'static',
+      deployNow: false,
+    });
+    expect(created.body.error).toBeUndefined();
+    const previewPort = created.body.result.data.previewPort as number;
+
+    const standIn = net.createServer();
+    await new Promise<void>((resolve) => standIn.listen(previewPort, '127.0.0.1', resolve));
+
+    try {
+      const result = await call('GET', 'sites.websiteHealth');
+      const row = result.body.result.data.find((r: any) => r.slug === 'just-html');
+
+      // Not N/A: a static site that is being served reads as up, on both
+      // halves, and offers no restart because there is no process to restart.
+      expect(row.app).toBe(true);
+      expect(row.preview).toBe(true);
+      expect(row.status).toBe('ok');
+      expect(row.canRestart).toBe(false);
+    } finally {
+      await new Promise((resolve) => standIn.close(resolve));
+    }
   }, 30_000);
 
   it('creates a blank static website with a starter page', async () => {
