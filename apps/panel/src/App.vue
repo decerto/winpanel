@@ -143,8 +143,21 @@ async function signOut(): Promise<void> {
   window.location.reload();
 }
 
+/**
+ * Whether a nav entry is the current page.
+ *
+ * Prefix matching lets `/sites/acme` light up "Websites", but it also means
+ * `/health/websites` matches both "Server health" (`/health`) and "Website
+ * health" (`/health/websites`). When two entries match, only the longest —
+ * the most specific — is the current one, or both would light up at once.
+ */
 function isCurrent(to: string): boolean {
-  return route.path === to || route.path.startsWith(`${to}/`);
+  const matches = route.path === to || route.path.startsWith(`${to}/`);
+  if (!matches) return false;
+
+  return !nav.value.some(
+    (other) => other.to !== to && other.to.length > to.length && route.path.startsWith(other.to),
+  );
 }
 </script>
 
