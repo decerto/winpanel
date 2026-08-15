@@ -351,6 +351,8 @@ export const sitesRouter = router({
         return {
           slug: site.slug,
           displayName: site.displayName,
+          /** The site's first domain, shown under its name; null when it has none. */
+          domain: (site.domains as string[])[0] ?? null,
           runtime: site.runtime,
           status,
           app,

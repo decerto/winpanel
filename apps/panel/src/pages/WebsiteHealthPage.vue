@@ -87,6 +87,32 @@ const STATUS_DOT: Record<Row['status'], string> = {
   off: 'bg-idle',
 };
 
+/**
+ * One half of a site's answer, for its own column. `app` is the program
+ * behind the live domain; `preview` is the IP-and-port address. They break
+ * independently, so each gets its own readout instead of one ambiguous word.
+ * Returns null where there is nothing to answer (a static site has no app
+ * process; a site can have no preview port), which renders as a dash.
+ */
+type Half = { label: string; tone: 'ok' | 'down' | 'na' };
+
+function halfState(value: boolean | null): Half {
+  if (value === null) return { label: 'N/A', tone: 'na' };
+  return value ? { label: 'Up', tone: 'ok' } : { label: 'Down', tone: 'down' };
+}
+
+const HALF_TONE: Record<Half['tone'], string> = {
+  ok: 'text-ok',
+  down: 'text-danger',
+  na: 'text-ink-faint',
+};
+
+const HALF_DOT: Record<Half['tone'], string> = {
+  ok: 'bg-ok',
+  down: 'bg-danger',
+  na: 'bg-idle',
+};
+
 /** The one-line detail under a row that is not simply fine. */
 function detail(row: Row): string | null {
   if (row.status === 'down') {
@@ -117,9 +143,11 @@ onUnmounted(() => {
       <div class="min-w-0 flex-1">
         <h2 class="text-lg font-semibold tracking-tight text-ink">Website health</h2>
         <p class="mt-1.5 text-sm text-ink-muted">
-          Whether each website is answering, on its domain and on its preview address. A
-          website can be down while the server itself is perfectly healthy — this page is
-          where you see that.
+          Each website is checked two ways: the <span class="text-ink">Live site</span> is the
+          app behind its domain, and <span class="text-ink">Preview</span> is the IP-and-port
+          address that works before DNS does. They fail independently, so they are shown
+          separately. A website can be down while the server itself is perfectly healthy —
+          this page is where you see that.
         </p>
       </div>
 
@@ -163,8 +191,9 @@ onUnmounted(() => {
           <thead>
             <tr class="border-b border-line text-left text-xs uppercase tracking-wide text-ink-faint">
               <th class="px-5 py-3 font-medium">Website</th>
+              <th class="px-5 py-3 font-medium">Live site</th>
+              <th class="px-5 py-3 font-medium">Preview</th>
               <th class="px-5 py-3 font-medium">Status</th>
-              <th class="hidden px-5 py-3 font-medium md:table-cell">Preview</th>
               <th class="px-5 py-3 text-right font-medium">Action</th>
             </tr>
           </thead>
@@ -177,7 +206,40 @@ onUnmounted(() => {
                 >
                   {{ row.displayName }}
                 </RouterLink>
+                <!-- The address visitors use, under the name it is known by. -->
+                <a
+                  v-if="row.domain"
+                  :href="`https://${row.domain}`"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  class="mt-0.5 block font-mono text-xs text-ink-faint hover:text-brand-bright"
+                >
+                  {{ row.domain }}
+                </a>
                 <p v-if="detail(row)" class="mt-1 text-xs text-ink-faint">{{ detail(row) }}</p>
+              </td>
+
+              <td class="px-5 py-3.5">
+                <span class="inline-flex items-center gap-1.5">
+                  <span class="h-1.5 w-1.5 rounded-full" :class="HALF_DOT[halfState(row.app).tone]" aria-hidden="true" />
+                  <span :class="HALF_TONE[halfState(row.app).tone]">{{ halfState(row.app).label }}</span>
+                </span>
+              </td>
+
+              <td class="px-5 py-3.5">
+                <span class="inline-flex items-center gap-1.5">
+                  <span class="h-1.5 w-1.5 rounded-full" :class="HALF_DOT[halfState(row.preview).tone]" aria-hidden="true" />
+                  <span :class="HALF_TONE[halfState(row.preview).tone]">{{ halfState(row.preview).label }}</span>
+                </span>
+                <a
+                  v-if="row.previewUrl"
+                  :href="row.previewUrl"
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  class="ml-2 font-mono text-xs text-brand-bright underline underline-offset-2"
+                >
+                  open
+                </a>
               </td>
 
               <td class="px-5 py-3.5">
@@ -197,19 +259,6 @@ onUnmounted(() => {
                     {{ STATUS_LABEL[row.status] }}
                   </span>
                 </span>
-              </td>
-
-              <td class="hidden px-5 py-3.5 md:table-cell">
-                <a
-                  v-if="row.previewUrl"
-                  :href="row.previewUrl"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                  class="font-mono text-xs text-brand-bright underline underline-offset-2"
-                >
-                  {{ row.previewUrl }}
-                </a>
-                <span v-else class="text-xs text-ink-faint">&mdash;</span>
               </td>
 
               <td class="px-5 py-3.5 text-right">
