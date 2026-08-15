@@ -34,6 +34,12 @@ export const router = createRouter({
       meta: { title: 'Server health', minRole: 'admin' },
     },
     {
+      path: '/health/websites',
+      name: 'website-health',
+      component: () => import('./pages/WebsiteHealthPage.vue'),
+      meta: { title: 'Website health', minRole: 'admin' },
+    },
+    {
       path: '/sites',
       name: 'sites',
       component: () => import('./pages/SitesPage.vue'),

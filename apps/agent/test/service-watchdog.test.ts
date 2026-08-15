@@ -61,10 +61,14 @@ describe('recoverStalledService', () => {
     expect(d.started).toEqual([]);
   });
 
-  it('restarts a running service that answers on none of its ports', async () => {
-    // The dead-child case: Windows reports the wrapper running, but nothing is
-    // listening. The port probe is what tells the two apart.
-    const d = deps({ states: ['running', 'running'], answered: false, holders: [] });
+  it('restarts a running service that was already silent last sweep', async () => {
+    // The dead-child case, confirmed: the wrapper reports running and nothing
+    // listened this sweep OR last. Two silent readings are what separates a
+    // dead child from a slow start.
+    const d = {
+      ...deps({ states: ['running', 'running'], answered: false, holders: [] }),
+      confirmDead: () => true, // it was already silent last time
+    };
 
     expect(await recoverStalledService(caddy, d)).toBe('recovered');
     expect(d.started).toEqual(['winpanel-caddy']);
@@ -72,14 +76,29 @@ describe('recoverStalledService', () => {
     expect(d.killed).toEqual([]);
   });
 
-  it('clears the orphan before restarting a dead service, so it can rebind', async () => {
+  it('does not restart a running service on a single silent reading', async () => {
+    // A slow start (PHP workers spawning, a Node app warming) is silent for a
+    // few seconds and then answers. Restarting in that window would kill the
+    // start — so one silent sweep is watched, not acted on.
+    const d = deps({ states: ['running'], answered: false, holders: [] });
+
+    expect(await recoverStalledService(caddy, d)).toBe('running');
+    expect(d.started).toEqual([]);
+    expect(d.killed).toEqual([]);
+  });
+
+  it('clears the orphan before restarting a confirmed-dead service, so it can rebind', async () => {
     // The full boot-after-crash shape: the service says running, the port is
-    // silent to a real connect, yet our own orphan still holds it.
-    const d = deps({
-      states: ['running', 'running'],
-      answered: false,
-      holders: [{ pid: 6792, port: 3007, image: 'node.exe' }],
-    });
+    // silent to a real connect (and was last sweep), yet our own orphan still
+    // holds it.
+    const d = {
+      ...deps({
+        states: ['running', 'running'],
+        answered: false,
+        holders: [{ pid: 6792, port: 3007, image: 'node.exe' }],
+      }),
+      confirmDead: () => true,
+    };
     const site: WatchedService = {
       id: 'winpanel-site-forgeandfilter-com-blue',
       label: 'forgeandfilter-com website',
@@ -223,6 +242,53 @@ describe('ServiceWatchdog', () => {
 
     await Promise.all([watchdog.sweep(), watchdog.sweep()]);
     expect(peak).toBe(1);
+  });
+
+  it('restarts a silent service only on the second consecutive silent sweep', async () => {
+    // The confirmation that makes the dead-child check safe: the first silent
+    // sweep is logged and watched, the second acts. This mirrors a service
+    // that is dead rather than merely slow to start.
+    const started: string[] = [];
+    const watchdog = new ServiceWatchdog(
+      {
+        getState: async () => 'running',
+        start: async (id) => {
+          started.push(id);
+        },
+        probePort: async () => false, // never answers
+        listHolders: async () => [],
+      },
+      [caddy],
+    );
+
+    await watchdog.sweep();
+    expect(started).toEqual([]); // first silent sweep: watched, not restarted
+
+    await watchdog.sweep();
+    expect(started).toEqual(['winpanel-caddy']); // second silent sweep: restarted
+  });
+
+  it('forgets a service that answers again, so a later blip starts the count over', async () => {
+    const started: string[] = [];
+    let silent = true;
+    const watchdog = new ServiceWatchdog(
+      {
+        getState: async () => 'running',
+        start: async (id) => {
+          started.push(id);
+        },
+        probePort: async () => !silent,
+        listHolders: async () => [],
+      },
+      [caddy],
+    );
+
+    await watchdog.sweep(); // silent: watched
+    silent = false;
+    await watchdog.sweep(); // answers again: memory cleared
+    silent = true;
+    await watchdog.sweep(); // silent once more: a fresh first reading, not a restart
+    expect(started).toEqual([]);
   });
 
   it('watches the web server on the ports a stray copy would hold', () => {

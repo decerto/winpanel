@@ -38,6 +38,13 @@ const router = useRouter();
 const NAV = [
   { to: '/sites', label: 'Websites', icon: Globe, hint: 'Everything you host' },
   { to: '/health', label: 'Server health', icon: Activity, hint: 'Checks and fixes', minRole: 'admin' },
+  {
+    to: '/health/websites',
+    label: 'Website health',
+    icon: Globe,
+    hint: 'Is each website answering',
+    minRole: 'admin',
+  },
   { to: '/email', label: 'Email', icon: Mail, hint: 'Mailboxes and delivery', minRole: 'admin' },
   { to: '/webmail', label: 'Webmail', icon: Inbox, hint: 'Read and send mail' },
   { to: '/security', label: 'Security', icon: ShieldCheck, hint: 'Sign-in protection' },

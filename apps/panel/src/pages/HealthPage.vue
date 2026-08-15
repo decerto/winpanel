@@ -21,7 +21,7 @@ const loading = ref(true);
 const error = ref<string | null>(null);
 const busyAction = ref<string | null>(null);
 
-const overall = computed<CheckState>(() => rollUpState(results.value.map((r) => r.state)));
+const overall = computed<CheckState>(() => rollUpState(serverResults.value.map((r) => r.state)));
 
 // Problems first: a healthy server should not bury the one thing that is wrong.
 const ORDER: Record<CheckState, number> = {
@@ -33,13 +33,21 @@ const ORDER: Record<CheckState, number> = {
   ok: 5,
 };
 
+/*
+ * Only the machine's own checks belong here. The per-website ones move to the
+ * Website Health page, where they can be a table with a restart action — a
+ * website being down is about that website, not about the server, and the two
+ * pages answer different questions.
+ */
+const serverResults = computed(() => results.value.filter((r) => r.category !== 'site'));
+
 const sorted = computed(() =>
-  [...results.value].sort((a, b) => ORDER[a.state] - ORDER[b.state]),
+  [...serverResults.value].sort((a, b) => ORDER[a.state] - ORDER[b.state]),
 );
 
 const fixableCount = computed(
   () =>
-    results.value.filter(
+    serverResults.value.filter(
       (r) =>
         (r.state === 'blocked' || r.state === 'warning') &&
         r.fix?.kind === 'automatic' &&
@@ -49,9 +57,9 @@ const fixableCount = computed(
 
 /** Counts for the summary strip, in the order problems should be read. */
 const tally = computed(() => ({
-  blocked: results.value.filter((r) => r.state === 'blocked').length,
-  warning: results.value.filter((r) => r.state === 'warning').length,
-  ok: results.value.filter((r) => r.state === 'ok').length,
+  blocked: serverResults.value.filter((r) => r.state === 'blocked').length,
+  warning: serverResults.value.filter((r) => r.state === 'warning').length,
+  ok: serverResults.value.filter((r) => r.state === 'ok').length,
 }));
 
 const headline = computed(() => {
@@ -101,7 +109,7 @@ onMounted(load);
           <h2 class="truncate text-lg font-semibold tracking-tight text-ink">{{ headline }}</h2>
         </div>
         <p class="mt-1.5 text-sm text-ink-muted">
-          {{ loading ? 'This takes a moment.' : `${results.length} checks ran on this server.` }}
+          {{ loading ? 'This takes a moment.' : `${serverResults.length} checks ran on this server.` }}
         </p>
       </div>
 
@@ -141,6 +149,15 @@ onMounted(load);
     </section>
 
     <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
+
+    <!-- The per-website checks live on their own page now; point there. -->
+    <p class="mb-4 text-sm text-ink-muted">
+      Looking for whether a specific website is answering? See
+      <RouterLink to="/health/websites" class="text-brand-bright underline underline-offset-2">
+        Website health
+      </RouterLink>
+      — this page is the server itself.
+    </p>
 
     <LoadingBlock v-if="loading" class="h-96 rounded-card bg-surface" />
 

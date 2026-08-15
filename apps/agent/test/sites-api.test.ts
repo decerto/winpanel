@@ -198,6 +198,46 @@ describe('creating a website', () => {
     expect(previewUrl).toMatch(/^http:\/\/.+:\d+$/);
   }, 30_000);
 
+  it('reports every website\u2019s liveness to an administrator', async () => {
+    await call('POST', 'sites.create', validInput);
+
+    const result = await call('GET', 'sites.websiteHealth');
+
+    expect(result.body.error).toBeUndefined();
+    const rows = result.body.result.data;
+    expect(rows).toHaveLength(1);
+    // Nothing is listening in a test, so the app reads as down — the shape of
+    // the answer is what proves the endpoint is wired up.
+    expect(rows[0].slug).toBe('kitora-io');
+    expect(rows[0].displayName).toBe('Kitora');
+    expect(rows[0].status).toBe('down');
+    expect(rows[0].canRestart).toBe(true);
+    expect(typeof rows[0].previewUrl).toBe('string');
+  }, 30_000);
+
+  it('keeps website health away from customers', async () => {
+    // The page is admin-only in the UI; this is the real boundary. A customer
+    // account gets the same facts about their own site from its Overview page.
+    await app.auth.createUser({
+      username: 'alice',
+      password: 'a-sufficiently-long-password',
+      role: 'user',
+    });
+    const { token } = await app.auth.login({
+      username: 'alice',
+      password: 'a-sufficiently-long-password',
+      ip: '203.0.113.1',
+    });
+
+    const response = await server.inject({
+      method: 'GET',
+      url: '/api/trpc/sites.websiteHealth',
+      headers: { cookie: `winpanel_session=${token}` },
+    });
+    const body = JSON.parse(response.body);
+    expect(body.error ?? body[0]?.error).toBeDefined();
+  }, 30_000);
+
   it('creates a blank static website with a starter page', async () => {
     // The case that was impossible before: a website that is just HTML files.
     const result = await call('POST', 'sites.create', {

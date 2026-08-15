@@ -87,6 +87,14 @@ export interface WatchdogDeps {
    * can be tested without real sockets; defaults to a genuine TCP connect.
    */
   probePort?: PortProbe;
+  /**
+   * Confirmation for the running-but-dead case. Called with the service id
+   * and whether its ports are silent right now; returns whether they were
+   * already silent last time it was asked. Backed by the watchdog's memory of
+   * the previous sweep, so a service is only restarted once it has been
+   * silent for a full interval — never because it was merely still coming up.
+   */
+  confirmDead?: (id: string, silent: boolean) => boolean;
   log?: (message: string, detail?: unknown) => void;
 }
 
@@ -149,10 +157,31 @@ async function reviveDeadService(
 
   // A service with nothing to connect to (a static site has no process) is
   // not watched here at all — it has no ports in the list.
-  if (!(await allPortsSilent(service.ports, probe))) return 'running';
+  const silent = await allPortsSilent(service.ports, probe);
 
   /*
-   * Nothing answers. Now find out whether one of our own is squatting there.
+   * The confirmation is the whole safety of this. A service that is starting
+   * — PHP workers spawning one by one, a Node app warming its framework — is
+   * silent for a few seconds and then answers, and restarting it in that
+   * window both kills the start and produces exactly the hang this check was
+   * built to prevent. Only a service silent across two whole sweeps (a full
+   * interval, far past any legitimate startup) is treated as dead. With no
+   * memory supplied, a single silent reading is reported but not acted on.
+   */
+  const wasAlreadyDead = deps.confirmDead?.(service.id, silent) ?? false;
+  if (!silent) return 'running';
+  if (!wasAlreadyDead) {
+    deps.log?.(
+      `The ${service.label} reports running but nothing answered on its ` +
+        `${service.ports.length === 1 ? 'port' : 'ports'} (${service.ports.join(', ')}). ` +
+        'Watching it; if it is still silent next sweep it will be restarted.',
+      { service: service.id },
+    );
+    return 'running';
+  }
+
+  /*
+   * Silent twice. Now find out whether one of our own is squatting there.
    * The commonest reason the child died is `EADDRINUSE` against its own
    * orphan, and leaving that orphan in place while restarting would just kill
    * the next child the same way.
@@ -229,11 +258,26 @@ export type WatchedServiceSource =
 export class ServiceWatchdog {
   #timer: NodeJS.Timeout | null = null;
   #busy = false;
+  /**
+   * Which services were silent on the previous sweep. The memory that makes
+   * the running-but-dead check safe: a service is only restarted once it has
+   * been silent across two sweeps, so a slow start is never mistaken for a
+   * death. Entries clear the moment a service answers again.
+   */
+  readonly #silentLastSweep = new Map<string, boolean>();
 
   constructor(
     private readonly deps: WatchdogDeps,
     private readonly source: WatchedServiceSource = WATCHED_SERVICES,
   ) {}
+
+  /** Records this sweep's reading and answers whether the last one matched. */
+  #confirmDead = (id: string, silent: boolean): boolean => {
+    const was = this.#silentLastSweep.get(id) ?? false;
+    if (silent) this.#silentLastSweep.set(id, true);
+    else this.#silentLastSweep.delete(id);
+    return was;
+  };
 
   async sweep(): Promise<void> {
     if (this.#busy) return;
@@ -250,9 +294,11 @@ export class ServiceWatchdog {
         return;
       }
 
+      const deps: WatchdogDeps = { ...this.deps, confirmDead: this.#confirmDead };
+
       for (const service of services) {
         try {
-          const outcome = await recoverStalledService(service, this.deps);
+          const outcome = await recoverStalledService(service, deps);
           if (outcome === 'recovered') {
             this.deps.log?.(`Restarted the ${service.label}.`, { service: service.id });
           } else if (outcome === 'revived') {

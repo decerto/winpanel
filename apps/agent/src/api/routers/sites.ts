@@ -14,7 +14,7 @@ import {
   SiteManifest,
   type SiteSource,
 } from '@winpanel/shared';
-import { protectedProcedure, router } from '../trpc.js';
+import { protectedProcedure, adminProcedure, router } from '../trpc.js';
 import { SiteError, SiteService } from '../../sites/site-service.js';
 import { sites } from '../../db/schema.js';
 import { detectApp } from '../../detect/detector.js';
@@ -305,6 +305,71 @@ export const sitesRouter = router({
         previewUrl: previewUrlFor(site.previewPort),
       };
     }),
+
+  /**
+   * Every website's liveness, for the Website Health page.
+   *
+   * Admin-only, and deliberately a different shape from the per-site `health`
+   * query: this one names each site, so a row can link to it and offer a
+   * restart. A customer gets the same facts about their own site from the
+   * banner on its Overview page; this table is the operator's view across all
+   * of them. Probed concurrently — fifty sites must not take fifty times as
+   * long as one.
+   */
+  websiteHealth: adminProcedure.query(async ({ ctx }) => {
+    const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
+
+    const rows = await Promise.all(
+      service.list().map(async (site) => {
+        const manifest = site.manifest as SiteManifest;
+        const runsAProcess = manifest.runtime !== 'static' && manifest.runtime !== 'proxy';
+        const activePort = site.activeColour === 'blue' ? site.portBlue : site.portGreen;
+
+        const app =
+          site.enabled && runsAProcess && activePort !== null
+            ? await isPortAnswered(activePort)
+            : null;
+        const preview =
+          site.enabled && site.previewPort !== null
+            ? await isPortAnswered(site.previewPort)
+            : null;
+
+        /*
+         * One rolled-up answer for the table: down when the app is silent,
+         * preview-only when only the preview is, off when disabled, ok
+         * otherwise. The two booleans are returned too, so the row can say
+         * which half is wrong rather than just that something is.
+         */
+        const status = !site.enabled
+          ? ('off' as const)
+          : app === false
+            ? ('down' as const)
+            : preview === false
+              ? ('preview-down' as const)
+              : ('ok' as const);
+
+        return {
+          slug: site.slug,
+          displayName: site.displayName,
+          runtime: site.runtime,
+          status,
+          app,
+          preview,
+          previewUrl: previewUrlFor(site.previewPort),
+          /** Whether there is a process a restart could bring back. */
+          canRestart: runsAProcess,
+        };
+      }),
+    );
+
+    // Problems first, then alphabetical — an operator scans for what is wrong.
+    const rank = { down: 0, 'preview-down': 1, off: 2, ok: 3 } as const;
+    rows.sort(
+      (a, b) => rank[a.status] - rank[b.status] || a.displayName.localeCompare(b.displayName),
+    );
+
+    return rows;
+  }),
 
   /**
    * How much traffic a website has taken.
