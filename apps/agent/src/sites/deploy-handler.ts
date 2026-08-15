@@ -655,11 +655,49 @@ export function createDeployHandler(deps: DeployDependencies) {
           });
         }
       } catch (error) {
-        if (await rollBack(deps, { folders, serviceId, ctx })) liveIsPrevious = true;
+        /*
+         * One retry before rolling anything back. The likeliest reason a
+         * service starts and then fails its health check is that its own last
+         * process never let the port go, so the new one died on EADDRINUSE a
+         * second after Windows reported it started. Restarting goes through
+         * stop+start, which clears that orphan and proves the result — and is
+         * far cheaper than tearing down a deploy that was otherwise fine.
+         */
+        ctx.log(
+          'The new version did not answer. Restarting it once in case its own previous ' +
+            'process was still holding the port…',
+          'warn',
+          'start',
+        );
 
-        const message = error instanceof Error ? error.message : String(error);
-        const hint = explainRuntimeFailure(message, manifest.packageManager);
-        throw hint ? new DeploymentError(`${message}\n\n${hint}`) : error;
+        const retried = await deps.services
+          .restart(serviceId)
+          .then(async () => {
+            if (manifest.runtime === 'php') {
+              await waitForPhpPool({
+                basePort: targetPort,
+                timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
+                log: (message) => ctx.log(message),
+              });
+            } else {
+              await waitForHealthy({
+                port: targetPort,
+                path: manifest.app.healthCheckPath,
+                timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
+                ctx,
+              });
+            }
+            return true;
+          })
+          .catch(() => false);
+
+        if (!retried) {
+          if (await rollBack(deps, { folders, serviceId, ctx })) liveIsPrevious = true;
+
+          const message = error instanceof Error ? error.message : String(error);
+          const hint = explainRuntimeFailure(message, manifest.packageManager);
+          throw hint ? new DeploymentError(`${message}\n\n${hint}`) : error;
+        }
       }
 
       /*

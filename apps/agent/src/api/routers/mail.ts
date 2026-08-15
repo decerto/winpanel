@@ -883,6 +883,9 @@ export const mailRouter = router({
     if (!credentials) {
       return {
         connected: false,
+        /** Tells "never set up" apart from "set up but down" — the two read
+         *  very differently to the person whose email just stopped. */
+        reason: 'not-configured' as const,
         message:
           'Email is not set up on this server yet. Ask whoever runs it to connect the mail ' +
           'server in Settings.',
@@ -890,12 +893,15 @@ export const mailRouter = router({
     }
 
     const result = await new StalwartClient(credentials.username, credentials.password).ping();
+    const up = result.authorised && result.manageable;
 
     return {
-      connected: result.authorised && result.manageable,
-      message: result.authorised && result.manageable
+      connected: up,
+      reason: up ? ('ok' as const) : ('down' as const),
+      message: up
         ? ''
-        : 'The mail server is not answering right now. Ask whoever runs this server to check it.',
+        : 'The mail server is not answering right now. Whoever runs this server has been ' +
+          'told to check it — your email is not lost, it is waiting until the server is back.',
     };
   }),
 

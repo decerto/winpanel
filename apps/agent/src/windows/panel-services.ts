@@ -41,6 +41,13 @@ export interface PanelService {
   label: string;
   kind: PanelServiceKind;
   state: PanelServiceState;
+  /**
+   * False only when the service says running but nothing answers on its
+   * ports — the wrapper is alive and the application behind it is not.
+   * Undefined when no probe was run, so listing stays cheap for callers that
+   * only need the state word.
+   */
+  responding?: boolean;
 }
 
 /**

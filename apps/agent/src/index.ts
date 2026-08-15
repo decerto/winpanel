@@ -10,6 +10,7 @@ import { cleanUpAfterUpdate } from './components/panel-update.js';
 import { localAddresses } from './tls/panel-certificate.js';
 import { ServiceWatchdog } from './windows/service-watchdog.js';
 import { watchdogServices } from './windows/watched-services.js';
+import { registerSiteChecks } from './api/routers/checks.js';
 import { findStrayListeners, killProcessTree } from './windows/stray-processes.js';
 
 /**
@@ -88,6 +89,13 @@ async function main(): Promise<void> {
 
   const app = await createAppContext();
   const server = await createServer(app);
+
+  /*
+   * Point the per-website health checks at the live database. Done here rather
+   * than at module load because the checks router is constructed before the
+   * app context — and the database — exists.
+   */
+  registerSiteChecks(app.db);
 
   app.jobs.start();
 
@@ -302,6 +310,15 @@ async function main(): Promise<void> {
    * The list is rebuilt on every sweep rather than captured here: websites are
    * created and removed while this is running, and a site added after start-up
    * is the one most likely to be mid-experiment and in need of it.
+   *
+   * The first sweep doubles as the recovery for an unclean shutdown. A restart
+   * or power cut leaves each website's last node process orphaned and still
+   * holding its port, so the auto-started service's new child dies on
+   * EADDRINUSE a second after boot and the wrapper reports RUNNING over a dead
+   * site. The sweep probes every watched port, finds the ones that say running
+   * but answer nothing, and restarts them through `services.start` — which
+   * clears the orphan before binding. One sweep, a minute after boot, is what
+   * turns "every site is down until somebody RDPs in" into a self-heal.
    */
   const watchdog = new ServiceWatchdog(
     {

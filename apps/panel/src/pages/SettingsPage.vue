@@ -352,6 +352,7 @@ const STATE_DOT: Record<string, string> = {
   starting: 'bg-warn',
   stopping: 'bg-warn',
   unknown: 'bg-idle',
+  dead: 'bg-danger',
 };
 
 const STATE_LABEL: Record<string, string> = {
@@ -360,7 +361,17 @@ const STATE_LABEL: Record<string, string> = {
   starting: 'Starting',
   stopping: 'Stopping',
   unknown: 'Unknown',
+  dead: 'Not answering',
 };
+
+/**
+ * The one state the service word cannot express: Windows says running, but
+ * nothing answers on the port, so the site behind it is down. Shown as its
+ * own label rather than folded into Running, which is the lie that hid it.
+ */
+function displayState(service: BackgroundServices[number]): string {
+  return service.state === 'running' && service.responding === false ? 'dead' : service.state;
+}
 
 /** One in-flight service operation at a time, so the list cannot fight itself. */
 const servicesBusy = computed(
@@ -1146,18 +1157,31 @@ async function installUpdate(): Promise<void> {
           :key="service.id"
           class="flex flex-wrap items-center gap-x-3 gap-y-2 py-2.5"
         >
-          <span class="h-1.5 w-1.5 rounded-full" :class="STATE_DOT[service.state]" aria-hidden="true" />
+          <span class="h-1.5 w-1.5 rounded-full" :class="STATE_DOT[displayState(service)]" aria-hidden="true" />
 
           <span class="min-w-0 flex-1">
             <span class="block truncate text-sm text-ink">{{ service.label }}</span>
             <span class="block truncate font-mono text-xs text-ink-faint">{{ service.id }}</span>
+            <span
+              v-if="displayState(service) === 'dead'"
+              class="block truncate text-xs text-danger"
+            >
+              Windows reports it running, but nothing answers on its port. Restart it to
+              bring it back.
+            </span>
           </span>
 
           <span
             class="w-20 text-right text-xs"
-            :class="service.state === 'running' ? 'text-ok' : 'text-ink-faint'"
+            :class="
+              displayState(service) === 'running'
+                ? 'text-ok'
+                : displayState(service) === 'dead'
+                  ? 'text-danger'
+                  : 'text-ink-faint'
+            "
           >
-            {{ serviceBusyId === service.id ? 'Working\u2026' : STATE_LABEL[service.state] }}
+            {{ serviceBusyId === service.id ? 'Working\u2026' : STATE_LABEL[displayState(service)] }}
           </span>
 
           <!--

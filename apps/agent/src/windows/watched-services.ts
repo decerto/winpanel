@@ -2,8 +2,9 @@ import { inArray } from 'drizzle-orm';
 import { config } from '../config.js';
 import type { DatabaseHandle } from '../db/index.js';
 import { jobs, sites } from '../db/schema.js';
-import { AGENT_SERVICE_ID, siteServiceId } from './panel-services.js';
+import { AGENT_SERVICE_ID, siteServiceId, type PanelService } from './panel-services.js';
 import type { ServiceRecovery } from './service-manager.js';
+import { isPortAnswered, type PortProbe } from './service-probe.js';
 import { WATCHED_SERVICES, type WatchedService } from './service-watchdog.js';
 import {
   clearStrayListeners,
@@ -149,6 +150,42 @@ export function allWatchedServices(db: DatabaseHandle): WatchedService[] {
 export function watchedServiceFor(db: DatabaseHandle, id: string): WatchedService | undefined {
   const lower = id.toLowerCase();
   return allWatchedServices(db).find((service) => service.id.toLowerCase() === lower);
+}
+
+/**
+ * Marks each listed service that says running but answers on none of its ports.
+ *
+ * This is the visibility half of the watchdog's repair. Windows reports a
+ * service as RUNNING when its wrapper is alive, which says nothing about the
+ * application the wrapper supervises — so without this, the Background
+ * programs list shows a green Running next to a site that is serving a 502.
+ * A service only earns `responding: false` when every port it owns is silent;
+ * a component with several ports is not damned for one of them being down.
+ *
+ * Services with no recorded ports (a static site, the panel itself before it
+ * has bound) are left undefined, because there is nothing to connect to.
+ */
+export async function annotateResponding(
+  db: DatabaseHandle,
+  listed: readonly PanelService[],
+  probe: PortProbe = isPortAnswered,
+): Promise<PanelService[]> {
+  const watched = new Map(
+    allWatchedServices(db).map((service) => [service.id.toLowerCase(), service]),
+  );
+
+  return await Promise.all(
+    listed.map(async (service) => {
+      if (service.state !== 'running') return service;
+
+      const known = watched.get(service.id.toLowerCase());
+      if (!known || known.ports.length === 0) return service;
+
+      const answered = await Promise.all(known.ports.map((port) => probe(port)));
+      // Silent on every port is the dead-child case; anything else is fine.
+      return { ...service, responding: answered.some(Boolean) };
+    }),
+  );
 }
 
 /**

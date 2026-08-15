@@ -18,12 +18,15 @@ const caddy: WatchedService = {
 function deps(overrides: {
   states?: ServiceState[];
   holders?: Array<{ pid: number; port: number; image: string }>;
+  /** What the port probe answers. Defaults to "answering", i.e. healthy. */
+  answered?: boolean;
   start?: () => Promise<void>;
 }): {
   getState: (id: string) => Promise<ServiceState>;
   start: (id: string) => Promise<void>;
   listHolders: () => Promise<Array<{ pid: number; port: number; image: string }>>;
   kill: (pid: number) => Promise<boolean>;
+  probePort: () => Promise<boolean>;
   killed: number[];
   started: string[];
 } {
@@ -42,6 +45,8 @@ function deps(overrides: {
       killed.push(pid);
       return true;
     },
+    // Injected so a running service is never tested against a real socket.
+    probePort: async () => overrides.answered ?? true,
     killed,
     started,
   };
@@ -53,6 +58,49 @@ describe('recoverStalledService', () => {
 
     expect(await recoverStalledService(caddy, d)).toBe('running');
     expect(d.killed).toEqual([]);
+    expect(d.started).toEqual([]);
+  });
+
+  it('restarts a running service that answers on none of its ports', async () => {
+    // The dead-child case: Windows reports the wrapper running, but nothing is
+    // listening. The port probe is what tells the two apart.
+    const d = deps({ states: ['running', 'running'], answered: false, holders: [] });
+
+    expect(await recoverStalledService(caddy, d)).toBe('recovered');
+    expect(d.started).toEqual(['winpanel-caddy']);
+    // No stray to kill — the child was already gone.
+    expect(d.killed).toEqual([]);
+  });
+
+  it('clears the orphan before restarting a dead service, so it can rebind', async () => {
+    // The full boot-after-crash shape: the service says running, the port is
+    // silent to a real connect, yet our own orphan still holds it.
+    const d = deps({
+      states: ['running', 'running'],
+      answered: false,
+      holders: [{ pid: 6792, port: 3007, image: 'node.exe' }],
+    });
+    const site: WatchedService = {
+      id: 'winpanel-site-forgeandfilter-com-blue',
+      label: 'forgeandfilter-com website',
+      images: ['node.exe'],
+      ports: [3007],
+    };
+
+    expect(await recoverStalledService(site, d)).toBe('recovered');
+    expect(d.killed).toEqual([6792]);
+    expect(d.started).toEqual(['winpanel-site-forgeandfilter-com-blue']);
+  });
+
+  it('does not treat a service that answers on one of several ports as dead', async () => {
+    // The web server owns 80, 443 and 2019; one being down is not a dead child.
+    let calls = 0;
+    const d = {
+      ...deps({ states: ['running'] }),
+      probePort: async () => ++calls === 1, // only the first port answers
+    };
+
+    expect(await recoverStalledService(caddy, d)).toBe('running');
     expect(d.started).toEqual([]);
   });
 
@@ -146,6 +194,7 @@ describe('ServiceWatchdog', () => {
           return 'running';
         },
         start: async () => undefined,
+        probePort: async () => true,
         log: () => undefined,
       },
       WATCHED_SERVICES,
@@ -167,6 +216,7 @@ describe('ServiceWatchdog', () => {
           return 'running';
         },
         start: async () => undefined,
+        probePort: async () => true,
       },
       [caddy],
     );
@@ -195,6 +245,7 @@ describe('ServiceWatchdog', () => {
           return 'running';
         },
         start: async () => undefined,
+        probePort: async () => true,
       },
       () => sets.shift() ?? [],
     );
@@ -211,6 +262,7 @@ describe('ServiceWatchdog', () => {
       {
         getState: async () => 'running',
         start: async () => undefined,
+        probePort: async () => true,
         log: (message) => logged.push(message),
       },
       () => {

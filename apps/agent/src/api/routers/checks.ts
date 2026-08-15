@@ -2,18 +2,30 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { CheckEngine } from '../../checks/engine.js';
 import { buildServerChecks } from '../../checks/server-checks.js';
+import { buildSiteHealthChecks } from '../../checks/site-checks.js';
 import { FixError, FixRunner } from '../../checks/fixes.js';
 import { adminProcedure, router } from '../trpc.js';
+import type { DatabaseHandle } from '../../db/index.js';
 
 /**
  * Server health and the fixes that go with it.
  *
  * The engine is built once per process: check definitions are stateless, and
  * the cache inside the engine is what makes the Health page feel instant on
- * revisit.
+ * revisit. The per-website checks are a dynamic source rather than a fixed
+ * registration, so a site created after boot is checked — and a deleted one
+ * stops appearing — without the engine being rebuilt.
  */
 const engine = new CheckEngine();
 engine.registerAll(buildServerChecks());
+
+/** The database the per-website checks read. Set once the app context exists. */
+let siteCheckDb: DatabaseHandle | null = null;
+
+export function registerSiteChecks(db: DatabaseHandle): void {
+  siteCheckDb = db;
+  engine.registerDynamic(() => (siteCheckDb ? buildSiteHealthChecks(siteCheckDb) : []));
+}
 
 /** Sentinel used by the "Fix everything safe" button. */
 const FIX_ALL_SAFE = '__all_safe__';

@@ -29,11 +29,20 @@ export interface CheckOutcome {
   detail?: string;
   reason?: string;
   fix?: CheckResult['fix'];
+  /** The website this result is about, when it belongs to one. */
+  siteSlug?: string;
 }
 
 export class CheckEngine {
   readonly #definitions = new Map<string, CheckDefinition>();
   readonly #cache = new Map<string, CheckResult>();
+  /**
+   * Re-derived on every run, for checks that describe things which come and
+   * go — one per website. A site added after boot must be checked like any
+   * other, and a removed site must stop appearing, neither of which a fixed
+   * registration can do.
+   */
+  #dynamic: (() => CheckDefinition[]) | null = null;
 
   register(definition: CheckDefinition): void {
     this.#definitions.set(definition.id, definition);
@@ -43,13 +52,18 @@ export class CheckEngine {
     for (const definition of definitions) this.register(definition);
   }
 
+  /** Supplies the checks that change as websites are added and removed. */
+  registerDynamic(source: () => CheckDefinition[]): void {
+    this.#dynamic = source;
+  }
+
   list(): readonly CheckDefinition[] {
-    return [...this.#definitions.values()];
+    return [...this.#definitions.values(), ...(this.#dynamic?.() ?? [])];
   }
 
   /** Runs one check, bypassing the cache. */
   async runOne(id: string): Promise<CheckResult> {
-    const definition = this.#definitions.get(id);
+    const definition = this.#definitions.get(id) ?? this.#dynamic?.().find((d) => d.id === id);
     if (!definition) {
       throw new Error(`No check is registered with id "${id}".`);
     }
@@ -78,6 +92,7 @@ export class CheckEngine {
       detail: outcome.detail,
       reason: outcome.reason,
       fix: outcome.fix,
+      ...(outcome.siteSlug ? { siteSlug: outcome.siteSlug } : {}),
       checkedAt: new Date(),
       ttlSeconds: definition.ttlSeconds,
     };
@@ -96,7 +111,7 @@ export class CheckEngine {
     const now = Date.now();
 
     const results = await Promise.all(
-      [...this.#definitions.values()].map(async (definition) => {
+      [...this.#definitions.values(), ...(this.#dynamic?.() ?? [])].map(async (definition) => {
         if (options.useCache) {
           const cached = this.#cache.get(definition.id);
           if (cached && now - cached.checkedAt.getTime() < cached.ttlSeconds * 1000) {

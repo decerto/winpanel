@@ -29,7 +29,11 @@ import {
   stopSupportingServices,
   type PanelService,
 } from '../../windows/panel-services.js';
-import { createServiceRecovery, describeBlockers } from '../../windows/watched-services.js';
+import {
+  annotateResponding,
+  createServiceRecovery,
+  describeBlockers,
+} from '../../windows/watched-services.js';
 import type { DatabaseHandle } from '../../db/index.js';
 import { validateUpdateUrl } from '../../components/panel-update.js';
 import { BrowseError, browseDirectory } from '../../files/server-browse.js';
@@ -269,8 +273,15 @@ export const systemRouter = router({
    * without this the only way to find out is services.msc. It is also the
    * answer to "why will this not uninstall": whatever is listed as running
    * here is what holds the program folder open.
+   *
+   * Each running service is also probed on its own ports, because "running"
+   * is the wrapper's word, not the application's. A website whose process died
+   * leaving the wrapper alive shows Running while serving a 502; the
+   * `responding` flag is what lets the list say so instead of claiming health.
    */
-  backgroundServices: adminProcedure.query(async () => await listPanelServices()),
+  backgroundServices: adminProcedure.query(
+    async ({ ctx }) => await annotateResponding(ctx.app.db, await listPanelServices()),
+  ),
 
   /**
    * Lists a folder on the server, so a path can be pointed at rather than

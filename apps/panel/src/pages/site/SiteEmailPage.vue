@@ -556,7 +556,28 @@ watch(() => site.value?.slug, load, { immediate: true });
                      mailboxes will live here."
       />
 
-      <!-- Nothing on this tab can work without the mail server. -->
+      <!--
+        Nothing on this tab can work without the mail server. Two different
+        "nothing" are said differently: a server that was never connected is a
+        set-up task, while one that stopped answering is an outage — the
+        customer's mail is sitting there waiting, and saying "not available
+        yet" would tell them it was never theirs.
+      -->
+      <EmptyState
+        v-else-if="!status?.connected && status?.reason === 'not-configured'"
+        :icon="Server"
+        title="Email is not available for this website yet"
+        :description="status?.message ?? ''"
+      />
+
+      <AlertMessage
+        v-else-if="!status?.connected && status?.reason === 'down'"
+        tone="danger"
+        title="Email is temporarily unavailable"
+      >
+        {{ status?.message }}
+      </AlertMessage>
+
       <EmptyState
         v-else-if="!status?.connected"
         :icon="Server"

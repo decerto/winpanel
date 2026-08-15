@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, inject } from 'vue';
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue';
 import { GitBranch, Rocket, Server } from 'lucide-vue-next';
 import { siteContextKey } from '../../lib/site-context';
+import { api } from '../../lib/api';
 import EmptyState from '../../components/EmptyState.vue';
+import AlertMessage from '../../components/AlertMessage.vue';
 
 /**
  * What is running, where it came from, and what happened last.
@@ -12,6 +14,91 @@ import EmptyState from '../../components/EmptyState.vue';
  */
 
 const { site, deploy, deploying } = inject(siteContextKey)!;
+
+type SiteHealth = Awaited<ReturnType<typeof api.sites.health.query>>;
+
+const health = ref<SiteHealth | null>(null);
+const isCustomer = ref(false);
+const restarting = ref(false);
+const restartError = ref<string | null>(null);
+const restarted = ref(false);
+let healthTimer: ReturnType<typeof setInterval> | null = null;
+
+async function refreshHealth(): Promise<void> {
+  if (!site.value) return;
+  health.value = await api.sites.health.query({ slug: site.value.slug }).catch(() => null);
+}
+
+/**
+ * Restarts the site's own app process. Available to whoever owns the site —
+ * the endpoint is scoped so a customer can only ever reach their own — which
+ * is exactly the recovery a down site needs, and the reason the banner can
+ * offer a button instead of advice to find an administrator.
+ */
+async function restartApp(): Promise<void> {
+  if (!site.value) return;
+  restarting.value = true;
+  restartError.value = null;
+  restarted.value = false;
+
+  try {
+    await api.sites.app.restart.mutate({ slug: site.value.slug });
+    restarted.value = true;
+    // Give the process a moment to come up before re-probing.
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
+    await refreshHealth();
+  } catch (err) {
+    restartError.value = err instanceof Error ? err.message : 'The restart did not work.';
+  } finally {
+    restarting.value = false;
+  }
+}
+
+onMounted(async () => {
+  // The role decides the wording of the down message: a customer can restart
+  // their own site, an administrator is pointed at the whole server.
+  try {
+    const me = await api.auth.me.query();
+    isCustomer.value = me?.role === 'user';
+  } catch {
+    isCustomer.value = false;
+  }
+
+  await refreshHealth();
+  // A site that falls over while the page is open should say so without a
+  // manual refresh; thirty seconds is often enough to catch it and rare
+  // enough to cost nothing.
+  healthTimer = setInterval(() => void refreshHealth(), 30_000);
+});
+
+onUnmounted(() => {
+  if (healthTimer) clearInterval(healthTimer);
+});
+
+/*
+ * The layout above keeps this page mounted across sites: it swaps `site` in
+ * place rather than remounting. Reset the health readout and any restart
+ * result when the slug changes, or a down banner for one site would linger
+ * over another.
+ */
+watch(
+  () => site.value?.slug,
+  () => {
+    health.value = null;
+    restarting.value = false;
+    restartError.value = null;
+    restarted.value = false;
+    void refreshHealth();
+  },
+);
+
+/** The app process is down: the site is gone on its domain and its preview. */
+const appDown = computed(() => health.value?.app === false);
+
+/** The subtler case: the site works, but its preview address does not. */
+const previewDown = computed(
+  () => health.value?.app === true && health.value?.preview === false,
+);
 
 const source = computed(
   () => site.value?.source as { kind?: string; url?: string; branch?: string } | undefined,
@@ -61,6 +148,65 @@ function when(value: Date | number | null | undefined): string {
 
 <template>
   <div v-if="site" class="space-y-6">
+    <AlertMessage v-if="appDown" tone="danger">
+      <template v-if="isCustomer">
+        Your website is not answering — it is down on its address and its preview. This is
+        usually the app having stopped, and restarting it nearly always brings it back.
+      </template>
+      <template v-else>
+        This website is not answering. Its background program says it should be running, but
+        nothing replies on its port — so it is down on its address and its preview.
+      </template>
+
+      <span class="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          v-if="runsAProcess"
+          type="button"
+          class="btn btn-primary btn-sm"
+          :disabled="restarting"
+          @click="restartApp"
+        >
+          {{ restarting ? 'Restarting\u2026' : 'Restart the app' }}
+        </button>
+        <span v-if="restarted" class="text-xs">
+          Restarted — give it a few seconds, then open the site again.
+        </span>
+        <span v-if="restartError" class="text-xs">{{ restartError }}</span>
+        <span v-if="!isCustomer" class="text-xs">
+          You can also restart it from Settings &rsaquo; Background programs, and check its Logs
+          if it will not stay up.
+        </span>
+      </span>
+    </AlertMessage>
+    <AlertMessage v-else-if="previewDown" tone="warning">
+      <template v-if="isCustomer">
+        Your website is live, but its preview address
+        <span v-if="health?.previewUrl" class="font-mono"> ({{ health.previewUrl }}) </span>
+        is not answering right now. Your visitors are unaffected — this only affects the
+        IP-and-port link. It is being looked into; restarting the app often brings the preview
+        back too.
+      </template>
+      <template v-else>
+        This website is live, but its preview address
+        <span v-if="health?.previewUrl" class="font-mono"> ({{ health.previewUrl }}) </span>
+        is not answering. Rebuild the web server configuration from the Health page, or restart
+        the web server in Settings, to bring the preview back.
+      </template>
+
+      <span v-if="isCustomer && runsAProcess" class="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          class="btn btn-primary btn-sm"
+          :disabled="restarting"
+          @click="restartApp"
+        >
+          {{ restarting ? 'Restarting\u2026' : 'Restart the app' }}
+        </button>
+        <span v-if="restarted" class="text-xs">Restarted — re-open the preview in a moment.</span>
+        <span v-if="restartError" class="text-xs">{{ restartError }}</span>
+      </span>
+    </AlertMessage>
+
     <dl class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
       <!--
         The address that works without DNS. First, because on a site that has

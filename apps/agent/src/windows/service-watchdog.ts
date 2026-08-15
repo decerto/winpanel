@@ -1,4 +1,5 @@
 import { CADDY_ADMIN_PORT, MAIL_PORTS, STALWART_HTTP_PORT } from '@winpanel/shared';
+import { allPortsSilent, isPortAnswered, type PortProbe } from './service-probe.js';
 import {
   describeHolder,
   killProcessTree,
@@ -65,6 +66,8 @@ export const WATCHED_SERVICES: readonly WatchedService[] = [
 export type WatchdogOutcome =
   | 'not-installed'
   | 'running'
+  /** Up according to Windows, but nothing answers on its ports. Restarted. */
+  | 'revived'
   /** Down, but nothing is squatting on its ports: a deliberate stop. */
   | 'left-alone'
   /** Down, and the port belongs to something that is not ours to end. */
@@ -79,7 +82,92 @@ export interface WatchdogDeps {
   /** Everything listening on those ports, whatever it is. Filtering is done here. */
   listHolders?: (ports: readonly number[]) => Promise<StrayProcess[]>;
   kill?: (pid: number) => Promise<boolean>;
+  /**
+   * Whether anything answers on a port. Injected so the running-but-dead case
+   * can be tested without real sockets; defaults to a genuine TCP connect.
+   */
+  probePort?: PortProbe;
   log?: (message: string, detail?: unknown) => void;
+}
+
+/**
+ * Ends any of the service's own processes still holding its ports, then starts
+ * it. Shared by both repairs: a stopped service whose orphan never let go, and
+ * a running service whose child is dead. Either way, whatever of ours is on
+ * the port is the previous incarnation and has to go before the new one can
+ * bind it.
+ */
+async function clearOursAndStart(
+  service: WatchedService,
+  ours: readonly StrayProcess[],
+  deps: WatchdogDeps,
+): Promise<WatchdogOutcome> {
+  const kill = deps.kill ?? killProcessTree;
+  const pids = [...new Set(ours.map((stray) => stray.pid))];
+
+  if (pids.length > 0) {
+    deps.log?.(
+      `The ${service.label} has ${pids.length === 1 ? 'a process' : 'processes'} still ` +
+        'holding its ports. Ending them so it can start again.',
+      { service: service.id, strays: ours },
+    );
+    for (const pid of pids) await kill(pid);
+  }
+
+  try {
+    await deps.start(service.id);
+  } catch (error) {
+    deps.log?.(`Could not restart the ${service.label}.`, error);
+    return 'still-down';
+  }
+
+  return (await deps.getState(service.id)) === 'stopped' ? 'still-down' : 'recovered';
+}
+
+/**
+ * The case the state word hides: the service is RUNNING, but nothing answers.
+ *
+ * `sc.exe query` reports the wrapper, and the wrapper is alive. The program it
+ * is supervising is a separate process, and once that dies — usually because
+ * it tried to bind a port its own orphaned predecessor still held — the
+ * wrapper sits there reporting success for a site that serves nothing. From
+ * the outside this is a 502; from the panel it looked, until now, exactly like
+ * health.
+ *
+ * The evidence that separates it from a slow start is the port. A service
+ * that is coming up answers within seconds; one whose ports stay silent across
+ * a watchdog sweep is not coming up. Anything of ours still on the port is
+ * cleared first — it is the orphan that caused the death — then the service is
+ * restarted, which goes through `stop` and `start` and so gets the full
+ * unblock-and-prove treatment a panel-initiated start does.
+ */
+async function reviveDeadService(
+  service: WatchedService,
+  deps: WatchdogDeps,
+): Promise<WatchdogOutcome> {
+  const probe = deps.probePort ?? isPortAnswered;
+
+  // A service with nothing to connect to (a static site has no process) is
+  // not watched here at all — it has no ports in the list.
+  if (!(await allPortsSilent(service.ports, probe))) return 'running';
+
+  /*
+   * Nothing answers. Now find out whether one of our own is squatting there.
+   * The commonest reason the child died is `EADDRINUSE` against its own
+   * orphan, and leaving that orphan in place while restarting would just kill
+   * the next child the same way.
+   */
+  const listHolders = deps.listHolders ?? listPortHolders;
+  const { ours } = partitionHolders(await listHolders(service.ports), service.images);
+
+  deps.log?.(
+    `The ${service.label} reports running but nothing answers on its ` +
+      `${service.ports.length === 1 ? 'port' : 'ports'} (${service.ports.join(', ')}). ` +
+      'Restarting it.',
+    { service: service.id },
+  );
+
+  return await clearOursAndStart(service, ours, deps);
 }
 
 export async function recoverStalledService(
@@ -89,7 +177,16 @@ export async function recoverStalledService(
   const state = await deps.getState(service.id);
   if (state === 'not-installed') return 'not-installed';
   // `stopping` is a transition, not a stall: acting on it would race Windows.
-  if (state !== 'stopped') return 'running';
+  if (state === 'stopping') return 'running';
+
+  /*
+   * A running service is not assumed healthy. Its state describes the wrapper
+   * process; the application behind it can be dead with the wrapper none the
+   * wiser. Probe the ports before believing it.
+   */
+  if (state === 'running' || state === 'starting') {
+    return await reviveDeadService(service, deps);
+  }
 
   const listHolders = deps.listHolders ?? listPortHolders;
   const { ours, foreign } = partitionHolders(await listHolders(service.ports), service.images);
@@ -112,25 +209,7 @@ export async function recoverStalledService(
     return 'blocked';
   }
 
-  const kill = deps.kill ?? killProcessTree;
-  const pids = [...new Set(ours.map((stray) => stray.pid))];
-
-  deps.log?.(
-    `The ${service.label} is stopped but ${pids.length === 1 ? 'a process is' : 'processes are'} ` +
-      'still holding its ports. Ending them so it can start again.',
-    { service: service.id, strays: ours },
-  );
-
-  for (const pid of pids) await kill(pid);
-
-  try {
-    await deps.start(service.id);
-  } catch (error) {
-    deps.log?.(`Could not restart the ${service.label} after clearing its ports.`, error);
-    return 'still-down';
-  }
-
-  return (await deps.getState(service.id)) === 'stopped' ? 'still-down' : 'recovered';
+  return await clearOursAndStart(service, ours, deps);
 }
 
 export const WATCHDOG_INTERVAL_MS = 60_000;
@@ -176,6 +255,12 @@ export class ServiceWatchdog {
           const outcome = await recoverStalledService(service, this.deps);
           if (outcome === 'recovered') {
             this.deps.log?.(`Restarted the ${service.label}.`, { service: service.id });
+          } else if (outcome === 'revived') {
+            this.deps.log?.(
+              `The ${service.label} said it was running but was not answering, so it was ` +
+                'restarted.',
+              { service: service.id },
+            );
           }
         } catch (error) {
           this.deps.log?.(`Could not check on the ${service.label}.`, error);

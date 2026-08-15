@@ -9,10 +9,12 @@ import { SecretVault } from '../src/security/vault.js';
 import { SiteService } from '../src/sites/site-service.js';
 import { partitionHolders } from '../src/windows/stray-processes.js';
 import {
+  annotateResponding,
   siteWatchedServices,
   watchdogServices,
   watchedServiceFor,
 } from '../src/windows/watched-services.js';
+import type { PanelService } from '../src/windows/panel-services.js';
 
 /**
  * A website's own orphaned process is invisible from outside: it answers the
@@ -170,4 +172,63 @@ describe('partitionHolders', () => {
     expect(ours).toEqual([]);
     expect(foreign).toHaveLength(3);
   });
+});
+
+describe('annotateResponding', () => {
+  function listed(id: string, state: PanelService['state']): PanelService {
+    return { id, label: id, kind: 'site', state };
+  }
+
+  it('flags a running website that answers on none of its ports', async () => {
+    await createSite('shop', 'node');
+
+    const result = await annotateResponding(
+      handle,
+      [listed('winpanel-site-shop-example-blue', 'running')],
+      async () => false,
+    );
+
+    expect(result[0]?.responding).toBe(false);
+  }, 30_000);
+
+  it('leaves a running website that answers as responding', async () => {
+    await createSite('shop', 'node');
+
+    const result = await annotateResponding(
+      handle,
+      [listed('winpanel-site-shop-example-blue', 'running')],
+      async () => true,
+    );
+
+    expect(result[0]?.responding).toBe(true);
+  }, 30_000);
+
+  it('does not probe a stopped service, so a deliberate stop is never flagged', async () => {
+    await createSite('shop', 'node');
+    let probed = false;
+
+    const result = await annotateResponding(
+      handle,
+      [listed('winpanel-site-shop-example-blue', 'stopped')],
+      async () => {
+        probed = true;
+        return false;
+      },
+    );
+
+    expect(probed).toBe(false);
+    expect(result[0]?.responding).toBeUndefined();
+  }, 30_000);
+
+  it('leaves a running service it has no ports for untouched', async () => {
+    // The panel itself has a port in the config but none recorded per-site; a
+    // static site has no process at all. Neither is probed.
+    const result = await annotateResponding(
+      handle,
+      [listed('winpanel-site-ghost-blue', 'running')],
+      async () => false,
+    );
+
+    expect(result[0]?.responding).toBeUndefined();
+  }, 30_000);
 });

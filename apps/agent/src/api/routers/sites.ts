@@ -23,6 +23,7 @@ import { retargetSteps } from '../../sites/package-manager.js';
 import { GitClient, validateGitRef, validateRepositoryUrl } from '../../sites/git-client.js';
 import { generateDeployKey, isSshUrl } from '../../sites/ssh-keys.js';
 import { serviceIdFor } from '../../sites/deploy-handler.js';
+import { isPortAnswered } from '../../windows/service-probe.js';
 import { localAddresses } from '../../tls/panel-certificate.js';
 import { panelHostnameAmong } from '../../tls/panel-hostname.js';
 import { accessLogExists, logFilesFor } from '../../traffic/collector.js';
@@ -265,6 +266,44 @@ export const sitesRouter = router({
       usageCache.set(site.slug, { usedBytes, at: Date.now() });
 
       return { usedBytes, quotaBytes: site.diskQuotaBytes, measuredAt: new Date() };
+    }),
+
+  /**
+   * Whether the website is actually answering, on its app port and its preview.
+   *
+   * Two separate answers, because they break independently. The app port being
+   * silent means the process is down and the site is gone everywhere; the
+   * preview port being silent while the app answers is the subtler case this
+   * endpoint exists to catch — the domain works, the preview 502s, and nothing
+   * else in the panel says so. Probed on loopback, so a firewall rule that
+   * blocks the preview band from outside is never mistaken for a broken site.
+   */
+  health: protectedProcedure
+    .input(z.object({ slug: z.string().min(1) }))
+    .query(async ({ ctx, input }) => {
+      const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
+      const site = service.get(input.slug);
+      if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
+
+      const manifest = site.manifest as SiteManifest;
+      const runsAProcess = manifest.runtime !== 'static' && manifest.runtime !== 'proxy';
+      const activePort = site.activeColour === 'blue' ? site.portBlue : site.portGreen;
+
+      const app =
+        site.enabled && runsAProcess && activePort !== null
+          ? await isPortAnswered(activePort)
+          : null;
+      const preview =
+        site.enabled && site.previewPort !== null ? await isPortAnswered(site.previewPort) : null;
+
+      return {
+        enabled: site.enabled,
+        /** True/false, or null when there is no process to probe. */
+        app,
+        /** True/false, or null when the site has no preview port. */
+        preview,
+        previewUrl: previewUrlFor(site.previewPort),
+      };
     }),
 
   /**
