@@ -249,6 +249,15 @@ async function stageAgent(): Promise<void> {
     { recursive: true },
   );
 
+  // The game catalog seed set ships with the agent: agent/game-servers/
+  // catalogue/ in every layout, which the agent resolves relative to its own
+  // module. Without it a fresh install finds no games at all.
+  await fs.cp(
+    path.join(REPO_ROOT, 'game-servers', 'catalogue'),
+    path.join(target, 'game-servers', 'catalogue'),
+    { recursive: true },
+  );
+
   await fs.rm(scratch, { recursive: true, force: true });
   await ensureNativeAbi(target);
   await log('Staged the agent and its dependencies.');

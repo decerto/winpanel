@@ -109,20 +109,35 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
   const sites = new SiteService(db, vault, config.sitesRoot);
 
   /*
-   * The game catalog is data, not code. The repo seed set ships with the
-   * installer; the data folder is where an administrator drops or overrides
-   * configs without a rebuild. Seeding copies the built-ins over only what
-   * is missing, so a local edit survives a panel update.
+   * The game catalog is data, not code. The seed set ships inside the
+   * installed agent (agent/game-servers/catalogue/); the data folder is where
+   * an administrator drops or overrides configs without a rebuild. Seeding
+   * copies the built-ins over only what is missing, so a local edit survives
+   * a panel update.
    *
-   * The repo catalog path is resolved relative to this file rather than the
-   * install root, so it works the same whether the agent runs from source or
-   * from the built output.
+   * Two seed locations: beside the agent in an installed layout, and the repo
+   * root in development. The first that exists wins, so a packaged install
+   * uses its shipped copy and a source checkout uses the repo's.
    */
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-  const gameCatalogueRepo = path.join(moduleDir, '..', '..', '..', 'game-servers', 'catalogue');
+  const packagedCatalogue = path.join(moduleDir, '..', 'game-servers', 'catalogue');
+  const repoCatalogue = path.join(moduleDir, '..', '..', '..', 'game-servers', 'catalogue');
+  const gameCatalogueRepo = (await fs.access(packagedCatalogue).then(() => true, () => false))
+    ? packagedCatalogue
+    : repoCatalogue;
   const gameCatalogueData = path.join(config.dataDir, 'game-servers', 'catalogue');
   await seedGameServerCatalogue(gameCatalogueRepo, gameCatalogueData);
-  const { entries: gameCatalogue } = await loadGameServerCatalogue(gameCatalogueRepo, gameCatalogueData);
+  const { entries: gameCatalogue, rejected: rejectedGameConfigs } = await loadGameServerCatalogue(gameCatalogueRepo, gameCatalogueData);
+  if (gameCatalogue.length === 0) {
+    // An empty catalog is a broken install, not a quiet empty library.
+    process.stderr.write(
+      `No game server configs found in ${gameCatalogueRepo} or ${gameCatalogueData}. ` +
+        'The Game Servers page will be empty until at least one valid config is added.\n',
+    );
+  }
+  for (const { file, error } of rejectedGameConfigs) {
+    process.stderr.write(`Skipping game server config ${file}: ${error}\n`);
+  }
   const gameServers = new GameServerService(db, config.gameServersRoot, gameCatalogue);
   const traffic = new TrafficCollector({ db, accessLogDir: config.accessLogDir });
 
