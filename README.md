@@ -4,15 +4,15 @@
 
 # WinPanel
 
-**A free control panel for hosting websites on Windows — Server 2022 and 2025, or
-Windows 11 Home and Pro. Node.js apps, .NET apps, PHP sites and WordPress, with HTTPS,
-DNS, email and customer logins.**
+**A free control panel for hosting websites and game servers on Windows — Server 2022 and
+2025, or Windows 11 Home and Pro. Node.js apps, .NET apps, PHP sites, WordPress,
+Minecraft and Steam dedicated servers, with HTTPS, DNS, email and customer logins.**
 
 Put a website online on your own Windows machine, keep it running, give it a domain and a
 padlock, host the mailboxes for it, and hand a client their own login — from one web page,
 without IIS and without touching the command line.
 
-[Features](#what-it-does) · [Start here](#new-here) · [Websites](#websites) · [DNS](#dns-control) · [Email](#email-control) · [People](#user-control-and-management) · [Compare](#how-it-compares) · [Live sites](#sites-running-on-it) · [FAQ](#frequently-asked-questions) · [Install](#installing) · [Support](#support) · [Licence](#licence) · [Develop](#development)
+[Features](#what-it-does) · [Start here](#new-here) · [Websites](#websites) · [Game servers](#game-servers) · [DNS](#dns-control) · [Email](#email-control) · [People](#user-control-and-management) · [Compare](#how-it-compares) · [Live sites](#sites-running-on-it) · [FAQ](#frequently-asked-questions) · [Install](#installing) · [Support](#support) · [Licence](#licence) · [Develop](#development)
 
 [![Chat on Discord](https://img.shields.io/badge/Discord-Ask%20for%20help-5865F2?logo=discord&logoColor=white)](https://discord.gg/wT6mnfAnUD)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/decerto)
@@ -22,17 +22,21 @@ without IIS and without touching the command line.
 ---
 
 WinPanel is a free, self-hosted **web hosting control panel for Windows** — an
-alternative to IIS, Plesk and cPanel for people running Node.js, ASP.NET Core, PHP and
-static sites on Windows. Your apps run as ordinary Windows Services on loopback ports, and
+alternative to IIS, Plesk and cPanel for people running websites and game servers on
+Windows. It is also a **game server control panel for Windows**: Minecraft Java and
+Bedrock, Palworld, Project Zomboid and other Steam dedicated servers install as Windows
+Services with their own ports, firewall rules, file manager and scoped customer access.
+Your apps run as ordinary Windows Services on loopback ports, and
 **Caddy** sits in front handling HTTPS, domains and traffic. WordPress is a one-click
 install backed by a bundled **MariaDB** database. Mail is served by
 **Stalwart**, DNS is driven through **Cloudflare**, and everything — websites,
-certificates, mailboxes, customers and Windows itself — is managed from one web interface.
+game servers, certificates, mailboxes, customers and Windows itself — is managed from one web interface.
 
 It is for anyone with a Windows machine they want to host on — a rented Windows Server VPS,
 a box in the office, or a spare PC at home. Agencies, developers, IT departments and people
 who simply have a computer sitting there. Node.js hosting on Windows is treated as the
-normal case rather than the exception.
+normal case rather than the exception. So is hosting a game server: Minecraft Java and
+Bedrock, Steam dedicated servers, and a library you can extend with a config file.
 
 You reach the panel at **`https://<your-server-ip>:8443`** — no domain required.
 
@@ -105,6 +109,7 @@ Windows equivalent.
 | Area | Capability |
 | --- | --- |
 | **Websites** | Static files, Node, .NET and PHP apps, from Git or managed by hand — plus one-click WordPress |
+| **Game servers** | Minecraft Java/Bedrock and Steam dedicated servers, with Windows Services, scoped files, and a config-driven library you can extend |
 | **Databases** | MariaDB with per-site databases and a built-in browser, each database limited to its own site |
 | **Releases** | Builds off to one side and swaps it in, so a failed build never touches the live site |
 | **HTTPS** | Free certificates, renewed automatically, using the DNS challenge |
@@ -180,6 +185,27 @@ server's own access logs — per website, per hour, for up to 90 days.
 ![Traffic for one website](docs/screenshots/traffic.png)
 
 ---
+
+![Game servers, as cards](docs/screenshots/game-servers-library.png)
+
+Each card shows the provider, the status, and the connection details. The detail page is
+where the lifecycle lives: start, stop, restart, update, and the console.
+
+![A game server's detail page](docs/screenshots/game-server-detail.png)
+
+### Game servers
+
+WinPanel can host supported dedicated game servers as Windows Services. Minecraft Java and
+Bedrock, Steam titles, and anything you describe in a config file. Each server gets its own
+Windows Service, scoped data folder, typed TCP/UDP ports, and firewall rules.
+
+The library is data, not code: a JSON file per game in `game-servers/catalogue/` describes
+the App ID, executable, launch arguments, ports, and EULA, and the panel reads the same
+folder from its data directory. Adding a game means adding a file — no TypeScript edit,
+no rebuild, no waiting for a release. See [Game servers on Windows](docs/game-servers-on-windows.md)
+for the schema and the contribution path.
+
+![Game servers, as cards](docs/screenshots/game-servers-library.png)
 
 ## DNS control
 

@@ -71,3 +71,42 @@ export function uploadFile(
 
   return { promise, cancel: () => request.abort() };
 }
+
+export function gameDownloadUrl(gameServerSlug: string, path: string): string {
+  return `/api/game-servers/${encodeURIComponent(gameServerSlug)}/files/download?path=${encodeURIComponent(path)}`;
+}
+
+export function uploadGameFile(
+  gameServerSlug: string,
+  folder: string,
+  file: File,
+  onProgress?: (fraction: number) => void,
+): UploadHandle {
+  const request = new XMLHttpRequest();
+  const promise = new Promise<void>((resolve, reject) => {
+    const url =
+      `/api/game-servers/${encodeURIComponent(gameServerSlug)}/files/upload` +
+      `?path=${encodeURIComponent(folder)}&name=${encodeURIComponent(file.name)}`;
+    request.open('POST', url);
+    request.setRequestHeader('content-type', 'application/octet-stream');
+    request.withCredentials = true;
+    request.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable && onProgress) onProgress(event.loaded / event.total);
+    });
+    request.addEventListener('load', () => {
+      if (request.status >= 200 && request.status < 300) return resolve();
+      let message = `Upload failed (${request.status}).`;
+      try {
+        const parsed = JSON.parse(request.responseText) as { error?: string };
+        if (parsed.error) message = parsed.error;
+      } catch {
+        // The status is the only useful response when the request failed early.
+      }
+      reject(new Error(message));
+    });
+    request.addEventListener('error', () => reject(new Error('Could not reach the server.')));
+    request.addEventListener('abort', () => reject(new Error('Upload cancelled.')));
+    request.send(file);
+  });
+  return { promise, cancel: () => request.abort() };
+}

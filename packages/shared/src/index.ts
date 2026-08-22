@@ -16,3 +16,5 @@ export * from './user.js';
 export * from './dns.js';
 export * from './files.js';
 export * from './mail.js';
+export * from './game-server.js';
+export * from './game-server-config.js';

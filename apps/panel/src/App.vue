@@ -4,6 +4,7 @@ import {
   Activity,
   ChevronRight,
   Globe,
+  Gamepad2,
   History,
   Inbox,
   LogOut,
@@ -37,6 +38,7 @@ const router = useRouter();
 
 const NAV = [
   { to: '/sites', label: 'Websites', icon: Globe, hint: 'Everything you host' },
+  { to: '/game-servers', label: 'Game Servers', icon: Gamepad2, hint: 'Games you host' },
   { to: '/health', label: 'Server health', icon: Activity, hint: 'Checks and fixes', minRole: 'admin' },
   {
     to: '/health/websites',
@@ -71,6 +73,9 @@ const NAV = [
 const nav = computed(() =>
   NAV.filter(
     (item) =>
+      item.to !== '/game-servers' || gameServersEnabled.value,
+  ).filter(
+    (item) =>
       !('minRole' in item) || (role.value !== null && roleAtLeast(role.value, item.minRole)),
   ),
 );
@@ -86,6 +91,16 @@ const title = computed(() => (route.meta['title'] as string | undefined) ?? 'Win
  * four tabs all look alike.
  */
 const crumbs = computed<Array<{ label: string; to?: string }>>(() => {
+  if (route.path.startsWith('/game-servers')) {
+    const trail: Array<{ label: string; to?: string }> = [
+      { label: 'Game Servers', to: '/game-servers' },
+    ];
+    if (route.name === 'new-game-server') trail.push({ label: 'Choose a game' });
+    const slug = route.params['slug'];
+    if (typeof slug === 'string' && route.name !== 'new-game-server') trail.push({ label: slug });
+    return trail;
+  }
+
   if (!route.path.startsWith('/sites')) return [{ label: title.value }];
 
   const trail: Array<{ label: string; to?: string }> = [{ label: 'Websites', to: '/sites' }];
@@ -103,12 +118,17 @@ const bare = computed(() => route.meta['bare'] === true);
 
 const username = ref('');
 const role = ref<UserRole | null>(null);
+const gameServersEnabled = ref(false);
 
 async function loadMe(): Promise<void> {
   try {
-    const user = await api.auth.me.query();
+    const [user, feature] = await Promise.all([
+      api.auth.me.query(),
+      api.gameServers.feature.query(),
+    ]);
     username.value = user?.username ?? '';
     role.value = user?.role ?? null;
+    gameServersEnabled.value = feature.enabled;
   } catch {
     // Each page reports a dead agent in its own way; the shell staying as it
     // is beats a sidebar that empties itself over one failed request.

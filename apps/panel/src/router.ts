@@ -46,6 +46,24 @@ export const router = createRouter({
       meta: { title: 'Websites' },
     },
     {
+      path: '/game-servers',
+      name: 'game-servers',
+      component: () => import('./pages/GameServersPage.vue'),
+      meta: { title: 'Game Servers' },
+    },
+    {
+      path: '/game-servers/new',
+      name: 'new-game-server',
+      component: () => import('./pages/NewGameServerPage.vue'),
+      meta: { title: 'Choose a game' },
+    },
+    {
+      path: '/game-servers/:slug',
+      name: 'game-server',
+      component: () => import('./pages/GameServerPage.vue'),
+      meta: { title: 'Game Server' },
+    },
+    {
       path: '/sites/new',
       name: 'new-site',
       component: () => import('./pages/NewSitePage.vue'),

@@ -1,0 +1,20 @@
+{
+  "id": "minecraft-bedrock-vanilla",
+  "provider": "minecraft-bedrock",
+  "name": "Minecraft Bedrock Edition",
+  "description": "Vanilla Minecraft Bedrock Dedicated Server for Windows.",
+  "status": "ready",
+  "genre": "Sandbox",
+  "art": "ocean",
+  "artUrl": "https://www.minecraft.net/content/dam/minecraftnet/games/minecraft/game-characters/MC-About_Key-Art_Survive_the_Night_600x800.png",
+  "requiresEula": true,
+  "steamRequiresOwnership": false,
+  "executable": "bedrock_server.exe",
+  "launchArgs": [],
+  "console": "none",
+  "downloadUrl": "https://minecraft.azureedge.net/bin-win/bedrock-server-1.21.80.3.zip",
+  "downloadSha256": null,
+  "ports": [
+    { "name": "game", "protocol": "udp", "purpose": "game", "visibility": "public", "port": 19132 }
+  ]
+}

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
-import { desc, eq, inArray } from 'drizzle-orm';
+import { desc, eq, inArray, or } from 'drizzle-orm';
 import { protectedProcedure, router, superadminProcedure } from '../trpc.js';
 import { accessRouter } from './access.js';
 import { authRouter } from './auth.js';
@@ -15,6 +15,7 @@ import { databasesRouter } from './databases.js';
 import { systemRouter } from './system.js';
 import { componentsRouter } from './components.js';
 import { usersRouter } from './users.js';
+import { gameServersRouter } from './game-servers.js';
 import type { RequestContext } from '../trpc.js';
 
 /**
@@ -24,7 +25,9 @@ import type { RequestContext } from '../trpc.js';
  * updating the panel — which only an admin ever starts and only an admin
  * should be able to watch.
  */
-function visibleJobIds(ctx: RequestContext): string[] | null {
+function visibleJobIds(
+  ctx: RequestContext,
+): { siteIds: string[]; gameServerIds: string[] } | null {
   if (ctx.user?.role !== 'user') return null;
 
   const owned = ctx.app.db.db
@@ -33,16 +36,24 @@ function visibleJobIds(ctx: RequestContext): string[] | null {
     .where(eq(ctx.app.schema.sites.ownerUserId, ctx.user.id))
     .all();
 
-  return owned.map((site) => site.id);
+  const gameServers = ctx.app.gameServers.listForUser(ctx.user.id);
+  return {
+    siteIds: owned.map((site) => site.id),
+    gameServerIds: gameServers.map((server) => server.id),
+  };
 }
 
 function assertJobVisible(ctx: RequestContext, jobId: string): void {
-  const siteIds = visibleJobIds(ctx);
-  if (siteIds === null) return;
+  const visible = visibleJobIds(ctx);
+  if (visible === null) return;
 
   const job = ctx.app.jobs.getJob(jobId);
 
-  if (!job || job.siteId === null || !siteIds.includes(job.siteId)) {
+  const visibleSite = job?.siteId != null && visible.siteIds.includes(job.siteId);
+  const visibleGameServer =
+    job?.gameServerId != null && visible.gameServerIds.includes(job.gameServerId);
+
+  if (!job || (!visibleSite && !visibleGameServer)) {
     throw new TRPCError({ code: 'NOT_FOUND', message: 'That job is not on your account.' });
   }
 }
@@ -51,15 +62,28 @@ const jobsRouter = router({
   list: protectedProcedure
     .input(z.object({ limit: z.number().int().min(1).max(200).default(50) }).optional())
     .query(({ ctx, input }) => {
-      const siteIds = visibleJobIds(ctx);
+      const visible = visibleJobIds(ctx);
 
       // An account with no websites yet has no jobs, and `inArray` with an
       // empty list is not something every driver agrees on.
-      if (siteIds?.length === 0) return [];
+      if (visible?.siteIds.length === 0 && visible.gameServerIds.length === 0) return [];
 
       const query = ctx.app.db.db.select().from(ctx.app.schema.jobs);
 
-      return (siteIds === null ? query : query.where(inArray(ctx.app.schema.jobs.siteId, siteIds)))
+      return (
+        visible === null
+          ? query
+          : query.where(
+              or(
+                visible.siteIds.length > 0
+                  ? inArray(ctx.app.schema.jobs.siteId, visible.siteIds)
+                  : undefined,
+                visible.gameServerIds.length > 0
+                  ? inArray(ctx.app.schema.jobs.gameServerId, visible.gameServerIds)
+                  : undefined,
+              ),
+            )
+      )
         .orderBy(desc(ctx.app.schema.jobs.createdAt))
         .limit(input?.limit ?? 50)
         .all();
@@ -115,6 +139,7 @@ export const appRouter = router({
   users: usersRouter,
   checks: checksRouter,
   sites: sitesRouter,
+  gameServers: gameServersRouter,
   files: filesRouter,
   dns: dnsRouter,
   ssl: sslRouter,

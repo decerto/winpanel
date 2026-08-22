@@ -1,0 +1,20 @@
+{
+  "id": "nomad-dedicated",
+  "provider": "steam",
+  "name": "Nomad",
+  "description": "Nomad dedicated server using the game files and batch-mode launch contract.",
+  "status": "ready",
+  "genre": "Survival",
+  "art": "desert",
+  "requiresEula": true,
+  "steamRequiresOwnership": true,
+  "steamAppId": 378370,
+  "executable": "Nomad.exe",
+  "launchArgs": ["-port", "{gamePort}", "-batchmode", "-nographics"],
+  "console": "none",
+  "dataDirectory": "Nomad Server",
+  "configFile": "Config/config.json",
+  "ports": [
+    { "name": "game", "protocol": "tcp", "purpose": "game", "visibility": "public", "port": 25565 }
+  ]
+}

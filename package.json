@@ -1,8 +1,23 @@
 {
   "name": "winpanel",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "private": true,
-  "description": "Free control panel for hosting websites and Node.js apps on Windows Server 2022/2025 and Windows 11 Home/Pro, without IIS",
+  "description": "Free control panel for hosting websites, Node.js apps and game servers on Windows Server 2022/2025 and Windows 11 Home/Pro, without IIS",
+  "keywords": [
+    "windows hosting panel",
+    "windows server control panel",
+    "plesk alternative",
+    "cpanel alternative",
+    "iis alternative",
+    "nodejs hosting",
+    "wordpress hosting",
+    "game server hosting",
+    "game server control panel",
+    "minecraft server hosting",
+    "steam dedicated server",
+    "windows game server",
+    "self-hosted"
+  ],
   "license": "SEE LICENSE IN LICENSE.md",
   "packageManager": "pnpm@10.30.2",
   "engines": {

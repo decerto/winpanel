@@ -27,6 +27,8 @@ AppId={{8F3C1A94-2E7B-4D5A-9C61-7B2E4F8A1D33}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
+AppVerName={#AppName} {#AppVersion}
+VersionInfoDescription=WinPanel - host websites and game servers on Windows
 AppCopyright=Copyright 2026 Diminished Studios
 ; The licence is not permissive, so it is shown and accepted rather than
 ; buried in the install folder.

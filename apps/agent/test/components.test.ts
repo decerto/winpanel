@@ -189,7 +189,7 @@ describe('component catalogue', () => {
       // Caddy's download service has no version parameter: it always builds
       // the current release, so a number here would be a lie. The same reason
       // it cannot have a fixed hash.
-      if (component.id === 'caddy') {
+      if (component.id === 'caddy' || component.id === 'steamcmd') {
         expect(component.version).toBe('latest');
         continue;
       }
@@ -204,13 +204,14 @@ describe('component catalogue', () => {
     }
   });
 
-  it('only allows an unpinned hash for Caddy, which is built per request', () => {
+  it('only allows an unpinned hash for mutable publisher bootstrappers', () => {
     for (const component of COMPONENT_CATALOGUE) {
-      if (component.id === 'caddy') continue;
+      if (component.id === 'caddy' || component.id === 'steamcmd') continue;
 
       // Everything here runs with high privilege once installed, so an
-      // unverified download is a route onto the server. Caddy is the sole
-      // exception because its endpoint compiles a binary per request.
+      // unverified download is a route onto the server. Caddy and SteamCMD
+      // are the exceptions because both are publisher-controlled bootstrappers
+      // whose download bytes are not stable enough to pin here.
       expect(component.sha256, `${component.id} must pin a hash`).toMatch(/^[0-9a-f]{64}$/);
     }
     expect(findComponent('caddy')?.sha256).toBeNull();
@@ -259,5 +260,16 @@ describe('component catalogue', () => {
     const bun = findComponent('bun');
     expect(bun?.kind).toBe('zip');
     expect(bun?.url).toContain('bun-windows-x64.zip');
+  });
+
+  it('offers Valve SteamCMD as a self-updating game-server prerequisite', () => {
+    const steamcmd = findComponent('steamcmd');
+
+    expect(steamcmd?.kind).toBe('zip');
+    expect(steamcmd?.url).toBe(
+      'https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip',
+    );
+    expect(steamcmd?.verifyArgs).toEqual([]);
+    expect(steamcmd?.serviceName).toBeNull();
   });
 });

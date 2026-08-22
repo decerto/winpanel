@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import net from 'node:net';
+import os from 'node:os';
 import path from 'node:path';
 import { config, paths } from '../config.js';
 import { createAppContext } from '../app-context.js';
@@ -123,6 +124,7 @@ export async function install(options: { skipService?: boolean } = {}): Promise<
     config.caddyDir,
     config.logDir,
     config.sitesRoot,
+    config.gameServersRoot,
     path.join(config.dataDir, 'services'),
   ]) {
     await fs.mkdir(dir, { recursive: true });
@@ -477,8 +479,52 @@ export async function main(argv: readonly string[]): Promise<number> {
     return token ? 0 : 1;
   }
 
+  if (command === 'demo-seed') {
+    await demoSeed();
+    return 0;
+  }
+
   process.stderr.write(`Unknown command "${command}".\n`);
   return 2;
+}
+
+/**
+ * Writes a temporary database with invented game servers, for screenshots.
+ *
+ * The capture script renders the real panel against this instance, so the
+ * images show the actual UI rather than a mockup. Nothing here touches a
+ * real install: the database, the folders, and the panel all live in the
+ * temp directory the caller deletes afterwards.
+ */
+async function demoSeed(): Promise<void> {
+  const root = path.join(os.tmpdir(), 'winpanel-demo');
+  const dataDir = path.join(root, 'data');
+  const serversDir = path.join(root, 'servers');
+  await fs.rm(root, { recursive: true, force: true });
+  await fs.mkdir(dataDir, { recursive: true });
+  await fs.mkdir(serversDir, { recursive: true });
+
+  process.env['WINPANEL_DATA_DIR'] = dataDir;
+  process.env['WINPANEL_GAME_SERVERS_ROOT'] = serversDir;
+  process.env['WINPANEL_PORT'] = '18443';
+  process.env['WINPANEL_HTTPS'] = 'false';
+
+  const app = await createAppContext({
+    databasePath: path.join(dataDir, 'panel.db'),
+    vaultKeyPath: path.join(dataDir, 'vault.key'),
+    setupTokenPath: path.join(dataDir, 'setup-token.txt'),
+    registerJobHandlers: false,
+    demoSeed: true,
+  });
+
+  const setupToken = await app.auth.ensureSetupToken();
+  await app.auth.completeSetup({
+    setupToken,
+    username: 'demo',
+    password: 'a-password-long-enough',
+  });
+
+  await app.shutdown();
 }
 
 export { buildServiceXml };

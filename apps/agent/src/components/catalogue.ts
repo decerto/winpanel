@@ -18,7 +18,7 @@ import type { ComponentDefinition } from '@winpanel/shared';
  * running the binary afterwards and checking it reports the expected version
  * and includes the Cloudflare module.
  *
- * Every other hash below was taken from the publisher's own record — the
+ * Every pinned hash below was taken from the publisher's own record — the
  * `SHASUMS256.txt` for a Node release, the asset digest GitHub computes for a
  * release attachment — rather than from a file this machine happened to
  * download. Bumping a version means fetching the new hash from the same place.
@@ -28,6 +28,7 @@ const CADDY_VERSION = 'latest';
 const STALWART_VERSION = '0.16.16';
 const GIT_VERSION = '2.51.0';
 const NODE_LTS_VERSION = '22.21.1';
+const JAVA_VERSION = '21.0.12+8';
 const PNPM_VERSION = '11.20.0';
 const YARN_VERSION = '1.22.22';
 const BUN_VERSION = '1.3.14';
@@ -45,6 +46,7 @@ const VCREDIST_VERSION = '14.44.35211.0';
 const MARIADB_VERSION = '12.3.2';
 const COMPOSER_VERSION = '2.8.12';
 const ADMINER_VERSION = '6.0.0';
+const STEAMCMD_VERSION = 'latest';
 
 /**
  * Caddy's official download service builds a binary with the plugins you ask
@@ -128,6 +130,20 @@ export const COMPONENT_CATALOGUE: readonly ComponentDefinition[] = [
     serviceName: null,
     verifyArgs: ['--version'],
     verifyExpect: 'v',
+    requires: [],
+  },
+  {
+    id: 'java',
+    name: 'Java runtime',
+    description: 'The runtime needed by Minecraft Java Edition servers.',
+    version: JAVA_VERSION,
+    kind: 'zip',
+    url: 'https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12%2B8/OpenJDK21U-jre_x64_windows_hotspot_21.0.12_8.zip',
+    sha256: 'b8aa18fef5edb69bee8618f99677d66d0873d22cb40d974c15ac9ffcdecf73ba',
+    args: [],
+    serviceName: null,
+    verifyArgs: ['--version'],
+    verifyExpect: '21.0.12',
     requires: [],
   },
   {
@@ -264,6 +280,26 @@ export const COMPONENT_CATALOGUE: readonly ComponentDefinition[] = [
     verifyArgs: ['--version', '--no-ansi'],
     verifyExpect: 'Composer',
     requires: ['php'],
+  },
+  {
+    id: 'steamcmd',
+    name: 'SteamCMD',
+    description:
+      'Downloads the dedicated-server files for supported Steam games. SteamCMD updates itself ' +
+      'from Valve when it first runs.',
+    version: STEAMCMD_VERSION,
+    kind: 'zip',
+    // Valve publishes a self-updating bootstrap ZIP without a stable checksum.
+    url: 'https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip',
+    sha256: null,
+    args: [],
+    serviceName: null,
+    // The first invocation may self-update and return a bootstrap-specific
+    // exit code. Executable discovery is the safe install check; game
+    // installation validates SteamCMD's actual app command separately.
+    verifyArgs: [],
+    verifyExpect: null,
+    requires: [],
   },
   {
     /*

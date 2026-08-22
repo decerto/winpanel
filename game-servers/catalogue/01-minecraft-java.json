@@ -1,0 +1,19 @@
+{
+  "id": "minecraft-java-vanilla",
+  "provider": "minecraft-java",
+  "name": "Minecraft Java Edition",
+  "description": "Vanilla Minecraft Java server for Windows.",
+  "status": "ready",
+  "genre": "Sandbox",
+  "art": "forest",
+  "artUrl": "https://www.minecraft.net/content/dam/minecraftnet/games/minecraft/game-characters/MC-About_Key-Art_Build_Amazing_Things_600x800.png",
+  "requiresEula": true,
+  "steamRequiresOwnership": false,
+  "executable": "server.jar",
+  "launchArgs": ["-jar", "server.jar", "nogui"],
+  "console": "none",
+  "configFile": "server.properties",
+  "ports": [
+    { "name": "game", "protocol": "tcp", "purpose": "game", "visibility": "public", "port": 25565 }
+  ]
+}

@@ -11,6 +11,8 @@ These two answer the questions people arrive with, and need no knowledge of the 
 | [nodejs-hosting-on-windows-server.md](nodejs-hosting-on-windows-server.md) | How to host a Node.js app on Windows Server 2022/2025 or Windows 11 without IIS or `iisnode` — as a Windows Service behind a reverse proxy, by hand or with the panel |
 | [hosting-a-website-on-windows-server.md](hosting-a-website-on-windows-server.md) | The same subject with no jargon: what hosting a website on your own Windows PC or server involves, what it costs, and what the words mean |
 | [wordpress-on-windows-server.md](wordpress-on-windows-server.md) | How WordPress runs on Windows — PHP, a web server and MariaDB — and the one-click install the panel does for you |
+| [game-servers-on-windows.md](game-servers-on-windows.md) | How to enable, install and manage supported Minecraft and Steam dedicated servers on Windows |
+| [game-servers-catalogue.md](game-servers-catalogue.md) | The config-file format for adding a game, the fields it carries, and how the panel loads it |
 
 ## Developer documentation
 

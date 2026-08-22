@@ -1,20 +1,22 @@
 ---
-title: Hosting Node.js, PHP and WordPress on Windows
+title: Host websites and game servers on Windows — Node.js, PHP, WordPress and Minecraft
 description: >-
-  How to host Node.js apps, .NET apps, PHP sites and WordPress on Windows Server 2022/2025 or
-  Windows 11 Home and Pro without IIS or iisnode - plus WinPanel, a free control panel that does it for you.
+  How to host Node.js apps, .NET apps, PHP sites, WordPress and game servers on Windows
+  Server 2022/2025 or Windows 11 Home and Pro without IIS or iisnode - plus WinPanel, a
+  free control panel that does it for you.
 image: /winpanel/banner.png
 ---
 
-![WinPanel - a free control panel for hosting websites, Node.js apps and email on Windows](banner.png)
+![WinPanel - a free control panel for hosting websites, Node.js apps, game servers and email on Windows](banner.png)
 
-# Hosting websites, Node.js, PHP and WordPress on Windows
+# Hosting websites and game servers on Windows
 
-**You can host Node.js, PHP and WordPress on Windows. You do not need IIS, you do not need
-`iisnode`, and you do not need a `web.config`.** Run each app as a Windows Service on a
-loopback port,
-and put a reverse proxy in front of it for the domain and the HTTPS certificate. That is
-the same architecture every Linux host uses — only the names of the parts differ.
+**You can host websites and game servers on Windows. You do not need IIS, you do not need
+`iisnode`, and you do not need a Linux VM.** Run each website and each game server as a
+Windows Service,
+and put a reverse proxy in front of the websites for the domain and the HTTPS
+certificate. That is the same architecture every Linux host uses — only the names of the
+parts differ.
 
 These pages explain how to do that by hand, and how
 **[WinPanel](https://github.com/decerto/winpanel)** — a free, self-hosted control panel for
@@ -48,25 +50,35 @@ means, and what goes wrong — with no jargon and no command line.
 WordPress without IIS or a Linux VM. How WordPress actually runs on Windows — PHP behind a
 web server, MariaDB for its data — and the one-click install WinPanel does for you.
 
+### [How to host a game server on Windows](game-servers-on-windows.html)
+
+Minecraft, Palworld, Project Zomboid and other Steam dedicated servers on Windows — each
+one a supervised Windows Service with its own ports, firewall rules, file manager and
+customer login, and a library you can extend with a config file.
+
 ---
 
 ## What WinPanel is
 
-A free control panel for Windows that manages websites, HTTPS, DNS, email and
-customer accounts from one interface. Static sites, Node.js apps, ASP.NET Core apps, PHP
-sites and WordPress are
-all first-class; each runs as a supervised Windows Service, with [Caddy](https://caddyserver.com/)
+A free control panel for Windows that manages websites, game servers, HTTPS, DNS, email
+and customer accounts from one interface. Static sites, Node.js apps, ASP.NET Core apps,
+PHP sites and WordPress are
+all first-class; each runs as a supervised Windows Service, with
+[Caddy](https://caddyserver.com/)
 in front handling domains, certificates and traffic. WordPress is a one-click install backed
 by a bundled MariaDB database, with a database browser built in. It supports Windows Server
 2022/2025 and Windows 11 Home or Pro — there is no Server-edition requirement.
 
 - **Websites** — from Git or managed by hand, with builds that swap in only if they start
+- **Game servers** — Minecraft Java and Bedrock, Palworld, Project Zomboid and other Steam
+  titles, each a Windows Service with its own ports and firewall rules
 - **WordPress & PHP** — one-click WordPress, and PHP sites on a supervised worker pool
 - **Databases** — MariaDB with per-site databases and a built-in browser
 - **HTTPS** — free certificates, renewed automatically, over the DNS challenge
 - **DNS** — Cloudflare records per website, including a reviewed "point this domain here"
 - **Email** — self-hosted mailboxes with quotas, aliases, DKIM and webmail
-- **People** — owner, administrator and customer roles, each with site, disk and mail limits
+- **People** — owner, administrator and customer roles, each with site, disk, mail and
+  game server limits
 - **Server health** — detects and fixes the Windows settings that quietly break Node hosting
 
 ![The websites list](screenshots/websites.png)
@@ -85,4 +97,5 @@ installation instructions are in the
 - [SSL certificates without IIS](https://github.com/decerto/winpanel/wiki/SSL-Certificates-on-Windows-Server-Without-IIS)
 - [Host your own email on Windows Server](https://github.com/decerto/winpanel/wiki/Host-Your-Own-Email-on-Windows-Server)
 - [Free Plesk alternative for Windows Server](https://github.com/decerto/winpanel/wiki/Free-Plesk-Alternative-for-Windows-Server)
+- [Host a Minecraft server on Windows](game-servers-on-windows.html)
 - [Windows Server vs Linux for web hosting](https://github.com/decerto/winpanel/wiki/Windows-Server-vs-Linux-for-Web-Hosting)

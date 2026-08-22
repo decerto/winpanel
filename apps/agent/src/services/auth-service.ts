@@ -3,7 +3,15 @@ import fs from 'node:fs/promises';
 import { and, count, desc, eq, gt, isNull, sql } from 'drizzle-orm';
 import type { UserRole } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
-import { ipAllowlist, recoveryCodes, sessions, settings, sites, users } from '../db/schema.js';
+import {
+  gameServers,
+  ipAllowlist,
+  recoveryCodes,
+  sessions,
+  settings,
+  sites,
+  users,
+} from '../db/schema.js';
 import {
   generateSetupToken,
   generateToken,
@@ -75,10 +83,14 @@ export interface ManagedUser {
   siteLimit: number | null;
   mailQuotaBytes: number | null;
   siteDiskQuotaBytes: number | null;
+  gameServerLimit: number | null;
+  gameServerProviders: string[];
   lastLoginAt: Date | null;
   createdAt: Date;
   /** How many websites they currently own, so limits mean something. */
   siteCount: number;
+  /** How many game servers they currently own, so limits mean something. */
+  gameServerCount: number;
 }
 
 /** A live sign-in, as shown to the owner. */
@@ -116,7 +128,11 @@ function publicSessionId(tokenHash: string): string {
 }
 
 /** Drops the password hash and the two-factor secrets on the way out. */
-function toManagedUser(row: typeof users.$inferSelect, siteCount: number): ManagedUser {
+function toManagedUser(
+  row: typeof users.$inferSelect,
+  siteCount: number,
+  gameServerCount: number,
+): ManagedUser {
   return {
     id: row.id,
     username: row.username,
@@ -126,9 +142,12 @@ function toManagedUser(row: typeof users.$inferSelect, siteCount: number): Manag
     siteLimit: row.siteLimit,
     mailQuotaBytes: row.mailQuotaBytes,
     siteDiskQuotaBytes: row.siteDiskQuotaBytes,
+    gameServerLimit: row.gameServerLimit,
+    gameServerProviders: (row.gameServerProviders as string[]) ?? [],
     lastLoginAt: row.lastLoginAt,
     createdAt: row.createdAt,
     siteCount,
+    gameServerCount,
   };
 }
 
@@ -241,13 +260,13 @@ export class AuthService {
       .orderBy(users.username)
       .all();
 
-    return rows.map((row) => toManagedUser(row.user, row.siteCount));
+    return rows.map((row) => toManagedUser(row.user, row.siteCount, this.gameServerCountFor(row.user.id)));
   }
 
   getUser(userId: string): ManagedUser | undefined {
     const row = this.handle.db.select().from(users).where(eq(users.id, userId)).get();
     if (!row) return undefined;
-    return toManagedUser(row, this.siteCountFor(userId));
+    return toManagedUser(row, this.siteCountFor(userId), this.gameServerCountFor(userId));
   }
 
   siteCountFor(userId: string): number {
@@ -255,6 +274,15 @@ export class AuthService {
       .select({ total: count() })
       .from(sites)
       .where(eq(sites.ownerUserId, userId))
+      .get();
+    return row?.total ?? 0;
+  }
+
+  gameServerCountFor(userId: string): number {
+    const row = this.handle.db
+      .select({ total: count() })
+      .from(gameServers)
+      .where(eq(gameServers.ownerUserId, userId))
       .get();
     return row?.total ?? 0;
   }
@@ -272,6 +300,8 @@ export class AuthService {
     siteLimit?: number | null;
     mailQuotaBytes?: number | null;
     siteDiskQuotaBytes?: number | null;
+    gameServerLimit?: number | null;
+    gameServerProviders?: string[];
     createdBy?: string | null;
   }): Promise<ManagedUser> {
     const username = input.username.trim();
@@ -294,6 +324,9 @@ export class AuthService {
         siteLimit: input.role === 'user' ? (input.siteLimit ?? null) : null,
         mailQuotaBytes: input.role === 'user' ? (input.mailQuotaBytes ?? null) : null,
         siteDiskQuotaBytes: input.role === 'user' ? (input.siteDiskQuotaBytes ?? null) : null,
+        gameServerLimit: input.role === 'user' ? (input.gameServerLimit ?? null) : null,
+        gameServerProviders:
+          input.role === 'user' ? (input.gameServerProviders ?? []) : [],
         createdBy: input.createdBy ?? null,
         totpEnrolled: false,
       })
@@ -319,6 +352,8 @@ export class AuthService {
       siteLimit?: number | null;
       mailQuotaBytes?: number | null;
       siteDiskQuotaBytes?: number | null;
+      gameServerLimit?: number | null;
+      gameServerProviders?: string[];
     },
   ): ManagedUser {
     const existing = this.handle.db.select().from(users).where(eq(users.id, userId)).get();
@@ -342,8 +377,22 @@ export class AuthService {
               changes.siteDiskQuotaBytes === undefined
                 ? existing.siteDiskQuotaBytes
                 : changes.siteDiskQuotaBytes,
+            gameServerLimit:
+              changes.gameServerLimit === undefined
+                ? existing.gameServerLimit
+                : changes.gameServerLimit,
+            gameServerProviders:
+              changes.gameServerProviders === undefined
+                ? (existing.gameServerProviders as string[])
+                : changes.gameServerProviders,
           }
-        : { siteLimit: null, mailQuotaBytes: null, siteDiskQuotaBytes: null };
+        : {
+            siteLimit: null,
+            mailQuotaBytes: null,
+            siteDiskQuotaBytes: null,
+            gameServerLimit: null,
+            gameServerProviders: [],
+          };
 
     this.handle.db
       .update(users)

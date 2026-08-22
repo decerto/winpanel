@@ -29,6 +29,8 @@ function envBool(name: string, fallback: boolean): boolean {
 
 const DEFAULT_ROOT = process.platform === 'win32' ? 'C:\\WinPanel' : path.join(process.cwd(), '.winpanel-dev');
 const DEFAULT_SITES_ROOT = process.platform === 'win32' ? 'C:\\Sites' : path.join(process.cwd(), '.winpanel-sites');
+const DEFAULT_GAME_SERVERS_ROOT =
+  process.platform === 'win32' ? 'C:\\GameServers' : path.join(process.cwd(), '.winpanel-game-servers');
 
 const root = envPath('WINPANEL_ROOT', DEFAULT_ROOT);
 
@@ -64,6 +66,7 @@ export const config = {
    * manager enforces: nothing outside it is reachable, ever.
    */
   sitesRoot: envPath('WINPANEL_SITES_ROOT', DEFAULT_SITES_ROOT),
+  gameServersRoot: envPath('WINPANEL_GAME_SERVERS_ROOT', DEFAULT_GAME_SERVERS_ROOT),
 
   /**
    * The panel listens here. Fixed rather than random so it is easy to
@@ -97,6 +100,7 @@ export const paths = {
   setupToken: () => path.join(config.dataDir, 'setup-token.txt'),
   componentManifest: () => path.join(config.dataDir, 'components.json'),
   siteRoot: (slug: string) => path.join(config.sitesRoot, slug),
+  gameServerRoot: (slug: string) => path.join(config.gameServersRoot, slug),
 } as const;
 
 export type Config = typeof config;

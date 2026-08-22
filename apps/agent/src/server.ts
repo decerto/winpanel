@@ -9,6 +9,8 @@ import { appRouter } from './api/routers/index.js';
 import { registerInstallerUpload } from './api/installer-upload.js';
 import { registerDbBrowserRoutes } from './api/db-browser.js';
 import { registerSiteFileRoutes } from './api/site-files.js';
+import { registerGameServerFileRoutes } from './api/game-server-files.js';
+import { registerGameServerArtRoute } from './api/game-server-art.js';
 import { createContextFactory } from './api/trpc.js';
 import { paths } from './config.js';
 import { resolvePanelTls, type PanelTls } from './tls/panel-certificate.js';
@@ -145,6 +147,8 @@ export async function createServer(app: AppContext): Promise<FastifyInstance> {
 
   registerInstallerUpload(server, app);
   registerSiteFileRoutes(server, app);
+  registerGameServerFileRoutes(server, app);
+  registerGameServerArtRoute(server, app);
   registerDbBrowserRoutes(server, app);
 
   // The built panel SPA. Absent during development, when Vite serves it.

@@ -72,7 +72,8 @@ Composer install on each deploy when the project has a `composer.json`.
 ## What WinPanel is
 
 A free, self-hosted control panel for Windows Server 2022/2025 and Windows 11 Home or Pro.
-It manages websites, HTTPS, DNS, email and customer accounts from one web page, with no
-IIS and no command line. See [the repository](https://github.com/decerto/winpanel) for the
-full picture, or [the hosting guide](hosting-a-website-on-windows-server.html) for the
-no-jargon version.
+It manages websites, game servers, HTTPS, DNS, email and customer accounts from one web
+page, with no IIS and no command line. See [the repository](https://github.com/decerto/winpanel) for the
+full picture, [the hosting guide](hosting-a-website-on-windows-server.html) for the
+no-jargon version, or [the game server guide](game-servers-on-windows.html) for Minecraft
+and Steam dedicated servers.

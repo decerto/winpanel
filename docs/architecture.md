@@ -12,8 +12,8 @@
 └───┬───────────────┬──────────────────┬───────────────────┘
     │ admin API     │ JMAP             │ SCM / WinSW
     ▼               ▼                  ▼
-  Caddy          Stalwart        Your sites' apps
-  :80 :443       :25 :465        :3001, :3003, …
+  Caddy          Stalwart        Your sites' apps       Game servers
+  :80 :443       :25 :465        :3001, :3003, ...     TCP/UDP ports
   :2019 (local)  :587 :993 :995  (loopback only)
 ```
 
@@ -34,6 +34,9 @@
   provisioned by `sites/databases.ts`; the browser-based editor is Adminer, run on a
   private loopback-only PHP server and proxied by the panel at `/db/…`
   (`api/db-browser.ts`) behind the panel's own sign-in, never on a public domain.
+- **Game servers** are stateful resources separate from `sites`. Provider adapters acquire
+  Minecraft or allowlisted Steam files, register one WinSW service per instance, expose a
+  contained data folder to the file manager, and apply typed public firewall bindings.
 
 ## Composition root
 
@@ -62,6 +65,7 @@ const app = await createAppContext({ databasePath, vaultKeyPath, setupTokenPath 
 | `detect/` | Works out how to build a project, producing `winpanel.json` |
 | `jobs/queue.ts` | Runs deployments, installs and other long tasks |
 | `sites/` | Site lifecycle, deployments, port allocation, command running; also `php-pool.ts` (the PHP worker supervisor), `databases.ts` (MariaDB provisioning) and `wordpress.ts` (the WordPress install job) |
+| `game-servers/` | Provider catalogue, installation jobs, lifecycle metadata, data files and provider-specific Windows services |
 | `traffic/` | Reads Caddy's access logs into hourly per-site counters |
 | `mail/` | Stalwart client, readiness probes, certificate sync |
 | `dns/` | Cloudflare client and the record planner |

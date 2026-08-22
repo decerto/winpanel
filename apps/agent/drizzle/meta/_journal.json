@@ -78,6 +78,20 @@
       "when": 1786611933382,
       "tag": "0010_add_php_preset_db_limit",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1787167000000,
+      "tag": "0011_add_game_servers",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1787317000000,
+      "tag": "0012_add_game_server_branch",
+      "breakpoints": true
     }
   ]
 }

@@ -1,7 +1,8 @@
 title: WinPanel
 description: >-
-  Free control panel for hosting websites, Node.js apps, PHP and WordPress on Windows Server
-  2025/2022 and Windows 11 - HTTPS, DNS, email and customer logins, without IIS.
+  Free control panel for hosting websites, Node.js apps, PHP, WordPress and game servers
+  on Windows Server 2025/2022 and Windows 11 - Minecraft and Steam dedicated servers,
+  HTTPS, DNS, email and customer logins, without IIS.
 
 url: https://decerto.github.io
 baseurl: /winpanel

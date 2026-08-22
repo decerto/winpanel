@@ -44,6 +44,7 @@ export interface EnqueueOptions {
   title: string;
   payload?: unknown;
   siteId?: string | null;
+  gameServerId?: string | null;
   maxAttempts?: number;
 }
 
@@ -75,6 +76,7 @@ export class JobQueue extends EventEmitter {
         status: 'pending',
         payload: options.payload ?? null,
         siteId: options.siteId ?? null,
+        gameServerId: options.gameServerId ?? null,
         maxAttempts: options.maxAttempts ?? 1,
       })
       .run();

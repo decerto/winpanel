@@ -115,11 +115,19 @@ async function verifyBinary(
   const result = await runCommand({
     exe: executable,
     args: [...prefixArgs, ...component.verifyArgs],
+    cwd: path.dirname(executable),
     timeoutMs: 60_000,
   });
 
   const output = `${result.stdout}\n${result.stderr}`.toLowerCase();
   const expected = component.verifyExpect?.toLowerCase();
+
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `The downloaded ${component.name.toLowerCase()} did not pass its verification command. ` +
+        'Nothing was registered or started.',
+    );
+  }
 
   if (expected && !output.includes(expected)) {
     throw new Error(

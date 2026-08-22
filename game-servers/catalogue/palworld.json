@@ -1,0 +1,21 @@
+{
+  "id": "palworld-dedicated",
+  "provider": "steam",
+  "name": "Palworld Dedicated Server",
+  "description": "Palworld dedicated server for Windows, downloaded through SteamCMD.",
+  "status": "ready",
+  "genre": "Survival",
+  "art": "ember",
+  "requiresEula": true,
+  "steamRequiresOwnership": false,
+  "steamAppId": 2394010,
+  "steamArtAppId": 1623730,
+  "executable": "PalServer.exe",
+  "launchArgs": ["-port={gamePort}"],
+  "console": "none",
+  "ports": [
+    { "name": "game", "protocol": "udp", "purpose": "game", "visibility": "public", "port": 8211 },
+    { "name": "query", "protocol": "udp", "purpose": "query", "visibility": "public", "port": 27015 },
+    { "name": "rcon", "protocol": "tcp", "purpose": "rcon", "visibility": "loopback", "port": 25575 }
+  ]
+}

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { GameServerAccountPolicy } from './game-server.js';
 
 /**
  * Who someone is on this server.
@@ -109,6 +110,7 @@ export const AccountLimits = z.object({
   mailQuotaBytes: z.number().int().min(0).nullable().default(null),
   /** Disk given to each website they create. */
   siteDiskQuotaBytes: z.number().int().min(0).nullable().default(null),
+  ...GameServerAccountPolicy.shape,
 });
 export type AccountLimits = z.infer<typeof AccountLimits>;
 

@@ -1,5 +1,8 @@
+import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { eq } from 'drizzle-orm';
 import { mailHostnameFor } from '@winpanel/shared';
 import { config, paths } from './config.js';
 import { createDatabase, migrateDatabase, schema, type DatabaseHandle } from './db/index.js';
@@ -9,8 +12,12 @@ import { AuthService } from './services/auth-service.js';
 import { CaddyClient } from './caddy/client.js';
 import { CaddyReconciler } from './caddy/reconciler.js';
 import { ServiceManager } from './windows/service-manager.js';
+import { FirewallManager } from './bootstrap/windows-setup.js';
 import { createServiceRecovery } from './windows/watched-services.js';
 import { SiteService } from './sites/site-service.js';
+import { GameServerService } from './game-servers/game-server-service.js';
+import { createInstallGameServerHandler } from './game-servers/install-handler.js';
+import { loadGameServerCatalogue } from './game-servers/catalogue-loader.js';
 import { TrafficCollector } from './traffic/collector.js';
 import { createDeployHandler } from './sites/deploy-handler.js';
 import { createRunCommandHandler } from './sites/command-runner.js';
@@ -42,6 +49,7 @@ export interface AppContext {
   routing: CaddyReconciler;
   services: ServiceManager;
   sites: SiteService;
+  gameServers: GameServerService;
   /** Counts the web server's access logs into per-website traffic figures. */
   traffic: TrafficCollector;
   /**
@@ -62,6 +70,8 @@ export interface CreateAppOptions {
   migrationsFolder?: string;
   /** Skips registering job handlers, for tests that only exercise the API. */
   registerJobHandlers?: boolean;
+  /** Seeds invented demo data for screenshots, without touching a real install. */
+  demoSeed?: boolean;
 }
 
 export async function createAppContext(options: CreateAppOptions = {}): Promise<AppContext> {
@@ -95,8 +105,30 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     path.join(config.dataDir, 'services'),
     createServiceRecovery(db),
   );
+  const firewall = process.platform === 'win32' ? new FirewallManager() : undefined;
   const sites = new SiteService(db, vault, config.sitesRoot);
+
+  /*
+   * The game catalog is data, not code. The repo seed set ships with the
+   * installer; the data folder is where an administrator drops or overrides
+   * configs without a rebuild. Seeding copies the built-ins over only what
+   * is missing, so a local edit survives a panel update.
+   *
+   * The repo catalog path is resolved relative to this file rather than the
+   * install root, so it works the same whether the agent runs from source or
+   * from the built output.
+   */
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const gameCatalogueRepo = path.join(moduleDir, '..', '..', '..', 'game-servers', 'catalogue');
+  const gameCatalogueData = path.join(config.dataDir, 'game-servers', 'catalogue');
+  await seedGameServerCatalogue(gameCatalogueRepo, gameCatalogueData);
+  const { entries: gameCatalogue } = await loadGameServerCatalogue(gameCatalogueRepo, gameCatalogueData);
+  const gameServers = new GameServerService(db, config.gameServersRoot, gameCatalogue);
   const traffic = new TrafficCollector({ db, accessLogDir: config.accessLogDir });
+
+  if (options.demoSeed) {
+    await seedDemoGameServers(db, gameServers, config.gameServersRoot);
+  }
 
   if (options.registerJobHandlers !== false) {
     jobs.register(
@@ -169,6 +201,18 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
       'update-panel',
       createPanelUpdateHandler({ binDir: config.binDir, logDir: config.logDir }),
     );
+    jobs.register(
+      'install-game-server',
+      createInstallGameServerHandler({ db, binDir: config.binDir, services, firewall, vault, catalogue: gameCatalogue }),
+    );
+    jobs.register(
+      'update-game-server',
+      createInstallGameServerHandler({ db, binDir: config.binDir, services, firewall, vault, catalogue: gameCatalogue }),
+    );
+    jobs.register(
+      'reinstall-game-server',
+      createInstallGameServerHandler({ db, binDir: config.binDir, services, firewall, vault, catalogue: gameCatalogue }),
+    );
   }
 
   return {
@@ -182,6 +226,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     routing,
     services,
     sites,
+    gameServers,
     traffic,
     shutdown: async () => {
       await jobs.stop();
@@ -191,3 +236,92 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     },
   };
 }
+
+/**
+ * Copies the built-in configs into the data folder where they are missing.
+ *
+ * The repo directory is the truth for a fresh install; the data directory is
+ * what the running panel reads, because that is where an administrator can
+ * drop a new game or override a shipped one without a rebuild. Only files
+ * that do not already exist are written, so a local edit is not trampled by
+ * the next update.
+ */
+async function seedGameServerCatalogue(repoDir: string, dataDir: string): Promise<void> {
+  await fs.mkdir(dataDir, { recursive: true });
+  try {
+    const files = await fs.readdir(repoDir);
+    for (const file of files.filter((name) => name.toLowerCase().endsWith('.json'))) {
+      const target = path.join(dataDir, file);
+      if (await fs.access(target).then(() => true, () => false)) continue;
+      await fs.copyFile(path.join(repoDir, file), target);
+    }
+  } catch {
+    // The repo folder may not exist in a packaged install that ships its own
+    // set; a missing seed is not a startup failure.
+  }
+}
+
+/**
+ * Seeds invented game servers for screenshots.
+ *
+ * The images in the docs are rendered from this data, so they show the real
+ * UI rather than a mockup. Nothing here touches a real install: the database,
+ * the folders, and the panel all live in the temp directory the caller
+ * deletes afterwards.
+ */
+async function seedDemoGameServers(
+  db: DatabaseHandle,
+  gameServers: GameServerService,
+  gameServersRoot: string,
+): Promise<void> {
+  // The feature flag is what makes the nav entry appear; without it the
+  // screenshots would show a panel that looks like it has no game servers.
+  db.db
+    .insert(schema.settings)
+    .values({ key: 'gameServers.enabled', value: true, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: schema.settings.key,
+      set: { value: true, updatedAt: new Date() },
+    })
+    .run();
+
+  for (const demo of DEMO_SERVERS) {
+    const server = await gameServers.create(
+      { displayName: demo.displayName, catalogId: demo.catalogId, eulaAccepted: true },
+      null,
+    );
+    await fs.mkdir(server.dataPath, { recursive: true });
+    // The demo state is what the screenshot shows, not what the service would
+    // report on a real machine.
+    await fs.mkdir(path.join(gameServersRoot, server.slug), { recursive: true });
+    // The screenshots show a running server with a version, so the demo data
+    // sets both after creation. A real install would set them during the
+    // install job.
+    db.db
+      .update(schema.gameServers)
+      .set({ state: demo.state, version: demo.version })
+      .where(eq(schema.gameServers.id, server.id))
+      .run();
+  }
+}
+
+const DEMO_SERVERS = [
+  {
+    displayName: 'Nomad',
+    catalogId: 'nomad-dedicated',
+    state: 'running' as const,
+    version: '1.0.0',
+  },
+  {
+    displayName: 'Palworld',
+    catalogId: 'palworld-dedicated',
+    state: 'running' as const,
+    version: 'latest',
+  },
+  {
+    displayName: 'Project Zomboid',
+    catalogId: 'zomboid-dedicated',
+    state: 'stopped' as const,
+    version: '42.20.0',
+  },
+];

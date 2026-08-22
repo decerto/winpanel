@@ -268,4 +268,6 @@ there.
 
 Related: [architecture.md](architecture.md) for how WinPanel puts these pieces together ·
 [hosting-a-website-on-windows-server.md](hosting-a-website-on-windows-server.md) for the
-same subject without the jargon.
+same subject without the jargon ·
+[game-servers-on-windows.md](game-servers-on-windows.md) for hosting Minecraft and Steam
+dedicated servers the same way.

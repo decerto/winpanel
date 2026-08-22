@@ -51,6 +51,10 @@ export const users = sqliteTable(
     siteLimit: integer('site_limit'),
     mailQuotaBytes: integer('mail_quota_bytes'),
     siteDiskQuotaBytes: integer('site_disk_quota_bytes'),
+    gameServerLimit: integer('game_server_limit'),
+    gameServerProviders: text('game_server_providers', { mode: 'json' })
+      .notNull()
+      .default(sql`'[]'`),
     /** Who made this account. Null for the first one, which made itself. */
     createdBy: text('created_by'),
     lastLoginAt: integer('last_login_at', { mode: 'timestamp_ms' }),
@@ -244,6 +248,7 @@ export const jobs = sqliteTable(
     progress: integer('progress'),
     payload: text('payload', { mode: 'json' }),
     siteId: text('site_id'),
+    gameServerId: text('game_server_id'),
     errorMessage: text('error_message'),
     attempts: integer('attempts').notNull().default(0),
     maxAttempts: integer('max_attempts').notNull().default(1),
@@ -258,6 +263,7 @@ export const jobs = sqliteTable(
   (table) => [
     index('jobs_status_created_idx').on(table.status, table.createdAt),
     index('jobs_site_idx').on(table.siteId),
+    index('jobs_game_server_idx').on(table.gameServerId),
   ],
 );
 
@@ -331,6 +337,85 @@ export const siteCertificates = sqliteTable('site_certificates', {
     .notNull()
     .default(sql`(unixepoch() * 1000)`),
 });
+
+export const gameServers = sqliteTable(
+  'game_servers',
+  {
+    id: text('id').primaryKey(),
+    slug: text('slug').notNull(),
+    displayName: text('display_name').notNull(),
+    ownerUserId: text('owner_user_id').references(() => users.id, { onDelete: 'set null' }),
+    catalogId: text('catalog_id').notNull(),
+    version: text('version'),
+    branch: text('branch'),
+    state: text('state', {
+      enum: [
+        'uninstalled',
+        'installing',
+        'stopped',
+        'starting',
+        'running',
+        'stopping',
+        'updating',
+        'reinstalling',
+        'failed',
+      ],
+    })
+      .notNull()
+      .default('uninstalled'),
+    installPath: text('install_path').notNull(),
+    dataPath: text('data_path').notNull(),
+    diskQuotaBytes: integer('disk_quota_bytes').notNull().default(53687091200),
+    serviceId: text('service_id'),
+    eulaAccepted: integer('eula_accepted', { mode: 'boolean' }).notNull().default(false),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex('game_servers_slug_idx').on(table.slug),
+    index('game_servers_owner_idx').on(table.ownerUserId),
+  ],
+);
+
+export const gameServerPorts = sqliteTable(
+  'game_server_ports',
+  {
+    id: text('id').primaryKey(),
+    gameServerId: text('game_server_id')
+      .notNull()
+      .references(() => gameServers.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    protocol: text('protocol', { enum: ['tcp', 'udp'] }).notNull(),
+    purpose: text('purpose', { enum: ['game', 'query', 'rcon', 'admin'] }).notNull(),
+    visibility: text('visibility', { enum: ['public', 'loopback'] }).notNull(),
+    port: integer('port').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (table) => [
+    uniqueIndex('game_server_ports_protocol_port_idx').on(table.protocol, table.port),
+    index('game_server_ports_server_idx').on(table.gameServerId),
+  ],
+);
+
+export const gameServerAccess = sqliteTable(
+  'game_server_access',
+  {
+    gameServerId: text('game_server_id')
+      .notNull()
+      .references(() => gameServers.id, { onDelete: 'cascade' }),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (table) => [
+    primaryKey({ columns: [table.gameServerId, table.userId] }),
+    index('game_server_access_user_idx').on(table.userId),
+  ],
+);
 
 /**
  * Undo records for server hardening.
@@ -432,3 +517,4 @@ export type UserRow = typeof users.$inferSelect;
 export type SiteRow = typeof sites.$inferSelect;
 export type JobRow = typeof jobs.$inferSelect;
 export type DeploymentRow = typeof deployments.$inferSelect;
+export type GameServerRow = typeof gameServers.$inferSelect;

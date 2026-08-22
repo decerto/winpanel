@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { KeyRound, Pencil, RefreshCw, Trash2, UserPlus, UsersRound } from 'lucide-vue-next';
+import { Gamepad2, KeyRound, ListChecks, Pencil, RefreshCw, Trash2, UserPlus, UsersRound } from 'lucide-vue-next';
 import { PASSWORD_MIN_LENGTH, ROLE_LABELS, roleAtLeast, type UserRole } from '@winpanel/shared';
 import { api, describeError } from '../lib/api';
 import { formatBytes, timeAgo } from '../lib/format';
@@ -22,10 +22,12 @@ import PageHeader from '../components/PageHeader.vue';
  */
 
 type Person = Awaited<ReturnType<typeof api.users.list.query>>[number];
+type GameServerCatalogEntry = Awaited<ReturnType<typeof api.gameServers.catalogue.query>>[number];
 
 const GB = 1024 ** 3;
 
 const people = ref<Person[]>([]);
+const gameCatalogue = ref<ReadonlyArray<GameServerCatalogEntry>>([]);
 const me = ref<{ id: string; role: UserRole } | null>(null);
 
 const loading = ref(true);
@@ -51,8 +53,14 @@ async function refresh(): Promise<void> {
   error.value = null;
 
   try {
-    const [list, current] = await Promise.all([api.users.list.query(), api.auth.me.query()]);
+    const catalogueRequest = api.gameServers?.catalogue?.query?.() ?? Promise.resolve([]);
+    const [list, current, catalogue] = await Promise.all([
+      api.users.list.query(),
+      api.auth.me.query(),
+      catalogueRequest.catch(() => []),
+    ]);
     people.value = list;
+    gameCatalogue.value = catalogue.filter((entry) => entry.status === 'ready');
     me.value = current ? { id: current.id, role: current.role } : null;
   } catch (err) {
     error.value = describeError(err);
@@ -91,6 +99,8 @@ interface FormState {
   siteLimit: string;
   mailQuotaGb: string;
   siteDiskQuotaGb: string;
+  gameServerLimit: string;
+  gameServerProviders: string[];
 }
 
 function blankForm(): FormState {
@@ -103,6 +113,8 @@ function blankForm(): FormState {
     siteLimit: '1',
     mailQuotaGb: '5',
     siteDiskQuotaGb: '20',
+    gameServerLimit: '1',
+    gameServerProviders: [],
   };
 }
 
@@ -126,6 +138,11 @@ function openEdit(person: Person): void {
     mailQuotaGb: person.mailQuotaBytes === null ? '' : String(person.mailQuotaBytes / GB),
     siteDiskQuotaGb:
       person.siteDiskQuotaBytes === null ? '' : String(person.siteDiskQuotaBytes / GB),
+    gameServerLimit:
+      person.gameServerLimit === null || person.gameServerLimit === undefined
+        ? ''
+        : String(person.gameServerLimit),
+    gameServerProviders: [...(person.gameServerProviders ?? [])],
   };
 }
 
@@ -164,6 +181,8 @@ async function submitForm(): Promise<void> {
           siteLimit: toLimit(state.siteLimit),
           mailQuotaBytes: toLimit(state.mailQuotaGb, GB),
           siteDiskQuotaBytes: toLimit(state.siteDiskQuotaGb, GB),
+          gameServerLimit: toLimit(state.gameServerLimit),
+          gameServerProviders: state.gameServerProviders,
         }
       : { siteLimit: null, mailQuotaBytes: null, siteDiskQuotaBytes: null };
 
@@ -243,6 +262,50 @@ function describeMail(person: Person): string {
   if (person.role !== 'user') return 'No limit';
   return person.mailQuotaBytes === null ? 'No limit' : formatBytes(person.mailQuotaBytes);
 }
+
+function describeGameServers(person: Person): string {
+  if (person.role !== 'user') return 'All games';
+  if (person.gameServerLimit === null || person.gameServerLimit === undefined) {
+    return `${person.gameServerCount ?? 0} of unlimited`;
+  }
+  return `${person.gameServerCount ?? 0} of ${person.gameServerLimit}`;
+}
+
+function toggleGameProvider(catalogId: string): void {
+  const providers = form.value.gameServerProviders;
+  form.value.gameServerProviders = providers.includes(catalogId)
+    ? providers.filter((id) => id !== catalogId)
+    : [...providers, catalogId];
+}
+
+const allowsAnyGame = computed(() => form.value.gameServerProviders.length === 0);
+
+function setGameAccess(mode: 'any' | 'selected'): void {
+  if (mode === 'any') {
+    form.value.gameServerProviders = [];
+    return;
+  }
+
+  // Selecting the first ready title gives the restricted mode a useful
+  // starting point without making administrators tick every title.
+  if (form.value.gameServerProviders.length === 0 && gameCatalogue.value[0]) {
+    form.value.gameServerProviders = [gameCatalogue.value[0].id];
+  }
+}
+
+const gamePickerQuery = ref('');
+
+const filteredGameCatalogue = computed(() => {
+  const query = gamePickerQuery.value.trim().toLowerCase();
+  if (!query) return gameCatalogue.value;
+  return gameCatalogue.value.filter((entry) =>
+    entry.name.toLowerCase().includes(query) || entry.genre.toLowerCase().includes(query),
+  );
+});
+
+function selectAllGames(): void {
+  form.value.gameServerProviders = gameCatalogue.value.map((entry) => entry.id);
+}
 </script>
 
 <template>
@@ -283,6 +346,7 @@ function describeMail(person: Person): string {
             <th scope="col" class="px-5 py-3 font-medium">Account</th>
             <th scope="col" class="px-5 py-3 font-medium">Role</th>
             <th scope="col" class="hidden px-5 py-3 font-medium sm:table-cell">Websites</th>
+            <th scope="col" class="hidden px-5 py-3 font-medium lg:table-cell">Game servers</th>
             <th scope="col" class="hidden px-5 py-3 font-medium lg:table-cell">Email</th>
             <th scope="col" class="hidden px-5 py-3 font-medium md:table-cell">Last signed in</th>
             <th scope="col" class="px-5 py-3 text-right font-medium">Manage</th>
@@ -320,6 +384,10 @@ function describeMail(person: Person): string {
 
             <td class="hidden whitespace-nowrap px-5 py-3 text-ink-muted sm:table-cell">
               {{ describeSites(person) }}
+            </td>
+
+            <td class="hidden whitespace-nowrap px-5 py-3 text-ink-muted lg:table-cell">
+              {{ describeGameServers(person) }}
             </td>
 
             <td class="hidden whitespace-nowrap px-5 py-3 text-ink-muted lg:table-cell">
@@ -424,7 +492,7 @@ function describeMail(person: Person): string {
           <p class="text-xs text-ink-faint">{{ ROLE_LABELS[form.role].description }}</p>
         </div>
 
-        <div v-if="showLimits" class="grid gap-3 sm:grid-cols-3">
+        <div v-if="showLimits" class="grid gap-3 sm:grid-cols-4">
           <div class="space-y-1">
             <label class="label" for="person-sites">Websites</label>
             <input
@@ -458,9 +526,90 @@ function describeMail(person: Person): string {
             />
           </div>
 
+          <div class="space-y-1">
+            <label class="label" for="person-game-servers">Game servers</label>
+            <input
+              id="person-game-servers"
+              v-model="form.gameServerLimit"
+              class="field"
+              inputmode="numeric"
+              placeholder="No limit"
+            />
+          </div>
+
           <p class="text-xs text-ink-faint sm:col-span-3">
-            Leave a field empty for no limit. All three can be changed later.
+            Leave a field empty for no limit. These limits can be changed later.
           </p>
+
+          <fieldset v-if="gameCatalogue.length > 0" class="space-y-3 sm:col-span-3">
+            <legend class="label">Game access</legend>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <label class="game-access-card" :class="allowsAnyGame ? 'game-access-card-on' : ''">
+                <input
+                  type="radio"
+                  name="game-access"
+                  class="sr-only"
+                  :checked="allowsAnyGame"
+                  @change="setGameAccess('any')"
+                />
+                <Gamepad2 :size="18" class="mt-0.5 shrink-0 text-brand-bright" aria-hidden="true" />
+                <span>
+                  <strong class="font-medium text-ink">Any supported game</strong>
+                  <span class="mt-0.5 block text-xs text-ink-faint">
+                    They pick the game themselves when they create their server.
+                  </span>
+                </span>
+              </label>
+              <label class="game-access-card" :class="!allowsAnyGame ? 'game-access-card-on' : ''">
+                <input
+                  type="radio"
+                  name="game-access"
+                  class="sr-only"
+                  :checked="!allowsAnyGame"
+                  @change="setGameAccess('selected')"
+                />
+                <ListChecks :size="18" class="mt-0.5 shrink-0 text-brand-bright" aria-hidden="true" />
+                <span>
+                  <strong class="font-medium text-ink">Selected games</strong>
+                  <span class="mt-0.5 block text-xs text-ink-faint">
+                    Only the games you pick below are available to them.
+                  </span>
+                </span>
+              </label>
+
+              <div v-if="!allowsAnyGame" class="rounded-lg border border-line bg-black/15 p-3">
+                <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <span class="text-xs text-ink-faint">{{ form.gameServerProviders.length }} selected</span>
+                  <button type="button" class="text-xs text-brand-bright hover:underline" @click="selectAllGames">
+                    Select all supported games
+                  </button>
+                </div>
+                <div class="space-y-2">
+                  <input
+                    v-model="gamePickerQuery"
+                    class="field"
+                    placeholder="Search games"
+                    aria-label="Search supported games"
+                  />
+                  <div class="max-h-40 overflow-y-auto rounded-lg border border-line bg-black/10 p-2">
+                    <label
+                      v-for="entry in filteredGameCatalogue"
+                      :key="entry.id"
+                      class="flex items-center gap-2 rounded px-2 py-1 text-sm text-ink-muted hover:bg-white/[0.03]"
+                    >
+                      <input
+                        type="checkbox"
+                        :checked="form.gameServerProviders.includes(entry.id)"
+                        @change="toggleGameProvider(entry.id)"
+                      />
+                      <span class="truncate">{{ entry.name }}</span>
+                      <span class="ml-auto text-xs text-ink-faint">{{ entry.genre }}</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </fieldset>
         </div>
 
         <div class="flex justify-end gap-2 pt-2">
@@ -509,3 +658,38 @@ function describeMail(person: Person): string {
     </div>
   </div>
 </template>
+
+<style scoped>
+/*
+ * The two game-access options are peers, so they present as peers: same
+ * width, an icon each, and a visible selected border rather than a bare radio
+ * dot that reads as decoration.
+ */
+.game-access-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  cursor: pointer;
+  border: 1px solid var(--color-line);
+  border-radius: 0.5rem;
+  background: rgb(0 0 0 / 0.15);
+  padding: 0.75rem;
+  font-size: 0.875rem;
+  color: var(--color-ink-muted);
+  transition: border-color 140ms ease, background 140ms ease;
+}
+
+.game-access-card:hover {
+  border-color: var(--color-line-strong, rgb(255 255 255 / 0.22));
+}
+
+.game-access-card-on {
+  border-color: var(--color-brand);
+  background: rgb(0 0 0 / 0.25);
+}
+
+.game-access-card:has(input:focus-visible) {
+  outline: 2px solid var(--color-brand-bright);
+  outline-offset: 2px;
+}
+</style>

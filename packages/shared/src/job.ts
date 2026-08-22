@@ -32,6 +32,12 @@ export const JobKind = z.enum([
   'update-panel',
   /** Downloading WordPress, creating its database and writing wp-config.php. */
   'install-wordpress',
+  /** Downloading the files for a supported game server. */
+  'install-game-server',
+  /** Pulling the latest build of a game server's selected Steam branch. */
+  'update-game-server',
+  /** Reacquiring provider-managed files while preserving server data. */
+  'reinstall-game-server',
 ]);
 export type JobKind = z.infer<typeof JobKind>;
 
@@ -59,6 +65,7 @@ export const Job = z.object({
   /** Free-form payload, validated per job kind by the handler. */
   payload: z.unknown(),
   siteId: z.string().uuid().nullable().default(null),
+  gameServerId: z.string().uuid().nullable().default(null),
   /** Set when the job failed — plain English, with a fix hint where possible. */
   errorMessage: z.string().nullable().default(null),
   attempts: z.number().int().nonnegative().default(0),

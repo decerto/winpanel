@@ -121,6 +121,9 @@ importers:
       happy-dom:
         specifier: ^20.0.0
         version: 20.11.1
+      playwright-core:
+        specifier: ^1.57.0
+        version: 1.62.1
       tailwindcss:
         specifier: ^4.1.14
         version: 4.3.3
@@ -1875,6 +1878,11 @@ packages:
 
   pino@9.14.0:
     resolution: {integrity: sha512-8OEwKp5juEvb/MjpIc4hjqfgCNysrS94RIOMXYvpYCdm/jglrKEiAYmiumbmGhCvs+IcInsphYDFwqrjr7398w==}
+    hasBin: true
+
+  playwright-core@1.62.1:
+    resolution: {integrity: sha512-wPYSwEBJY9GHraISXqyqtx0na0LpO3XEX7jNDhntbex7tzUS7kLnZsOlFruFJB4Hi/rhDMjXGqHewDZ68nYZVw==}
+    engines: {node: '>=20'}
     hasBin: true
 
   postcss@8.5.25:
@@ -3641,6 +3649,8 @@ snapshots:
       safe-stable-stringify: 2.5.0
       sonic-boom: 4.2.1
       thread-stream: 3.2.0
+
+  playwright-core@1.62.1: {}
 
   postcss@8.5.25:
     dependencies:

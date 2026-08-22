@@ -207,4 +207,5 @@ will tell you to read the source code.
 ---
 
 Related: [the full feature list](https://github.com/decerto/winpanel#readme) ·
-[the technical version of this page](nodejs-hosting-on-windows-server.md)
+[the technical version of this page](nodejs-hosting-on-windows-server.md) ·
+[hosting a game server on Windows](game-servers-on-windows.md)

@@ -15,6 +15,7 @@ export const ComponentId = z.enum([
   'stalwart',
   'git',
   'node',
+  'java',
   'pnpm',
   'yarn',
   'bun',
@@ -25,6 +26,8 @@ export const ComponentId = z.enum([
   'composer',
   /** The single-file database browser, served only through the panel itself. */
   'adminer',
+  /** Valve's self-updating tool for downloading allowlisted Steam servers. */
+  'steamcmd',
 ]);
 export type ComponentId = z.infer<typeof ComponentId>;
 
@@ -67,9 +70,9 @@ export const ComponentDefinition = z.object({
    * Lowercase hex SHA-256 of the download. Verified before the file is
    * extracted or executed. A mismatch aborts the install.
    *
-   * Null only for downloads that are generated per-request and therefore have
-   * no stable hash (Caddy's custom-build endpoint). Those are additionally
-   * validated by running the binary and checking its reported version.
+  * Null only for downloads that are generated per-request or are mutable
+  * publisher bootstrappers (Caddy and Valve's SteamCMD). Those are
+  * additionally validated by their executable verification command.
    */
   sha256: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
   /** Arguments for `exe`/`script` kinds. Never a shell string. */

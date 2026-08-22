@@ -22,6 +22,7 @@ const PANEL_MANAGED = new Set([
   'caddy',
   'stalwart',
   'git',
+  'java',
   'pnpm',
   'yarn',
   'bun',
@@ -30,6 +31,7 @@ const PANEL_MANAGED = new Set([
   'mariadb',
   'composer',
   'adminer',
+  'steamcmd',
 ]);
 
 /** Names each program may go by, matching the installer's own list. */

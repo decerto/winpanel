@@ -1,6 +1,15 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue';
-import { Download, FolderSearch, Info, Lock, Power, RefreshCw, Server } from 'lucide-vue-next';
+import {
+  Download,
+  FolderSearch,
+  Gamepad2,
+  Info,
+  Lock,
+  Power,
+  RefreshCw,
+  Server,
+} from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
 import { LOG_LEVEL_CLASS, useJobLog } from '../lib/job-log';
 import PageHeader from '../components/PageHeader.vue';
@@ -22,6 +31,7 @@ type MailStatus = Awaited<ReturnType<typeof api.mail.serverStatus.query>>;
 type BackgroundServices = Awaited<ReturnType<typeof api.system.backgroundServices.query>>;
 type ShutdownResult = Awaited<ReturnType<typeof api.system.shutdown.mutate>>;
 type PanelCertificate = Awaited<ReturnType<typeof api.system.panelCertificate.query>>;
+type GameServersSettings = Awaited<ReturnType<typeof api.gameServers.settings.query>>;
 
 const info = ref<SystemInfo | null>(null);
 
@@ -39,6 +49,17 @@ const mailBusy = ref(false);
 const mailManual = ref(false);
 
 const services = ref<BackgroundServices>([]);
+const gameServers = ref<GameServersSettings | null>(null);
+const gameServersBusy = ref(false);
+const steamUsername = ref('');
+const steamPassword = ref('');
+const steamCredentialsBusy = ref(false);
+const gameServersJob = useJobLog({
+  onFinished: async () => {
+    gameServersBusy.value = false;
+    await refreshGameServers();
+  },
+});
 const shutdownBusy = ref(false);
 const startAllBusy = ref(false);
 const serviceBusyId = ref<string | null>(null);
@@ -249,9 +270,10 @@ async function refresh(): Promise<void> {
     api.mail.serverStatus.query(),
     api.system.backgroundServices.query(),
     api.auth.me.query(),
+    api.gameServers.settings.query(),
   ]);
 
-  const [systemInfo, mailStatus, background, me] = results;
+  const [systemInfo, mailStatus, background, me, gameServerSettings] = results;
 
   if (systemInfo.status === 'fulfilled') info.value = systemInfo.value;
   if (mailStatus.status === 'fulfilled') mail.value = mailStatus.value;
@@ -262,12 +284,88 @@ async function refresh(): Promise<void> {
    * it either way.
    */
   if (me.status === 'fulfilled') isOwner.value = me.value?.role === 'superadmin';
+  if (gameServerSettings.status === 'fulfilled') gameServers.value = gameServerSettings.value;
 
   await loadPanelCertificate({ adoptHostname: firstLoad });
   firstLoad = false;
 
   const failure = results.find((result) => result.status === 'rejected');
   if (failure) error.value = describeError(failure.reason);
+}
+
+async function refreshGameServers(): Promise<void> {
+  try {
+    gameServers.value = await api.gameServers.settings.query();
+  } catch {
+    // The rest of Settings remains useful if this optional capability check fails.
+  }
+}
+
+async function setGameServersEnabled(enabled: boolean): Promise<void> {
+  gameServersBusy.value = true;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    await api.gameServers.setEnabled.mutate({ enabled });
+    await refreshGameServers();
+    notice.value = enabled
+      ? 'Game servers are enabled. Install the required tools below before creating one.'
+      : 'Game servers are disabled. Existing server files were left untouched.';
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    gameServersBusy.value = false;
+  }
+}
+
+async function installGameComponent(componentId: 'steamcmd' | 'java'): Promise<void> {
+  gameServersBusy.value = true;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    const result = await api.components.install.mutate({ componentId });
+    gameServersJob.watchJob(result.jobId);
+  } catch (err) {
+    error.value = describeError(err);
+    gameServersBusy.value = false;
+  }
+}
+
+async function saveSteamCredentials(): Promise<void> {
+  if (!steamUsername.value.trim() || !steamPassword.value) return;
+  steamCredentialsBusy.value = true;
+  error.value = null;
+  notice.value = null;
+  try {
+    await api.gameServers.setSteamCredentials.mutate({
+      username: steamUsername.value.trim(),
+      password: steamPassword.value,
+    });
+    steamPassword.value = '';
+    await refreshGameServers();
+    notice.value = 'Steam credentials saved encrypted on this server.';
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    steamCredentialsBusy.value = false;
+  }
+}
+
+async function clearSteamCredentials(): Promise<void> {
+  steamCredentialsBusy.value = true;
+  try {
+    await api.gameServers.clearSteamCredentials.mutate();
+    steamUsername.value = '';
+    steamPassword.value = '';
+    await refreshGameServers();
+    notice.value = 'Steam credentials removed.';
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    steamCredentialsBusy.value = false;
+  }
 }
 
 void refresh();
@@ -612,6 +710,114 @@ async function installUpdate(): Promise<void> {
     <AlertMessage v-if="notice" tone="success" class="mb-4">{{ notice }}</AlertMessage>
 
     <ComponentsPanel class="mb-4" @changed="refresh" />
+
+    <section class="card mb-4 p-6">
+      <div class="flex items-start gap-3">
+        <span
+          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-line
+                 bg-brand-soft/50 text-brand-bright"
+          aria-hidden="true"
+        >
+          <Gamepad2 :size="19" />
+        </span>
+
+        <div class="min-w-0 flex-1">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 class="text-base font-semibold text-ink">Game servers</h2>
+              <p class="mt-1 text-sm text-ink-muted">
+                Turn on game-server hosting for this machine and prepare the tools used by the
+                supported providers.
+              </p>
+            </div>
+
+            <label class="inline-flex items-center gap-2 text-sm text-ink-muted">
+              <span>Enabled</span>
+              <input
+                type="checkbox"
+                :checked="gameServers?.enabled ?? false"
+                :disabled="gameServersBusy || !gameServers"
+                @change="setGameServersEnabled(($event.target as HTMLInputElement).checked)"
+              />
+            </label>
+          </div>
+
+          <div v-if="gameServers" class="mt-5 grid gap-3 sm:grid-cols-2">
+            <div class="rounded-lg border border-line bg-black/20 p-3">
+              <p class="text-xs uppercase tracking-wide text-ink-faint">SteamCMD</p>
+              <p class="mt-1 text-sm" :class="gameServers.steamcmdInstalled ? 'text-ok' : 'text-warn'">
+                {{ gameServers.steamcmdInstalled ? 'Installed' : 'Not installed' }}
+              </p>
+              <button
+                v-if="!gameServers.steamcmdInstalled"
+                type="button"
+                class="btn btn-primary btn-sm mt-3"
+                :disabled="gameServersBusy || !gameServers.enabled"
+                @click="installGameComponent('steamcmd')"
+              >
+                Install SteamCMD
+              </button>
+              <p v-else class="mt-2 text-xs text-ink-faint">
+                {{ gameServers.steamCredentialsConfigured ? 'Authenticated Steam account configured.' : 'Anonymous downloads only.' }}
+              </p>
+              <form v-if="gameServers.steamcmdInstalled" class="mt-3 space-y-2 border-t border-line pt-3" @submit.prevent="saveSteamCredentials">
+                <label class="label" for="steam-username">Steam account</label>
+                <input id="steam-username" v-model="steamUsername" class="field" autocomplete="off" placeholder="Username" />
+                <input v-model="steamPassword" class="field" type="password" autocomplete="new-password" placeholder="Password" />
+                <div class="flex flex-wrap gap-2">
+                  <button type="submit" class="btn btn-primary btn-sm" :disabled="steamCredentialsBusy || !steamUsername.trim() || !steamPassword">Save encrypted credentials</button>
+                  <button v-if="gameServers.steamCredentialsConfigured" type="button" class="btn btn-ghost btn-sm" :disabled="steamCredentialsBusy" @click="clearSteamCredentials">Clear</button>
+                </div>
+                <p class="text-xs text-ink-faint">Steam Guard may still require an interactive login outside this panel for accounts that request it.</p>
+              </form>
+            </div>
+
+            <div class="rounded-lg border border-line bg-black/20 p-3">
+              <p class="text-xs uppercase tracking-wide text-ink-faint">Minecraft Java</p>
+              <p class="mt-1 text-sm" :class="gameServers.javaInstalled ? 'text-ok' : 'text-warn'">
+                {{ gameServers.javaInstalled ? gameServers.javaVersion : 'Java was not found' }}
+              </p>
+              <button
+                v-if="!gameServers.javaInstalled"
+                type="button"
+                class="btn btn-primary btn-sm mt-3"
+                :disabled="gameServersBusy || !gameServers.enabled"
+                @click="installGameComponent('java')"
+              >
+                Install Java runtime
+              </button>
+            </div>
+          </div>
+
+          <HowTo title="Before creating a game server" class="mt-4">
+            <li>Enable Game servers here. Existing server files are not changed by this switch.</li>
+            <li>
+              Install SteamCMD for Steam providers. Valve's bootstrapper updates itself from its
+              official download when it first runs.
+            </li>
+            <li>
+              Install the Java runtime from this page for Minecraft Java Edition. Bedrock uses
+              its own Windows server and does not need Java.
+            </li>
+            <li>
+              Make sure the game publisher's dedicated-server terms and EULA are accepted before
+              installation.
+            </li>
+          </HowTo>
+
+          <pre
+            v-if="gameServersJob.lines.value.length > 0"
+            class="mt-4 max-h-48 overflow-y-auto rounded-lg border border-line bg-black/25 p-3
+                   font-mono text-xs leading-relaxed"
+          ><span
+            v-for="line in gameServersJob.lines.value"
+            :key="line.seq"
+            class="block"
+            :class="LOG_LEVEL_CLASS[line.level] ?? 'text-ink'"
+          >{{ line.message }}</span></pre>
+        </div>
+      </div>
+    </section>
 
     <section class="card mt-4 p-6">
       <div class="flex items-start gap-3">

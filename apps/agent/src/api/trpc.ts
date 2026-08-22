@@ -195,6 +195,16 @@ export function userMayAccessSite(app: AppContext, user: SessionUser, slug: stri
   );
 }
 
+/** Whether a customer owns or has been explicitly assigned a game server. */
+export function userMayAccessGameServer(
+  app: AppContext,
+  user: SessionUser,
+  slug: string,
+): boolean {
+  if (user.role !== 'user') return true;
+  return app.gameServers.getVisible(slug, user.id) !== undefined;
+}
+
 /**
  * Stops a customer reaching a website that is not theirs.
  *
@@ -242,6 +252,9 @@ export const protectedProcedure = t.procedure
   .use(requireAuth)
   .use(enforceSiteScope)
   .use(auditMiddleware);
+
+/** Authenticated API without the website-specific scope middleware. */
+export const accountProcedure = t.procedure.use(requireAuth).use(auditMiddleware);
 
 /**
  * Requires an administrator or the owner.
