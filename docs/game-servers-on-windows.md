@@ -14,6 +14,9 @@ WinPanel can host supported dedicated game servers as Windows Services. Game ser
 
 ## Setup
 
+Everything below happens once, from a browser. There is no command line involved, and
+nothing on this page asks you to edit a file by hand before your first server is up.
+
 1. Open **Settings** and enable **Game servers**.
 2. Install **SteamCMD** from the Programs section if you want a Steam provider.
 3. For Steam games that require ownership, enter the Steam account in the Game servers section. Credentials are encrypted in WinPanel and never shown back to the browser.
@@ -179,6 +182,32 @@ A minimal Steam config for a game that downloads anonymously:
 The panel validates the file at startup, and the game appears in the library the next time it loads. A bad file is skipped with its name in the log, so a typo never takes the catalog down.
 
 Configs are shared through the repository. If you write one for a game that is not in the library, a pull request adding the file is the whole change — see [docs/game-servers-catalogue.md](game-servers-catalogue.md) for the review checklist and how to test it on your own install first.
+
+## Setting up a server that works
+
+The panel takes care of the service, the ports and the firewall. The game inside is still
+yours — these are the settings that decide whether anyone can actually play on it.
+
+**Names and passwords first.** Every game shows a server name in its browser list, and
+most take a password. Set both before inviting anyone: a server called `server` with no
+password is open to whoever finds it. The file manager's **Server config** button opens
+the right file for the games that name one; the rest keep the setting in their own config
+under the data folder.
+
+**Match the player count to the machine.** A server's default max-players is often far
+above what a small VM holds comfortably. Player slots cost memory before they cost CPU,
+and a server that runs out of memory does not lag — it stops. Start lower than the
+default and raise it once you have seen what a full evening does to the machine.
+
+**Game ports are already allocated and firewalled; the rest of the path is not.** The
+Connection panel shows the exact bindings. If players cannot connect, the cause is almost
+always upstream: the router has no port forwarding, the cloud security group has no rule,
+or the game is still starting. Check those in that order before touching the panel.
+
+**Updates replace files, not settings.** An update pulls the current build from the
+provider and keeps the data folder. Settings, worlds and saves survive it; a setting the
+provider renamed between versions does not, so read the provider's patch notes before
+updating a server people are playing on.
 
 ## Updates and limitations
 

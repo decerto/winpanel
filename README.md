@@ -205,7 +205,7 @@ folder from its data directory. Adding a game means adding a file — no TypeScr
 no rebuild, no waiting for a release. See [Game servers on Windows](docs/game-servers-on-windows.md)
 for the schema and the contribution path.
 
-![Game servers, as cards](docs/screenshots/game-servers-library.png)
+![Choosing who gets which games](docs/screenshots/people-game-access.png)
 
 ## DNS control
 
