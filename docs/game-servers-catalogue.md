@@ -88,3 +88,35 @@ A minimal Steam config for a game that downloads anonymously:
 The panel validates the file at startup, and the game appears in the library the next
 time it loads. A bad file is skipped with its name in the log, so a typo never takes the
 catalog down.
+
+## Sharing a config
+
+A config that works on your server works on everyone's. If you have written one for a
+game that is not in the library, open a pull request that adds the file to
+`game-servers/catalogue/` — nothing else. No TypeScript, no release notes; the loader
+finds it and the next release carries it.
+
+Before opening it, check the file against the list below. These are the things a review
+will ask about, in the order it will ask them:
+
+- **The download is official and verifiable.** A Steam `steamAppId` from the publisher's
+  own depot, or a `downloadUrl` on the publisher's own domain. A config that points at a
+  re-upload or a third-party mirror is a supply-chain problem, not a contribution.
+- **The executable check matches what the download actually contains.** `executable` is
+  how the panel knows an install completed; a wrong name produces a server that installs
+  and then cannot start.
+- **Ports are the provider's documented defaults.** WinPanel reallocates them on
+  collision, so the catalog value is the well-known one, not a random high port.
+- **`launchArgs` are complete enough to start unattended.** A server that needs a console
+  answer on first launch cannot run as a service. Use the documented batch/dedicated
+  flags (`-batchmode`, `-nographics`, headless JVM options) rather than leaving the
+  prompt for a person who is not there.
+- **The config has been run.** Install it through the panel on a real machine, start it,
+  and connect to it. A config that has never been run is a guess.
+
+The schema is validated at load, so the fastest check is to drop the file into your own
+data folder first — a typo is rejected with its reason in the panel log.
+
+Artwork is optional. Steam games get cover art from their `steamArtAppId` automatically.
+For anything else, `artUrl` points at the publisher's official image and the panel
+proxies it; the themed letter fallback is fine without one.

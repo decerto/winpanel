@@ -41,6 +41,14 @@ failure](docs/testing.md#things-that-bite) rather than your change.
 - **No new dependency without a reason.** Every package is something that has to be
   audited, updated and shipped in the installer.
 
+## Adding a game to the library
+
+The game server catalog is data, not code. Adding a supported game means adding one JSON
+file to `game-servers/catalogue/` — no TypeScript, no rebuild. The file format, the merge
+rules, and the checklist a review follows are in
+[docs/game-servers-catalogue.md](docs/game-servers-catalogue.md), including how to test a
+config on your own install before opening the pull request.
+
 ## Tests
 
 New code touching file paths, process launching, downloads or authorisation is expected to

@@ -178,6 +178,8 @@ A minimal Steam config for a game that downloads anonymously:
 
 The panel validates the file at startup, and the game appears in the library the next time it loads. A bad file is skipped with its name in the log, so a typo never takes the catalog down.
 
+Configs are shared through the repository. If you write one for a game that is not in the library, a pull request adding the file is the whole change — see [docs/game-servers-catalogue.md](game-servers-catalogue.md) for the review checklist and how to test it on your own install first.
+
 ## Updates and limitations
 
 Reinstalling or installing again runs the provider's acquisition path. A normal update workflow will be exposed per provider once its data migration and graceful-stop behavior are tested.
