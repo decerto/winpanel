@@ -347,6 +347,34 @@ export class ServiceManager {
     return 'updated';
   }
 
+  /**
+   * Rewrites a registered service's configuration in place.
+   *
+   * Same reasoning as `setEnvironment`: the Windows registration points at the
+   * wrapper with no arguments and the wrapper re-reads this file every time it
+   * starts, so a corrected executable or argument list takes effect without an
+   * unregister/re-register cycle. This is what lets a reinstall repair a
+   * server whose launch arguments were wrong when it was first set up.
+   */
+  async reconfigure(
+    definition: ServiceDefinition,
+  ): Promise<'not-installed' | 'unchanged' | 'updated'> {
+    const configPath = this.configPathFor(definition.id);
+
+    const current = await fs.readFile(configPath, 'utf8').catch(() => null);
+    if (current === null) return 'not-installed';
+
+    const next = buildServiceXml(definition);
+    if (next === current) return 'unchanged';
+
+    await fs.mkdir(definition.logPath, { recursive: true });
+    await fs.writeFile(configPath, next, { mode: 0o600 });
+
+    if ((await this.getState(definition.id)) === 'running') await this.restart(definition.id);
+
+    return 'updated';
+  }
+
   async uninstall(id: string): Promise<void> {
     const wrapperPath = this.wrapperPathFor(id);
 

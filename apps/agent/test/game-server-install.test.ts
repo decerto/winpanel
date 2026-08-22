@@ -281,6 +281,7 @@ describe('Minecraft Java installation', () => {
     const services = {
       isInstalled: async () => true,
       install: async () => undefined,
+      reconfigure: async () => 'unchanged' as const,
       stop: async () => calls.push('stop'),
       start: async () => calls.push('start'),
     } as unknown as ServiceManager;
@@ -437,6 +438,7 @@ describe('Minecraft Java installation', () => {
     const services = {
       isInstalled: async () => false,
       install: async (definition: (typeof installed)[number]) => installed.push(definition),
+      reconfigure: async () => 'unchanged' as const,
     } as unknown as ServiceManager;
     const handler = createInstallGameServerHandler({
       db: handle,
@@ -483,14 +485,21 @@ describe('Minecraft Java installation', () => {
     expect(installed[0]?.args).toContain('-Xmx2560m');
     expect(installed[0]?.workingDirectory).toBe(server.installPath);
 
-    const gamePort = handle.db
-      .select({ port: gameServerPorts.port })
-      .from(gameServerPorts)
-      .all()[0]?.port;
-    const iniPath = path.join(server.installPath, 'zomboid-profile', `${server.slug}.ini`);
+    const profileDir = path.join(server.installPath, 'zomboid-profile');
+    const bindings = handle.db.select().from(gameServerPorts).all();
+    const gamePort = bindings.find((binding) => binding.purpose === 'game')?.port;
+    const directPort = bindings.find((binding) => binding.purpose === 'query')?.port;
+    expect(installed[0]?.args).toContain(`-cachedir=${profileDir}`);
+    expect(installed[0]?.args).toContain('-adminpassword');
+    expect(installed[0]?.args).toContain(String(gamePort));
+    expect(installed[0]?.args).toContain(String(directPort));
+
+    const iniPath = path.join(profileDir, 'Server', `${server.slug}.ini`);
     const ini = await fs.readFile(iniPath, 'utf8');
-    expect(ini).toContain(`UDPPort=${gamePort}`);
-    expect(ini).toContain(`SteamServerName=PZ`);
-    expect(service.get(server.slug)?.dataPath).toBe(path.join(server.installPath, 'zomboid-profile'));
+    expect(ini).toContain(`DefaultPort=${gamePort}`);
+    expect(ini).toContain(`UDPPort=${directPort}`);
+    expect(ini).toContain('Public=true');
+    expect(ini).toContain('PublicName=PZ');
+    expect(service.get(server.slug)?.dataPath).toBe(profileDir);
   });
 });

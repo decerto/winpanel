@@ -40,7 +40,7 @@ loaded.
 | `artUrl` | Official cover art URL for games that are not on Steam. Proxied and cached by the panel. |
 | `configFile` | The main settings file, relative to the server's data folder. Adds an edit shortcut on the server page. `{slug}` expands to the server slug. Omit it to hide the shortcut. |
 | `executable` / `launchExecutable` | The file that proves a download completed, and the binary the service actually runs. |
-| `launchArgs` | Fixed arguments; `{gamePort}`, `{slug}`, `{classpath}`, and `{heapMb}` are expanded at install time. |
+| `launchArgs` | Fixed arguments; `{gamePort}`, `{directPort}`, `{slug}`, `{classpath}`, `{heapMb}`, `{dataDir}`, and `{adminPassword}` are expanded at install time. |
 | `downloadUrl` / `downloadSha256` | Official download and optional checksum for non-Steam providers. |
 | `console` | `rcon`, `stdin`, or `none`. `none` until a protocol is proven. |
 | `dataDirectory` | The provider's data folder, mapped into the Files view. |

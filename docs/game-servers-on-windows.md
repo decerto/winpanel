@@ -72,7 +72,11 @@ Nomad normally creates its editable server data under `Nomad Server` on first la
 
 Zomboid is supported from Steam App ID `380870` and downloads anonymously — no Steam account is needed. WinPanel runs the server directly through the bundled `jre64/bin/java.exe` rather than the `StartServer64.bat` wrapper, because a Windows service cannot answer the batch file's first-run console prompt.
 
-WinPanel creates a managed profile inside the install folder and starts the server with `-servername <slug>`. The server settings file — `<slug>.ini` — lives in the profile, which is mapped into the Files view so it can be edited there. The default bindings are UDP `16261` (game) and UDP `16262` (direct connection), allocated and firewalled like every other public port. On first start, the server creates its admin account using a password WinPanel generates and stores in the vault; it is not printed in logs.
+WinPanel creates a managed profile inside the install folder and points the server at it with `-cachedir`, so everything the game writes — settings, saves, logs — stays with the install instead of landing in the service account's `%USERPROFILE%\Zomboid`. The server reads its settings from `<cachedir>\Server\<servername>.ini`, so the settings file is at `Server/<slug>.ini` inside the profile, which is mapped into the Files view and reachable from the **Server config** button.
+
+The default bindings are UDP `16261` (`DefaultPort`, the port players connect to) and UDP `16262` (`UDPPort`, direct connection), allocated and firewalled like every other public port and also passed as `-port`/`-udpport` so the service cannot drift from the allocation. The seeded profile sets `Public=true` and `PublicName` to the server's display name; without those the server never announces itself and cannot be found in the in-game browser however open the ports are.
+
+The first start creates the `admin` account with a password WinPanel generates and stores in the vault, supplied through `-adminpassword` — the batch file would otherwise block forever on a console prompt no service can answer. Reinstalling reuses the stored password rather than rotating it, and refreshes the service's launch arguments, which is the repair path for a server registered before these arguments were correct.
 
 The heap is sized from the memory actually free on the machine at install time (between 1 GB and 4 GB), rather than the upstream launcher’s fixed 4 GB default — a small VM otherwise fails to start at all with an out-of-memory error. Because the heap is baked into the Windows service definition, resizing it later means deleting and recreating the server.
 
@@ -94,7 +98,7 @@ For isolation, use a dedicated Steam account owned by the hosting operator rathe
 
 The **Files** view operates on the server's data folder. It supports browsing, editing, folders, deletion, uploads, downloads, quotas, and containment checks. Provider executables are kept outside this editable data root.
 
-When the catalog names a `configFile` for the game, the server page also shows a **Server config** button in the Files header that opens that file straight into the editor — Nomad's `Config/config.json`, Minecraft Java's `server.properties`, Zomboid's `<slug>.ini`. Providers whose settings live outside the data folder, or that have no single obvious settings file, do not show the button; browse the file manager instead.
+When the catalog names a `configFile` for the game, the server page also shows a **Server config** button in the Files header that opens that file straight into the editor — Nomad's `Config/config.json`, Minecraft Java's `server.properties`, Zomboid's `Server/<slug>.ini`. Providers whose settings live outside the data folder, or that have no single obvious settings file, do not show the button; browse the file manager instead.
 
 Minecraft Java exposes a live service log and an authenticated RCON console on its detail page. Commands are sent only to the loopback RCON binding and the password remains in the vault. Providers without a tested console protocol show output status but do not expose a fake shell.
 
@@ -142,7 +146,7 @@ The fields a config carries:
 | `steamRequiresOwnership` | Whether the game needs a Steam account that owns it. |
 | `steamAppId` / `steamArtAppId` | The install ID and the retail ID used for library artwork. |
 | `executable` / `launchExecutable` | The file that proves a download completed, and the binary the service actually runs. |
-| `launchArgs` | Fixed arguments; `{gamePort}`, `{slug}`, `{classpath}`, and `{heapMb}` are expanded at install time. |
+| `launchArgs` | Fixed arguments; `{gamePort}`, `{directPort}`, `{slug}`, `{classpath}`, `{heapMb}`, `{dataDir}`, and `{adminPassword}` are expanded at install time. |
 | `downloadUrl` / `downloadSha256` | Official download and optional checksum for non-Steam providers. |
 | `console` | `rcon`, `stdin`, or `none`. `none` until a protocol is proven. |
 | `dataDirectory` | The provider's data folder, mapped into the Files view. |

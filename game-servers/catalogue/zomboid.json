@@ -24,12 +24,17 @@
     "-Djava.library.path=natives/;natives/win64/;.",
     "-cp", "{classpath}",
     "zombie.network.GameServer",
+    "-cachedir={dataDir}",
     "-servername", "{slug}",
+    "-adminusername", "admin",
+    "-adminpassword", "{adminPassword}",
+    "-port", "{gamePort}",
+    "-udpport", "{directPort}",
     "-statistic", "0"
   ],
   "console": "none",
   "dataDirectory": "zomboid-profile",
-  "configFile": "{slug}.ini",
+  "configFile": "Server/{slug}.ini",
   "ports": [
     { "name": "game", "protocol": "udp", "purpose": "game", "visibility": "public", "port": 16261 },
     { "name": "direct", "protocol": "udp", "purpose": "query", "visibility": "public", "port": 16262 }

@@ -228,17 +228,27 @@ async function registerService(
   ctx: JobContext,
 ): Promise<string> {
   const serviceId = server.serviceId ?? `winpanel-game-${server.slug}`;
-  if (deps.services && !(await deps.services.isInstalled(serviceId))) {
-    await deps.services.install({
-      id: serviceId,
-      displayName: `WinPanel ${server.displayName}`,
-      description: `${catalogEntry(deps.catalogue, server.catalogId)?.name ?? 'Game'} managed by WinPanel.`,
-      executable,
-      args,
-      workingDirectory,
-      logPath: path.join(server.dataPath, 'logs'),
-    });
-    ctx.log('Registered the Windows service. The server is stopped until you start it.');
+  const definition = {
+    id: serviceId,
+    displayName: `WinPanel ${server.displayName}`,
+    description: `${catalogEntry(deps.catalogue, server.catalogId)?.name ?? 'Game'} managed by WinPanel.`,
+    executable,
+    args,
+    workingDirectory,
+    logPath: path.join(server.dataPath, 'logs'),
+  };
+  if (deps.services) {
+    if (await deps.services.isInstalled(serviceId)) {
+      // A reinstall is the repair path for a server registered with launch
+      // arguments that have since been corrected, so refresh them rather than
+      // leaving the broken ones in place.
+      if ((await deps.services.reconfigure(definition)) === 'updated') {
+        ctx.log('Updated the Windows service with the current launch arguments.');
+      }
+    } else {
+      await deps.services.install(definition);
+      ctx.log('Registered the Windows service. The server is stopped until you start it.');
+    }
   }
 
   if (deps.firewall) {
@@ -447,26 +457,35 @@ async function zomboidClasspath(installPath: string): Promise<string> {
 async function seedZomboidProfile(
   server: typeof gameServers.$inferSelect,
   gamePort: number,
+  directPort: number,
   ctx: JobContext,
 ): Promise<string> {
   const profileDir = path.join(server.installPath, 'zomboid-profile');
-  await fs.mkdir(profileDir, { recursive: true });
+  // The server only ever reads settings from <cachedir>/Server/<servername>.ini,
+  // so the managed profile has to mirror that layout for -cachedir to find it.
+  const settingsDir = path.join(profileDir, 'Server');
+  await fs.mkdir(settingsDir, { recursive: true });
 
-  const iniPath = path.join(profileDir, `${server.slug}.ini`);
+  const iniPath = path.join(settingsDir, `${server.slug}.ini`);
   if (!(await fs.access(iniPath).then(() => true, () => false))) {
     await fs.writeFile(
       iniPath,
       [
-        `UDPPort=${gamePort}`,
-        `SteamServerName=${server.displayName}`,
-        'PublicServer=true',
+        `DefaultPort=${gamePort}`,
+        `UDPPort=${directPort}`,
+        // Without Public the server never announces itself, so it cannot be
+        // found in the in-game browser however open the ports are.
+        'Public=true',
+        `PublicName=${server.displayName}`,
+        'PublicDescription=',
+        'Open=true',
         'PlayerRespawnWithSelf=false',
         'FastForwardMultiplier=40',
         '',
       ].join('\r\n'),
       'utf8',
     );
-    ctx.log(`Created the server profile ${server.slug}.ini with the allocated port.`);
+    ctx.log(`Created the server profile Server\\${server.slug}.ini with the allocated ports.`);
   }
   return profileDir;
 }
@@ -494,10 +513,14 @@ async function installZomboid(
   entry: GameServerCatalogEntry,
   ctx: JobContext,
 ): Promise<void> {
-  const gamePort = (await publicPorts(deps, server.id)).find((binding) => binding.purpose === 'game')?.port;
-  if (!gamePort) throw new Error('The Project Zomboid server does not have a game port allocated.');
+  const ports = await publicPorts(deps, server.id);
+  const gamePort = ports.find((binding) => binding.purpose === 'game')?.port;
+  const directPort = ports.find((binding) => binding.purpose === 'query')?.port;
+  if (!gamePort || !directPort) {
+    throw new Error('The Project Zomboid server does not have its game and direct-connection ports allocated.');
+  }
 
-  const profileDir = await seedZomboidProfile(server, gamePort, ctx);
+  const profileDir = await seedZomboidProfile(server, gamePort, directPort, ctx);
   const classpath = await zomboidClasspath(server.installPath);
   // launchExecutable is a relative path in the catalog; the walker matches
   // basenames, and java.exe is unique inside this package.
@@ -507,29 +530,34 @@ async function installZomboid(
     throw new Error('The Project Zomboid download did not contain its bundled java.exe.');
   }
 
-  const adminPassword = crypto.randomBytes(18).toString('base64url');
+  // Reinstalling must not rotate this: the account already exists by then, so
+  // the server ignores the new value and the vault would stop matching it.
+  const secretKey = `game-server:${server.id}:admin-password`;
+  let adminPassword = crypto.randomBytes(18).toString('base64url');
   if (deps.vault) {
-    writeSecret(deps.db, deps.vault, `game-server:${server.id}:admin-password`, adminPassword);
+    adminPassword = readSecret(deps.db, deps.vault, secretKey) ?? adminPassword;
+    writeSecret(deps.db, deps.vault, secretKey, adminPassword);
   }
 
   const heapMb = zomboidHeapMegabytes((deps.freeMemoryBytes ?? os.freemem)());
   const args = entry.launchArgs.map((argument) =>
     argument
       .replaceAll('{gamePort}', String(gamePort))
+      .replaceAll('{directPort}', String(directPort))
       .replaceAll('{slug}', server.slug)
       .replaceAll('{classpath}', classpath)
-      .replaceAll('{heapMb}', String(heapMb)),
+      .replaceAll('{heapMb}', String(heapMb))
+      .replaceAll('{dataDir}', profileDir)
+      .replaceAll('{adminPassword}', adminPassword),
   );
   ctx.log(`Giving the server ${heapMb} MB of heap, sized from the memory this machine has free.`);
 
   const managedServer = { ...server, dataPath: profileDir };
   const serviceId = await registerService(deps, managedServer, launchExecutable, args, server.installPath, ctx);
 
-  // First launch asks for an admin password on its console; nobody can type
-  // into a WinSW child. Feed it the generated one so the server reaches a
-  // state the panel can control, and record the fact in the job log without
-  // printing the password.
-  ctx.log('First start will create the admin account with a panel-generated password.');
+  // First launch blocks on a console admin-password prompt that nobody can
+  // answer through WinSW, so -adminpassword supplies the generated one.
+  ctx.log('First start creates the "admin" account with a panel-generated password.');
   deps.db.db
     .update(gameServers)
     .set({ dataPath: profileDir, serviceId, state: 'stopped', updatedAt: new Date() })
