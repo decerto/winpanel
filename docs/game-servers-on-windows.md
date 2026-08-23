@@ -131,7 +131,7 @@ Router port forwarding and upstream security groups remain outside WinPanel.
 
 The library is data, not code. Each supported game is a JSON file in `game-servers/catalogue/` in the repository, and the panel reads the same folder from its data directory at runtime. Adding a game means adding a file, not editing TypeScript.
 
-A file dropped into the panel's data folder wins over a built-in with the same ID, so a local tweak does not need a fork. The schema is validated at startup; an invalid file is skipped and logged rather than loaded. The panel reports how many configs it has loaded on the library page.
+A file dropped into the panel's data folder wins over a built-in with the same ID, so a local tweak does not need a fork. The shipped configs are refreshed on each update unless you have edited them, which is how a correction reaches an install that already has the old copy. The schema is validated at startup; an invalid file is skipped and logged rather than loaded. The panel reports how many configs it has loaded on the library page.
 
 ### Writing a config
 

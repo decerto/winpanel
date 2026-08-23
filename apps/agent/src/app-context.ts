@@ -18,6 +18,7 @@ import { SiteService } from './sites/site-service.js';
 import { GameServerService } from './game-servers/game-server-service.js';
 import { createInstallGameServerHandler } from './game-servers/install-handler.js';
 import { GameServerCatalogue } from './game-servers/catalogue-loader.js';
+import { seedGameServerCatalogue } from './game-servers/catalogue-seed.js';
 import { TrafficCollector } from './traffic/collector.js';
 import { createDeployHandler } from './sites/deploy-handler.js';
 import { createRunCommandHandler } from './sites/command-runner.js';
@@ -112,8 +113,8 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
    * The game catalog is data, not code. The seed set ships inside the
    * installed agent (agent/game-servers/catalogue/); the data folder is where
    * an administrator drops or overrides configs without a rebuild. Seeding
-   * copies the built-ins over only what is missing, so a local edit survives
-   * a panel update.
+   * refreshes a built-in nobody has edited, so a corrected config reaches
+   * installs that already have the old one.
    *
    * Two seed locations: beside the agent in an installed layout, and the repo
    * root in development. The first that exists wins, so a packaged install
@@ -126,7 +127,10 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     ? packagedCatalogue
     : repoCatalogue;
   const gameCatalogueData = path.join(config.dataDir, 'game-servers', 'catalogue');
-  await seedGameServerCatalogue(gameCatalogueRepo, gameCatalogueData);
+  const seeded = await seedGameServerCatalogue(gameCatalogueRepo, gameCatalogueData);
+  for (const file of seeded.customised) {
+    process.stderr.write(`Keeping your edited game config ${file}; the built-in version has moved on.\n`);
+  }
   const gameCatalogue = await GameServerCatalogue.load(gameCatalogueRepo, gameCatalogueData);
   if (gameCatalogue.entries.length === 0) {
     // An empty catalog is a broken install, not a quiet empty library.
@@ -250,30 +254,6 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
       db.close();
     },
   };
-}
-
-/**
- * Copies the built-in configs into the data folder where they are missing.
- *
- * The repo directory is the truth for a fresh install; the data directory is
- * what the running panel reads, because that is where an administrator can
- * drop a new game or override a shipped one without a rebuild. Only files
- * that do not already exist are written, so a local edit is not trampled by
- * the next update.
- */
-async function seedGameServerCatalogue(repoDir: string, dataDir: string): Promise<void> {
-  await fs.mkdir(dataDir, { recursive: true });
-  try {
-    const files = await fs.readdir(repoDir);
-    for (const file of files.filter((name) => name.toLowerCase().endsWith('.json'))) {
-      const target = path.join(dataDir, file);
-      if (await fs.access(target).then(() => true, () => false)) continue;
-      await fs.copyFile(path.join(repoDir, file), target);
-    }
-  } catch {
-    // The repo folder may not exist in a packaged install that ships its own
-    // set; a missing seed is not a startup failure.
-  }
 }
 
 /**

@@ -25,6 +25,13 @@ tweak wins without forking the release. Every file is validated against the shar
 before it can influence anything; an invalid one is skipped with its name logged, not
 loaded.
 
+The built-ins themselves are refreshed on each update, so a correction shipped in a
+release reaches installs that already have the old copy. A shipped config you have edited
+is left exactly as you left it — the panel says so on startup rather than silently keeping
+you on an old version. To customise a built-in and still receive updates to the rest, add
+your own file with a different name and the same `id`: it overrides by ID, and the shipped
+file stays shipped.
+
 ## The fields a config carries
 
 | Field | What it does |

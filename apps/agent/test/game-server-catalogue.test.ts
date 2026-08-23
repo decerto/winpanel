@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { GameServerCatalogue, loadGameServerCatalogue } from '../src/game-servers/catalogue-loader.js';
+import { seedGameServerCatalogue } from '../src/game-servers/catalogue-seed.js';
 
 const SEED = path.join(import.meta.dirname, '..', '..', '..', 'game-servers', 'catalogue');
 let tmpDir: string;
@@ -15,7 +16,101 @@ afterEach(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
+describe('seeding the catalogue folder', () => {
+  it('refreshes a built-in nobody has edited, so shipped fixes arrive', async () => {
+    // The first version of this only wrote files that were missing, which meant
+    // the copy taken on a panel's first run shadowed the built-in for good and
+    // every later correction was invisible on the installs that needed it.
+    const seedDir = path.join(tmpDir, 'seed');
+    const dataDir = path.join(tmpDir, 'data', 'catalogue');
+    await fs.mkdir(seedDir, { recursive: true });
+    await fs.writeFile(path.join(seedDir, 'game.json'), '{"version":1}');
+
+    await seedGameServerCatalogue(seedDir, dataDir);
+    expect(await fs.readFile(path.join(dataDir, 'game.json'), 'utf8')).toBe('{"version":1}');
+
+    await fs.writeFile(path.join(seedDir, 'game.json'), '{"version":2}');
+    const second = await seedGameServerCatalogue(seedDir, dataDir);
+
+    expect(second.updated).toContain('game.json');
+    expect(await fs.readFile(path.join(dataDir, 'game.json'), 'utf8')).toBe('{"version":2}');
+  });
+
+  it('leaves a config that was edited on this machine alone', async () => {
+    const seedDir = path.join(tmpDir, 'seed');
+    const dataDir = path.join(tmpDir, 'data', 'catalogue');
+    await fs.mkdir(seedDir, { recursive: true });
+    await fs.writeFile(path.join(seedDir, 'game.json'), '{"version":1}');
+    await seedGameServerCatalogue(seedDir, dataDir);
+
+    await fs.writeFile(path.join(dataDir, 'game.json'), '{"version":1,"mine":true}');
+    await fs.writeFile(path.join(seedDir, 'game.json'), '{"version":2}');
+    const result = await seedGameServerCatalogue(seedDir, dataDir);
+
+    expect(result.customised).toContain('game.json');
+    expect(await fs.readFile(path.join(dataDir, 'game.json'), 'utf8')).toBe('{"version":1,"mine":true}');
+  });
+
+  it('keeps a copy when it updates a file it has no record of', async () => {
+    // Upgrading from a panel that predates the manifest: whether the file on
+    // disk is an old seed or someone's edit cannot be known, so the update is
+    // made reversible.
+    const seedDir = path.join(tmpDir, 'seed');
+    const dataDir = path.join(tmpDir, 'data', 'catalogue');
+    await fs.mkdir(seedDir, { recursive: true });
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(path.join(seedDir, 'game.json'), '{"version":2}');
+    await fs.writeFile(path.join(dataDir, 'game.json'), '{"version":1}');
+
+    await seedGameServerCatalogue(seedDir, dataDir);
+
+    expect(await fs.readFile(path.join(dataDir, 'game.json'), 'utf8')).toBe('{"version":2}');
+    expect(await fs.readFile(path.join(dataDir, 'game.json.replaced'), 'utf8')).toBe('{"version":1}');
+  });
+
+  it('does not leave its bookkeeping where the loader will read it as a game', async () => {
+    const seedDir = path.join(tmpDir, 'seed');
+    const dataDir = path.join(tmpDir, 'data', 'catalogue');
+    await fs.mkdir(seedDir, { recursive: true });
+    await fs.writeFile(path.join(seedDir, 'game.json'), '{"version":1}');
+
+    await seedGameServerCatalogue(seedDir, dataDir);
+
+    expect(await fs.readdir(dataDir)).toEqual(['game.json']);
+  });
+});
+
 describe('game-server catalogue loading', () => {
+  it('rejects a config whose placeholders cannot resolve, before it reaches the library', async () => {
+    // The alternative is what this replaced: a seven-gigabyte download, and
+    // then a failure because the file asked for a heap it never declared.
+    const dataDir = path.join(tmpDir, 'catalogue-data');
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(
+      path.join(dataDir, 'broken-tokens.json'),
+      JSON.stringify({
+        id: 'broken-tokens',
+        provider: 'steam',
+        name: 'Broken',
+        description: 'Asks for things it never declared.',
+        genre: 'Survival',
+        requiresEula: true,
+        steamAppId: 1,
+        executable: 'Broken.exe',
+        launchArgs: ['-Xmx{heapMb}m', '-port', '{port:qeury}', '-pass', '{secret:rcon}'],
+        ports: [{ name: 'game', protocol: 'udp', purpose: 'game', visibility: 'public', port: 27500 }],
+      }),
+    );
+
+    const { entries, rejected } = await loadGameServerCatalogue(SEED, dataDir);
+
+    expect(entries.map((entry) => entry.id)).not.toContain('broken-tokens');
+    const reason = rejected.find((problem) => problem.file === 'broken-tokens.json')?.error ?? '';
+    expect(reason).toContain('heap');
+    expect(reason).toContain('{port:qeury}');
+    expect(reason).toContain('{secret:rcon}');
+  });
+
   it('picks up a config added after startup, without restarting the agent', async () => {
     // The whole point of the folder is that an administrator can drop a game
     // in. Serving the snapshot taken at boot would make that mean "drop a game

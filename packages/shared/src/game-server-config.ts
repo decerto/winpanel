@@ -14,7 +14,5 @@ import { GameServerCatalogEntry } from './game-server.js';
  * the loader merge built-ins and user files without any code knowing which is
  * which.
  */
-export const GameServerConfigFile = z.object({
-  ...GameServerCatalogEntry.shape,
-});
+export const GameServerConfigFile = GameServerCatalogEntry;
 export type GameServerConfigFile = z.infer<typeof GameServerConfigFile>;

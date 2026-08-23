@@ -139,6 +139,67 @@ export type GameServerHeap = z.infer<typeof GameServerHeap>;
 export const GameServerWorkingDirectory = z.enum(['install', 'data', 'executable']);
 export type GameServerWorkingDirectory = z.infer<typeof GameServerWorkingDirectory>;
 
+/** Every `{...}` token a config uses, across its arguments and seeded files. */
+function tokensUsed(entry: {
+  launchArgs?: string[];
+  seedFiles?: Array<{ path: string; content?: string; values?: Record<string, unknown> }>;
+}): string[] {
+  const text = [
+    ...(entry.launchArgs ?? []),
+    ...(entry.seedFiles ?? []).flatMap((file) => [
+      file.path,
+      file.content ?? '',
+      ...Object.values(file.values ?? {}).map((value) => String(value)),
+    ]),
+  ].join('\n');
+  return [...text.matchAll(/\{[A-Za-z0-9_:-]+\}/g)].map((match) => match[0]);
+}
+
+/**
+ * Rejects a config whose placeholders cannot possibly resolve.
+ *
+ * Checked here rather than at install time because the alternative is what it
+ * used to be: a seven-gigabyte download, and then a failure because the file
+ * asked for a heap size it never declared. A config that cannot work should
+ * not reach the library at all, and its author should be told which line is
+ * wrong.
+ */
+function assertPlaceholdersResolvable(
+  entry: {
+    ports: Array<{ name: string; purpose: string }>;
+    secrets?: Array<{ name: string }>;
+    heap?: unknown;
+    classpathDirectory?: string;
+    launchArgs?: string[];
+    seedFiles?: Array<{ path: string; content?: string; values?: Record<string, unknown> }>;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  const portKeys = new Set(entry.ports.flatMap((port) => [port.name, port.purpose]));
+  const secretNames = new Set((entry.secrets ?? []).map((secret) => secret.name));
+
+  for (const token of new Set(tokensUsed(entry))) {
+    const problem = (message: string) => ctx.addIssue({ code: 'custom', message });
+
+    if (token === '{heapMb}' && entry.heap === undefined) {
+      problem('uses {heapMb} but declares no "heap", so there is no size to use');
+    } else if (token === '{classpath}' && entry.classpathDirectory === undefined) {
+      problem('uses {classpath} but declares no "classpathDirectory", so there are no jars to join');
+    } else if (token === '{gamePort}' && !portKeys.has('game')) {
+      problem('uses {gamePort} but declares no port named or purposed "game"');
+    } else {
+      const port = /^\{port:([A-Za-z0-9_-]+)\}$/.exec(token);
+      if (port?.[1] && !portKeys.has(port[1])) {
+        problem(`uses {port:${port[1]}} but declares no port with that name or purpose`);
+      }
+      const secret = /^\{secret:([A-Za-z0-9_-]+)\}$/.exec(token);
+      if (secret?.[1] && !secretNames.has(secret[1])) {
+        problem(`uses {secret:${secret[1]}} but declares no secret with that name`);
+      }
+    }
+  }
+}
+
 export const GameServerCatalogEntry = z.object({
   id: z.string().min(1).max(80),
   provider: GameServerProviderId,
@@ -200,7 +261,7 @@ export const GameServerCatalogEntry = z.object({
    * games launched through their own bundled JVM rather than a start script.
    */
   classpathDirectory: SeedPath.optional(),
-});
+}).superRefine(assertPlaceholdersResolvable);
 export type GameServerCatalogEntry = z.infer<typeof GameServerCatalogEntry>;
 
 export const GameServer = z.object({
