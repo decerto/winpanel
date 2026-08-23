@@ -94,17 +94,41 @@ Customers see only servers they own or have been assigned. File, lifecycle, inst
 
 Steam credentials in Settings are a server-wide **administrator** installation credential, not a customer credential. They are encrypted in the vault, never returned by the API, and are not available to role-`user` accounts. A customer cannot trigger a Nomad install or reinstall using the administrator's Steam account; an administrator must perform that acquisition first. After installation, the customer can use the permissions granted for that server, including its files and lifecycle controls.
 
-For isolation, use a dedicated Steam account owned by the hosting operator rather than a personal account. SteamCMD still places credentials in the command invocation while it logs in, so local Windows administrators with process-inspection rights should be treated as trusted. Remote WinPanel customers do not receive the password or SteamCMD output containing it.
+Customers can read the job log for their own server, because that is where a failed download explains itself — and SteamCMD announces the account it is signing in as in its first line of output. Every line SteamCMD produces is therefore scrubbed before it reaches a log or an error message: the account name is replaced with "the server Steam account", the password is masked in case anything ever echoes it, and the email address in a Steam Guard notice is removed. Steam's own error is kept intact, so "No subscription" or "Disk write failure" still reaches the person waiting on it. The same scrubbing covers the install, update and Workshop paths.
+
+For isolation, use a dedicated Steam account owned by the hosting operator rather than a personal account. SteamCMD still places credentials in the command invocation while it logs in, so local Windows administrators with process-inspection rights should be treated as trusted. Remote WinPanel customers receive neither the account name, the password, nor any SteamCMD output containing them.
 
 ## Files and reinstall
 
-The **Files** view operates on the server's data folder. It supports browsing, editing, folders, deletion, uploads, downloads, quotas, and containment checks. Provider executables are kept outside this editable data root.
+The **Files** tab operates on the server's data folder. It supports browsing, editing, folders, deletion, uploads, downloads, quotas, and containment checks. Provider executables are kept outside this editable data root.
 
-When the catalog names a `configFile` for the game, the server page also shows a **Server config** button in the Files header that opens that file straight into the editor — Nomad's `Config/config.json`, Minecraft Java's `server.properties`, Zomboid's `Server/<slug>.ini`. Providers whose settings live outside the data folder, or that have no single obvious settings file, do not show the button; browse the file manager instead.
+Opening any text file gives you the panel's editor: a full-window pane with line numbers, find and replace across the whole file (with match counts, case sensitivity and regular expressions), go-to-line, block indent, and Ctrl+S to save. Config files for these games run to hundreds or thousands of lines — Project Zomboid's is roughly a thousand — so this is a real editor rather than a text box.
 
-Minecraft Java exposes a live service log and an authenticated RCON console on its detail page. Commands are sent only to the loopback RCON binding and the password remains in the vault. Providers without a tested console protocol show output status but do not expose a fake shell.
+When the catalog names a `configFile` for the game, the **Overview** tab shows an **Edit server config** button, and the Files header shows the same shortcut, which opens that file straight into the editor — Nomad's `Config/config.json`, Minecraft Java's `server.properties`, Zomboid's `Server/<slug>.ini`. Providers whose settings live outside the data folder, or that have no single obvious settings file, do not show the button; browse the file manager instead.
+
+Minecraft Java exposes a live service log and an authenticated RCON console on its **Console** tab. Commands are sent only to the loopback RCON binding and the password remains in the vault. Providers without a tested console protocol show output status but do not expose a fake shell.
 
 **Reinstall files** reacquires provider-managed files and preserves the data folder by default. It is not a backup and it cannot recover data that was deleted from the data folder. Deleting a server is explicit and removes its service, files, database record, allocated ports, and WinPanel firewall rules.
+
+## Steam Workshop mods
+
+Games whose catalog entry declares a `workshop` block get a **Workshop** tab on the server page. It answers the awkward question about mods on a rented server: whose Steam account does the downloading?
+
+The answer is nobody's but the machine's. The customer picks a mod; the panel downloads it with the operator's own SteamCMD, in a job with a live log. Customers never sign in to Steam, never see the operator's account, and never touch the files by hand.
+
+### Browsing
+
+Add a **Steam Web API key** in Settings and the tab becomes a browser: search the game's Workshop, sort by *Popular this week*, *Most subscribed*, *Recently updated* or *Newest*, filter by clicking a tag on any result, and press **Add to server**. Items already on the server show as **Added** rather than offering to add them twice. Thumbnails are fetched by the agent and served from the panel, so a page of mods does not become a page of requests to Valve's CDN carrying every customer's address.
+
+The key is optional and is not a sign-in. Valve issues one free to any Steam account at [steamcommunity.com/dev/apikey](https://steamcommunity.com/dev/apikey); it reads public Workshop listings and cannot sign in, buy, or change anything. It is stored encrypted in the vault, never returned by the API, and used only by the agent — searches are performed on the server and the panel receives results, not credentials. Identical searches are cached for a minute, because one key serves every customer on the machine.
+
+Without a key nothing is lost: **Open on Steam** opens Valve's own Workshop page, and pasting an item's address into the **Workshop link or id** field does the same job. Several links can be pasted at once, separated by spaces or commas, which is how a mod list moves across from another host. Either way the panel asks Steam what the item is — the title, the size, and whether it is even for the right game — before downloading anything.
+
+### What happens after
+
+Once an item is downloaded, its mod folders are copied to wherever the game looks for them, and the game's settings file has its mod list rewritten — for Project Zomboid, `WorkshopItems=` and `Mods=` in `Server/<slug>.ini`. No other line in that file is touched. **Update** re-downloads an item, which is how a mod gets its latest version; **Update all** does the lot. Removing an item deletes its files and takes it back out of the mod list. Restart the server for any of it to take effect.
+
+Most Workshop content downloads anonymously and needs no account at all. Where Steam refuses, the panel falls back to the Steam account configured in Settings — the same one that installed the game files — and the tab says so plainly if neither is available. That account's name never appears in the log the customer is watching; see [Ownership and access](#ownership-and-access).
 
 ## Updates and branches
 

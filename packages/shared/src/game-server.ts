@@ -139,6 +139,79 @@ export type GameServerHeap = z.infer<typeof GameServerHeap>;
 export const GameServerWorkingDirectory = z.enum(['install', 'data', 'executable']);
 export type GameServerWorkingDirectory = z.infer<typeof GameServerWorkingDirectory>;
 
+/**
+ * Where the installed Workshop item ids are written back.
+ *
+ * Downloading a mod is only half the job: the game has to be told to load it,
+ * and every game spells that differently. Naming the file and its two keys in
+ * the catalog means the panel can keep the list correct after every add and
+ * remove without knowing which game it is.
+ */
+export const GameServerWorkshopConfig = z.object({
+  /** Relative to the server's data folder. */
+  path: SeedPath,
+  /** Key listing the published file ids, e.g. `WorkshopItems`. */
+  itemsKey: z.string().min(1).max(64).optional(),
+  /** Key listing the mod ids found inside the downloaded items, e.g. `Mods`. */
+  modsKey: z.string().min(1).max(64).optional(),
+  separator: z.string().min(1).max(4).default(';'),
+  eol: z.enum(['lf', 'crlf']).default('lf'),
+});
+export type GameServerWorkshopConfig = z.infer<typeof GameServerWorkshopConfig>;
+
+/**
+ * Steam Workshop support for a game.
+ *
+ * The download runs on the server with the panel's own SteamCMD, so a customer
+ * adds a mod by pasting its link and never needs a Steam account of their own.
+ * `anonymous` says whether Valve serves this app's Workshop without a login;
+ * when it does not, the panel falls back to the operator's configured account,
+ * which is the same one that installed the server files.
+ */
+export const GameServerWorkshop = z.object({
+  /** The app whose Workshop holds the items — the game, not the server tool. */
+  appId: z.number().int().positive(),
+  /** Overrides the Steam Workshop page the "Browse" button opens. */
+  browseUrl: z.string().url().startsWith('https://').optional(),
+  anonymous: z.boolean().default(true),
+  /**
+   * Mod folders found inside a downloaded item are copied here, relative to
+   * the data folder. Left out, the item stays where SteamCMD put it and only
+   * the config keys are updated.
+   */
+  modsDirectory: SeedPath.optional(),
+  /** The file that marks a mod folder inside an item, and the key naming it. */
+  modManifestFile: z.string().min(1).max(120).default('mod.info'),
+  modManifestKey: z.string().min(1).max(64).default('id'),
+  config: GameServerWorkshopConfig.optional(),
+});
+export type GameServerWorkshop = z.infer<typeof GameServerWorkshop>;
+
+/** How far a Workshop item has got. */
+export const GameServerWorkshopItemState = z.enum(['pending', 'installed', 'failed']);
+export type GameServerWorkshopItemState = z.infer<typeof GameServerWorkshopItemState>;
+
+/**
+ * Turns whatever someone pasted into a published file id.
+ *
+ * People arrive with a browser URL, a `steam://` link from the client, or the
+ * bare number, and asking them to work out which part is the id is the kind of
+ * small indignity that makes a panel feel unfinished.
+ */
+export function parseWorkshopReference(input: string): string | null {
+  const text = input.trim();
+  if (text === '') return null;
+  if (/^\d{1,20}$/.test(text)) return text;
+
+  const fromQuery = /[?&]id=(\d{1,20})\b/.exec(text);
+  if (fromQuery?.[1]) return fromQuery[1];
+
+  const fromPath = /(?:CommunityFilePage|filedetails)\/(\d{1,20})\b/i.exec(text);
+  if (fromPath?.[1]) return fromPath[1];
+
+  return null;
+}
+
 /** Every `{...}` token a config uses, across its arguments and seeded files. */
 function tokensUsed(entry: {
   launchArgs?: string[];
@@ -256,6 +329,11 @@ export const GameServerCatalogEntry = z.object({
   /** Configuration written before the first start, so the game sees its ports. */
   seedFiles: z.array(GameServerSeedFile).max(12).default([]),
   heap: GameServerHeap.optional(),
+  /**
+   * Steam Workshop support. Present means the server page gets a Workshop tab
+   * that can search, add and remove items; absent means the game has none.
+   */
+  workshop: GameServerWorkshop.optional(),
   /**
    * Folder of jars joined into `{classpath}`, relative to installPath. For
    * games launched through their own bundled JVM rather than a start script.

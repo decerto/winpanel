@@ -364,6 +364,63 @@ describe('Minecraft Java installation', () => {
     expect(logged.some((line) => line.includes('Steam mobile app'))).toBe(true);
   });
 
+  /*
+   * The person watching this install is renting a server, not running one.
+   * The account signing in to Steam belongs to whoever owns the panel, and it
+   * is the same account for every customer on the machine — so it appears in
+   * neither the log they can read nor the error they are shown.
+   */
+  it('keeps the operator\'s Steam account out of a log the customer can read', async () => {
+    const server = await service.create(
+      { displayName: 'Nomad Private', catalogId: 'nomad-dedicated', eulaAccepted: true },
+      null,
+    );
+    const binDir = path.join(tmpDir, 'bin');
+    const steamDir = path.join(binDir, 'steamcmd');
+    await fs.mkdir(steamDir, { recursive: true });
+    await fs.writeFile(path.join(steamDir, 'steamcmd.exe'), 'fixture');
+    writeSecret(handle, vault, 'gameServers.steam.username', 'winpanel_host');
+    writeSecret(handle, vault, 'gameServers.steam.password', 'operator-password');
+
+    const logged: string[] = [];
+    const handler = createInstallGameServerHandler({
+      db: handle,
+      catalogue,
+      binDir,
+      vault,
+      runCommand: async (options) => {
+        options.onOutput?.("Logging in user 'winpanel_host' to Steam Public...", 'stdout');
+        options.onOutput?.('winpanel_host logged in OK', 'stdout');
+        const output =
+          "Logging in user 'winpanel_host' to Steam Public...\n" +
+          "ERROR! Failed to install app '378370' (No subscription) for user 'winpanel_host'";
+        return {
+          exitCode: 1,
+          stdout: output,
+          stderr: '',
+          timedOut: false,
+          durationMs: 1,
+          truncated: false,
+        };
+      },
+    });
+    const context = {
+      jobId: crypto.randomUUID(),
+      log: (message: string) => logged.push(message),
+      progress: () => undefined,
+      isCancelled: () => false,
+      throwIfCancelled: () => undefined,
+    };
+
+    const failure = await handler({ gameServerId: server.id }, context).catch((error: Error) => error);
+
+    const everything = [...logged, (failure as Error).message].join('\n');
+    expect(everything).not.toMatch(/winpanel_host/i);
+    expect(everything).not.toContain('operator-password');
+    // Still says what went wrong, which is the whole point of showing a log.
+    expect(everything).toContain('No subscription');
+  });
+
   it('expands Nomad launch arguments from its batch-file contract', async () => {
     const server = await service.create(
       { displayName: 'Nomad', catalogId: 'nomad-dedicated', eulaAccepted: true },

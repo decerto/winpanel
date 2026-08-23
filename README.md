@@ -109,7 +109,7 @@ Windows equivalent.
 | Area | Capability |
 | --- | --- |
 | **Websites** | Static files, Node, .NET and PHP apps, from Git or managed by hand — plus one-click WordPress |
-| **Game servers** | Minecraft Java/Bedrock and Steam dedicated servers, with Windows Services, scoped files, and a config-driven library you can extend |
+| **Game servers** | Minecraft Java/Bedrock and Steam dedicated servers, with Windows Services, scoped files, Steam Workshop mods, and a config-driven library you can extend |
 | **Databases** | MariaDB with per-site databases and a built-in browser, each database limited to its own site |
 | **Releases** | Builds off to one side and swaps it in, so a failed build never touches the live site |
 | **HTTPS** | Free certificates, renewed automatically, using the DNS challenge |
@@ -117,7 +117,7 @@ Windows equivalent.
 | **Email** | Self-hosted mailboxes with quotas and send-as aliases, MX/SPF/DKIM/DMARC checks, and webmail |
 | **People** | Owner, administrator and customer accounts, each with website, disk and mail limits |
 | **Security** | Two-factor sign-in, recovery codes, live sessions, failed-attempt log and automatic IP blocking |
-| **Files** | Browse, upload, edit and download each site's files from the browser |
+| **Files** | Browse, upload, download and edit each site's files from the browser, in an editor with line numbers and find and replace |
 | **Server** | Detects and fixes the Windows settings that break Node hosting |
 | **Recovery** | Notices an app that Windows thinks is stopped but whose old process is still running, ends it, and starts the app properly |
 
@@ -175,6 +175,10 @@ A real file manager: upload, edit, rename, copy, move, download, and a per-site 
 that is enforced rather than displayed. Every path is resolved and checked against the
 site's own folder before anything is read or written.
 
+Opening a text file gives you a real editor, not a text box: line numbers, find and replace
+across the whole file with match counts and regular expressions, go-to-line, and Ctrl+S to
+save. Config files run long, and a one-line change should not be a scrolling exercise.
+
 ![The file manager](docs/screenshots/files.png)
 
 ### Traffic
@@ -206,6 +210,12 @@ no TypeScript edit, no rebuild, no waiting for a release. Drop one into the pane
 folder, press **Reload configs**, and the game is in the library. A file that does not
 match the schema is skipped with the reason shown in the panel rather than taking the
 library down.
+
+Games that declare a Workshop get a **Workshop** tab: search the game's Steam Workshop,
+sort by what is popular or recent, and press **Add to server**. The download runs on the
+machine with the operator's own SteamCMD, so customers install mods without a Steam account
+and never see the one doing the work. The mod list in the game's settings file is kept in
+step automatically.
 
 See [Game servers on Windows](docs/game-servers-on-windows.md) for the schema and
 [the catalog guide](docs/game-servers-catalogue.md) for the contribution path.

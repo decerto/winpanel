@@ -398,6 +398,41 @@ export const gameServerPorts = sqliteTable(
   ],
 );
 
+/**
+ * A Steam Workshop item a server has been asked to run.
+ *
+ * The row is the panel's record of intent, kept whether or not the download
+ * has happened yet: a failed mod stays listed with its reason instead of
+ * vanishing, which is the difference between "retry this" and "did I imagine
+ * adding it?".
+ */
+export const gameServerWorkshopItems = sqliteTable(
+  'game_server_workshop_items',
+  {
+    id: text('id').primaryKey(),
+    gameServerId: text('game_server_id')
+      .notNull()
+      .references(() => gameServers.id, { onDelete: 'cascade' }),
+    /** Steam's published file id, which is a 64-bit number, so text. */
+    publishedFileId: text('published_file_id').notNull(),
+    title: text('title').notNull(),
+    previewUrl: text('preview_url'),
+    sizeBytes: integer('size_bytes').notNull().default(0),
+    /** JSON array of the mod ids found inside the item, for the game's config. */
+    modIds: text('mod_ids', { mode: 'json' }).notNull().default(sql`'[]'`),
+    state: text('state', { enum: ['pending', 'installed', 'failed'] })
+      .notNull()
+      .default('pending'),
+    /** Why it failed, when it did. */
+    message: text('message'),
+    installedAt: integer('installed_at', { mode: 'timestamp_ms' }),
+    ...timestamps,
+  },
+  (table) => [
+    uniqueIndex('game_server_workshop_items_idx').on(table.gameServerId, table.publishedFileId),
+  ],
+);
+
 export const gameServerAccess = sqliteTable(
   'game_server_access',
   {

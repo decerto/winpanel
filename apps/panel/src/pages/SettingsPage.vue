@@ -54,6 +54,8 @@ const gameServersBusy = ref(false);
 const steamUsername = ref('');
 const steamPassword = ref('');
 const steamCredentialsBusy = ref(false);
+const steamWebApiKey = ref('');
+const steamWebApiKeyBusy = ref(false);
 const gameServersJob = useJobLog({
   onFinished: async () => {
     gameServersBusy.value = false;
@@ -365,6 +367,42 @@ async function clearSteamCredentials(): Promise<void> {
     error.value = describeError(err);
   } finally {
     steamCredentialsBusy.value = false;
+  }
+}
+
+/*
+ * A Web API key is not a sign-in. It only lets the agent ask Steam what is on
+ * a game's Workshop, which is what turns the Workshop tab from "paste a link"
+ * into something you can browse.
+ */
+async function saveSteamWebApiKey(): Promise<void> {
+  if (!steamWebApiKey.value.trim()) return;
+  steamWebApiKeyBusy.value = true;
+  error.value = null;
+  notice.value = null;
+  try {
+    await api.gameServers.setSteamWebApiKey.mutate({ key: steamWebApiKey.value.trim() });
+    steamWebApiKey.value = '';
+    await refreshGameServers();
+    notice.value = 'Steam Web API key saved. Workshop browsing is now available on game servers.';
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    steamWebApiKeyBusy.value = false;
+  }
+}
+
+async function clearSteamWebApiKey(): Promise<void> {
+  steamWebApiKeyBusy.value = true;
+  try {
+    await api.gameServers.clearSteamWebApiKey.mutate();
+    steamWebApiKey.value = '';
+    await refreshGameServers();
+    notice.value = 'Steam Web API key removed. Workshop items can still be added by link.';
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    steamWebApiKeyBusy.value = false;
   }
 }
 
@@ -786,6 +824,34 @@ async function installUpdate(): Promise<void> {
               >
                 Install Java runtime
               </button>
+            </div>
+
+            <div class="rounded-lg border border-line bg-black/20 p-3 sm:col-span-2">
+              <p class="text-xs uppercase tracking-wide text-ink-faint">Steam Workshop browsing</p>
+              <p class="mt-1 text-sm" :class="gameServers.steamWebApiKeyConfigured ? 'text-ok' : 'text-ink-muted'">
+                {{ gameServers.steamWebApiKeyConfigured ? 'Customers can search the Workshop in the panel.' : 'Workshop items can be added by link only.' }}
+              </p>
+              <form class="mt-3 space-y-2" @submit.prevent="saveSteamWebApiKey">
+                <label class="label" for="steam-web-api-key">Steam Web API key</label>
+                <input
+                  id="steam-web-api-key"
+                  v-model="steamWebApiKey"
+                  class="field font-mono text-xs"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="32 hexadecimal characters"
+                />
+                <div class="flex flex-wrap gap-2">
+                  <button type="submit" class="btn btn-primary btn-sm" :disabled="steamWebApiKeyBusy || !steamWebApiKey.trim()">Save key</button>
+                  <button v-if="gameServers.steamWebApiKeyConfigured" type="button" class="btn btn-ghost btn-sm" :disabled="steamWebApiKeyBusy" @click="clearSteamWebApiKey">Clear</button>
+                  <a href="https://steamcommunity.com/dev/apikey" target="_blank" rel="noopener noreferrer" class="btn btn-ghost btn-sm">Get a key from Valve</a>
+                </div>
+                <p class="text-xs text-ink-faint">
+                  Optional, and separate from the account above: a Web API key reads public Workshop
+                  listings and cannot sign in, buy, or change anything. Without one the Workshop tab
+                  still works, but customers have to paste a link from Steam instead of searching here.
+                </p>
+              </form>
             </div>
           </div>
 

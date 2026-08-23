@@ -1,10 +1,24 @@
 import { TRPCError } from '@trpc/server';
+import crypto from 'node:crypto';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import { eq } from 'drizzle-orm';
-import { GameServerCreateRequest } from '@winpanel/shared';
+import { and, eq } from 'drizzle-orm';
+import { GameServerCreateRequest, parseWorkshopReference } from '@winpanel/shared';
 import { accountProcedure, adminProcedure, router, type RequestContext } from '../trpc.js';
 import { GameServerError, GameServerService } from '../../game-servers/game-server-service.js';
+import {
+  MAX_BROWSE_PAGE_SIZE,
+  WORKSHOP_SORTS,
+  clearWorkshopSearchCache,
+  fetchWorkshopDetails,
+  modFolders,
+  removeModFolders,
+  searchWorkshop,
+  workshopBrowseUrl,
+  workshopItemDirectory,
+} from '../../game-servers/workshop.js';
+import { syncWorkshopConfig } from '../../game-servers/workshop-handler.js';
 import { isComponentInstalled } from './components.js';
 import { findExecutable } from '../../components/archive.js';
 import { runCommand } from '../../process/run-command.js';
@@ -19,6 +33,8 @@ import { readConsoleSnapshot, sendRconCommand } from '../../game-servers/console
 const GAME_SERVERS_ENABLED_KEY = 'gameServers.enabled';
 const STEAM_USERNAME_KEY = 'gameServers.steam.username';
 const STEAM_PASSWORD_KEY = 'gameServers.steam.password';
+/** Optional, and only ever used to search the Workshop — never to sign in. */
+const STEAM_WEB_API_KEY = 'gameServers.steam.webApiKey';
 
 function gameServersEnabled(ctx: Pick<RequestContext, 'app'>): boolean {
   const row = ctx.app.db.db.select().from(settings).where(eq(settings.key, GAME_SERVERS_ENABLED_KEY)).get();
@@ -205,8 +221,341 @@ const createInput = GameServerCreateRequest.extend({
   ownerUserId: z.string().uuid().nullable().optional(),
 });
 
+const MAX_WORKSHOP_ITEMS = 200;
+
+function workshopFor(ctx: RequestContext, slug: string) {
+  const server = visibleServer(ctx, slug);
+  const entry = serviceCatalogEntry(ctx.app.gameServers as GameServerService, server.catalogId);
+  if (!entry?.workshop) {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'This game does not have a Steam Workshop.',
+    });
+  }
+  return { server, entry, workshop: entry.workshop };
+}
+
+function workshopRows(ctx: RequestContext, gameServerId: string) {
+  return ctx.app.db.db
+    .select()
+    .from(ctx.app.schema.gameServerWorkshopItems)
+    .where(eq(ctx.app.schema.gameServerWorkshopItems.gameServerId, gameServerId))
+    .all()
+    .map((row) => ({
+      publishedFileId: row.publishedFileId,
+      title: row.title,
+      sizeBytes: row.sizeBytes,
+      state: row.state,
+      message: row.message,
+      modIds: (row.modIds as string[] | null) ?? [],
+      hasPreview: row.previewUrl !== null,
+      installedAt: row.installedAt,
+      createdAt: row.createdAt,
+    }));
+}
+
+/**
+ * Steam Workshop items.
+ *
+ * Browsing happens here when an administrator has added a Steam Web API key,
+ * because Valve's search endpoint needs one. Without a key the tab still
+ * works: the Browse button opens Steam's own page and a pasted link does the
+ * rest. Either way the download runs on the operator's SteamCMD, so a customer
+ * never needs a Steam account.
+ */
+const workshopRouter = router({
+  status: accountProcedure
+    .input(z.object({ slug: z.string().min(1).max(64) }))
+    .query(async ({ ctx, input }) => {
+      const server = visibleServer(ctx, input.slug);
+      const entry = serviceCatalogEntry(ctx.app.gameServers as GameServerService, server.catalogId);
+      const workshop = entry?.workshop ?? null;
+      const accountConfigured =
+        readSecret(ctx.app.db, ctx.app.vault, STEAM_USERNAME_KEY) !== null &&
+        readSecret(ctx.app.db, ctx.app.vault, STEAM_PASSWORD_KEY) !== null;
+
+      return {
+        supported: workshop !== null,
+        appId: workshop?.appId ?? null,
+        browseUrl: workshop ? workshopBrowseUrl(workshop) : null,
+        anonymous: workshop?.anonymous ?? false,
+        /** An account is only needed when Valve will not serve this app anonymously. */
+        needsAccount: workshop ? !workshop.anonymous && !accountConfigured : false,
+        accountConfigured,
+        /** Whether the panel can search the Workshop itself, or only take links. */
+        searchable: readSecret(ctx.app.db, ctx.app.vault, STEAM_WEB_API_KEY) !== null,
+        steamcmdInstalled: await isComponentInstalled(ctx.app.config.binDir, 'steamcmd'),
+        modsDirectory: workshop?.modsDirectory ?? null,
+        configPath: workshop?.config?.path.replaceAll('{slug}', server.slug) ?? null,
+        installed: workshop ? workshopRows(ctx, server.id).length : 0,
+        limit: MAX_WORKSHOP_ITEMS,
+      };
+    }),
+
+  /**
+   * A page of the game's Workshop, searched and sorted the way Steam's own
+   * page offers. Items already on the server are flagged so the grid can say
+   * "Added" instead of offering to add them twice.
+   */
+  browse: accountProcedure
+    .input(z.object({
+      slug: z.string().min(1).max(64),
+      search: z.string().trim().max(200).default(''),
+      sort: z.enum(WORKSHOP_SORTS).default('trend'),
+      tag: z.string().trim().max(80).default(''),
+      page: z.number().int().min(1).max(50).default(1),
+      pageSize: z.number().int().min(1).max(MAX_BROWSE_PAGE_SIZE).default(24),
+    }))
+    .query(async ({ ctx, input }) => {
+      const { server, workshop } = workshopFor(ctx, input.slug);
+      const apiKey = readSecret(ctx.app.db, ctx.app.vault, STEAM_WEB_API_KEY);
+      if (!apiKey) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message:
+            'This panel cannot search the Workshop yet. An administrator can add a Steam Web API key ' +
+            'in Settings, or you can paste a Workshop link instead.',
+        });
+      }
+
+      try {
+        const result = await searchWorkshop({
+          apiKey,
+          appId: workshop.appId,
+          search: input.search,
+          sort: input.sort,
+          tag: input.tag,
+          page: input.page,
+          pageSize: input.pageSize,
+        });
+        const installed = new Set(workshopRows(ctx, server.id).map((row) => row.publishedFileId));
+
+        return {
+          total: result.total,
+          page: input.page,
+          pageSize: input.pageSize,
+          items: result.items.map((item) => ({
+            ...item,
+            installed: installed.has(item.publishedFileId),
+          })),
+        };
+      } catch (error) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: error instanceof Error ? error.message : 'The Workshop could not be searched.',
+          cause: error,
+        });
+      }
+    }),
+
+  list: accountProcedure
+    .input(z.object({ slug: z.string().min(1).max(64) }))
+    .query(({ ctx, input }) => workshopRows(ctx, visibleServer(ctx, input.slug).id)),
+
+  /** Confirms what a pasted link points at before anything is downloaded. */
+  lookup: accountProcedure
+    .input(z.object({ slug: z.string().min(1).max(64), reference: z.string().trim().min(1).max(500) }))
+    .mutation(async ({ ctx, input }) => {
+      const { workshop } = workshopFor(ctx, input.slug);
+      const id = parseWorkshopReference(input.reference);
+      if (!id) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'That is not a Workshop link or id. Paste the address of the item\'s Steam page.',
+        });
+      }
+
+      try {
+        const [details] = await fetchWorkshopDetails([id]);
+        if (!details) throw new TRPCError({ code: 'NOT_FOUND', message: 'Steam has no such Workshop item.' });
+        const { previewUrl, ...item } = details;
+        return {
+          ...item,
+          // The image comes back through the panel's proxy, not from Steam.
+          hasPreview: previewUrl !== null,
+          /** A mod for another game installs cleanly and then does nothing. */
+          wrongGame: details.appId !== null && details.appId !== workshop.appId,
+        };
+      } catch (error) {
+        if (error instanceof TRPCError) throw error;
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: error instanceof Error ? error.message : 'That Workshop item could not be looked up.',
+          cause: error,
+        });
+      }
+    }),
+
+  add: accountProcedure
+    .input(z.object({
+      slug: z.string().min(1).max(64),
+      references: z.array(z.string().trim().min(1).max(500)).min(1).max(25),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const { server, workshop } = workshopFor(ctx, input.slug);
+
+      const ids = [...new Set(input.references.map((reference) => parseWorkshopReference(reference)))];
+      if (ids.some((id) => id === null)) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'One of those lines is not a Workshop link or id.',
+        });
+      }
+      const wanted = ids as string[];
+
+      const existing = workshopRows(ctx, server.id);
+      const fresh = wanted.filter(
+        (id) => !existing.some((item) => item.publishedFileId === id),
+      );
+      if (existing.length + fresh.length > MAX_WORKSHOP_ITEMS) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `A server can have at most ${MAX_WORKSHOP_ITEMS} Workshop items.`,
+        });
+      }
+
+      let details;
+      try {
+        details = await fetchWorkshopDetails(wanted);
+      } catch (error) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: error instanceof Error ? error.message : 'Those Workshop items could not be looked up.',
+          cause: error,
+        });
+      }
+
+      for (const detail of details) {
+        if (detail.appId !== null && detail.appId !== workshop.appId) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: `"${detail.title}" is a Workshop item for a different game.`,
+          });
+        }
+      }
+
+      /*
+       * Workshop files land beside the game rather than inside the quota'd
+       * data folder, so the quota is applied here instead. Without it, a mod
+       * list is an unmetered way to fill the machine's disk.
+       */
+      const kept = existing
+        .filter((item) => !wanted.includes(item.publishedFileId))
+        .reduce((sum, item) => sum + item.sizeBytes, 0);
+      const incoming = details.reduce((sum, detail) => sum + detail.sizeBytes, 0);
+      if (kept + incoming > server.diskQuotaBytes) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Those Workshop items do not fit in this server\'s storage allowance.',
+        });
+      }
+
+      for (const detail of details) {
+        ctx.app.db.db
+          .insert(ctx.app.schema.gameServerWorkshopItems)
+          .values({
+            id: crypto.randomUUID(),
+            gameServerId: server.id,
+            publishedFileId: detail.publishedFileId,
+            title: detail.title,
+            previewUrl: detail.previewUrl,
+            sizeBytes: detail.sizeBytes,
+            modIds: [],
+            state: 'pending',
+          })
+          .onConflictDoUpdate({
+            target: [
+              ctx.app.schema.gameServerWorkshopItems.gameServerId,
+              ctx.app.schema.gameServerWorkshopItems.publishedFileId,
+            ],
+            set: {
+              title: detail.title,
+              previewUrl: detail.previewUrl,
+              sizeBytes: detail.sizeBytes,
+              state: 'pending',
+              message: null,
+              updatedAt: new Date(),
+            },
+          })
+          .run();
+      }
+
+      const jobId = ctx.app.jobs.enqueue({
+        kind: 'install-workshop-items',
+        title: `Adding ${details.length === 1 ? details[0]?.title ?? 'a mod' : `${details.length} mods`} to ${server.displayName}`,
+        payload: { gameServerId: server.id, publishedFileIds: details.map((detail) => detail.publishedFileId) },
+        gameServerId: server.id,
+      });
+      return { jobId, added: details.length };
+    }),
+
+  /** Re-downloads everything, which is how a mod gets updated. */
+  update: accountProcedure
+    .input(z.object({ slug: z.string().min(1).max(64), publishedFileId: z.string().regex(/^\d{1,20}$/).optional() }))
+    .mutation(({ ctx, input }) => {
+      const { server } = workshopFor(ctx, input.slug);
+      const jobId = ctx.app.jobs.enqueue({
+        kind: 'install-workshop-items',
+        title: `Updating Workshop items for ${server.displayName}`,
+        payload: {
+          gameServerId: server.id,
+          ...(input.publishedFileId ? { publishedFileIds: [input.publishedFileId] } : {}),
+        },
+        gameServerId: server.id,
+      });
+      return { jobId };
+    }),
+
+  remove: accountProcedure
+    .input(z.object({ slug: z.string().min(1).max(64), publishedFileId: z.string().regex(/^\d{1,20}$/) }))
+    .mutation(async ({ ctx, input }) => {
+      const { server, workshop } = workshopFor(ctx, input.slug);
+      const row = ctx.app.db.db
+        .select()
+        .from(ctx.app.schema.gameServerWorkshopItems)
+        .where(
+          and(
+            eq(ctx.app.schema.gameServerWorkshopItems.gameServerId, server.id),
+            eq(ctx.app.schema.gameServerWorkshopItems.publishedFileId, input.publishedFileId),
+          ),
+        )
+        .get();
+      if (!row) throw new TRPCError({ code: 'NOT_FOUND', message: 'That Workshop item is not on this server.' });
+
+      const itemDir = workshopItemDirectory(server.installPath, workshop.appId, row.publishedFileId);
+      try {
+        // Folder names are read back from the download rather than the
+        // manifest values, so removal cannot be steered by a mod's own file.
+        const folders = await modFolders(itemDir).then(
+          (dirs) => dirs.map((dir) => path.basename(dir)),
+          () => [],
+        );
+        await removeModFolders(server.dataPath, workshop, folders);
+        await fs.rm(itemDir, { recursive: true, force: true });
+      } catch (error) {
+        throw new TRPCError({
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'That mod\'s files could not be removed.',
+          cause: error,
+        });
+      }
+
+      ctx.app.db.db
+        .delete(ctx.app.schema.gameServerWorkshopItems)
+        .where(eq(ctx.app.schema.gameServerWorkshopItems.id, row.id))
+        .run();
+
+      await syncWorkshopConfig(
+        { db: ctx.app.db, catalogue: (ctx.app.gameServers as GameServerService).catalogueStore() },
+        server.id,
+      );
+      return { ok: true };
+    }),
+});
+
 export const gameServersRouter = router({
   files: gameServerFilesRouter,
+  workshop: workshopRouter,
   feature: accountProcedure.query(({ ctx }) => ({ enabled: gameServersEnabled(ctx) })),
 
   settings: adminProcedure.query(async ({ ctx }) => {
@@ -219,7 +568,22 @@ export const gameServersRouter = router({
       steamCredentialsConfigured:
         readSecret(ctx.app.db, ctx.app.vault, STEAM_USERNAME_KEY) !== null &&
         readSecret(ctx.app.db, ctx.app.vault, STEAM_PASSWORD_KEY) !== null,
+      steamWebApiKeyConfigured: readSecret(ctx.app.db, ctx.app.vault, STEAM_WEB_API_KEY) !== null,
     };
+  }),
+
+  setSteamWebApiKey: adminProcedure
+    .input(z.object({ key: z.string().trim().regex(/^[A-Fa-f0-9]{32}$/, 'A Steam Web API key is 32 hexadecimal characters.') }))
+    .mutation(({ ctx, input }) => {
+      writeSecret(ctx.app.db, ctx.app.vault, STEAM_WEB_API_KEY, input.key.toUpperCase());
+      clearWorkshopSearchCache();
+      return { configured: true };
+    }),
+
+  clearSteamWebApiKey: adminProcedure.mutation(({ ctx }) => {
+    deleteSecret(ctx.app.db, STEAM_WEB_API_KEY);
+    clearWorkshopSearchCache();
+    return { configured: false };
   }),
 
   setSteamCredentials: adminProcedure

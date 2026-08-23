@@ -17,6 +17,7 @@ import { createServiceRecovery } from './windows/watched-services.js';
 import { SiteService } from './sites/site-service.js';
 import { GameServerService } from './game-servers/game-server-service.js';
 import { createInstallGameServerHandler } from './game-servers/install-handler.js';
+import { createInstallWorkshopItemsHandler } from './game-servers/workshop-handler.js';
 import { GameServerCatalogue } from './game-servers/catalogue-loader.js';
 import { seedGameServerCatalogue } from './game-servers/catalogue-seed.js';
 import { TrafficCollector } from './traffic/collector.js';
@@ -231,6 +232,10 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     jobs.register(
       'reinstall-game-server',
       createInstallGameServerHandler({ db, binDir: config.binDir, services, firewall, vault, catalogue: gameCatalogue }),
+    );
+    jobs.register(
+      'install-workshop-items',
+      createInstallWorkshopItemsHandler({ db, binDir: config.binDir, vault, catalogue: gameCatalogue }),
     );
   }
 

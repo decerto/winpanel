@@ -40,6 +40,9 @@ const ALLOWED_ORIGINS = [
   // User-initiated link to the hosting control panel, where outbound mail is
   // unblocked and reverse DNS is set — neither of which this panel can do.
   'https://www.ovh.com',
+  // User-initiated link to a game's Steam Workshop, and to an item's page.
+  // Workshop thumbnails are proxied by the agent, so nothing is fetched here.
+  'https://steamcommunity.com',
   // Certificate authority, referenced by the connectivity check only
   'https://acme-v02.api.letsencrypt.org',
 ];

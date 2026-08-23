@@ -38,6 +38,8 @@ export const JobKind = z.enum([
   'update-game-server',
   /** Reacquiring provider-managed files while preserving server data. */
   'reinstall-game-server',
+  /** Fetching Steam Workshop items for a game server with the panel's SteamCMD. */
+  'install-workshop-items',
 ]);
 export type JobKind = z.infer<typeof JobKind>;
 

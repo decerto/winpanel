@@ -39,6 +39,20 @@
   "console": "none",
   "dataDirectory": "zomboid-profile",
   "configFile": "Server/{slug}.ini",
+  "workshop": {
+    "appId": 108600,
+    "anonymous": true,
+    "modsDirectory": "mods",
+    "modManifestFile": "mod.info",
+    "modManifestKey": "id",
+    "config": {
+      "path": "Server/{slug}.ini",
+      "itemsKey": "WorkshopItems",
+      "modsKey": "Mods",
+      "separator": ";",
+      "eol": "crlf"
+    }
+  },
   "seedFiles": [
     {
       "path": "Server/{slug}.ini",
@@ -53,7 +67,9 @@
         "PublicDescription": "",
         "Open": true,
         "PlayerRespawnWithSelf": false,
-        "FastForwardMultiplier": 40
+        "FastForwardMultiplier": 40,
+        "Mods": "",
+        "WorkshopItems": ""
       }
     }
   ],

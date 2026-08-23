@@ -1,15 +1,43 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { ArrowLeft, Download, Eye, EyeOff, File, FileCog, Folder, FolderPlus, RefreshCw, Save, Trash2 } from 'lucide-vue-next';
+import {
+  ArrowLeft,
+  Download,
+  Eye,
+  EyeOff,
+  File,
+  FileCog,
+  Folder,
+  FolderOpen,
+  FolderPlus,
+  Gauge,
+  Package,
+  RefreshCw,
+  TerminalSquare,
+  Trash2,
+} from 'lucide-vue-next';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
+import { roleAtLeast, type UserRole } from '@winpanel/shared';
 import { api, describeError } from '../lib/api';
 import { gameDownloadUrl, uploadGameFile } from '../lib/file-transfer';
 import { formatBytes } from '../lib/format';
 import AlertMessage from '../components/AlertMessage.vue';
+import FileEditorDialog from '../components/FileEditorDialog.vue';
+import GameWorkshopPanel from '../components/GameWorkshopPanel.vue';
 import LoadingBlock from '../components/LoadingBlock.vue';
 import PageHeader from '../components/PageHeader.vue';
 import StatusBadge from '../components/StatusBadge.vue';
 import { LOG_LEVEL_CLASS, useJobLog } from '../lib/job-log';
+
+/**
+ * One game server, and everything you can do to it.
+ *
+ * Split into tabs for the same reason a website is: the page had grown a
+ * console, a file browser, a credentials list and an editor stacked on top of
+ * one another, and each was a scroll away from whatever you actually came for.
+ * The tab lives in the address bar, so a link to a server's mods is a link to
+ * its mods.
+ */
 
 const route = useRoute();
 const router = useRouter();
@@ -18,11 +46,13 @@ type Server = Awaited<ReturnType<typeof api.gameServers.get.query>>;
 type Listing = Awaited<ReturnType<typeof api.gameServers.files.list.query>>;
 type Entry = Listing['entries'][number];
 
+const TABS = ['overview', 'console', 'files', 'workshop'] as const;
+type Tab = (typeof TABS)[number];
+
 const server = ref<Server | null>(null);
 const listing = ref<Listing | null>(null);
 const currentPath = ref('');
-const selectedPath = ref<string | null>(null);
-const editor = ref<{ path: string; content: string; modifiedAt: Date | null } | null>(null);
+const editingPath = ref<string | null>(null);
 const loading = ref(true);
 const fileLoading = ref(false);
 const busy = ref(false);
@@ -31,6 +61,7 @@ const notice = ref<string | null>(null);
 const creatingFolder = ref(false);
 const folderName = ref('');
 const fileInput = ref<HTMLInputElement | null>(null);
+const role = ref<UserRole | null>(null);
 type ConsoleState = Awaited<ReturnType<typeof api.gameServers.console.query>>;
 const consoleState = ref<ConsoleState | null>(null);
 const consoleCommand = ref('');
@@ -48,12 +79,34 @@ const installJob = useJobLog({
   },
 });
 
+const isAdmin = computed(() => role.value !== null && roleAtLeast(role.value, 'admin'));
+const hasWorkshop = computed(() => server.value?.catalog?.workshop != null);
+
+const tab = computed<Tab>(() => {
+  const wanted = String(route.query['tab'] ?? 'overview');
+  const found = TABS.find((name) => name === wanted) ?? 'overview';
+  return found === 'workshop' && !hasWorkshop.value ? 'overview' : found;
+});
+
+const visibleTabs = computed(() =>
+  [
+    { id: 'overview' as const, label: 'Overview', icon: Gauge, show: true },
+    { id: 'console' as const, label: 'Console', icon: TerminalSquare, show: true },
+    { id: 'files' as const, label: 'Files', icon: FolderOpen, show: true },
+    { id: 'workshop' as const, label: 'Workshop', icon: Package, show: hasWorkshop.value },
+  ].filter((entry) => entry.show),
+);
+
+function selectTab(next: Tab): void {
+  void router.replace({ query: { ...route.query, tab: next } });
+}
+
 const entries = computed(() => listing.value?.entries ?? []);
 /*
  * The catalog can name the one file that holds the server's settings. When it
- * does, the Files view gets a shortcut that opens it straight into the editor
- * — the common case is editing config, not browsing for it. Providers with no
- * single obvious file leave it unset and no button appears.
+ * does, the page gets a shortcut that opens it straight into the editor — the
+ * common case is editing config, not browsing for it. Providers with no single
+ * obvious file leave it unset and no button appears.
  */
 const configFilePath = computed(() =>
   server.value?.catalog?.configFile?.replaceAll('{slug}', slug.value) ?? null,
@@ -141,8 +194,6 @@ async function sendConsoleCommand(): Promise<void> {
 
 function goTo(path: string): void {
   currentPath.value = path;
-  selectedPath.value = null;
-  editor.value = null;
   void loadFiles();
 }
 
@@ -152,69 +203,19 @@ function goUp(): void {
   goTo(parts.join('/'));
 }
 
-async function openEntry(entry: Entry): Promise<void> {
+function openEntry(entry: Entry): void {
   if (entry.kind === 'directory') {
     goTo(entry.path);
     return;
   }
-
-  await openFile(entry.path);
-}
-
-/** Opens a file in the editor by path, wherever the current listing is. */
-async function openFile(path: string): Promise<boolean> {
-  selectedPath.value = path;
-  try {
-    const content = await api.gameServers.files.read.query({
-      gameServerSlug: slug.value,
-      path,
-    });
-    editor.value = { path, content: content.content, modifiedAt: content.modifiedAt };
-    return true;
-  } catch (err) {
-    error.value = describeError(err);
-    return false;
-  }
+  editingPath.value = entry.path;
 }
 
 /** Opens the catalog's named config file directly, without browsing for it. */
-async function openConfig(): Promise<void> {
-  const wanted = configFilePath.value;
-  if (!wanted) return;
-  busy.value = true;
+function openConfig(): void {
+  if (!configFilePath.value) return;
   error.value = null;
-  try {
-    if (!(await openFile(wanted))) {
-      // A missing file means the server has not written one yet — usually
-      // because it has never been started. Say so rather than showing the
-      // raw file error.
-      error.value = `${wanted} does not exist yet. The server writes it on first start.`;
-    }
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function saveFile(): Promise<void> {
-  if (!editor.value) return;
-  busy.value = true;
-  error.value = null;
-  notice.value = null;
-  try {
-    const result = await api.gameServers.files.write.mutate({
-      gameServerSlug: slug.value,
-      path: editor.value.path,
-      content: editor.value.content,
-      expectedModifiedAt: editor.value.modifiedAt,
-    });
-    editor.value.modifiedAt = result.modifiedAt;
-    notice.value = 'File saved.';
-    await loadFiles();
-  } catch (err) {
-    error.value = describeError(err);
-  } finally {
-    busy.value = false;
-  }
+  editingPath.value = configFilePath.value;
 }
 
 async function createFolder(): Promise<void> {
@@ -333,10 +334,7 @@ async function removeEntry(entry: Entry): Promise<void> {
       paths: [entry.path],
       permanent: false,
     });
-    if (selectedPath.value === entry.path) {
-      selectedPath.value = null;
-      editor.value = null;
-    }
+    if (editingPath.value === entry.path) editingPath.value = null;
     await loadFiles();
   } catch (err) {
     error.value = describeError(err);
@@ -365,9 +363,21 @@ async function removeServer(): Promise<void> {
 watch(slug, async () => {
   await loadServer();
   currentPath.value = '';
+  editingPath.value = null;
   await loadFiles();
   await loadConsole();
+  role.value = await api.auth.me.query().then((me) => me?.role ?? null, () => null);
+}, { immediate: true });
+
+/*
+ * The console only polls while it is on screen. Following a log nobody is
+ * looking at is a request every two and a half seconds for nothing.
+ */
+watch(tab, (current) => {
   if (consoleTimer) clearInterval(consoleTimer);
+  consoleTimer = null;
+  if (current !== 'console') return;
+  void loadConsole();
   consoleTimer = setInterval(() => void loadConsole(), 2500);
 }, { immediate: true });
 
@@ -452,35 +462,23 @@ onUnmounted(() => {
         </template>
       </PageHeader>
 
+      <nav class="mb-6 flex gap-5 overflow-x-auto border-b border-line" aria-label="Game server sections">
+        <button
+          v-for="entry in visibleTabs"
+          :key="entry.id"
+          type="button"
+          class="tab"
+          :class="tab === entry.id ? 'tab-active' : ''"
+          :aria-current="tab === entry.id ? 'page' : undefined"
+          @click="selectTab(entry.id)"
+        >
+          <component :is="entry.icon" :size="15" aria-hidden="true" />
+          {{ entry.label }}
+        </button>
+      </nav>
+
       <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
       <AlertMessage v-if="notice" tone="success" class="mb-4">{{ notice }}</AlertMessage>
-
-      <section v-if="server.catalog?.provider === 'steam'" class="card mb-6 overflow-hidden">
-        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
-          <div>
-            <h2 class="text-sm font-semibold text-ink">Updates</h2>
-            <p class="mt-0.5 text-xs text-ink-faint">
-              Pulls the latest build of this server's Steam branch. Leave the branch blank for the default.
-            </p>
-          </div>
-          <form class="flex items-center gap-2" @submit.prevent="saveBranch">
-            <input
-              v-model="branch"
-              class="field !w-44 font-mono text-xs"
-              placeholder="Branch, e.g. legacy41"
-              :disabled="branchBusy || busy"
-              aria-label="Steam branch"
-            />
-            <button type="submit" class="btn btn-ghost btn-sm" :disabled="branchBusy || busy">
-              Save branch
-            </button>
-          </form>
-        </div>
-        <div class="px-4 py-3 text-xs text-ink-muted">
-          <span class="text-ink-faint">Current:</span>
-          <span class="font-mono text-ink">{{ server.branch || 'default' }}</span>
-        </div>
-      </section>
 
       <section v-if="installJob.lines.value.length > 0" class="card mb-6 overflow-hidden">
         <div class="flex items-center justify-between border-b border-line px-4 py-3">
@@ -504,99 +502,45 @@ onUnmounted(() => {
         >{{ line.message }}</span></pre>
       </section>
 
-      <section class="card mb-6 overflow-hidden">
-        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
-          <div>
-            <h2 class="text-sm font-semibold text-ink">Server console</h2>
-            <p class="mt-0.5 text-xs text-ink-faint">
-              {{ consoleState?.available ? 'Live service output' : 'Interactive console unavailable for this provider' }}
-            </p>
-          </div>
-          <span v-if="consoleState?.kind" class="rounded-full bg-black/25 px-2 py-1 text-[0.65rem] uppercase tracking-wide text-ink-faint">
-            {{ consoleState.kind }}
-          </span>
-        </div>
-        <pre class="max-h-64 min-h-28 overflow-y-auto bg-[#101617] p-4 font-mono text-xs leading-relaxed text-[#b7d6c3]">{{ consoleState?.lines.join('\n') || 'No console output yet.' }}</pre>
-        <form v-if="consoleState?.kind === 'rcon'" class="flex gap-2 border-t border-line bg-black/15 p-3" @submit.prevent="sendConsoleCommand">
-          <span class="self-center font-mono text-sm text-brand-bright">&gt;</span>
-          <input v-model="consoleCommand" class="field flex-1 font-mono text-sm" :disabled="consoleBusy" placeholder="Enter a server command" autocomplete="off" />
-          <button type="submit" class="btn btn-primary btn-sm" :disabled="consoleBusy || !consoleCommand.trim()">Send</button>
-        </form>
-      </section>
-
-      <div class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
-        <section class="card overflow-hidden">
-          <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
-            <div class="flex min-w-0 flex-wrap items-center gap-1 text-sm">
-              <button type="button" class="text-brand-bright hover:underline" @click="goTo('')">data</button>
-              <template v-for="crumb in breadcrumbs" :key="crumb.path">
-                <span class="text-ink-faint">/</span>
-                <button type="button" class="truncate text-brand-bright hover:underline" @click="goTo(crumb.path)">
-                  {{ crumb.name }}
-                </button>
-              </template>
-            </div>
-            <div class="flex gap-2">
-              <button
-                v-if="configFilePath"
-                type="button"
-                class="btn btn-ghost btn-sm"
-                :disabled="busy"
-                :title="`Open ${configFilePath} in the editor`"
-                @click="openConfig"
-              >
-                <FileCog :size="14" aria-hidden="true" /> Server config
-              </button>
-              <button v-if="currentPath" type="button" class="btn btn-ghost btn-sm" @click="goUp">Up</button>
-              <input ref="fileInput" type="file" class="hidden" @change="upload" />
-              <button type="button" class="btn btn-ghost btn-sm" :disabled="busy" @click="chooseUpload">Upload</button>
-              <button type="button" class="btn btn-ghost btn-sm" :disabled="busy" @click="creatingFolder = !creatingFolder">
-                <FolderPlus :size="14" aria-hidden="true" /> New folder
-              </button>
-            </div>
-          </div>
-
-          <form v-if="creatingFolder" class="flex gap-2 border-b border-line p-3" @submit.prevent="createFolder">
-            <input v-model="folderName" class="field flex-1" placeholder="Folder name" autofocus />
-            <button type="submit" class="btn btn-primary btn-sm" :disabled="busy || !folderName.trim()">Create</button>
-          </form>
-
-          <div v-if="fileLoading" class="p-8"><LoadingBlock class="h-24" /></div>
-          <div v-else-if="entries.length === 0" class="p-8 text-center text-sm text-ink-muted">This data folder is empty.</div>
-          <ul v-else class="divide-y divide-line">
-            <li v-for="entry in entries" :key="entry.path" class="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.03]">
-              <button type="button" class="flex min-w-0 flex-1 items-center gap-3 text-left" @click="openEntry(entry)">
-                <Folder v-if="entry.kind === 'directory'" :size="17" class="shrink-0 text-brand-bright" aria-hidden="true" />
-                <File v-else :size="17" class="shrink-0 text-ink-faint" aria-hidden="true" />
-                <span class="min-w-0 truncate text-sm text-ink">{{ entry.name }}</span>
-                <span v-if="entry.kind === 'file'" class="ml-auto text-xs text-ink-faint">{{ formatBytes(entry.sizeBytes) }}</span>
-              </button>
-              <a
-                v-if="entry.kind === 'file'"
-                :href="gameDownloadUrl(slug, entry.path)"
-                class="btn btn-ghost btn-sm"
-                :download="entry.name"
-                aria-label="Download file"
-              >
-                Download
-              </a>
-              <button type="button" class="btn btn-ghost btn-sm text-danger" :disabled="busy" :aria-label="`Delete ${entry.name}`" @click="removeEntry(entry)">
-                <Trash2 :size="14" aria-hidden="true" />
-              </button>
-            </li>
-          </ul>
-        </section>
-
-        <aside class="space-y-4">
-          <section class="card p-5">
-            <h2 class="text-sm font-semibold text-ink">Data storage</h2>
+      <div v-if="tab === 'overview'" class="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
+        <div class="space-y-6">
+          <section v-if="configFilePath" class="card p-5">
+            <h2 class="text-sm font-semibold text-ink">Server configuration</h2>
             <p class="mt-2 text-sm text-ink-muted">
-              {{ formatBytes(listing?.quotaUsedBytes ?? 0) }} of {{ formatBytes(listing?.quotaTotalBytes ?? server.diskQuotaBytes) }} used
+              Nearly everything this game lets you change lives in one file. It opens in the panel's
+              editor, which has line numbers and find and replace — these files run long.
             </p>
-            <div class="mt-3 h-2 overflow-hidden rounded-full bg-black/30">
-              <div class="h-full rounded-full bg-brand" :style="{ width: `${quotaPercent}%` }" />
+            <p class="mt-2 font-mono text-xs text-ink-faint">{{ configFilePath }}</p>
+            <button type="button" class="btn btn-primary mt-4" :disabled="busy" @click="openConfig">
+              <FileCog :size="14" aria-hidden="true" /> Edit server config
+            </button>
+          </section>
+
+          <section v-if="server.catalog?.provider === 'steam'" class="card overflow-hidden">
+            <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+              <div>
+                <h2 class="text-sm font-semibold text-ink">Updates</h2>
+                <p class="mt-0.5 text-xs text-ink-faint">
+                  Pulls the latest build of this server's Steam branch. Leave the branch blank for the default.
+                </p>
+              </div>
+              <form class="flex items-center gap-2" @submit.prevent="saveBranch">
+                <input
+                  v-model="branch"
+                  class="field !w-44 font-mono text-xs"
+                  placeholder="Branch, e.g. legacy41"
+                  :disabled="branchBusy || busy"
+                  aria-label="Steam branch"
+                />
+                <button type="submit" class="btn btn-ghost btn-sm" :disabled="branchBusy || busy">
+                  Save branch
+                </button>
+              </form>
             </div>
-            <p class="mt-3 text-xs text-ink-faint">Provider files are managed separately. This area is for configuration, worlds, saves, and logs.</p>
+            <div class="px-4 py-3 text-xs text-ink-muted">
+              <span class="text-ink-faint">Current:</span>
+              <span class="font-mono text-ink">{{ server.branch || 'default' }}</span>
+            </div>
           </section>
 
           <section class="card p-5">
@@ -613,6 +557,19 @@ onUnmounted(() => {
               Forward these ports on your router or cloud firewall if the machine is not directly
               reachable from the internet.
             </p>
+          </section>
+        </div>
+
+        <aside class="space-y-4">
+          <section class="card p-5">
+            <h2 class="text-sm font-semibold text-ink">Data storage</h2>
+            <p class="mt-2 text-sm text-ink-muted">
+              {{ formatBytes(listing?.quotaUsedBytes ?? 0) }} of {{ formatBytes(listing?.quotaTotalBytes ?? server.diskQuotaBytes) }} used
+            </p>
+            <div class="mt-3 h-2 overflow-hidden rounded-full bg-black/30">
+              <div class="h-full rounded-full bg-brand" :style="{ width: `${quotaPercent}%` }" />
+            </div>
+            <p class="mt-3 text-xs text-ink-faint">Provider files are managed separately. This area is for configuration, worlds, saves, and logs.</p>
           </section>
 
           <section v-if="credentials.length > 0" class="card p-5">
@@ -643,18 +600,101 @@ onUnmounted(() => {
               </div>
             </dl>
           </section>
-
-          <section v-if="editor" class="card p-5">
-            <div class="flex items-center justify-between gap-2">
-              <h2 class="min-w-0 truncate text-sm font-semibold text-ink">{{ editor.path }}</h2>
-              <button type="button" class="btn btn-primary btn-sm" :disabled="busy" @click="saveFile">
-                <Save :size="14" aria-hidden="true" /> Save
-              </button>
-            </div>
-            <textarea v-model="editor.content" class="field mt-3 min-h-80 resize-y font-mono text-xs" spellcheck="false" />
-          </section>
         </aside>
       </div>
+
+      <section v-else-if="tab === 'console'" class="card overflow-hidden">
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+          <div>
+            <h2 class="text-sm font-semibold text-ink">Server console</h2>
+            <p class="mt-0.5 text-xs text-ink-faint">
+              {{ consoleState?.available ? 'Live service output' : 'Interactive console unavailable for this provider' }}
+            </p>
+          </div>
+          <span v-if="consoleState?.kind" class="rounded-full bg-black/25 px-2 py-1 text-[0.65rem] uppercase tracking-wide text-ink-faint">
+            {{ consoleState.kind }}
+          </span>
+        </div>
+        <pre class="max-h-[60vh] min-h-72 overflow-y-auto bg-[#101617] p-4 font-mono text-xs leading-relaxed text-[#b7d6c3]">{{ consoleState?.lines.join('\n') || 'No console output yet.' }}</pre>
+        <form v-if="consoleState?.kind === 'rcon'" class="flex gap-2 border-t border-line bg-black/15 p-3" @submit.prevent="sendConsoleCommand">
+          <span class="self-center font-mono text-sm text-brand-bright">&gt;</span>
+          <input v-model="consoleCommand" class="field flex-1 font-mono text-sm" :disabled="consoleBusy" placeholder="Enter a server command" autocomplete="off" />
+          <button type="submit" class="btn btn-primary btn-sm" :disabled="consoleBusy || !consoleCommand.trim()">Send</button>
+        </form>
+      </section>
+
+      <section v-else-if="tab === 'files'" class="card overflow-hidden">
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-3">
+          <div class="flex min-w-0 flex-wrap items-center gap-1 text-sm">
+            <button type="button" class="text-brand-bright hover:underline" @click="goTo('')">data</button>
+            <template v-for="crumb in breadcrumbs" :key="crumb.path">
+              <span class="text-ink-faint">/</span>
+              <button type="button" class="truncate text-brand-bright hover:underline" @click="goTo(crumb.path)">
+                {{ crumb.name }}
+              </button>
+            </template>
+          </div>
+          <div class="flex gap-2">
+            <button
+              v-if="configFilePath"
+              type="button"
+              class="btn btn-ghost btn-sm"
+              :disabled="busy"
+              :title="`Open ${configFilePath} in the editor`"
+              @click="openConfig"
+            >
+              <FileCog :size="14" aria-hidden="true" /> Server config
+            </button>
+            <button v-if="currentPath" type="button" class="btn btn-ghost btn-sm" @click="goUp">Up</button>
+            <input ref="fileInput" type="file" class="hidden" @change="upload" />
+            <button type="button" class="btn btn-ghost btn-sm" :disabled="busy" @click="chooseUpload">Upload</button>
+            <button type="button" class="btn btn-ghost btn-sm" :disabled="busy" @click="creatingFolder = !creatingFolder">
+              <FolderPlus :size="14" aria-hidden="true" /> New folder
+            </button>
+          </div>
+        </div>
+
+        <form v-if="creatingFolder" class="flex gap-2 border-b border-line p-3" @submit.prevent="createFolder">
+          <input v-model="folderName" class="field flex-1" placeholder="Folder name" autofocus />
+          <button type="submit" class="btn btn-primary btn-sm" :disabled="busy || !folderName.trim()">Create</button>
+        </form>
+
+        <div v-if="fileLoading" class="p-8"><LoadingBlock class="h-24" /></div>
+        <div v-else-if="entries.length === 0" class="p-8 text-center text-sm text-ink-muted">This data folder is empty.</div>
+        <ul v-else class="divide-y divide-line">
+          <li v-for="entry in entries" :key="entry.path" class="flex items-center gap-3 px-4 py-3 hover:bg-white/[0.03]">
+            <button type="button" class="flex min-w-0 flex-1 items-center gap-3 text-left" @click="openEntry(entry)">
+              <Folder v-if="entry.kind === 'directory'" :size="17" class="shrink-0 text-brand-bright" aria-hidden="true" />
+              <File v-else :size="17" class="shrink-0 text-ink-faint" aria-hidden="true" />
+              <span class="min-w-0 truncate text-sm text-ink">{{ entry.name }}</span>
+              <span v-if="entry.kind === 'file'" class="ml-auto text-xs text-ink-faint">{{ formatBytes(entry.sizeBytes) }}</span>
+            </button>
+            <a
+              v-if="entry.kind === 'file'"
+              :href="gameDownloadUrl(slug, entry.path)"
+              class="btn btn-ghost btn-sm"
+              :download="entry.name"
+              aria-label="Download file"
+            >
+              Download
+            </a>
+            <button type="button" class="btn btn-ghost btn-sm text-danger" :disabled="busy" :aria-label="`Delete ${entry.name}`" @click="removeEntry(entry)">
+              <Trash2 :size="14" aria-hidden="true" />
+            </button>
+          </li>
+        </ul>
+      </section>
+
+      <GameWorkshopPanel v-else-if="tab === 'workshop'" :slug="slug" :is-admin="isAdmin" />
+
+      <FileEditorDialog
+        v-if="editingPath"
+        :open="editingPath !== null"
+        :game-server-slug="slug"
+        :path="editingPath"
+        @close="editingPath = null"
+        @saved="loadFiles"
+      />
     </template>
   </div>
 </template>

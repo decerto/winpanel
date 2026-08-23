@@ -56,6 +56,7 @@ file stays shipped.
 | `classpathDirectory` | Folder of jars joined into `{classpath}`, for games launched through their own bundled JVM. |
 | `downloadUrl` / `downloadSha256` | Official download and optional checksum for non-Steam providers. |
 | `console` | `rcon` (log tail plus commands), `logs` (read-only tail), or `none`. |
+| `workshop` | Steam Workshop support. Present, the server page grows a **Workshop** tab. See below. |
 | `dataDirectory` | The provider's data folder, relative to the install root, mapped into the Files view. Omit it to use the panel's own data folder; `.` means the install root itself. |
 | `ports` | Named bindings with `protocol`, `purpose`, `visibility`, and a default `port`. |
 
@@ -109,6 +110,47 @@ about it:
   games that parse their config strictly reject the quoted form.
 - `path` is relative to the data folder. Absolute paths and `..` are rejected: a catalog
   file is contributed content, and it does not get to write outside the server's folder.
+
+## Steam Workshop
+
+A `workshop` block is all it takes for a game to get a Workshop tab, where the server's
+owner searches for mods and adds them. The download runs on the machine, under the
+operator's own SteamCMD — a customer never signs in to Steam, and never sees the
+operator's account:
+
+```json
+"workshop": {
+  "appId": 108600,
+  "anonymous": true,
+  "modsDirectory": "mods",
+  "modManifestFile": "mod.info",
+  "modManifestKey": "id",
+  "config": {
+    "path": "Server/{slug}.ini",
+    "itemsKey": "WorkshopItems",
+    "modsKey": "Mods",
+    "separator": ";",
+    "eol": "crlf"
+  }
+}
+```
+
+- `appId` is the **game's** app ID, not the dedicated-server tool's. Workshop items belong
+  to the game people play. It is what the in-panel search queries, and what the **Open on
+  Steam** button opens unless `browseUrl` overrides the link.
+- `anonymous: true` means Valve serves this app's Workshop without a login. The panel tries
+  anonymous first regardless, and falls back to the Steam account configured in Settings
+  when Steam refuses. Set it to `false` for a game whose Workshop always needs an account,
+  so the tab can say so up front rather than after a failed download.
+- `modsDirectory` is where each mod folder inside a downloaded item is copied, relative to
+  the data folder. Items for games that read mods straight out of the Steam download can
+  leave it out.
+- `modManifestFile` / `modManifestKey` name the file inside a mod folder that declares the
+  id the game's config expects — for Project Zomboid, `id=` in `mod.info`. The panel looks
+  a few folders deep, because build-42 items nest theirs.
+- `config` names the settings file and the two keys the mod list is written into after
+  every add and remove. Only those keys are touched. Leave `config` out and the download
+  still happens; nothing is written to the game's settings.
 
 ## Ports are defaults, not assignments
 

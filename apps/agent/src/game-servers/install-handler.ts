@@ -23,6 +23,7 @@ import { readSecret, writeSecret } from '../security/secret-store.js';
 import type { GameServerCatalogue } from './catalogue-loader.js';
 import { expandPlaceholders, type PlaceholderValues } from './placeholders.js';
 import { writeSeedFiles } from './seed-files.js';
+import { createSteamRedactor } from './steam-privacy.js';
 
 const VERSION_MANIFEST_URL = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json';
 const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024;
@@ -436,8 +437,16 @@ async function acquireSteam(
   const login = steamUsername && steamPassword
     ? ['+login', steamUsername, steamPassword]
     : ['+login', 'anonymous'];
+  /*
+   * The customer waiting on this download can read its log, and the account
+   * signing in belongs to whoever runs the panel. Neither the name the panel
+   * was given nor the one SteamCMD prints for itself gets through.
+   */
+  const redact = createSteamRedactor(
+    steamUsername && steamPassword ? { username: steamUsername, password: steamPassword } : null,
+  );
   if (steamUsername) {
-    ctx.log(`Signing in to Steam as ${steamUsername}. If the account uses Steam Guard, approve the sign-in in the Steam mobile app when it appears.`);
+    ctx.log('Signing in to Steam with the server account. If it uses Steam Guard, approve the sign-in in the Steam mobile app when it appears.');
   }
   // A selected beta branch rides the same app_update command, so "update"
   // and "install" are one code path that always pulls the latest build of
@@ -456,7 +465,8 @@ async function acquireSteam(
       '+quit',
     ],
     timeoutMs: 60 * 60 * 1000,
-    onOutput: (line) => {
+    onOutput: (raw) => {
+      const line = redact(raw);
       if (/error|failed/i.test(line)) ctx.log(line, 'warn');
       else if (line.trim()) ctx.log(line);
 
@@ -480,9 +490,9 @@ async function acquireSteam(
           'by running steamcmd.exe in the WinPanel bin folder — after that, installs continue without prompting.',
       );
     }
-    const detail = (result.stderr || result.stdout).trim().split(/\r?\n/).slice(-3).join(' ');
+    const detail = redact((result.stderr || result.stdout).trim()).split(/\r?\n/).slice(-3).join(' ');
     const ownership = /no subscription/i.test(combinedOutput)
-      ? ` Steam declined App ${entry.steamAppId}; the configured Steam account must own ${entry.name}.`
+      ? ` Steam declined App ${entry.steamAppId}; the server's Steam account must own ${entry.name}.`
       : '';
     throw new Error(`SteamCMD could not install the dedicated-server files.${ownership}${detail ? ` ${detail}` : ''}`);
   }

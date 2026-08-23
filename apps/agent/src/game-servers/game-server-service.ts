@@ -46,6 +46,11 @@ export class GameServerService {
     return this.catalogue.entries;
   }
 
+  /** The live store, for helpers that need to look entries up themselves. */
+  catalogueStore(): GameServerCatalogue {
+    return this.catalogue;
+  }
+
   /** Re-reads the catalog folders, so a dropped config appears without a restart. */
   async reloadCatalogue() {
     return await this.catalogue.reload();
