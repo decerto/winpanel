@@ -71,7 +71,8 @@ by a bundled MariaDB database, with a database browser built in. It supports Win
 
 - **Websites** — from Git or managed by hand, with builds that swap in only if they start
 - **Game servers** — Minecraft Java and Bedrock, Palworld, Project Zomboid and other Steam
-  titles, each a Windows Service with its own ports and firewall rules
+  titles, each a Windows Service with its own ports and firewall rules. Any game not in the
+  list is a JSON file away — the library is a config folder, not a code path
 - **WordPress & PHP** — one-click WordPress, and PHP sites on a supervised worker pool
 - **Databases** — MariaDB with per-site databases and a built-in browser
 - **HTTPS** — free certificates, renewed automatically, over the DNS challenge

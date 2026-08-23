@@ -11,7 +11,8 @@
   "steamAppId": 2394010,
   "steamArtAppId": 1623730,
   "executable": "PalServer.exe",
-  "launchArgs": ["-port={gamePort}"],
+  "launchArgs": ["-port={port:game}"],
+  "workingDirectory": "executable",
   "console": "none",
   "ports": [
     { "name": "game", "protocol": "udp", "purpose": "game", "visibility": "public", "port": 8211 },

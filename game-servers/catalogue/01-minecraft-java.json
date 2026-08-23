@@ -10,9 +10,25 @@
   "requiresEula": true,
   "steamRequiresOwnership": false,
   "executable": "server.jar",
-  "launchArgs": ["-jar", "server.jar", "nogui"],
+  "runtime": "java",
+  "launchArgs": ["-jar", "{installPath}\\server.jar", "nogui"],
+  "workingDirectory": "data",
   "console": "none",
   "configFile": "server.properties",
+  "seedFiles": [
+    {
+      "path": "eula.txt",
+      "format": "text",
+      "mode": "merge",
+      "content": "# Accepted through WinPanel\neula=true"
+    },
+    {
+      "path": "server.properties",
+      "format": "properties",
+      "mode": "merge",
+      "values": { "server-port": "{port:game}" }
+    }
+  ],
   "ports": [
     { "name": "game", "protocol": "tcp", "purpose": "game", "visibility": "public", "port": 25565 }
   ]

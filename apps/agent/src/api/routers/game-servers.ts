@@ -261,6 +261,27 @@ export const gameServersRouter = router({
     return { count: service.catalogueEntries().length };
   }),
 
+  /**
+   * What the catalog folders currently hold, including the files that failed
+   * validation. Without this, someone writing a config for a new game has to
+   * read the agent's stderr to find out why their file was ignored.
+   */
+  catalogueStatus: adminProcedure.query(({ ctx }) => {
+    const service = ctx.app.gameServers as GameServerService;
+    return {
+      loaded: service.catalogueEntries().length,
+      directory: service.catalogueDirectory(),
+      rejected: service.catalogueProblems(),
+    };
+  }),
+
+  /** Re-reads the catalog folders so a dropped config appears without a restart. */
+  reloadCatalogue: adminProcedure.mutation(async ({ ctx }) => {
+    const service = ctx.app.gameServers as GameServerService;
+    const result = await service.reloadCatalogue();
+    return { loaded: result.entries.length, rejected: result.rejected };
+  }),
+
   list: accountProcedure.query(({ ctx }) => {
     const servers = ctx.user?.role === 'user'
       ? ctx.app.gameServers.listForUser(ctx.user.id)
@@ -308,6 +329,44 @@ export const gameServersRouter = router({
       const server = visibleServer(ctx, input.slug);
       const kind = serviceCatalogEntry(ctx.app.gameServers as GameServerService, server.catalogId)?.console ?? 'none';
       return await readConsoleSnapshot(server, kind);
+    }),
+
+  /**
+   * The passwords the panel generated for this server, by name.
+   *
+   * A game that needs its owner to type an admin password into the game client
+   * is not served by a value only the vault can see, so the catalog's declared
+   * secrets are listed here and revealed one at a time.
+   */
+  credentials: accountProcedure
+    .input(z.object({ slug: z.string().min(1).max(64) }))
+    .query(({ ctx, input }) => {
+      const server = visibleServer(ctx, input.slug);
+      const entry = serviceCatalogEntry(ctx.app.gameServers as GameServerService, server.catalogId);
+      return (entry?.secrets ?? []).map((secret) => ({
+        name: secret.name,
+        available: readSecret(ctx.app.db, ctx.app.vault, `game-server:${server.id}:${secret.name}`) !== null,
+      }));
+    }),
+
+  revealCredential: accountProcedure
+    .input(z.object({ slug: z.string().min(1).max(64), name: z.string().min(1).max(64) }))
+    .mutation(({ ctx, input }) => {
+      const server = visibleServer(ctx, input.slug);
+      const entry = serviceCatalogEntry(ctx.app.gameServers as GameServerService, server.catalogId);
+      // Only names the catalog declared, so the parameter cannot be used to
+      // walk the vault's other keys.
+      if (!entry?.secrets.some((secret) => secret.name === input.name)) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'This game server has no such credential.' });
+      }
+      const value = readSecret(ctx.app.db, ctx.app.vault, `game-server:${server.id}:${input.name}`);
+      if (value === null) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'That password has not been generated yet. Install the server first.',
+        });
+      }
+      return { name: input.name, value };
     }),
 
   command: accountProcedure

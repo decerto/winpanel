@@ -14,6 +14,17 @@
   "console": "none",
   "downloadUrl": "https://minecraft.azureedge.net/bin-win/bedrock-server-1.21.80.3.zip",
   "downloadSha256": null,
+  "dataDirectory": ".",
+  "workingDirectory": "install",
+  "configFile": "server.properties",
+  "seedFiles": [
+    {
+      "path": "server.properties",
+      "format": "properties",
+      "mode": "merge",
+      "values": { "server-port": "{port:game}" }
+    }
+  ],
   "ports": [
     { "name": "game", "protocol": "udp", "purpose": "game", "visibility": "public", "port": 19132 }
   ]

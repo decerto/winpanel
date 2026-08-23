@@ -78,6 +78,8 @@ The default bindings are UDP `16261` (`DefaultPort`, the port players connect to
 
 The first start creates the `admin` account with a password WinPanel generates and stores in the vault, supplied through `-adminpassword` — the batch file would otherwise block forever on a console prompt no service can answer. Reinstalling reuses the stored password rather than rotating it, and refreshes the service's launch arguments, which is the repair path for a server registered before these arguments were correct.
 
+None of the above is Zomboid-specific code. The bundled JVM, the classpath, the heap, the generated password and the CRLF settings file are all fields in [its catalog file](https://github.com/decerto/winpanel/blob/main/game-servers/catalogue/zomboid.json) — which is what any other game with the same awkward shape can copy.
+
 The heap is sized from the memory actually free on the machine at install time (between 1 GB and 4 GB), rather than the upstream launcher’s fixed 4 GB default — a small VM otherwise fails to start at all with an out-of-memory error. Because the heap is baked into the Windows service definition, resizing it later means deleting and recreating the server.
 
 ## Ownership and access
@@ -138,7 +140,7 @@ The fields a config carries:
 | Field | What it does |
 | --- | --- |
 | `id` | Unique catalog ID. Lowercase, stable, used to merge overrides. |
-| `provider` | `minecraft-java`, `minecraft-bedrock`, or `steam`. |
+| `provider` | How the files are fetched: `steam`, `download`, or `minecraft-java`. |
 | `name` / `description` | Shown in the library and on the server card. |
 | `status` | `ready` or `planned`. Only `ready` can be created. |
 | `genre` / `art` | Genre label and local fallback art theme. |
@@ -146,11 +148,24 @@ The fields a config carries:
 | `steamRequiresOwnership` | Whether the game needs a Steam account that owns it. |
 | `steamAppId` / `steamArtAppId` | The install ID and the retail ID used for library artwork. |
 | `executable` / `launchExecutable` | The file that proves a download completed, and the binary the service actually runs. |
-| `launchArgs` | Fixed arguments; `{gamePort}`, `{directPort}`, `{slug}`, `{classpath}`, `{heapMb}`, `{dataDir}`, and `{adminPassword}` are expanded at install time. |
+| `runtime` | `native`, or `java` to use the panel's own Java runtime. |
+| `launchArgs` | The service's arguments, with placeholders expanded at install time. |
+| `workingDirectory` | `install`, `data`, or `executable`. |
+| `seedFiles` | Config files written before the first start, so the game learns its ports and passwords. |
+| `secrets` | Passwords the panel generates, vaults, and expands as `{secret:name}`. |
+| `heap` | Heap floor, cap and reserve for JVM games; enables `{heapMb}`. |
+| `classpathDirectory` | Folder of jars joined into `{classpath}`. |
 | `downloadUrl` / `downloadSha256` | Official download and optional checksum for non-Steam providers. |
-| `console` | `rcon`, `stdin`, or `none`. `none` until a protocol is proven. |
+| `console` | `rcon` (log tail plus commands), `logs` (read-only tail), or `none`. |
 | `dataDirectory` | The provider's data folder, mapped into the Files view. |
 | `ports` | Named bindings with `protocol`, `purpose`, `visibility`, and a default `port`. |
+
+Placeholders are the same wherever they appear — launch arguments, seeded config values,
+and a seed file's own path: `{port:<name>}`, `{secret:<name>}`, `{slug}`, `{displayName}`,
+`{installPath}`, `{dataDir}`, `{version}`, `{classpath}`, `{heapMb}`. A token the config
+never declared stops the install rather than reaching the command line. The full
+reference, including how to seed a settings file, is in
+[the catalogue guide](game-servers-catalogue.md).
 
 ### Ports are defaults, not assignments
 
@@ -168,22 +183,20 @@ A minimal Steam config for a game that downloads anonymously:
   "provider": "steam",
   "name": "My Game",
   "description": "My Game dedicated server for Windows.",
-  "status": "ready",
   "genre": "Survival",
-  "art": "steel",
   "requiresEula": true,
-  "steamRequiresOwnership": false,
   "steamAppId": 12345,
   "executable": "MyServer.exe",
-  "launchArgs": ["-port", "{gamePort}", "-batchmode"],
-  "console": "none",
+  "launchArgs": ["-port", "{port:game}", "-batchmode"],
   "ports": [
     { "name": "game", "protocol": "udp", "purpose": "game", "visibility": "public", "port": 25000 }
   ]
 }
 ```
 
-The panel validates the file at startup, and the game appears in the library the next time it loads. A bad file is skipped with its name in the log, so a typo never takes the catalog down.
+That is the whole file — everything else has a default. Drop it into `<data>/game-servers/catalogue/` on the machine, open **Game Servers → Add a server**, and press **Reload configs**. The game appears in the library immediately; there is no rebuild and no restart. A file that does not match the schema is skipped on its own, with the reason shown on that page, so a typo never takes the catalog down.
+
+Games that need more — a settings file seeded with the allocated port, a generated admin password, a sized JVM heap, a bundled runtime — describe that in the same file with `seedFiles`, `secrets`, `heap` and `classpathDirectory`. Project Zomboid needs all four and is still just a config.
 
 Configs are shared through the repository. If you write one for a game that is not in the library, a pull request adding the file is the whole change — see [docs/game-servers-catalogue.md](game-servers-catalogue.md) for the review checklist and how to test it on your own install first.
 
@@ -197,6 +210,12 @@ most take a password. Set both before inviting anyone: a server called `server` 
 password is open to whoever finds it. The file manager's **Server config** button opens
 the right file for the games that name one; the rest keep the setting in their own config
 under the data folder.
+
+**Passwords the panel generated are on the server's Credentials panel.** Where a game's
+config declares one — Project Zomboid's admin account, for instance — WinPanel generates
+it at install, keeps it in the vault, and shows it on request from the server's page.
+Reinstalling reuses it rather than rotating it, so the account the game created still
+works.
 
 **Match the player count to the machine.** A server's default max-players is often far
 above what a small VM holds comfortably. Player slots cost memory before they cost CPU,

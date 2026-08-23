@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { loadGameServerCatalogue } from '../src/game-servers/catalogue-loader.js';
+import { GameServerCatalogue, loadGameServerCatalogue } from '../src/game-servers/catalogue-loader.js';
 
 const SEED = path.join(import.meta.dirname, '..', '..', '..', 'game-servers', 'catalogue');
 let tmpDir: string;
@@ -16,6 +16,51 @@ afterEach(async () => {
 });
 
 describe('game-server catalogue loading', () => {
+  it('picks up a config added after startup, without restarting the agent', async () => {
+    // The whole point of the folder is that an administrator can drop a game
+    // in. Serving the snapshot taken at boot would make that mean "drop a game
+    // in and restart the agent".
+    const dataDir = path.join(tmpDir, 'catalogue-data');
+    await fs.mkdir(dataDir, { recursive: true });
+    const catalogue = await GameServerCatalogue.load(SEED, dataDir);
+    const before = catalogue.entries.length;
+    expect(catalogue.find('community-game')).toBeUndefined();
+
+    await fs.writeFile(
+      path.join(dataDir, 'community-game.json'),
+      JSON.stringify({
+        id: 'community-game',
+        provider: 'steam',
+        name: 'Community Game',
+        description: 'Contributed by someone who never opened an editor.',
+        genre: 'Survival',
+        requiresEula: true,
+        steamAppId: 999999,
+        executable: 'CommunityServer.exe',
+        launchArgs: ['-port', '{port:game}'],
+        ports: [{ name: 'game', protocol: 'udp', purpose: 'game', visibility: 'public', port: 27500 }],
+      }),
+    );
+
+    await catalogue.reload();
+
+    expect(catalogue.entries.length).toBe(before + 1);
+    expect(catalogue.find('community-game')?.name).toBe('Community Game');
+  });
+
+  it('keeps the reason a config was rejected, so its author can be told', async () => {
+    const dataDir = path.join(tmpDir, 'catalogue-data');
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(path.join(dataDir, 'typo.json'), JSON.stringify({ id: 'typo', provider: 'stem' }));
+
+    const catalogue = await GameServerCatalogue.load(SEED, dataDir);
+
+    expect(catalogue.rejected.map((problem) => problem.file)).toEqual(['typo.json']);
+    expect(catalogue.rejected[0]?.error).toBeTruthy();
+    // One bad file must not take the rest of the library down with it.
+    expect(catalogue.entries.length).toBeGreaterThanOrEqual(5);
+  });
+
   it('loads the built-in seed set from the repo folder', async () => {
     const { entries, rejected } = await loadGameServerCatalogue(SEED, path.join(tmpDir, 'empty'));
 
@@ -103,10 +148,11 @@ describe('game-server catalogue loading', () => {
     expect(rejected).toEqual([]);
 
     const withShortcut = entries.filter((entry) => entry.configFile);
-    // The shortcut is the common case: every ready built-in names its settings
-    // file except Bedrock, whose server.properties lives outside the data folder.
+    // The shortcut is the common case: every ready built-in names the settings
+    // file the panel seeds for it.
     expect(withShortcut.map((entry) => entry.id)).toEqual([
       'minecraft-java-vanilla',
+      'minecraft-bedrock-vanilla',
       'nomad-dedicated',
       'zomboid-dedicated',
     ]);

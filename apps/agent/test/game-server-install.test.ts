@@ -7,11 +7,11 @@ import { eq } from 'drizzle-orm';
 import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
 import { gameServerPorts, gameServers } from '../src/db/schema.js';
 import { GameServerService } from '../src/game-servers/game-server-service.js';
-import { createInstallGameServerHandler, zomboidHeapMegabytes } from '../src/game-servers/install-handler.js';
-import { loadGameServerCatalogue } from '../src/game-servers/catalogue-loader.js';
+import { createInstallGameServerHandler, heapMegabytes } from '../src/game-servers/install-handler.js';
+import { GameServerCatalogue } from '../src/game-servers/catalogue-loader.js';
 import type { ServiceManager } from '../src/windows/service-manager.js';
 import { SecretVault } from '../src/security/vault.js';
-import { writeSecret } from '../src/security/secret-store.js';
+import { writeSecret, readSecret } from '../src/security/secret-store.js';
 
 const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
 const CATALOGUE = path.join(import.meta.dirname, '..', '..', '..', 'game-servers', 'catalogue');
@@ -20,13 +20,13 @@ let tmpDir: string;
 let handle: DatabaseHandle;
 let service: GameServerService;
 let vault: SecretVault;
-let catalogue: Awaited<ReturnType<typeof loadGameServerCatalogue>>['entries'];
+let catalogue: GameServerCatalogue;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'winpanel-game-install-'));
   handle = createDatabase(path.join(tmpDir, 'test.db'));
   migrateDatabase(handle, MIGRATIONS);
-  catalogue = (await loadGameServerCatalogue(CATALOGUE, path.join(tmpDir, 'catalogue-data'))).entries;
+  catalogue = await GameServerCatalogue.load(CATALOGUE, path.join(tmpDir, 'catalogue-data'));
   service = new GameServerService(handle, path.join(tmpDir, 'servers'), catalogue);
   vault = new SecretVault(path.join(tmpDir, 'vault.key'));
   await vault.initialise();
@@ -38,19 +38,27 @@ afterEach(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
-describe('Zomboid heap sizing', () => {
-  it('caps a dedicated machine at 4 GB', () => {
-    expect(zomboidHeapMegabytes(16 * 1024 ** 3)).toBe(4096);
+describe('JVM heap sizing', () => {
+  // The numbers come from the catalog, not the code, so the test reads them
+  // from the entry that declares them.
+  const heapOf = (id: string) => {
+    const heap = catalogue.find(id)?.heap;
+    if (!heap) throw new Error(`${id} declares no heap`);
+    return heap;
+  };
+
+  it('caps a dedicated machine at the configured maximum', () => {
+    expect(heapMegabytes(16 * 1024 ** 3, heapOf('zomboid-dedicated'))).toBe(4096);
   });
 
   it('scales down a mid-range machine', () => {
     // 4 GB free, 1.5 GB reserved for Windows => 2.5 GB heap.
-    expect(zomboidHeapMegabytes(4 * 1024 ** 3)).toBe(2560);
+    expect(heapMegabytes(4 * 1024 ** 3, heapOf('zomboid-dedicated'))).toBe(2560);
   });
 
-  it('never drops below 1 GB, even on a tiny VM', () => {
-    expect(zomboidHeapMegabytes(2 * 1024 ** 3)).toBe(1024);
-    expect(zomboidHeapMegabytes(512 * 1024 ** 2)).toBe(1024);
+  it('never drops below the configured floor, even on a tiny VM', () => {
+    expect(heapMegabytes(2 * 1024 ** 3, heapOf('zomboid-dedicated'))).toBe(1024);
+    expect(heapMegabytes(512 * 1024 ** 2, heapOf('zomboid-dedicated'))).toBe(1024);
   });
 });
 
@@ -413,9 +421,98 @@ describe('Minecraft Java installation', () => {
       serverPort: number;
       maxPlayers: number;
       Bots: number;
+      serverName: string;
     };
-    expect(config).toMatchObject({ serverPort: gamePort, maxPlayers: 30, Bots: 20 });
+    expect(config).toMatchObject({ serverPort: gamePort, maxPlayers: 30, Bots: 20, serverName: 'Nomad' });
     expect(handle.db.select().from(gameServerPorts).all()).toHaveLength(1);
+  });
+
+  it('installs a game the panel has never heard of, from a config file alone', async () => {
+    // The whole promise of the catalog: someone adds JSON for a Steam game and
+    // it installs, seeds its settings and registers a service with no code
+    // change anywhere. If this test needs a source edit to pass, the promise
+    // has been broken.
+    const dataDir = path.join(tmpDir, 'catalogue-data');
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(
+      path.join(dataDir, 'community-game.json'),
+      JSON.stringify({
+        id: 'community-game',
+        provider: 'steam',
+        name: 'Community Game',
+        description: 'Contributed without touching TypeScript.',
+        genre: 'Survival',
+        requiresEula: true,
+        steamAppId: 999999,
+        executable: 'CommunityServer.exe',
+        workingDirectory: 'executable',
+        secrets: [{ name: 'rcon' }],
+        launchArgs: ['-port', '{port:game}', '-rconpassword', '{secret:rcon}'],
+        seedFiles: [
+          {
+            path: 'settings.ini',
+            format: 'ini',
+            eol: 'crlf',
+            values: { Port: '{port:game}', ServerName: '{displayName}', RconPassword: '{secret:rcon}' },
+          },
+        ],
+        ports: [
+          { name: 'game', protocol: 'udp', purpose: 'game', visibility: 'public', port: 27500 },
+        ],
+      }),
+    );
+    await catalogue.reload();
+
+    const server = await service.create(
+      { displayName: 'Community', catalogId: 'community-game', eulaAccepted: true },
+      null,
+    );
+    const binDir = path.join(tmpDir, 'bin');
+    await fs.mkdir(path.join(binDir, 'steamcmd'), { recursive: true });
+    await fs.writeFile(path.join(binDir, 'steamcmd', 'steamcmd.exe'), 'fixture');
+    await fs.writeFile(path.join(server.installPath, 'CommunityServer.exe'), 'fixture');
+
+    const installed: Array<{ executable: string; args?: readonly string[]; workingDirectory?: string }> = [];
+    const services = {
+      isInstalled: async () => false,
+      install: async (definition: (typeof installed)[number]) => installed.push(definition),
+    } as unknown as ServiceManager;
+    const handler = createInstallGameServerHandler({
+      db: handle,
+      catalogue,
+      binDir,
+      services,
+      vault,
+      runCommand: async () => ({
+        exitCode: 0,
+        stdout: "Success! App '999999' fully installed.",
+        stderr: '',
+        timedOut: false,
+        durationMs: 1,
+        truncated: false,
+      }),
+    });
+    const context = {
+      jobId: crypto.randomUUID(),
+      log: () => undefined,
+      progress: () => undefined,
+      isCancelled: () => false,
+      throwIfCancelled: () => undefined,
+    };
+
+    await handler({ gameServerId: server.id }, context);
+
+    const gamePort = handle.db.select().from(gameServerPorts).all()[0]?.port;
+    expect(service.get(server.slug)?.state).toBe('stopped');
+    expect(installed[0]?.executable).toContain('CommunityServer.exe');
+    expect(installed[0]?.workingDirectory).toBe(server.installPath);
+
+    const rcon = readSecret(handle, vault, `game-server:${server.id}:rcon`);
+    expect(rcon).toBeTruthy();
+    expect(installed[0]?.args).toEqual(['-port', String(gamePort), '-rconpassword', rcon]);
+
+    const ini = await fs.readFile(path.join(server.dataPath, 'settings.ini'), 'utf8');
+    expect(ini).toBe(`Port=${gamePort}\r\nServerName=Community\r\nRconPassword=${rcon}\r\n`);
   });
 
   it('installs Project Zomboid anonymously with its bundled JRE and managed profile', async () => {

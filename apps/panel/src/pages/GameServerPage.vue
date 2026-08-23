@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref, watch } from 'vue';
-import { ArrowLeft, Download, File, FileCog, Folder, FolderPlus, RefreshCw, Save, Trash2 } from 'lucide-vue-next';
+import { ArrowLeft, Download, Eye, EyeOff, File, FileCog, Folder, FolderPlus, RefreshCw, Save, Trash2 } from 'lucide-vue-next';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
 import { api, describeError } from '../lib/api';
 import { gameDownloadUrl, uploadGameFile } from '../lib/file-transfer';
@@ -38,6 +38,9 @@ const consoleBusy = ref(false);
 let consoleTimer: ReturnType<typeof setInterval> | null = null;
 const branch = ref('');
 const branchBusy = ref(false);
+type Credential = Awaited<ReturnType<typeof api.gameServers.credentials.query>>[number];
+const credentials = ref<ReadonlyArray<Credential>>([]);
+const revealed = ref<Record<string, string>>({});
 const installJob = useJobLog({
   onFinished: async () => {
     busy.value = false;
@@ -69,10 +72,30 @@ async function loadServer(): Promise<void> {
   try {
     server.value = await api.gameServers.get.query({ slug: slug.value });
     branch.value = server.value.branch ?? '';
+    credentials.value = await api.gameServers.credentials.query({ slug: slug.value });
   } catch (err) {
     error.value = describeError(err);
   } finally {
     loading.value = false;
+  }
+}
+
+/*
+ * Revealed on request rather than sent with the page, so a password the game
+ * needs its owner to type is not sitting in every response that happens to
+ * load this server.
+ */
+async function revealCredential(name: string): Promise<void> {
+  if (revealed.value[name]) {
+    const { [name]: _hidden, ...rest } = revealed.value;
+    revealed.value = rest;
+    return;
+  }
+  try {
+    const result = await api.gameServers.revealCredential.mutate({ slug: slug.value, name });
+    revealed.value = { ...revealed.value, [name]: result.value };
+  } catch (err) {
+    error.value = describeError(err);
   }
 }
 
@@ -590,6 +613,35 @@ onUnmounted(() => {
               Forward these ports on your router or cloud firewall if the machine is not directly
               reachable from the internet.
             </p>
+          </section>
+
+          <section v-if="credentials.length > 0" class="card p-5">
+            <h2 class="text-sm font-semibold text-ink">Credentials</h2>
+            <p class="mt-2 text-xs text-ink-faint">
+              Generated when the server was installed and kept in the panel's vault. Reinstalling
+              does not change them.
+            </p>
+            <dl class="mt-3 space-y-3 text-sm">
+              <div v-for="credential in credentials" :key="credential.name">
+                <dt class="flex items-center justify-between gap-3 text-ink-faint">
+                  <span>{{ credential.name.replaceAll('-', ' ') }}</span>
+                  <button
+                    v-if="credential.available"
+                    type="button"
+                    class="btn btn-ghost btn-sm"
+                    :title="revealed[credential.name] ? 'Hide' : 'Show'"
+                    @click="revealCredential(credential.name)"
+                  >
+                    <component :is="revealed[credential.name] ? EyeOff : Eye" :size="14" aria-hidden="true" />
+                    {{ revealed[credential.name] ? 'Hide' : 'Show' }}
+                  </button>
+                </dt>
+                <dd class="mt-1 break-all font-mono text-ink-muted">
+                  <template v-if="!credential.available">Not generated yet — install the server first.</template>
+                  <template v-else>{{ revealed[credential.name] ?? '••••••••••••' }}</template>
+                </dd>
+              </div>
+            </dl>
           </section>
 
           <section v-if="editor" class="card p-5">

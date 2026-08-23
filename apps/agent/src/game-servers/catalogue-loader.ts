@@ -69,3 +69,48 @@ export async function loadGameServerCatalogue(
 
   return { entries: [...entries.values()], rejected };
 }
+
+/**
+ * The loaded catalog, and the ability to load it again.
+ *
+ * Everything that needs the catalog holds this rather than an array, because
+ * the point of the folder is that an administrator can drop a config in and
+ * have the game appear. Handing out a snapshot array would mean the panel kept
+ * serving the catalog as it was when the process started, and "add a file"
+ * would quietly mean "add a file and restart the agent".
+ */
+export class GameServerCatalogue {
+  #entries: readonly GameServerCatalogEntry[] = [];
+  #rejected: CatalogLoadResult['rejected'] = [];
+
+  private constructor(
+    readonly seedDir: string,
+    readonly dataDir: string,
+  ) {}
+
+  static async load(seedDir: string, dataDir: string): Promise<GameServerCatalogue> {
+    const catalogue = new GameServerCatalogue(seedDir, dataDir);
+    await catalogue.reload();
+    return catalogue;
+  }
+
+  get entries(): readonly GameServerCatalogEntry[] {
+    return this.#entries;
+  }
+
+  /** Files that failed validation, so an author can be told what was wrong. */
+  get rejected(): CatalogLoadResult['rejected'] {
+    return this.#rejected;
+  }
+
+  find(id: string): GameServerCatalogEntry | undefined {
+    return this.#entries.find((entry) => entry.id === id);
+  }
+
+  async reload(): Promise<CatalogLoadResult> {
+    const result = await loadGameServerCatalogue(this.seedDir, this.dataDir);
+    this.#entries = result.entries;
+    this.#rejected = result.rejected;
+    return result;
+  }
+}

@@ -17,9 +17,12 @@ import { downloadVerified } from '../components/download.js';
 import { extractZip, findExecutable } from '../components/archive.js';
 import { FirewallManager } from '../bootstrap/windows-setup.js';
 import { applyGameServerFirewall } from './firewall.js';
-import type { GameServerCatalogEntry } from '@winpanel/shared';
+import type { GameServerCatalogEntry, GameServerHeap } from '@winpanel/shared';
 import type { SecretVault } from '../security/vault.js';
 import { readSecret, writeSecret } from '../security/secret-store.js';
+import type { GameServerCatalogue } from './catalogue-loader.js';
+import { expandPlaceholders, type PlaceholderValues } from './placeholders.js';
+import { writeSeedFiles } from './seed-files.js';
 
 const VERSION_MANIFEST_URL = 'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json';
 const MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024 * 1024;
@@ -46,7 +49,7 @@ export interface GameServerInstallDependencies {
   services?: ServiceManager;
   firewall?: FirewallManager;
   vault?: SecretVault;
-  catalogue: readonly GameServerCatalogEntry[];
+  catalogue: GameServerCatalogue;
   runCommand?: typeof runCommand;
   /** Injectable for tests; production checks the host's Java runtime. */
   runJava?: () => Promise<boolean>;
@@ -54,16 +57,25 @@ export interface GameServerInstallDependencies {
   freeMemoryBytes?: () => number;
 }
 
+type ServerRow = typeof gameServers.$inferSelect;
+
 function catalogEntry(
-  catalogue: readonly GameServerCatalogEntry[],
+  catalogue: GameServerCatalogue,
   id: string,
 ): GameServerCatalogEntry | undefined {
-  return catalogue.find((entry) => entry.id === id);
+  return catalogue.find(id);
 }
 
 function assertString(value: unknown, message: string): string {
   if (typeof value !== 'string' || value.length === 0) throw new Error(message);
   return value;
+}
+
+async function exists(target: string): Promise<boolean> {
+  return await fs.access(target).then(
+    () => true,
+    () => false,
+  );
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -108,109 +120,6 @@ async function downloadSha1(url: string, destination: string, expectedSha1: stri
   }
 }
 
-/** Adds or replaces a flat key=value entry without disturbing other settings. */
-export function setMinecraftProperty(text: string, key: string, value: string): string {
-  const lines = text.split(/\r?\n/);
-  let found = false;
-  const next = lines.map((line) => {
-    if (line.startsWith(`${key}=`)) {
-      found = true;
-      return `${key}=${value}`;
-    }
-    return line;
-  });
-  if (!found) next.push(`${key}=${value}`);
-  return `${next.filter((line, index) => line !== '' || index < next.length - 1).join('\n').replace(/\n*$/, '')}\n`;
-}
-
-async function installMinecraftJava(
-  deps: GameServerInstallDependencies,
-  server: typeof gameServers.$inferSelect,
-  ctx: JobContext,
-): Promise<void> {
-  const manifest = await fetchJson<MinecraftManifest>(VERSION_MANIFEST_URL);
-  const wanted = server.version ?? manifest.latest?.release;
-  const version = manifest.versions?.find((entry) => entry.id === wanted);
-  if (!version?.url) throw new Error(`Minecraft Java version "${wanted ?? 'latest'}" is not available.`);
-
-  const versionManifest = await fetchJson<MinecraftVersionManifest>(version.url);
-  const download = versionManifest.downloads?.server;
-  const url = assertString(download?.url, 'That Minecraft version has no server download.');
-  const sha1 = assertString(download?.sha1, 'That Minecraft version has no published fingerprint.');
-
-  await fs.mkdir(server.installPath, { recursive: true });
-  await fs.mkdir(server.dataPath, { recursive: true });
-  ctx.progress(15);
-  ctx.log(`Preparing Minecraft Java ${version.id}.`);
-
-  await downloadSha1(url, path.join(server.installPath, 'server.jar'), sha1, ctx);
-  ctx.throwIfCancelled();
-
-  const eulaPath = path.join(server.dataPath, 'eula.txt');
-  await fs.writeFile(eulaPath, '# Accepted through WinPanel\neula=true\n', 'utf8');
-
-  const port = deps.db.db
-    .select({ port: gameServerPorts.port })
-    .from(gameServerPorts)
-    .where(eq(gameServerPorts.gameServerId, server.id))
-    .get()?.port;
-  if (!port) throw new Error('The Minecraft server does not have a game port allocated.');
-
-  const propertiesPath = path.join(server.dataPath, 'server.properties');
-  const existing = await fs.readFile(propertiesPath, 'utf8').catch(() => '');
-  await fs.writeFile(propertiesPath, setMinecraftProperty(existing, 'server-port', String(port)), 'utf8');
-
-  if (deps.vault) {
-    const rconPort = (await publicPorts(deps, server.id)).find((binding) => binding.purpose === 'rcon')?.port;
-    if (rconPort) {
-      const rconPassword = crypto.randomBytes(24).toString('base64url');
-      writeSecret(deps.db, deps.vault, `game-server:${server.id}:rcon`, rconPassword);
-      let configured = setMinecraftProperty(existing, 'server-port', String(port));
-      configured = setMinecraftProperty(configured, 'enable-rcon', 'true');
-      configured = setMinecraftProperty(configured, 'rcon.port', String(rconPort));
-      configured = setMinecraftProperty(configured, 'rcon.password', rconPassword);
-      await fs.writeFile(propertiesPath, configured, 'utf8');
-    }
-  }
-
-  const javaExecutable = deps.binDir
-    ? await findExecutable(path.join(deps.binDir, 'java'), ['java.exe'])
-    : null;
-  const javaExe = javaExecutable ?? 'java.exe';
-  const javaWorks = deps.runJava
-    ? await deps.runJava()
-    : (await (deps.runCommand ?? runCommand)({ exe: javaExe, args: ['-version'], timeoutMs: 10_000 })).exitCode === 0;
-  if (!javaWorks) {
-    throw new Error('Minecraft Java was downloaded, but no working Java runtime was found.');
-  }
-
-  const serviceId = server.serviceId ?? `winpanel-game-${server.slug}`;
-  if (deps.services && !(await deps.services.isInstalled(serviceId))) {
-    await deps.services.install({
-      id: serviceId,
-      displayName: `WinPanel ${server.displayName}`,
-      description: 'Minecraft Java game server managed by WinPanel.',
-      executable: javaExe,
-      args: ['-jar', path.join(server.installPath, 'server.jar'), 'nogui'],
-      workingDirectory: server.dataPath,
-      logPath: path.join(server.dataPath, 'logs'),
-    });
-    ctx.log('Registered the Windows service. The server is stopped until you start it.');
-  }
-
-  deps.db.db
-    .update(gameServers)
-    .set({ version: version.id, serviceId, state: 'stopped', updatedAt: new Date() })
-    .where(eq(gameServers.id, server.id))
-    .run();
-  if (deps.firewall) {
-    await applyGameServerFirewall(deps.firewall, server.slug, await publicPorts(deps, server.id));
-    ctx.log('Applied the Windows Firewall rule for the public game port.');
-  }
-  ctx.progress(100);
-  ctx.log(`Minecraft Java ${version.id} is installed and stopped. It is ready to start.`);
-}
-
 async function publicPorts(deps: GameServerInstallDependencies, serverId: string) {
   return deps.db.db
     .select()
@@ -219,9 +128,125 @@ async function publicPorts(deps: GameServerInstallDependencies, serverId: string
     .all();
 }
 
+async function findDirectory(root: string, name: string, depth = 4): Promise<string | null> {
+  if (depth < 0) return null;
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const full = path.join(root, entry.name);
+    if (entry.name.toLowerCase() === name.toLowerCase()) return full;
+    const nested = await findDirectory(full, name, depth - 1);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+/**
+ * How much heap a JVM game should get on this machine.
+ *
+ * The upstream launchers ship a figure chosen for a dedicated box, which is a
+ * guaranteed failure on a small VM. Sizing from the memory actually free at
+ * install time is the difference between a service that starts and one that
+ * dies before it prints a single log line.
+ */
+export function heapMegabytes(freeBytes: number, heap: GameServerHeap): number {
+  const availableMb = Math.floor(freeBytes / (1024 * 1024)) - heap.reserveMb;
+  return Math.max(heap.minMb, Math.min(heap.maxMb, availableMb));
+}
+
+/**
+ * Joins a folder of jars into a classpath, relative to the install root.
+ *
+ * Relative rather than absolute because the games that need this run with
+ * their install folder as the working directory, and their own launchers
+ * write it the same way.
+ */
+async function buildClasspath(installPath: string, directory: string): Promise<string> {
+  const absolute = path.join(installPath, directory);
+  const jars = (await fs.readdir(absolute, { withFileTypes: true }).catch(() => []))
+    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.jar'))
+    .map((entry) => path.posix.join(directory.replaceAll('\\', '/'), entry.name))
+    .sort();
+  if (jars.length === 0) {
+    throw new Error(`The download did not contain any jars in ${directory}, so the server cannot start.`);
+  }
+  return jars.join(';');
+}
+
+/**
+ * The data folder the game actually writes to.
+ *
+ * Most games are happy with the panel's own data folder. Some create their own
+ * tree inside the install and ignore anything else, which is what
+ * `dataDirectory` describes; it is resolved case-insensitively because the
+ * folder may already exist from a previous run.
+ */
+async function resolveDataDirectory(server: ServerRow, entry: GameServerCatalogEntry): Promise<string> {
+  if (!entry.dataDirectory) return server.dataPath;
+  const direct = path.join(server.installPath, entry.dataDirectory);
+  if (await exists(direct)) return direct;
+  return (await findDirectory(server.installPath, entry.dataDirectory)) ?? direct;
+}
+
+/**
+ * Generates every secret the entry declares, reusing any already stored.
+ *
+ * Rotating on reinstall would leave the vault disagreeing with the account the
+ * game created on its first run, so an existing value always wins.
+ */
+function resolveSecrets(
+  deps: GameServerInstallDependencies,
+  server: ServerRow,
+  entry: GameServerCatalogEntry,
+): Map<string, string> {
+  const secrets = new Map<string, string>();
+  for (const declared of entry.secrets) {
+    const key = `game-server:${server.id}:${declared.name}`;
+    const existing = deps.vault ? readSecret(deps.db, deps.vault, key) : null;
+    const value = existing ?? crypto.randomBytes(declared.bytes).toString('base64url');
+    if (deps.vault && !existing) writeSecret(deps.db, deps.vault, key, value);
+    secrets.set(declared.name, value);
+  }
+  return secrets;
+}
+
+async function resolveExecutable(
+  deps: GameServerInstallDependencies,
+  server: ServerRow,
+  entry: GameServerCatalogEntry,
+): Promise<string> {
+  if (entry.runtime === 'java') {
+    const bundled = deps.binDir ? await findExecutable(path.join(deps.binDir, 'java'), ['java.exe']) : null;
+    const javaExe = bundled ?? 'java.exe';
+    const works = deps.runJava
+      ? await deps.runJava()
+      : (await (deps.runCommand ?? runCommand)({ exe: javaExe, args: ['-version'], timeoutMs: 10_000 })).exitCode === 0;
+    if (!works) throw new Error(`${entry.name} was downloaded, but no working Java runtime was found.`);
+    return javaExe;
+  }
+
+  // The walker matches on basename, so a nested path in the catalog still
+  // finds the right binary inside the download.
+  const wanted = path.basename(entry.launchExecutable ?? entry.executable);
+  const found = await findExecutable(server.installPath, [wanted]);
+  if (!found) throw new Error(`The download did not contain ${wanted}.`);
+  return found;
+}
+
+function workingDirectoryFor(
+  entry: GameServerCatalogEntry,
+  server: ServerRow,
+  dataDir: string,
+  executable: string,
+): string {
+  if (entry.workingDirectory === 'data') return dataDir;
+  if (entry.workingDirectory === 'executable') return path.dirname(executable);
+  return server.installPath;
+}
+
 async function registerService(
   deps: GameServerInstallDependencies,
-  server: typeof gameServers.$inferSelect,
+  server: ServerRow,
   executable: string,
   args: readonly string[],
   workingDirectory: string,
@@ -259,18 +284,114 @@ async function registerService(
   return serviceId;
 }
 
-async function installBedrock(
+/**
+ * Everything between "the files are on disk" and "the service is registered".
+ *
+ * Deliberately knows nothing about any particular game: ports, secrets, heap,
+ * config files, working directory and launch arguments all come from the
+ * catalog entry. Supporting a new game is a JSON file, not a branch here.
+ */
+async function configureAndRegister(
   deps: GameServerInstallDependencies,
-  server: typeof gameServers.$inferSelect,
+  server: ServerRow,
+  entry: GameServerCatalogEntry,
+  installedVersion: string | null,
   ctx: JobContext,
 ): Promise<void> {
-  const entry = catalogEntry(deps.catalogue, server.catalogId);
-  if (!entry?.downloadUrl) throw new Error('This Bedrock provider has no official download configured.');
+  const dataDir = await resolveDataDirectory(server, entry);
+  await fs.mkdir(dataDir, { recursive: true });
 
-  const archivePath = path.join(server.installPath, '.bedrock-download.zip');
+  const ports = new Map<string, number>();
+  for (const binding of await publicPorts(deps, server.id)) {
+    ports.set(binding.name, binding.port);
+    // Purpose is the key that means the same thing across games, so
+    // `{port:game}` works whatever a config calls its bindings.
+    if (!ports.has(binding.purpose)) ports.set(binding.purpose, binding.port);
+  }
+
+  const values: PlaceholderValues = {
+    slug: server.slug,
+    displayName: server.displayName,
+    installPath: server.installPath,
+    dataDir,
+    version: installedVersion ?? server.version ?? '',
+    ports,
+    secrets: resolveSecrets(deps, server, entry),
+    classpath: entry.classpathDirectory
+      ? await buildClasspath(server.installPath, entry.classpathDirectory)
+      : undefined,
+    heapMb: entry.heap ? heapMegabytes((deps.freeMemoryBytes ?? os.freemem)(), entry.heap) : undefined,
+  };
+  if (values.heapMb !== undefined) {
+    ctx.log(`Giving the server ${values.heapMb} MB of heap, sized from the memory this machine has free.`);
+  }
+
+  for (const outcome of await writeSeedFiles(entry.seedFiles, dataDir, values)) {
+    if (outcome.written) ctx.log(`Wrote ${outcome.path}.`);
+  }
+
+  const executable = await resolveExecutable(deps, server, entry);
+  const args = entry.launchArgs.map((argument) => expandPlaceholders(argument, values));
+  const workingDirectory = workingDirectoryFor(entry, server, dataDir, executable);
+
+  const serviceId = await registerService(
+    deps,
+    { ...server, dataPath: dataDir },
+    executable,
+    args,
+    workingDirectory,
+    ctx,
+  );
+
+  deps.db.db
+    .update(gameServers)
+    .set({
+      dataPath: dataDir,
+      serviceId,
+      state: 'stopped',
+      ...(installedVersion ? { version: installedVersion } : {}),
+      updatedAt: new Date(),
+    })
+    .where(eq(gameServers.id, server.id))
+    .run();
+  ctx.progress(100);
+  ctx.log(`${entry.name} is installed and stopped. It is ready to start.`);
+}
+
+async function acquireMinecraftJava(
+  server: ServerRow,
+  ctx: JobContext,
+): Promise<string> {
+  const manifest = await fetchJson<MinecraftManifest>(VERSION_MANIFEST_URL);
+  const wanted = server.version ?? manifest.latest?.release;
+  const version = manifest.versions?.find((entry) => entry.id === wanted);
+  if (!version?.url || !version.id) throw new Error(`Minecraft Java version "${wanted ?? 'latest'}" is not available.`);
+
+  const versionManifest = await fetchJson<MinecraftVersionManifest>(version.url);
+  const download = versionManifest.downloads?.server;
+  const url = assertString(download?.url, 'That Minecraft version has no server download.');
+  const sha1 = assertString(download?.sha1, 'That Minecraft version has no published fingerprint.');
+
   await fs.mkdir(server.installPath, { recursive: true });
-  await fs.mkdir(server.dataPath, { recursive: true });
-  ctx.log('Downloading the official Minecraft Bedrock Dedicated Server.');
+  ctx.progress(15);
+  ctx.log(`Preparing Minecraft Java ${version.id}.`);
+
+  await downloadSha1(url, path.join(server.installPath, 'server.jar'), sha1, ctx);
+  ctx.throwIfCancelled();
+  ctx.progress(70);
+  return version.id;
+}
+
+async function acquireDownload(
+  server: ServerRow,
+  entry: GameServerCatalogEntry,
+  ctx: JobContext,
+): Promise<void> {
+  if (!entry.downloadUrl) throw new Error('This provider has no official download configured.');
+
+  const archivePath = path.join(server.installPath, '.download.zip');
+  await fs.mkdir(server.installPath, { recursive: true });
+  ctx.log(`Downloading the official ${entry.name}.`);
   const download = await downloadVerified({
     url: entry.downloadUrl,
     destination: archivePath,
@@ -281,36 +402,24 @@ async function installBedrock(
     },
   });
   if (!download.verified) {
-    ctx.log('The official Bedrock archive has no stable publisher hash; executable discovery will still be checked.', 'warn');
+    ctx.log('This archive has no stable publisher hash; executable discovery will still be checked.', 'warn');
   }
   await extractZip(archivePath, server.installPath);
   await fs.rm(archivePath, { force: true });
-
-  const executable = await findExecutable(server.installPath, [entry.executable]);
-  if (!executable) throw new Error('The Bedrock download did not contain bedrock_server.exe.');
-
-  const properties = path.join(server.installPath, 'server.properties');
-  const existing = await fs.readFile(properties, 'utf8').catch(() => '');
-  const port = (await publicPorts(deps, server.id)).find((binding) => binding.purpose === 'game')?.port;
-  await fs.writeFile(properties, setMinecraftProperty(existing, 'server-port', String(port ?? 19132)), 'utf8');
-
-  const serviceId = await registerService(deps, server, executable, entry.launchArgs, server.installPath, ctx);
-  deps.db.db.update(gameServers).set({ serviceId, state: 'stopped', updatedAt: new Date() }).where(eq(gameServers.id, server.id)).run();
-  ctx.progress(100);
-  ctx.log('Minecraft Bedrock is installed and stopped. It is ready to start.');
+  ctx.progress(70);
 }
 
-async function installSteam(
+async function acquireSteam(
   deps: GameServerInstallDependencies,
-  server: typeof gameServers.$inferSelect,
+  server: ServerRow,
+  entry: GameServerCatalogEntry,
   ctx: JobContext,
 ): Promise<void> {
-  const entry = catalogEntry(deps.catalogue, server.catalogId);
-  if (!entry?.steamAppId) throw new Error('This Steam provider has no dedicated-server App ID.');
+  if (!entry.steamAppId) throw new Error('This Steam provider has no dedicated-server App ID.');
   if (!deps.binDir) throw new Error('SteamCMD is not configured on this server.');
 
   const steamcmd = path.join(deps.binDir, 'steamcmd', 'steamcmd.exe');
-  if (!(await fs.access(steamcmd).then(() => true, () => false))) {
+  if (!(await exists(steamcmd))) {
     throw new Error('SteamCMD is not installed. Install it from Settings before installing this server.');
   }
 
@@ -378,263 +487,39 @@ async function installSteam(
     throw new Error(`SteamCMD could not install the dedicated-server files.${ownership}${detail ? ` ${detail}` : ''}`);
   }
   ctx.progress(70);
-
-  const executable = await findExecutable(server.installPath, [entry.executable]);
-  if (!executable) throw new Error(`SteamCMD completed, but ${entry.executable} was not found.`);
-  const gamePort = (await publicPorts(deps, server.id)).find((binding) => binding.purpose === 'game')?.port;
-  const resolvedPort = String(gamePort ?? 8211);
-  let args = entry.launchArgs.map((argument) => argument.replaceAll('{gamePort}', resolvedPort));
-  if (!entry.launchArgs.some((argument) => argument.includes('{gamePort}'))) {
-    args.push('-port', resolvedPort);
-  }
-  let managedServer = server;
-  if (entry.dataDirectory && entry.id === 'nomad-dedicated') {
-    // Nomad creates this tree on first launch. Create it before registering
-    // the service so the Files view has a stable root immediately after the
-    // Steam download, and so the first launch receives the allocated port.
-    const providerData =
-      (await findDirectory(server.installPath, entry.dataDirectory)) ??
-      path.join(server.installPath, entry.dataDirectory);
-    await fs.mkdir(path.join(providerData, 'Config'), { recursive: true });
-    const configPath = path.join(providerData, 'Config', 'config.json');
-    if (!(await fs.access(configPath).then(() => true, () => false))) {
-      const config = {
-        serverPort: Number(resolvedPort),
-        maxPlayers: 30,
-        password: '',
-        serverName: 'Nomad Server',
-        maxPing: 1000,
-        motdTimer: 300,
-        kits: false,
-        RegularLoot: 150,
-        MediumLoot: 40,
-        HighLoot: 30,
-        IndustrialLoot: 30,
-        HealthLoot: 30,
-        FoodLoot: 150,
-        FireLoot: 30,
-        SupplyDropTimer: 5400,
-        MiningNodes: 200,
-        BarrelSpawns: 80,
-        PalletSpawns: 50,
-        Zombies: 60,
-        Deers: 40,
-        Bots: 20,
-      };
-      await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
-      ctx.log(`Created ${path.join(entry.dataDirectory, 'Config', 'config.json')}.`);
-    }
-    managedServer = { ...server, dataPath: providerData };
-    ctx.log(`Using ${path.join(entry.dataDirectory, 'Config', 'config.json')} as the server data workspace.`);
-  }
-  const serviceId = await registerService(deps, managedServer, executable, args, path.dirname(executable), ctx);
-  deps.db.db.update(gameServers).set({ dataPath: managedServer.dataPath, serviceId, state: 'stopped', updatedAt: new Date() }).where(eq(gameServers.id, server.id)).run();
-  ctx.progress(100);
-  ctx.log(`${entry.name} is installed and stopped. It is ready to start.`);
 }
 
 /**
- * Project Zomboid's Steam download includes the launcher batch files and the
- * bundled JRE, but the real server process is `jre64/bin/java.exe` against
- * the bundled jar set. The batch file's admin-password prompt happens on the
- * console, which nobody can answer through WinSW — so the first run supplies
- * it on stdin instead.
- */
-async function zomboidClasspath(installPath: string): Promise<string> {
-  const javaDir = path.join(installPath, 'java');
-  const jars = (await fs.readdir(javaDir, { withFileTypes: true }).catch(() => []))
-    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.jar'))
-    .map((entry) => path.posix.join('java', entry.name))
-    .sort();
-  if (jars.length === 0) {
-    throw new Error(
-      'The Project Zomboid download did not contain its java/*.jar libraries, so the server cannot start.',
-    );
-  }
-  return jars.join(';');
-}
-
-async function seedZomboidProfile(
-  server: typeof gameServers.$inferSelect,
-  gamePort: number,
-  directPort: number,
-  ctx: JobContext,
-): Promise<string> {
-  const profileDir = path.join(server.installPath, 'zomboid-profile');
-  // The server only ever reads settings from <cachedir>/Server/<servername>.ini,
-  // so the managed profile has to mirror that layout for -cachedir to find it.
-  const settingsDir = path.join(profileDir, 'Server');
-  await fs.mkdir(settingsDir, { recursive: true });
-
-  const iniPath = path.join(settingsDir, `${server.slug}.ini`);
-  if (!(await fs.access(iniPath).then(() => true, () => false))) {
-    await fs.writeFile(
-      iniPath,
-      [
-        `DefaultPort=${gamePort}`,
-        `UDPPort=${directPort}`,
-        // Without Public the server never announces itself, so it cannot be
-        // found in the in-game browser however open the ports are.
-        'Public=true',
-        `PublicName=${server.displayName}`,
-        'PublicDescription=',
-        'Open=true',
-        'PlayerRespawnWithSelf=false',
-        'FastForwardMultiplier=40',
-        '',
-      ].join('\r\n'),
-      'utf8',
-    );
-    ctx.log(`Created the server profile Server\\${server.slug}.ini with the allocated ports.`);
-  }
-  return profileDir;
-}
-
-/**
- * How much heap a Zomboid server should get on this machine.
+ * Confirms the download produced what the catalog said it would.
  *
- * The upstream batch file ships a 4 GB default, which is sensible for a
- * dedicated box and a guaranteed failure on a small VM. Sizing from the
- * memory actually free at install time — minus headroom for Windows itself —
- * is the difference between a service that starts and one that dies before
- * it prints a single log line.
+ * For games whose real binary is elsewhere in the tree — a bundled JVM, or a
+ * batch file the panel deliberately does not run — `executable` is the
+ * completion marker rather than the thing that runs, so it is accepted
+ * anywhere under the install root.
  */
-export function zomboidHeapMegabytes(freeBytes: number): number {
-  const FLOOR_MB = 1024;
-  const CAP_MB = 4096;
-  const RESERVE_MB = 1536;
-  const availableMb = Math.floor(freeBytes / (1024 * 1024)) - RESERVE_MB;
-  return Math.max(FLOOR_MB, Math.min(CAP_MB, availableMb));
+async function assertDownloaded(server: ServerRow, entry: GameServerCatalogEntry): Promise<void> {
+  if (await exists(path.join(server.installPath, entry.executable))) return;
+  if (await findExecutable(server.installPath, [path.basename(entry.executable)])) return;
+  throw new Error(`The download completed, but ${entry.executable} was not found.`);
 }
 
-async function installZomboid(
+/** Returns the version the provider actually resolved, when it picks one. */
+async function acquire(
   deps: GameServerInstallDependencies,
-  server: typeof gameServers.$inferSelect,
+  server: ServerRow,
   entry: GameServerCatalogEntry,
   ctx: JobContext,
-): Promise<void> {
-  const ports = await publicPorts(deps, server.id);
-  const gamePort = ports.find((binding) => binding.purpose === 'game')?.port;
-  const directPort = ports.find((binding) => binding.purpose === 'query')?.port;
-  if (!gamePort || !directPort) {
-    throw new Error('The Project Zomboid server does not have its game and direct-connection ports allocated.');
+): Promise<string | null> {
+  if (entry.provider === 'minecraft-java') {
+    return await acquireMinecraftJava(server, ctx);
   }
-
-  const profileDir = await seedZomboidProfile(server, gamePort, directPort, ctx);
-  const classpath = await zomboidClasspath(server.installPath);
-  // launchExecutable is a relative path in the catalog; the walker matches
-  // basenames, and java.exe is unique inside this package.
-  const wantedExecutable = path.basename(entry.launchExecutable ?? entry.executable);
-  const launchExecutable = await findExecutable(server.installPath, [wantedExecutable]);
-  if (!launchExecutable) {
-    throw new Error('The Project Zomboid download did not contain its bundled java.exe.');
+  if (entry.provider === 'steam') {
+    await acquireSteam(deps, server, entry, ctx);
+  } else {
+    // `minecraft-bedrock` predates the generic name and behaves identically.
+    await acquireDownload(server, entry, ctx);
   }
-
-  // Reinstalling must not rotate this: the account already exists by then, so
-  // the server ignores the new value and the vault would stop matching it.
-  const secretKey = `game-server:${server.id}:admin-password`;
-  let adminPassword = crypto.randomBytes(18).toString('base64url');
-  if (deps.vault) {
-    adminPassword = readSecret(deps.db, deps.vault, secretKey) ?? adminPassword;
-    writeSecret(deps.db, deps.vault, secretKey, adminPassword);
-  }
-
-  const heapMb = zomboidHeapMegabytes((deps.freeMemoryBytes ?? os.freemem)());
-  const args = entry.launchArgs.map((argument) =>
-    argument
-      .replaceAll('{gamePort}', String(gamePort))
-      .replaceAll('{directPort}', String(directPort))
-      .replaceAll('{slug}', server.slug)
-      .replaceAll('{classpath}', classpath)
-      .replaceAll('{heapMb}', String(heapMb))
-      .replaceAll('{dataDir}', profileDir)
-      .replaceAll('{adminPassword}', adminPassword),
-  );
-  ctx.log(`Giving the server ${heapMb} MB of heap, sized from the memory this machine has free.`);
-
-  const managedServer = { ...server, dataPath: profileDir };
-  const serviceId = await registerService(deps, managedServer, launchExecutable, args, server.installPath, ctx);
-
-  // First launch blocks on a console admin-password prompt that nobody can
-  // answer through WinSW, so -adminpassword supplies the generated one.
-  ctx.log('First start creates the "admin" account with a panel-generated password.');
-  deps.db.db
-    .update(gameServers)
-    .set({ dataPath: profileDir, serviceId, state: 'stopped', updatedAt: new Date() })
-    .where(eq(gameServers.id, server.id))
-    .run();
-  ctx.progress(100);
-  ctx.log(`${entry.name} is installed and stopped. The world and settings live in its Files view.`);
-}
-
-/**
- * Downloads Zomboid through the shared anonymous Steam path, then applies its
- * dedicated launch adapter instead of the generic fixed-App-ID service wiring.
- *
- * Split out rather than folded into installSteam: the generic path treats
- * every Steam game as executable-plus-args, while Zomboid's real runtime is
- * its bundled JRE with a classpath, a profile folder, and a console prompt.
- */
-async function installSteamZomboid(
-  deps: GameServerInstallDependencies,
-  server: typeof gameServers.$inferSelect,
-  entry: GameServerCatalogEntry,
-  ctx: JobContext,
-): Promise<void> {
-  if (!entry.steamAppId) throw new Error('This Steam provider has no dedicated-server App ID.');
-  if (!deps.binDir) throw new Error('SteamCMD is not configured on this server.');
-
-  const steamcmd = path.join(deps.binDir, 'steamcmd', 'steamcmd.exe');
-  if (!(await fs.access(steamcmd).then(() => true, () => false))) {
-    throw new Error('SteamCMD is not installed. Install it from Settings before installing this server.');
-  }
-
-  await fs.mkdir(server.installPath, { recursive: true });
-  ctx.log(`Downloading Steam app ${entry.steamAppId} through SteamCMD.`);
-  const branch = server.branch?.trim();
-  if (branch) ctx.log(`Using the "${branch}" Steam branch.`);
-  const result = await (deps.runCommand ?? runCommand)({
-    exe: steamcmd,
-    cwd: path.dirname(steamcmd),
-    args: [
-      '+force_install_dir', server.installPath,
-      '+login', 'anonymous',
-      '+app_update', String(entry.steamAppId), ...(branch ? ['-beta', branch] : []), 'validate',
-      '+quit',
-    ],
-    timeoutMs: 60 * 60 * 1000,
-    onOutput: (line) => {
-      if (/error|failed/i.test(line)) ctx.log(line, 'warn');
-      else if (line.trim()) ctx.log(line);
-    },
-  });
-  const combinedOutput = `${result.stdout}\n${result.stderr}`;
-  if (result.exitCode !== 0 || /failed to install app/i.test(combinedOutput)) {
-    const detail = (result.stderr || result.stdout).trim().split(/\r?\n/).slice(-3).join(' ');
-    throw new Error(`SteamCMD could not install the dedicated-server files.${detail ? ` ${detail}` : ''}`);
-  }
-  ctx.progress(70);
-
-  // StartServer64.bat is a batch file, and the executable walker only knows
-  // .exe. Its presence is the completion marker; the service runs the JRE.
-  const marker = path.join(server.installPath, entry.executable);
-  if (!(await fs.access(marker).then(() => true, () => false))) {
-    throw new Error(`SteamCMD completed, but ${entry.executable} was not found.`);
-  }
-
-  await installZomboid(deps, server, entry, ctx);
-}
-
-async function findDirectory(root: string, name: string, depth = 4): Promise<string | null> {
-  if (depth < 0) return null;
-  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => []);
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const full = path.join(root, entry.name);
-    if (entry.name.toLowerCase() === name.toLowerCase()) return full;
-    const nested = await findDirectory(full, name, depth - 1);
-    if (nested) return nested;
-  }
+  await assertDownloaded(server, entry);
   return null;
 }
 
@@ -643,7 +528,8 @@ export function createInstallGameServerHandler(deps: GameServerInstallDependenci
     const input = payload as InstallGameServerPayload;
     const server = deps.db.db.select().from(gameServers).where(eq(gameServers.id, input.gameServerId)).get();
     if (!server) throw new Error('That game server no longer exists.');
-    if (catalogEntry(deps.catalogue, server.catalogId)?.status !== 'ready') {
+    const entry = catalogEntry(deps.catalogue, server.catalogId);
+    if (!entry || entry.status !== 'ready') {
       throw new Error('This game is still being tested and cannot be installed yet.');
     }
 
@@ -657,19 +543,8 @@ export function createInstallGameServerHandler(deps: GameServerInstallDependenci
     deps.db.db.update(gameServers).set({ state, updatedAt: new Date() }).where(eq(gameServers.id, server.id)).run();
 
     try {
-      if (server.catalogId === 'minecraft-java-vanilla') {
-        await installMinecraftJava(deps, server, ctx);
-      } else if (server.catalogId === 'minecraft-bedrock-vanilla') {
-        await installBedrock(deps, server, ctx);
-      } else if (server.catalogId === 'zomboid-dedicated') {
-        const entry = catalogEntry(deps.catalogue, server.catalogId);
-        if (!entry) throw new Error('This game server provider is not installable yet.');
-        await installSteamZomboid(deps, server, entry, ctx);
-      } else if (catalogEntry(deps.catalogue, server.catalogId)?.provider === 'steam') {
-        await installSteam(deps, server, ctx);
-      } else {
-        throw new Error('This game server provider is not installable yet.');
-      }
+      const installedVersion = await acquire(deps, server, entry, ctx);
+      await configureAndRegister(deps, server, entry, installedVersion, ctx);
 
       if ((input.reinstall || input.update) && wasRunning && server.serviceId && deps.services) {
         ctx.log('Starting the server with the updated files.');

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { ArrowLeft, ArrowRight, Check, LockKeyhole, Server, Sparkles } from 'lucide-vue-next';
+import { ArrowLeft, ArrowRight, Check, LockKeyhole, RefreshCw, Server, Sparkles } from 'lucide-vue-next';
 import { RouterLink, useRouter } from 'vue-router';
 import { api, describeError } from '../lib/api';
 import AlertMessage from '../components/AlertMessage.vue';
@@ -19,6 +19,10 @@ const loading = ref(true);
 const busy = ref(false);
 const error = ref<string | null>(null);
 const catalogueCount = ref<number | null>(null);
+type CatalogueStatus = Awaited<ReturnType<typeof api.gameServers.catalogueStatus.query>>;
+const catalogueStatus = ref<CatalogueStatus | null>(null);
+const reloading = ref(false);
+const notice = ref<string | null>(null);
 
 const selected = computed(() => catalogue.value.find((entry) => entry.id === selectedId.value) ?? null);
 const readyGames = computed(() => catalogue.value.filter((entry) => entry.status === 'ready'));
@@ -30,10 +34,31 @@ async function load(): Promise<void> {
   try {
     catalogue.value = await api.gameServers.catalogue.query();
     catalogueCount.value = (await api.gameServers.catalogueCount.query()).count;
+    // Admin-only, and a customer seeing the picker should not be an error.
+    catalogueStatus.value = await api.gameServers.catalogueStatus.query().catch(() => null);
   } catch (err) {
     error.value = describeError(err);
   } finally {
     loading.value = false;
+  }
+}
+
+/*
+ * The catalog folder is meant to be edited on the machine, so the panel offers
+ * a reload rather than making "I added a game" mean "restart the agent".
+ */
+async function reloadCatalogue(): Promise<void> {
+  reloading.value = true;
+  error.value = null;
+  notice.value = null;
+  try {
+    const result = await api.gameServers.reloadCatalogue.mutate();
+    await load();
+    notice.value = `${result.loaded} config${result.loaded === 1 ? '' : 's'} loaded.`;
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    reloading.value = false;
   }
 }
 
@@ -91,6 +116,18 @@ void load();
     />
 
     <AlertMessage v-if="error" class="mb-5">{{ error }}</AlertMessage>
+    <AlertMessage v-if="notice" tone="success" class="mb-5">{{ notice }}</AlertMessage>
+    <AlertMessage v-if="catalogueStatus && catalogueStatus.rejected.length > 0" tone="warning" class="mb-5">
+      <p class="font-medium">
+        {{ catalogueStatus.rejected.length }} game config{{ catalogueStatus.rejected.length === 1 ? ' was' : 's were' }}
+        skipped because {{ catalogueStatus.rejected.length === 1 ? 'it does' : 'they do' }} not match the schema.
+      </p>
+      <ul class="mt-2 space-y-1 text-xs">
+        <li v-for="problem in catalogueStatus.rejected" :key="problem.file">
+          <span class="font-mono">{{ problem.file }}</span> — {{ problem.error }}
+        </li>
+      </ul>
+    </AlertMessage>
     <LoadingBlock v-if="loading" class="h-96 rounded-card bg-surface" />
 
     <template v-else>
@@ -102,9 +139,24 @@ void load();
               <h2 class="mt-1 text-xl font-semibold tracking-tight text-ink">Server-ready games</h2>
               <p v-if="catalogueCount !== null" class="mt-1 text-xs text-ink-faint">
                 {{ catalogueCount }} config{{ catalogueCount === 1 ? '' : 's' }} loaded
+                <template v-if="catalogueStatus">
+                  from <span class="font-mono">{{ catalogueStatus.directory }}</span>
+                </template>
               </p>
             </div>
-            <span class="text-sm text-ink-faint">{{ readyGames.length }} available</span>
+            <div class="flex items-center gap-3">
+              <button
+                v-if="catalogueStatus"
+                type="button"
+                class="btn btn-ghost btn-sm"
+                :disabled="reloading"
+                title="Re-read the catalogue folder after adding or editing a game config"
+                @click="reloadCatalogue"
+              >
+                <RefreshCw :size="14" aria-hidden="true" /> Reload configs
+              </button>
+              <span class="text-sm text-ink-faint">{{ readyGames.length }} available</span>
+            </div>
           </div>
 
           <div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">

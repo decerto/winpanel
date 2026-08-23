@@ -200,10 +200,15 @@ Bedrock, Steam titles, and anything you describe in a config file. Each server g
 Windows Service, scoped data folder, typed TCP/UDP ports, and firewall rules.
 
 The library is data, not code: a JSON file per game in `game-servers/catalogue/` describes
-the App ID, executable, launch arguments, ports, and EULA, and the panel reads the same
-folder from its data directory. Adding a game means adding a file — no TypeScript edit,
-no rebuild, no waiting for a release. See [Game servers on Windows](docs/game-servers-on-windows.md)
-for the schema and the contribution path.
+the App ID, executable, launch arguments, ports, and EULA — and also the settings file to
+write, the passwords to generate, and the heap to size. Adding a game means adding a file:
+no TypeScript edit, no rebuild, no waiting for a release. Drop one into the panel's data
+folder, press **Reload configs**, and the game is in the library. A file that does not
+match the schema is skipped with the reason shown in the panel rather than taking the
+library down.
+
+See [Game servers on Windows](docs/game-servers-on-windows.md) for the schema and
+[the catalog guide](docs/game-servers-catalogue.md) for the contribution path.
 
 ![Choosing who gets which games](docs/screenshots/people-game-access.png)
 

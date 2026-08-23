@@ -10,10 +10,41 @@
   "steamRequiresOwnership": true,
   "steamAppId": 378370,
   "executable": "Nomad.exe",
-  "launchArgs": ["-port", "{gamePort}", "-batchmode", "-nographics"],
+  "launchArgs": ["-port", "{port:game}", "-batchmode", "-nographics"],
+  "workingDirectory": "executable",
   "console": "none",
   "dataDirectory": "Nomad Server",
   "configFile": "Config/config.json",
+  "seedFiles": [
+    {
+      "path": "Config/config.json",
+      "format": "json",
+      "mode": "create",
+      "values": {
+        "serverPort": "{port:game}",
+        "maxPlayers": 30,
+        "password": "",
+        "serverName": "{displayName}",
+        "maxPing": 1000,
+        "motdTimer": 300,
+        "kits": false,
+        "RegularLoot": 150,
+        "MediumLoot": 40,
+        "HighLoot": 30,
+        "IndustrialLoot": 30,
+        "HealthLoot": 30,
+        "FoodLoot": 150,
+        "FireLoot": 30,
+        "SupplyDropTimer": 5400,
+        "MiningNodes": 200,
+        "BarrelSpawns": 80,
+        "PalletSpawns": 50,
+        "Zombies": 60,
+        "Deers": 40,
+        "Bots": 20
+      }
+    }
+  ],
   "ports": [
     { "name": "game", "protocol": "tcp", "purpose": "game", "visibility": "public", "port": 25565 }
   ]

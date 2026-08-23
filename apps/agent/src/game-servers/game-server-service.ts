@@ -20,6 +20,7 @@ import { slugify } from '../sites/site-service.js';
 import type { ServiceManager } from '../windows/service-manager.js';
 import { FirewallManager } from '../bootstrap/windows-setup.js';
 import { removeGameServerFirewall } from './firewall.js';
+import type { GameServerCatalogue } from './catalogue-loader.js';
 import { excludedPortRanges, isPortExcluded, isPortFree } from '../checks/server-checks.js';
 
 export class GameServerError extends Error {
@@ -33,16 +34,30 @@ export class GameServerService {
   constructor(
     private readonly handle: DatabaseHandle,
     private readonly gameServersRoot: string,
-    private readonly catalogue: readonly GameServerCatalogEntry[],
+    private readonly catalogue: GameServerCatalogue,
   ) {}
 
   private catalogEntry(id: string): GameServerCatalogEntry | undefined {
-    return this.catalogue.find((entry) => entry.id === id);
+    return this.catalogue.find(id);
   }
 
   /** The loaded catalog, for the router and the count endpoint. */
   catalogueEntries(): readonly GameServerCatalogEntry[] {
-    return this.catalogue;
+    return this.catalogue.entries;
+  }
+
+  /** Re-reads the catalog folders, so a dropped config appears without a restart. */
+  async reloadCatalogue() {
+    return await this.catalogue.reload();
+  }
+
+  catalogueProblems() {
+    return this.catalogue.rejected;
+  }
+
+  /** The folder an administrator drops new configs into. */
+  catalogueDirectory(): string {
+    return this.catalogue.dataDir;
   }
 
   catalogEntryFor(id: string): GameServerCatalogEntry | undefined {

@@ -6,7 +6,7 @@ import { buildFirewallArgs } from '../src/bootstrap/windows-setup.js';
 import { gameServerFirewallRules } from '../src/game-servers/firewall.js';
 import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
 import { GameServerService } from '../src/game-servers/game-server-service.js';
-import { loadGameServerCatalogue } from '../src/game-servers/catalogue-loader.js';
+import { GameServerCatalogue } from '../src/game-servers/catalogue-loader.js';
 import { canInstallServer } from '../src/api/routers/game-servers.js';
 import type { RequestContext } from '../src/api/trpc.js';
 
@@ -14,13 +14,13 @@ const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
 const CATALOGUE = path.join(import.meta.dirname, '..', '..', '..', 'game-servers', 'catalogue');
 let tmpDir: string;
 let handle: DatabaseHandle;
-let catalogue: Awaited<ReturnType<typeof loadGameServerCatalogue>>['entries'];
+let catalogue: GameServerCatalogue;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'winpanel-game-security-'));
   handle = createDatabase(path.join(tmpDir, 'test.db'));
   migrateDatabase(handle, MIGRATIONS);
-  catalogue = (await loadGameServerCatalogue(CATALOGUE, path.join(tmpDir, 'catalogue-data'))).entries;
+  catalogue = await GameServerCatalogue.load(CATALOGUE, path.join(tmpDir, 'catalogue-data'));
 });
 
 afterEach(async () => {
@@ -30,7 +30,7 @@ afterEach(async () => {
 
 describe('game-server catalogue safety', () => {
   it('uses a fixed Steam App ID and executable for Palworld', async () => {
-    const entry = catalogue.find((item) => item.id === 'palworld-dedicated');
+    const entry = catalogue.find('palworld-dedicated');
     expect(entry?.steamAppId).toBe(2394010);
     expect(entry?.executable).toBe('PalServer.exe');
     expect(entry?.ports.map((port) => [port.protocol, port.port])).toEqual([

@@ -4,9 +4,29 @@ import { z } from 'zod';
 export const GameServerProviderId = z.enum([
   'minecraft-java',
   'minecraft-bedrock',
+  'download',
   'steam',
 ]);
 export type GameServerProviderId = z.infer<typeof GameServerProviderId>;
+
+/**
+ * A path inside the server's own folders.
+ *
+ * Config files are contributed by whoever writes the game's JSON, so a path
+ * that escapes the server's directory would let a catalog file write anywhere
+ * the agent can reach. Absolute paths and `..` segments are rejected here and
+ * checked again when the file is written.
+ */
+export function isSafeRelativePath(value: string): boolean {
+  if (/^[a-zA-Z]:/.test(value) || /^[\\/]/.test(value)) return false;
+  return value.split(/[\\/]/).every((segment) => segment !== '..' && segment.trim() !== '');
+}
+
+const SeedPath = z
+  .string()
+  .min(1)
+  .max(300)
+  .refine(isSafeRelativePath, 'must be a relative path inside the server folder');
 
 export const GameServerState = z.enum([
   'uninstalled',
@@ -33,7 +53,15 @@ export type GameServerPortVisibility = z.infer<typeof GameServerPortVisibility>;
 export const GameServerCatalogStatus = z.enum(['ready', 'planned']);
 export type GameServerCatalogStatus = z.infer<typeof GameServerCatalogStatus>;
 
-export const GameServerConsoleKind = z.enum(['stdin', 'rcon', 'none']);
+/**
+ * How much of a console a game exposes.
+ *
+ * `logs` is a read-only tail of the service log; `rcon` adds sending commands
+ * over Source RCON, which needs a port with `purpose: "rcon"` and a secret
+ * named `rcon`. There is no option for typing into the process's own console:
+ * a Windows service has no one at its keyboard.
+ */
+export const GameServerConsoleKind = z.enum(['logs', 'rcon', 'none']);
 export type GameServerConsoleKind = z.infer<typeof GameServerConsoleKind>;
 
 export const GameServerPort = z.object({
@@ -44,6 +72,72 @@ export const GameServerPort = z.object({
   port: z.number().int().min(1024).max(49151),
 });
 export type GameServerPort = z.infer<typeof GameServerPort>;
+
+/**
+ * A value generated once per server and kept in the vault.
+ *
+ * Referenced from launch arguments and config files as `{secret:name}`, so a
+ * game that needs an RCON or admin password gets one without the agent
+ * knowing which game it is. Regenerating on reinstall would desynchronise the
+ * vault from whatever the game already wrote down, so the value is reused.
+ */
+export const GameServerSecret = z.object({
+  name: z.string().min(1).max(64).regex(/^[a-z0-9-]+$/, 'must be lowercase letters, digits and dashes'),
+  bytes: z.number().int().min(8).max(64).default(18),
+});
+export type GameServerSecret = z.infer<typeof GameServerSecret>;
+
+export const GameServerSeedFormat = z.enum(['properties', 'ini', 'json', 'text']);
+export type GameServerSeedFormat = z.infer<typeof GameServerSeedFormat>;
+
+/**
+ * A configuration file the panel writes before the first start.
+ *
+ * This is how a game gets told which port it was allocated and what its
+ * generated passwords are. Values go through the same placeholder expansion
+ * as launch arguments.
+ */
+export const GameServerSeedFile = z.object({
+  /** Relative to the server's data folder. */
+  path: SeedPath,
+  format: GameServerSeedFormat,
+  /**
+   * `create` writes the file only when it is absent, so hand edits survive a
+   * reinstall. `merge` keeps every other line and rewrites only these keys,
+   * which is what a port allocation needs to do to a file the game owns.
+   */
+  mode: z.enum(['create', 'merge']).default('create'),
+  /** Used by `text` files; the other formats build their content from `values`. */
+  content: z.string().max(20000).optional(),
+  values: z
+    .record(
+      z.string().min(1).max(200),
+      z.union([z.string().max(2000), z.number(), z.boolean()]),
+    )
+    .default({}),
+  /** Some games only parse their own settings file when it uses CRLF. */
+  eol: z.enum(['lf', 'crlf']).default('lf'),
+});
+export type GameServerSeedFile = z.infer<typeof GameServerSeedFile>;
+
+/**
+ * Heap sizing for games that run on a JVM.
+ *
+ * Sized from the memory actually free at install time rather than a fixed
+ * figure, because the upstream launchers ship a number chosen for a dedicated
+ * box and a small VM dies before printing a log line.
+ */
+export const GameServerHeap = z.object({
+  minMb: z.number().int().min(128).max(65536).default(1024),
+  maxMb: z.number().int().min(128).max(65536).default(4096),
+  /** Left for Windows and everything else on the machine. */
+  reserveMb: z.number().int().min(0).max(65536).default(1536),
+});
+export type GameServerHeap = z.infer<typeof GameServerHeap>;
+
+/** Where the service runs from. */
+export const GameServerWorkingDirectory = z.enum(['install', 'data', 'executable']);
+export type GameServerWorkingDirectory = z.infer<typeof GameServerWorkingDirectory>;
 
 export const GameServerCatalogEntry = z.object({
   id: z.string().min(1).max(80),
@@ -82,6 +176,11 @@ export const GameServerCatalogEntry = z.object({
   executable: z.string().min(1).max(120),
   /** When the service should run a different binary than the one found first. */
   launchExecutable: z.string().min(1).max(200).optional(),
+  /**
+   * `java` resolves the panel's own Java runtime instead of a binary inside
+   * the download, for games that ship a jar and expect a JVM to be present.
+   */
+  runtime: z.enum(['native', 'java']).default('native'),
   /** Fixed arguments appended to the provider's launch arguments. */
   launchArgs: z.array(z.string().max(500)).default([]),
   /** Official mutable download, used by providers that do not publish hashes. */
@@ -90,6 +189,17 @@ export const GameServerCatalogEntry = z.object({
   console: GameServerConsoleKind.default('none'),
   /** Provider data folder to expose in the scoped Files view, relative to installPath. */
   dataDirectory: z.string().max(200).optional(),
+  workingDirectory: GameServerWorkingDirectory.default('install'),
+  /** Passwords the panel generates, vaults, and expands as `{secret:name}`. */
+  secrets: z.array(GameServerSecret).max(8).default([]),
+  /** Configuration written before the first start, so the game sees its ports. */
+  seedFiles: z.array(GameServerSeedFile).max(12).default([]),
+  heap: GameServerHeap.optional(),
+  /**
+   * Folder of jars joined into `{classpath}`, relative to installPath. For
+   * games launched through their own bundled JVM rather than a start script.
+   */
+  classpathDirectory: SeedPath.optional(),
 });
 export type GameServerCatalogEntry = z.infer<typeof GameServerCatalogEntry>;
 

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
 import { GameServerError, GameServerService } from '../src/game-servers/game-server-service.js';
-import { loadGameServerCatalogue } from '../src/game-servers/catalogue-loader.js';
+import { GameServerCatalogue } from '../src/game-servers/catalogue-loader.js';
 import { AuthService } from '../src/services/auth-service.js';
 import { SecretVault } from '../src/security/vault.js';
 
@@ -16,13 +16,13 @@ let tmpDir: string;
 let handle: DatabaseHandle;
 let service: GameServerService;
 let auth: AuthService;
-let catalogue: Awaited<ReturnType<typeof loadGameServerCatalogue>>['entries'];
+let catalogue: GameServerCatalogue;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'winpanel-game-servers-'));
   handle = createDatabase(path.join(tmpDir, 'test.db'));
   migrateDatabase(handle, MIGRATIONS);
-  catalogue = (await loadGameServerCatalogue(CATALOGUE, path.join(tmpDir, 'catalogue-data'))).entries;
+  catalogue = await GameServerCatalogue.load(CATALOGUE, path.join(tmpDir, 'catalogue-data'));
   service = new GameServerService(handle, path.join(tmpDir, 'servers'), catalogue);
 
   const vault = new SecretVault(path.join(tmpDir, 'vault.key'));

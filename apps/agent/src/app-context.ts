@@ -17,7 +17,7 @@ import { createServiceRecovery } from './windows/watched-services.js';
 import { SiteService } from './sites/site-service.js';
 import { GameServerService } from './game-servers/game-server-service.js';
 import { createInstallGameServerHandler } from './game-servers/install-handler.js';
-import { loadGameServerCatalogue } from './game-servers/catalogue-loader.js';
+import { GameServerCatalogue } from './game-servers/catalogue-loader.js';
 import { TrafficCollector } from './traffic/collector.js';
 import { createDeployHandler } from './sites/deploy-handler.js';
 import { createRunCommandHandler } from './sites/command-runner.js';
@@ -127,15 +127,15 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     : repoCatalogue;
   const gameCatalogueData = path.join(config.dataDir, 'game-servers', 'catalogue');
   await seedGameServerCatalogue(gameCatalogueRepo, gameCatalogueData);
-  const { entries: gameCatalogue, rejected: rejectedGameConfigs } = await loadGameServerCatalogue(gameCatalogueRepo, gameCatalogueData);
-  if (gameCatalogue.length === 0) {
+  const gameCatalogue = await GameServerCatalogue.load(gameCatalogueRepo, gameCatalogueData);
+  if (gameCatalogue.entries.length === 0) {
     // An empty catalog is a broken install, not a quiet empty library.
     process.stderr.write(
       `No game server configs found in ${gameCatalogueRepo} or ${gameCatalogueData}. ` +
         'The Game Servers page will be empty until at least one valid config is added.\n',
     );
   }
-  for (const { file, error } of rejectedGameConfigs) {
+  for (const { file, error } of gameCatalogue.rejected) {
     process.stderr.write(`Skipping game server config ${file}: ${error}\n`);
   }
   const gameServers = new GameServerService(db, config.gameServersRoot, gameCatalogue);

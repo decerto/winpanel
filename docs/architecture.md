@@ -34,9 +34,13 @@
   provisioned by `sites/databases.ts`; the browser-based editor is Adminer, run on a
   private loopback-only PHP server and proxied by the panel at `/db/…`
   (`api/db-browser.ts`) behind the panel's own sign-in, never on a public domain.
-- **Game servers** are stateful resources separate from `sites`. Provider adapters acquire
-  Minecraft or allowlisted Steam files, register one WinSW service per instance, expose a
-  contained data folder to the file manager, and apply typed public firewall bindings.
+- **Game servers** are stateful resources separate from `sites`. Installing is two stages:
+  a small acquisition step per provider (Steam, a publisher's archive, Mojang's signed
+  manifest), then one shared configure-and-register step that knows nothing about any
+  particular game. Ports, secrets, seeded config files, heap and launch arguments all come
+  from the catalog entry, so a new game is a JSON file in `game-servers/catalogue/`, not a
+  branch in the installer. Each instance gets one WinSW service, a contained data folder in
+  the file manager, and typed public firewall bindings.
 
 ## Composition root
 

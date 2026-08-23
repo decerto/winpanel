@@ -12,6 +12,10 @@
   "steamArtAppId": 108600,
   "executable": "StartServer64.bat",
   "launchExecutable": "jre64/bin/java.exe",
+  "classpathDirectory": "java",
+  "workingDirectory": "install",
+  "heap": { "minMb": 1024, "maxMb": 4096, "reserveMb": 1536 },
+  "secrets": [{ "name": "admin-password", "bytes": 18 }],
   "launchArgs": [
     "-Djava.awt.headless=true",
     "-Dzomboid.steam=1",
@@ -27,14 +31,32 @@
     "-cachedir={dataDir}",
     "-servername", "{slug}",
     "-adminusername", "admin",
-    "-adminpassword", "{adminPassword}",
-    "-port", "{gamePort}",
-    "-udpport", "{directPort}",
+    "-adminpassword", "{secret:admin-password}",
+    "-port", "{port:game}",
+    "-udpport", "{port:direct}",
     "-statistic", "0"
   ],
   "console": "none",
   "dataDirectory": "zomboid-profile",
   "configFile": "Server/{slug}.ini",
+  "seedFiles": [
+    {
+      "path": "Server/{slug}.ini",
+      "format": "ini",
+      "mode": "create",
+      "eol": "crlf",
+      "values": {
+        "DefaultPort": "{port:game}",
+        "UDPPort": "{port:direct}",
+        "Public": true,
+        "PublicName": "{displayName}",
+        "PublicDescription": "",
+        "Open": true,
+        "PlayerRespawnWithSelf": false,
+        "FastForwardMultiplier": 40
+      }
+    }
+  ],
   "ports": [
     { "name": "game", "protocol": "udp", "purpose": "game", "visibility": "public", "port": 16261 },
     { "name": "direct", "protocol": "udp", "purpose": "query", "visibility": "public", "port": 16262 }

@@ -11,7 +11,7 @@ const MAX_LOG_BYTES = 128 * 1024;
 
 export interface ConsoleSnapshot {
   available: boolean;
-  kind: 'rcon' | 'stdin' | 'none';
+  kind: 'rcon' | 'logs' | 'none';
   lines: string[];
 }
 
