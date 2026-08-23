@@ -1,6 +1,6 @@
 {
   "name": "winpanel",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "private": true,
   "description": "Free control panel for hosting websites, Node.js apps and game servers on Windows Server 2022/2025 and Windows 11 Home/Pro, without IIS",
   "keywords": [

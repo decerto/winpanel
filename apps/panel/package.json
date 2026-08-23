@@ -1,6 +1,6 @@
 {
   "name": "@winpanel/panel",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE.md",
   "type": "module",
