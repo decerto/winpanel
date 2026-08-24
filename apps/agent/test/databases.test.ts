@@ -9,7 +9,7 @@ import {
 } from '../src/databases/names.js';
 import { DatabaseError } from '../src/databases/errors.js';
 import { fullDatabaseName } from '../src/databases/service.js';
-import { parseFilter } from '../src/databases/browser.js';
+import { parseDocument, parseFilter } from '../src/databases/browser.js';
 
 /**
  * A database name is interpolated into SQL, so the validator is the whole
@@ -157,6 +157,18 @@ describe('parseFilter', () => {
   it('refuses JSON that is not an object', () => {
     for (const bad of ['[1,2]', '"Ada"', '42', 'null']) {
       expect(() => parseFilter(bad), bad).toThrow(DatabaseError);
+    }
+  });
+});
+
+describe('parseDocument', () => {
+  it('accepts a JSON object', () => {
+    expect(parseDocument('{"name":"Ada"}')).toEqual({ name: 'Ada' });
+  });
+
+  it('refuses invalid or non-object JSON', () => {
+    for (const bad of ['{name: Ada}', '[1,2]', '"Ada"', 'null']) {
+      expect(() => parseDocument(bad), bad).toThrow(DatabaseError);
     }
   });
 });

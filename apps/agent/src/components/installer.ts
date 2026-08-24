@@ -24,6 +24,7 @@ import { caddyServiceEnv, cloudflareTokenEnvironment } from '../caddy/service.js
 import { downloadVerified } from './download.js';
 import { extractZip, findExecutable, listExecutables, sniffPayload } from './archive.js';
 import { findComponent } from './catalogue.js';
+import { forgetDatabase, listAllDatabases } from '../databases/store.js';
 
 /**
  * Installing the pieces the panel drives.
@@ -53,6 +54,17 @@ export interface InstallerDependencies {
 
 export interface InstallComponentPayload {
   componentId: string;
+  deleteData?: boolean;
+}
+
+const POSTGRES_SERVICE_ACCOUNT = 'NT AUTHORITY\\NetworkService';
+
+function componentDataPath(deps: InstallerDependencies, componentId: string): string | null {
+  if (componentId === 'stalwart') return path.join(deps.dataDir, 'mail');
+  if (componentId === 'mariadb' || componentId === 'postgres' || componentId === 'mongodb') {
+    return engineDataDir(deps.dataDir, componentId);
+  }
+  return null;
 }
 
 /** Vault key the MariaDB root password is stored under. */
@@ -644,6 +656,20 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
         dataDir: engineDataDir(deps.dataDir, 'postgres'),
         ctx,
       });
+
+      const access = await runCommand({
+        exe: 'icacls.exe',
+        args: [
+          engineDataDir(deps.dataDir, 'postgres'),
+          '/grant',
+          `${POSTGRES_SERVICE_ACCOUNT}:(OI)(CI)M`,
+          '/T',
+        ],
+        timeoutMs: 120_000,
+      });
+      if (access.exitCode !== 0) {
+        throw new Error('PostgreSQL could not grant its service account access to its data.');
+      }
     }
     if (component.id === 'mongodb') {
       await setUpMongo({
@@ -724,6 +750,9 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
       ...(env ? { env } : {}),
       workingDirectory: path.dirname(executable),
       logPath: path.join(deps.logDir, component.id),
+      ...(component.id === 'postgres'
+        ? { account: { username: POSTGRES_SERVICE_ACCOUNT, password: '' } }
+        : {}),
     });
 
     ctx.progress(90);
@@ -773,7 +802,7 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
 
 export function createUninstallComponentHandler(deps: InstallerDependencies) {
   return async (payload: unknown, ctx: JobContext): Promise<void> => {
-    const { componentId } = payload as InstallComponentPayload;
+    const { componentId, deleteData = false } = payload as InstallComponentPayload;
     const component = findComponent(componentId);
     if (!component) throw new Error(`There is no component called "${componentId}".`);
 
@@ -797,9 +826,29 @@ export function createUninstallComponentHandler(deps: InstallerDependencies) {
     // would keep asking a certificate authority for names nothing answers on.
     if (component.id === 'stalwart') storeMailDomains(deps.db, []);
 
-    // Mail and website data are deliberately left alone. Removing a program
-    // is not the same as agreeing to lose what it was holding.
-    ctx.log(`${component.name} has been removed. Its data was left in place.`);
+    if (deleteData) {
+      const dataPath = componentDataPath(deps, component.id);
+      if (dataPath) {
+        ctx.log('Removing the associated data...');
+        await fs.rm(dataPath, {
+          recursive: true,
+          force: true,
+          maxRetries: 5,
+          retryDelay: 250,
+        });
+      }
+
+      if (component.id === 'mariadb' || component.id === 'postgres' || component.id === 'mongodb') {
+        for (const database of listAllDatabases(deps.db).filter(
+          (entry) => entry.engine === component.id,
+        )) {
+          forgetDatabase(deps.db, database.id);
+        }
+      }
+      ctx.log(`${component.name} has been removed, including its associated data.`);
+    } else {
+      ctx.log(`${component.name} has been removed. Its data was left in place.`);
+    }
     ctx.progress(100);
   };
 }

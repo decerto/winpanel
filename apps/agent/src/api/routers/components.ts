@@ -166,7 +166,13 @@ export const componentsRouter = router({
    * administrator should be able to do while troubleshooting one site.
    */
   uninstall: superadminProcedure
-    .input(z.object({ componentId: z.string().min(1) }))
+    .input(
+      z.object({
+        componentId: z.string().min(1),
+        confirmation: z.string().min(1),
+        deleteData: z.boolean().default(false),
+      }),
+    )
     .mutation(({ ctx, input }) => {
       const component = findComponent(input.componentId);
 
@@ -177,10 +183,20 @@ export const componentsRouter = router({
         });
       }
 
+      if (input.confirmation !== component.name) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `Type "${component.name}" to confirm removing this program.`,
+        });
+      }
+
       const jobId = ctx.app.jobs.enqueue({
         kind: 'uninstall-component',
         title: `Removing ${component.name}`,
-        payload: { componentId: component.id },
+        payload: {
+          componentId: component.id,
+          deleteData: input.deleteData,
+        },
       });
 
       return { jobId };

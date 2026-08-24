@@ -32,7 +32,13 @@ import {
   listDatabasesForSite,
   type DatabaseSummary,
 } from '../../databases/store.js';
-import { browseCollections, browseDocuments } from '../../databases/browser.js';
+import {
+  browseCollections,
+  browseDocuments,
+  deleteDocuments,
+  insertDocument,
+  updateDocuments,
+} from '../../databases/browser.js';
 import { rewriteWpConfigPassword } from '../../sites/wordpress.js';
 import type { EngineContext } from '../../databases/types.js';
 
@@ -462,6 +468,68 @@ export const databasesRouter = router({
         });
       } catch (error) {
         throw asTrpcError(error, 'Those documents could not be read.');
+      }
+    }),
+
+  mongoInsert: protectedProcedure
+    .input(
+      z.object({
+        id: z.string().min(1),
+        collection: z.string().min(1).max(120),
+        document: z.string().min(1).max(64 * 1024),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const record = mustGetDatabase(ctx, input.id);
+
+      try {
+        await insertDocument(engineContext(ctx), record, input);
+        return { ok: true };
+      } catch (error) {
+        throw asTrpcError(error, 'That document could not be inserted.');
+      }
+    }),
+
+  mongoUpdate: protectedProcedure
+    .input(
+      z.object({
+        id: z.string().min(1),
+        collection: z.string().min(1).max(120),
+        filter: z.string().min(1).max(4_000),
+        update: z.string().min(1).max(64 * 1024),
+        many: z.boolean().default(false),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const record = mustGetDatabase(ctx, input.id);
+
+      try {
+        return {
+          modified: await updateDocuments(engineContext(ctx), record, input),
+        };
+      } catch (error) {
+        throw asTrpcError(error, 'Those documents could not be updated.');
+      }
+    }),
+
+  mongoDelete: protectedProcedure
+    .input(
+      z.object({
+        id: z.string().min(1),
+        collection: z.string().min(1).max(120),
+        filter: z.string().min(1).max(4_000),
+        many: z.boolean().default(false),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const record = mustGetDatabase(ctx, input.id);
+
+      try {
+        return {
+          deleted: await deleteDocuments(engineContext(ctx), record, input),
+        };
+      } catch (error) {
+        throw asTrpcError(error, 'Those documents could not be deleted.');
       }
     }),
 

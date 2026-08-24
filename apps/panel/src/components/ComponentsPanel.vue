@@ -109,18 +109,30 @@ async function install(component: Component): Promise<void> {
 async function uninstall(component: Component): Promise<void> {
   if (
     !window.confirm(
-      `Remove ${component.name}? Its data is left in place, but anything relying on it stops ` +
-        'working until it is installed again.',
+      `Remove ${component.name}? Websites or mailboxes may rely on it and will stop working ` +
+        'until it is installed again.',
     )
   ) {
     return;
   }
 
+  const confirmation = window.prompt(`Type "${component.name}" to confirm removing it:`);
+  if (confirmation !== component.name) return;
+
+  const deleteData = window.confirm(
+    `Also permanently delete all ${component.name} data? This cannot be undone. ` +
+      'Website files are not removed.',
+  );
+
   busyId.value = component.id;
   error.value = null;
 
   try {
-    const result = await api.components.uninstall.mutate({ componentId: component.id });
+    const result = await api.components.uninstall.mutate({
+      componentId: component.id,
+      confirmation,
+      deleteData,
+    });
     watchJob(result.jobId);
   } catch (err) {
     error.value = describeError(err);

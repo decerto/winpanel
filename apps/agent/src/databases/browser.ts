@@ -14,10 +14,9 @@ import type { EngineContext } from './types.js';
  * as the engine you cannot see into, the panel reads it directly through the
  * driver it already uses to create databases.
  *
- * Deliberately read-only. A viewer that can also delete is a much larger
- * promise: it needs confirmation flows, an audit trail of what was changed and
- * a way back from a mistake. Browsing is what people actually want from a
- * hosting panel, and everything else is a connection string away.
+ * The connection is made as the database's own login, never as the
+ * administrator. Writes are explicit and use the same credentials, so a
+ * customer cannot use the browser to reach another database.
  *
  * The connection is made as the database's own login, never as the
  * administrator. That way the worst a bug here can do is show somebody their
@@ -115,6 +114,25 @@ export function parseFilter(text: string | undefined): Document {
   return parsed as Document;
 }
 
+export function parseDocument(text: string): Document {
+  if (text.length > MAX_DOCUMENT_BYTES) {
+    throw new DatabaseError(`Documents are limited to ${MAX_DOCUMENT_BYTES} bytes.`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new DatabaseError('That document is not valid JSON.');
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new DatabaseError('A document has to be a JSON object.');
+  }
+
+  return parsed as Document;
+}
+
 export interface DocumentPage {
   collection: string;
   total: number;
@@ -171,6 +189,54 @@ export async function browseDocuments(
       documents,
       truncated,
     };
+  });
+}
+
+export async function insertDocument(
+  ctx: EngineContext,
+  record: DatabaseRecord,
+  options: { collection: string; document: string },
+): Promise<void> {
+  const credentials = credentialsFor(ctx, record);
+  const document = parseDocument(options.document);
+
+  await withMongo(credentials, async (client) => {
+    await client.db(record.name).collection(options.collection).insertOne(document);
+  });
+}
+
+export async function updateDocuments(
+  ctx: EngineContext,
+  record: DatabaseRecord,
+  options: { collection: string; filter: string; update: string; many: boolean },
+): Promise<number> {
+  const credentials = credentialsFor(ctx, record);
+  const filter = parseFilter(options.filter);
+  const update = parseDocument(options.update);
+
+  return await withMongo(credentials, async (client) => {
+    const collection = client.db(record.name).collection(options.collection);
+    const result = options.many
+      ? await collection.updateMany(filter, update)
+      : await collection.updateOne(filter, update);
+    return result.modifiedCount;
+  });
+}
+
+export async function deleteDocuments(
+  ctx: EngineContext,
+  record: DatabaseRecord,
+  options: { collection: string; filter: string; many: boolean },
+): Promise<number> {
+  const credentials = credentialsFor(ctx, record);
+  const filter = parseFilter(options.filter);
+
+  return await withMongo(credentials, async (client) => {
+    const collection = client.db(record.name).collection(options.collection);
+    const result = options.many
+      ? await collection.deleteMany(filter)
+      : await collection.deleteOne(filter);
+    return result.deletedCount;
   });
 }
 

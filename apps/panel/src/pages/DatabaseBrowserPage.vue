@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, RouterLink } from 'vue-router';
-import { ArrowLeft, Search, Table2 } from 'lucide-vue-next';
+import { ArrowLeft, Search, Table2, Trash2 } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
 import AlertMessage from '../components/AlertMessage.vue';
 import EmptyState from '../components/EmptyState.vue';
@@ -17,10 +17,8 @@ import PaginationBar from '../components/PaginationBar.vue';
  * PECL extension PHP does not ship — so rather than leave MongoDB as the one
  * engine you cannot see into, the panel reads it directly.
  *
- * Deliberately read-only. A viewer that could also delete is a much larger
- * promise: it needs confirmations, an audit trail and a way back from a
- * mistake. Browsing is what people actually want from a hosting panel, and
- * everything beyond it is a connection string away.
+ * Writes use the database's own login through the agent, so this page cannot
+ * reach data outside the database the signed-in person owns.
  */
 
 const route = useRoute();
@@ -38,6 +36,13 @@ const page = ref(1);
 const filter = ref('');
 /** The filter that was actually sent, so editing the box does not re-query. */
 const appliedFilter = ref('');
+const insertJson = ref('{\n  \n}');
+const updateFilter = ref('');
+const updateJson = ref('{\n  \n}');
+const deleteFilter = ref('');
+const updateMany = ref(false);
+const deleteMany = ref(false);
+const writing = ref(false);
 
 const loading = ref(true);
 const loadingDocuments = ref(false);
@@ -95,6 +100,66 @@ function applyFilter(): void {
   void loadDocuments();
 }
 
+async function insert(): Promise<void> {
+  if (!selected.value) return;
+  writing.value = true;
+  error.value = null;
+  try {
+    await api.databases.mongoInsert.mutate({
+      id: id.value,
+      collection: selected.value,
+      document: insertJson.value,
+    });
+    await loadCollections();
+    await loadDocuments();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    writing.value = false;
+  }
+}
+
+async function update(): Promise<void> {
+  if (!selected.value) return;
+  writing.value = true;
+  error.value = null;
+  try {
+    await api.databases.mongoUpdate.mutate({
+      id: id.value,
+      collection: selected.value,
+      filter: updateFilter.value,
+      update: updateJson.value,
+      many: updateMany.value,
+    });
+    await loadCollections();
+    await loadDocuments();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    writing.value = false;
+  }
+}
+
+async function remove(): Promise<void> {
+  if (!selected.value || !window.confirm('Delete the matching MongoDB documents?')) return;
+  writing.value = true;
+  error.value = null;
+  try {
+    await api.databases.mongoDelete.mutate({
+      id: id.value,
+      collection: selected.value,
+      filter: deleteFilter.value,
+      many: deleteMany.value,
+    });
+    await loadCollections();
+    await loadDocuments();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    writing.value = false;
+  }
+}
+
 watch([selected, page], loadDocuments);
 
 onMounted(async () => {
@@ -114,8 +179,8 @@ onMounted(async () => {
 
     <PageHeader
       title="Browse database"
-      description="The collections in this MongoDB database and the documents inside them. This
-                   view reads only; use a client with the connection details to make changes."
+      description="Browse and change documents in this MongoDB database. All operations use the
+                   database account's own permissions."
     />
 
     <AlertMessage v-if="error" tone="danger" class="mb-4">{{ error }}</AlertMessage>
@@ -166,6 +231,59 @@ onMounted(async () => {
             <Search :size="13" aria-hidden="true" /> Filter
           </button>
         </form>
+
+        <div class="grid gap-4 xl:grid-cols-3">
+          <form class="card space-y-3 p-4" @submit.prevent="insert">
+            <h3 class="text-sm font-semibold text-ink">Insert document</h3>
+            <textarea
+              v-model="insertJson"
+              class="field min-h-32 w-full font-mono text-xs"
+              aria-label="Document to insert"
+              spellcheck="false"
+            />
+            <button type="submit" class="btn btn-primary btn-sm" :disabled="writing">
+              Insert
+            </button>
+          </form>
+
+          <form class="card space-y-3 p-4" @submit.prevent="update">
+            <h3 class="text-sm font-semibold text-ink">Update documents</h3>
+            <input
+              v-model="updateFilter"
+              class="field w-full font-mono text-xs"
+              placeholder='Filter, for example {"status": "draft"}'
+              aria-label="Update filter"
+            />
+            <textarea
+              v-model="updateJson"
+              class="field min-h-24 w-full font-mono text-xs"
+              aria-label="Update document"
+              spellcheck="false"
+            />
+            <label class="flex items-center gap-2 text-xs text-ink-muted">
+              <input v-model="updateMany" type="checkbox" /> Update every match
+            </label>
+            <button type="submit" class="btn btn-ghost btn-sm" :disabled="writing">
+              Update
+            </button>
+          </form>
+
+          <form class="card space-y-3 p-4" @submit.prevent="remove">
+            <h3 class="text-sm font-semibold text-ink">Delete documents</h3>
+            <input
+              v-model="deleteFilter"
+              class="field w-full font-mono text-xs"
+              placeholder='Filter, for example {"status": "draft"}'
+              aria-label="Delete filter"
+            />
+            <label class="flex items-center gap-2 text-xs text-ink-muted">
+              <input v-model="deleteMany" type="checkbox" /> Delete every match
+            </label>
+            <button type="submit" class="btn btn-danger btn-sm" :disabled="writing">
+              <Trash2 :size="13" aria-hidden="true" /> Delete
+            </button>
+          </form>
+        </div>
 
         <LoadingBlock v-if="loadingDocuments" class="h-64 rounded-card bg-surface" />
 
