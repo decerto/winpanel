@@ -200,6 +200,54 @@ export async function freeDiskBytes(driveLetter = 'C'): Promise<number | null> {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+export interface CommitMemory {
+  /** Memory and page file added together: the ceiling on what may be handed out. */
+  limitBytes: number;
+  freeBytes: number;
+}
+
+/**
+ * Windows' commit limit, and how much of it is unspoken for.
+ *
+ * This, not `os.freemem()`, is the number that decides whether an allocation
+ * succeeds. A server with a gigabyte of memory free and no page file refuses
+ * allocations while every "free memory" reading looks healthy, so reporting
+ * only free memory hides the single most likely reason a deployment fails on
+ * a small machine. Node.js reports the refusal as "Zone Allocation failed -
+ * process out of memory" followed by a native stack trace.
+ */
+export async function commitMemory(): Promise<CommitMemory | null> {
+  if (process.platform !== 'win32') return null;
+
+  const result = await runCommand({
+    exe: 'powershell.exe',
+    args: [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      '$os = Get-CimInstance Win32_OperatingSystem; ' +
+        '"$($os.TotalVirtualMemorySize),$($os.FreeVirtualMemory)"',
+    ],
+    timeoutMs: 20_000,
+  });
+
+  if (result.exitCode !== 0) return null;
+  return parseCommitMemory(result.stdout);
+}
+
+/** Split out so the units and the empty cases are testable without a shell. */
+export function parseCommitMemory(output: string): CommitMemory | null {
+  const parts = output.trim().split(',');
+  if (parts.length !== 2) return null;
+
+  // Win32_OperatingSystem reports both of these in kilobytes.
+  const limit = Number.parseInt(parts[0] ?? '', 10) * 1024;
+  const free = Number.parseInt(parts[1] ?? '', 10) * 1024;
+
+  if (!Number.isFinite(limit) || !Number.isFinite(free) || limit <= 0 || free < 0) return null;
+  return { limitBytes: limit, freeBytes: free };
+}
+
 function formatBytes(bytes: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
   let value = bytes;
@@ -209,6 +257,72 @@ function formatBytes(bytes: number): string {
     unit++;
   }
   return `${value.toFixed(1)} ${units[unit]}`;
+}
+
+const PAGE_FILE_FIX: CheckOutcome['fix'] = {
+  kind: 'manual',
+  label: 'Give the server a page file',
+  instructions:
+    'Open System properties, then Advanced, then Settings under Performance, then Advanced ' +
+    'again, then Change under Virtual memory. Either tick "Automatically manage paging file ' +
+    'size for all drives" or set a custom size of at least 4096 MB, then restart the server.',
+};
+
+/**
+ * The Available memory outcome, from readings taken elsewhere.
+ *
+ * Pure, because the cases worth getting right — no page file, commit limit
+ * nearly spent — cannot be produced on the machine the tests run on.
+ */
+export function describeMemory(
+  totalBytes: number,
+  freeBytes: number,
+  commit: CommitMemory | null,
+): CheckOutcome {
+  const gb = (bytes: number) => bytes / 1024 ** 3;
+  const detail = `${gb(freeBytes).toFixed(1)} GB free of ${gb(totalBytes).toFixed(1)} GB`;
+
+  if (gb(freeBytes) < 0.5) {
+    return {
+      state: 'warning',
+      detail,
+      reason: 'Very little memory is free. Apps may be shut down unexpectedly.',
+    };
+  }
+
+  if (!commit) return { state: 'ok', detail };
+
+  const commitFreeGb = gb(commit.freeBytes);
+  const pageFileGb = Math.max(0, gb(commit.limitBytes - totalBytes));
+
+  if (commitFreeGb < 0.75) {
+    return {
+      state: 'warning',
+      detail: `${detail}, ${commitFreeGb.toFixed(1)} GB of the commit limit left`,
+      reason:
+        'The server is close to its commit limit, which is its memory and its page file added ' +
+        'together. Programs are refused memory at that limit even while memory itself looks ' +
+        'free, and deploying a website, which builds it here, is usually the first thing to ' +
+        'fail.',
+      fix: PAGE_FILE_FIX,
+    };
+  }
+
+  if (pageFileGb < 1) {
+    const size = pageFileGb < 0.05 ? 'no page file' : `${pageFileGb.toFixed(1)} GB page file`;
+    return {
+      state: 'warning',
+      detail: `${detail}, ${size}`,
+      reason:
+        'This server has little or no page file, so it can never hand out more memory than it ' +
+        'physically has. Building a website takes several times the memory the finished ' +
+        'website needs, so deployments fail first, with an out-of-memory error raised while ' +
+        'the free memory reading still looks healthy.',
+      fix: PAGE_FILE_FIX,
+    };
+  }
+
+  return { state: 'ok', detail };
 }
 
 export function buildServerChecks(): CheckDefinition[] {
@@ -556,24 +670,12 @@ export function buildServerChecks(): CheckDefinition[] {
       id: 'server.memory',
       category: 'server',
       name: 'Available memory',
-      plainDescription: 'Each website and the mail server need memory to run.',
-      ttlSeconds: 60,
-      run: async (): Promise<CheckOutcome> => {
-        const totalGb = os.totalmem() / 1024 ** 3;
-        const freeGb = os.freemem() / 1024 ** 3;
-
-        if (freeGb < 0.5) {
-          return {
-            state: 'warning',
-            detail: `${freeGb.toFixed(1)} GB free of ${totalGb.toFixed(1)} GB`,
-            reason: 'Very little memory is free. Apps may be shut down unexpectedly.',
-          };
-        }
-        return {
-          state: 'ok',
-          detail: `${freeGb.toFixed(1)} GB free of ${totalGb.toFixed(1)} GB`,
-        };
-      },
+      plainDescription:
+        'Each website and the mail server need memory to run, and building a website when it ' +
+        'is deployed needs far more than running it does.',
+      ttlSeconds: 120,
+      run: async (): Promise<CheckOutcome> =>
+        describeMemory(os.totalmem(), os.freemem(), await commitMemory()),
     },
 
     {

@@ -3,9 +3,11 @@ import { rollUpState, statusPresentation } from '@winpanel/shared';
 import { CheckEngine, type CheckDefinition, type CheckOutcome } from '../src/checks/engine.js';
 import {
   buildServerChecks,
+  describeMemory,
   isPortExcluded,
   isPortFree,
   missingFirewallRuleNames,
+  parseCommitMemory,
 } from '../src/checks/server-checks.js';
 import { requiredFirewallRules } from '../src/bootstrap/windows-setup.js';
 
@@ -235,6 +237,58 @@ describe('server check definitions', () => {
       expect(['ok', 'warning', 'blocked', 'absent', 'unknown']).toContain(result.state);
     }
   }, 30_000);
+});
+
+const GB = 1024 ** 3;
+
+describe('available memory', () => {
+  it('reads the commit limit and free commit as kilobytes', () => {
+    // Win32_OperatingSystem: TotalVirtualMemorySize, FreeVirtualMemory.
+    expect(parseCommitMemory(' 8388608,2097152 \r\n')).toEqual({
+      limitBytes: 8 * GB,
+      freeBytes: 2 * GB,
+    });
+  });
+
+  it('answers null rather than a wrong number when the reading is unusable', () => {
+    expect(parseCommitMemory('')).toBeNull();
+    expect(parseCommitMemory('8388608')).toBeNull();
+    expect(parseCommitMemory('nonsense,2097152')).toBeNull();
+    expect(parseCommitMemory('0,0')).toBeNull();
+  });
+
+  it('warns when the server is near its commit limit even though memory looks free', () => {
+    // The failure this exists for: 1.2 GB of memory free, and a build still
+    // dies because Windows will not commit another megabyte.
+    const outcome = describeMemory(4 * GB, 1.2 * GB, {
+      limitBytes: 4.5 * GB,
+      freeBytes: 0.2 * GB,
+    });
+
+    expect(outcome.state).toBe('warning');
+    expect(outcome.reason).toMatch(/commit limit/);
+    expect(outcome.fix?.kind).toBe('manual');
+  });
+
+  it('warns when there is no page file at all', () => {
+    const outcome = describeMemory(4 * GB, 3 * GB, { limitBytes: 4 * GB, freeBytes: 3 * GB });
+
+    expect(outcome.state).toBe('warning');
+    expect(outcome.detail).toMatch(/no page file/);
+    expect(outcome.reason).toMatch(/page file/);
+  });
+
+  it('is happy with plenty of memory behind a real page file', () => {
+    const outcome = describeMemory(8 * GB, 5 * GB, { limitBytes: 16 * GB, freeBytes: 12 * GB });
+
+    expect(outcome.state).toBe('ok');
+    expect(outcome.detail).toBe('5.0 GB free of 8.0 GB');
+  });
+
+  it('falls back to the memory reading alone when the commit limit cannot be read', () => {
+    expect(describeMemory(8 * GB, 5 * GB, null).state).toBe('ok');
+    expect(describeMemory(8 * GB, 0.2 * GB, null).state).toBe('warning');
+  });
 });
 
 describe('firewall rules', () => {

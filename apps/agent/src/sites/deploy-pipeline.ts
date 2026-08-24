@@ -125,6 +125,9 @@ export function explainToolFailure(command: string, output: string): string | nu
     }
   }
 
+  const outOfMemory = explainOutOfMemory(output);
+  if (outOfMemory) return outOfMemory;
+
   const unresolved = findUnresolvedPackage(output);
   if (unresolved) {
     return (
@@ -168,6 +171,55 @@ export function explainRuntimeFailure(message: string, packageManager: string): 
     `packages the same way. Add "${name}" to the project\u2019s dependencies ` +
     `(\`${packageManager} add ${name}\`) and commit that.`
   );
+}
+
+/**
+ * Distinguishes the two out-of-memory failures Node.js can suffer.
+ *
+ * They print almost the same words and have opposite fixes. "JavaScript heap
+ * out of memory" is V8 refusing to grow past a limit it imposes on itself, so
+ * the answer is to raise that limit. "Zone Allocation failed" is Windows
+ * refusing an ordinary allocation of a megabyte or less, which happens when
+ * the commit limit — memory and page file added together — is reached, and
+ * raising Node's own limit there makes matters worse. Neither message says
+ * which of the two it is, and the native stack trace that follows it, which is
+ * all the deployment log would otherwise end with, says nothing at all.
+ */
+export function explainOutOfMemory(output: string): string | null {
+  const systemRefused =
+    output.includes('Zone Allocation failed') ||
+    output.includes('Failed to reserve virtual memory') ||
+    output.includes('Fatal process OOM in Reserve');
+
+  if (systemRefused) {
+    return (
+      'The build ran out of memory, and it was Windows that refused it rather than Node.js. ' +
+      'That means the server reached its commit limit, which is its memory and its page file ' +
+      'added together \u2014 so the Server health page can still show memory free while this ' +
+      'happens. Give the server a page file (System properties, Advanced, Performance ' +
+      'Settings, Advanced, Virtual memory) or fit more memory. Setting NODE_OPTIONS to ' +
+      '--max-old-space-size=768 in the environment variables on the Application page helps ' +
+      'as well, because a lower limit makes the build reclaim memory sooner instead of asking ' +
+      'for more. If the server cannot be given either, build the project on your own computer ' +
+      'and commit the result.'
+    );
+  }
+
+  const heapExhausted =
+    output.includes('JavaScript heap out of memory') || output.includes('Reached heap limit');
+
+  if (heapExhausted) {
+    return (
+      'The build ran out of memory: it reached the limit Node.js places on itself, which is ' +
+      'lower than what this server has. Add NODE_OPTIONS with the value ' +
+      '--max-old-space-size=2048 to the environment variables on the Application page and ' +
+      'deploy again \u2014 environment variables are given to the build as well as to the ' +
+      'running website. Check the Server health page first: setting it higher than the machine ' +
+      'can supply only moves the failure.'
+    );
+  }
+
+  return null;
 }
 
 /** The package name from a bundler's "module not found" message, if there is one. */

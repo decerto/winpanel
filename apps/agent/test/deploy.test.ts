@@ -750,6 +750,32 @@ describe('explainToolFailure', () => {
     expect(explainToolFailure('pnpm', 'ELIFECYCLE build failed')).toBeNull();
     expect(explainToolFailure('npm', 'ERR_PNPM_IGNORED_BUILDS')).toBeNull();
   });
+
+  it('blames the commit limit, not Node, when Windows refused the allocation', () => {
+    // The whole point: the heap was only at 650 MB, so raising Node's own
+    // limit would be the wrong advice and would make it worse.
+    const hint = explainToolFailure(
+      'npm',
+      '<--- Last few GCs --->\n' +
+        '[8432:0000] 13408 ms: Scavenge 646.1 (712.2) -> 593.0 (721.4) MB\n' +
+        'FATAL ERROR: Zone Allocation failed - process out of memory\n' +
+        '----- Native stack trace -----\n 1: 00007FF71F3448DF',
+    );
+
+    expect(hint).toMatch(/commit limit/);
+    expect(hint).toMatch(/page file/);
+    expect(hint).not.toMatch(/--max-old-space-size=2048/);
+  });
+
+  it('tells the user to raise the limit when it is Node that ran out', () => {
+    const hint = explainToolFailure(
+      'npm',
+      'FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory',
+    );
+
+    expect(hint).toMatch(/--max-old-space-size=2048/);
+    expect(hint).not.toMatch(/page file/);
+  });
 });
 
 describe('explainRuntimeFailure', () => {
