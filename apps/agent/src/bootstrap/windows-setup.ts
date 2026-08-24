@@ -8,6 +8,7 @@ import {
   STALWART_HTTP_PORT,
 } from '@winpanel/shared';
 import { runCommand } from '../process/run-command.js';
+import { DATABASE_FIREWALL_ENGINES, databaseFirewallRuleName } from '../databases/network.js';
 
 /**
  * Windows Firewall rules.
@@ -27,6 +28,8 @@ export interface FirewallRule {
   port: number | string;
   protocol: 'TCP' | 'UDP';
   action: 'allow' | 'block';
+  /** Optional source address or comma-separated list of sources. */
+  remoteIp?: string;
   /** Human-readable reason, shown in the panel. */
   purpose: string;
 }
@@ -116,8 +119,9 @@ export function buildFirewallArgs(rule: FirewallRule): string[] {
     `protocol=${rule.protocol}`,
     `localport=${rule.port}`,
     // Block rules apply to everything remote; the loopback interface is not
-    // affected, so the service still reaches itself.
-    ...(rule.action === 'block' ? ['remoteip=any'] : []),
+    // affected, so the service still reaches itself. Allow rules may be
+    // narrowed to the sources selected by the administrator.
+    ...(rule.remoteIp || rule.action === 'block' ? [`remoteip=${rule.remoteIp ?? 'any'}`] : []),
     'profile=any',
     'enable=yes',
   ];
@@ -161,6 +165,7 @@ export class FirewallManager {
     for (const rule of [...requiredFirewallRules(), ...mailFirewallRules()]) {
       await this.remove(rule.name);
     }
+    for (const engine of DATABASE_FIREWALL_ENGINES) await this.remove(databaseFirewallRuleName(engine));
   }
 
   /** Lists the panel's rules that are currently present. */

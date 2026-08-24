@@ -43,6 +43,11 @@ describe('databaseUri', () => {
     expect(decodeURIComponent(new URL(uri).password)).toBe('p@ss/word:1');
   });
 
+  it('formats an external IPv6 host for URI consumers', () => {
+    const uri = databaseUri('mongodb', 'shop', 'shop', 'pw', '2001:db8::10');
+    expect(uri).toBe('mongodb://shop:pw@[2001:db8::10]:27017/shop?authSource=shop');
+  });
+
   it('leaves a placeholder recognisable in the template', () => {
     expect(databaseUriTemplate('mariadb', 'shop', 'shop')).toContain('PASSWORD');
   });

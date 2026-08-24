@@ -90,6 +90,10 @@ async function main(): Promise<void> {
   const app = await createAppContext();
   const server = await createServer(app);
 
+  void app.databaseNetwork.reconcileInstalled().catch((error) => {
+    process.stderr.write(`Could not reconcile database network access: ${String(error)}\n`);
+  });
+
   /*
    * Point the per-website health checks at the live database. Done here rather
    * than at module load because the checks router is constructed before the

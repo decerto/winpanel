@@ -2,7 +2,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ComponentDefinition } from '@winpanel/shared';
-import { MONGODB_PORT, POSTGRES_PORT } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
 import type { SecretVault } from '../security/vault.js';
 import type { JobContext } from '../jobs/queue.js';
@@ -25,6 +24,12 @@ import { downloadVerified } from './download.js';
 import { extractZip, findExecutable, listExecutables, sniffPayload } from './archive.js';
 import { findComponent } from './catalogue.js';
 import { forgetDatabase, listAllDatabases } from '../databases/store.js';
+import {
+  databaseFirewallRuleName,
+  databaseServerArgs,
+} from '../databases/network.js';
+import { engineNetworkPolicy, type DatabaseNetworkService } from '../databases/network-service.js';
+import type { FirewallManager } from '../bootstrap/windows-setup.js';
 
 /**
  * Installing the pieces the panel drives.
@@ -42,6 +47,8 @@ export interface InstallerDependencies {
   db: DatabaseHandle;
   vault: SecretVault;
   services: ServiceManager;
+  firewall?: FirewallManager;
+  databaseNetwork?: DatabaseNetworkService;
   binDir: string;
   dataDir: string;
   logDir: string;
@@ -696,35 +703,11 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
       component.id === 'stalwart'
         ? ['--config', path.join(deps.dataDir, 'mail', 'config.json')]
         : component.id === 'mariadb'
-          ? // Loopback only: the databases are reached by sites on this machine,
-            // never from the network, so there is no reason to listen on it.
-            [`--datadir=${engineDataDir(deps.dataDir, 'mariadb')}`, '--bind-address=127.0.0.1', '--port=3306']
+          ? databaseServerArgs('mariadb', engineDataDir(deps.dataDir, 'mariadb'), engineNetworkPolicy(deps.db, 'mariadb'))
           : component.id === 'postgres'
-            ? [
-                '-D',
-                engineDataDir(deps.dataDir, 'postgres'),
-                '-h',
-                '127.0.0.1',
-                '-p',
-                String(POSTGRES_PORT),
-              ]
+            ? databaseServerArgs('postgres', engineDataDir(deps.dataDir, 'postgres'), engineNetworkPolicy(deps.db, 'postgres'))
             : component.id === 'mongodb'
-              ? [
-                  '--dbpath',
-                  engineDataDir(deps.dataDir, 'mongodb'),
-                  '--bind_ip',
-                  '127.0.0.1',
-                  '--port',
-                  String(MONGODB_PORT),
-                  /*
-                   * Access control on from the very first start. MongoDB's
-                   * reputation for being found open on the internet comes
-                   * entirely from installations that skipped this; the
-                   * localhost exception is what lets the panel still create
-                   * the first account afterwards.
-                   */
-                  '--auth',
-                ]
+              ? databaseServerArgs('mongodb', engineDataDir(deps.dataDir, 'mongodb'), engineNetworkPolicy(deps.db, 'mongodb'))
               : [...component.args];
 
     // Caddy needs its data directory and, once Cloudflare is connected, the
@@ -758,6 +741,10 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
     ctx.progress(90);
     ctx.log('Starting it\u2026');
     await deps.services.start(component.serviceName);
+
+    if (deps.databaseNetwork && (component.id === 'mariadb' || component.id === 'postgres' || component.id === 'mongodb')) {
+      await deps.databaseNetwork.syncEngine(component.id);
+    }
 
     /*
      * The two steps that can only happen once a server is actually answering.
@@ -809,6 +796,13 @@ export function createUninstallComponentHandler(deps: InstallerDependencies) {
     if (component.serviceName) {
       ctx.log('Stopping and removing the Windows service\u2026');
       await deps.services.uninstall(component.serviceName);
+    }
+
+    if (
+      deps.firewall &&
+      (component.id === 'mariadb' || component.id === 'postgres' || component.id === 'mongodb')
+    ) {
+      await deps.firewall.remove(databaseFirewallRuleName(component.id));
     }
 
     ctx.log('Removing the program files\u2026');

@@ -34,9 +34,9 @@ under its own data folder, generates an administrative password and stores it en
 registers a Windows Service, starts it, and adds it to the watchdog that restarts it if
 its process ever dies behind Windows' back.
 
-Each server listens on `127.0.0.1` only, on its standard port — 3306, 5432 and 27017.
-Nothing is exposed to the network and no firewall rule is opened, because a hosted
-database is reached by applications on the same machine.
+Each server listens on `127.0.0.1` only by default, on its standard port — 3306, 5432
+and 27017. Nothing is exposed to the network and no firewall rule is opened, because a
+hosted database is reached by applications on the same machine.
 
 **Removing** a database server removes the program and leaves its data exactly where it
 is. Reinstalling picks the same data back up.
@@ -100,10 +100,9 @@ MongoDB's `authSource` is not optional. Its login lives inside its own database 
 in `admin`, and a driver that is not told so looks in `admin`, finds nothing, and reports
 the password as wrong.
 
-Because the servers are bound to loopback, these work from anything running on the same
-machine — a website WinPanel hosts, a service you installed yourself, a scheduled task.
-To reach one from another machine, put it behind something that authenticates; do not
-open the port.
+Because the servers are bound to loopback by default, these work from anything running on
+the same machine — a website WinPanel hosts, a service you installed yourself, a scheduled
+task. To reach one from your own computer, see [Remote connections](#remote-connections).
 
 ## Looking inside
 
@@ -124,8 +123,54 @@ MongoDB Compass to see what is in it.
 
 Desktop tools still work if you prefer them, or if you want to write to MongoDB rather than
 just read it. Paste the connection string into Compass, pgAdmin, DBeaver or `psql` and they
-will connect — but only from the server itself, since the databases do not answer the
-network.
+will connect from the server itself.
+
+### Remote connections
+
+Each database decides for itself, and the decision belongs to whoever owns it rather than
+to whoever owns the server — the person who needs to connect is the customer or the
+developer they hired, and an administrator has no way of knowing what address that is.
+
+Press **Remote access** next to a database on the **Databases** page and choose one of:
+
+- **This server only** — the default. Nothing off this machine can reach it.
+- **Any IP** — anyone who can reach the server may try to sign in. Only the password stands
+  in the way.
+- **Chosen addresses** — only the IP addresses or CIDR ranges you list.
+
+**Add my IP** fills in the address your browser reached the panel from, so you do not have
+to look it up. It is not offered when you are signed in on the server itself, because
+loopback would let nothing new in.
+
+Databases on one engine share a port, so the first database to want remote access opens it
+for that engine. That does not put anybody else's data within reach: the login is
+restricted to the same addresses the owner chose, and a database that asked for nothing
+stays reachable only from this machine.
+
+| Engine | What holds the line |
+| --- | --- |
+| **MariaDB** | The account exists only for the listed addresses — `user@203.0.113.42`, or a netmask for a range. There is no `user@%` unless the owner asked for Any IP. |
+| **PostgreSQL** | A `pg_hba.conf` line naming that one database, that one role and that one source. Never `host all all`. |
+| **MongoDB** | An authentication restriction on the login itself, so it answers only to the listed addresses. |
+
+The listeners are IPv4, so an IPv6 entry is allowed through the firewall but still will not
+connect. A cloud-provider firewall, router port-forward or NAT rule may also be needed —
+those are outside the panel's control. Use the server's reachable public address as the
+connection host; never `0.0.0.0`, which is a listener address and not a destination.
+
+Once a database is reachable remotely, the connection details shown in the panel use the
+server's first non-loopback address as a convenience. Replace it with the public address or
+DNS name when the server is behind NAT.
+
+## Moving a database to a website
+
+A database does not have to be tied to a website, and the one it is tied to can be changed
+at any time from the **Used by** column on the **Databases** page. Nothing moves and
+nothing is rewritten — the database keeps its name, its login and its contents, and only
+the website it is listed under changes.
+
+Handing a website to another account takes its databases with it, so the new owner can see
+the password their own site is using and the previous owner can no longer reach it.
 
 ## Allowances
 

@@ -13,6 +13,7 @@ import { CaddyClient } from './caddy/client.js';
 import { CaddyReconciler } from './caddy/reconciler.js';
 import { ServiceManager } from './windows/service-manager.js';
 import { FirewallManager } from './bootstrap/windows-setup.js';
+import { DatabaseNetworkService } from './databases/network-service.js';
 import { createServiceRecovery } from './windows/watched-services.js';
 import { SiteService } from './sites/site-service.js';
 import { GameServerService } from './game-servers/game-server-service.js';
@@ -50,6 +51,7 @@ export interface AppContext {
   /** Pushes the panel's view of what should be served into Caddy. */
   routing: CaddyReconciler;
   services: ServiceManager;
+  databaseNetwork: DatabaseNetworkService;
   sites: SiteService;
   gameServers: GameServerService;
   /** Counts the web server's access logs into per-website traffic figures. */
@@ -108,6 +110,15 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     createServiceRecovery(db),
   );
   const firewall = process.platform === 'win32' ? new FirewallManager() : undefined;
+  const databaseNetwork = new DatabaseNetworkService({
+    db,
+    vault,
+    services,
+    firewall,
+    binDir: config.binDir,
+    dataDir: config.dataDir,
+    logDir: config.logDir,
+  });
   const sites = new SiteService(db, vault, config.sitesRoot);
 
   /*
@@ -184,6 +195,8 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
       db,
       vault,
       services,
+      firewall,
+      databaseNetwork,
       binDir: config.binDir,
       dataDir: config.dataDir,
       logDir: config.logDir,
@@ -250,6 +263,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     caddy,
     routing,
     services,
+    databaseNetwork,
     sites,
     gameServers,
     traffic,

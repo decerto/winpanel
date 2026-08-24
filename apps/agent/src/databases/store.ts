@@ -3,6 +3,7 @@ import { and, eq, isNull } from 'drizzle-orm';
 import type { DatabaseEngine } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
 import { hostedDatabases, sites, users } from '../db/schema.js';
+import type { DatabaseNetworkPolicy } from './network.js';
 
 /**
  * The panel's record of every database it has made.
@@ -22,6 +23,8 @@ export interface DatabaseRecord {
   username: string;
   siteId: string | null;
   ownerUserId: string | null;
+  /** Who may reach this database from off the machine. */
+  network: DatabaseNetworkPolicy;
   createdAt: Date;
 }
 
@@ -39,11 +42,33 @@ const SELECTION = {
   username: hostedDatabases.username,
   siteId: hostedDatabases.siteId,
   ownerUserId: hostedDatabases.ownerUserId,
+  networkMode: hostedDatabases.networkMode,
+  networkCidrs: hostedDatabases.networkCidrs,
   createdAt: hostedDatabases.createdAt,
   siteSlug: sites.slug,
   siteName: sites.displayName,
   ownerUsername: users.username,
 };
+
+type Row = {
+  networkMode: DatabaseNetworkPolicy['mode'];
+  networkCidrs: unknown;
+} & Record<string, unknown>;
+
+/** Folds the two stored columns into the policy shape the rest of the code uses. */
+function toSummary(row: Row): DatabaseSummary {
+  const { networkMode, networkCidrs, ...rest } = row;
+
+  return {
+    ...(rest as unknown as Omit<DatabaseSummary, 'network'>),
+    network: {
+      mode: networkMode,
+      remoteCidrs: Array.isArray(networkCidrs)
+        ? networkCidrs.filter((value): value is string => typeof value === 'string')
+        : [],
+    },
+  };
+}
 
 function baseQuery(db: DatabaseHandle) {
   return db.db
@@ -55,20 +80,27 @@ function baseQuery(db: DatabaseHandle) {
 
 /** Every database on the server, newest last. Admins only. */
 export function listAllDatabases(db: DatabaseHandle): DatabaseSummary[] {
-  return baseQuery(db).all() as DatabaseSummary[];
+  return baseQuery(db).all().map((row) => toSummary(row as Row));
 }
 
 /** The databases one account owns, whatever website they are attached to. */
 export function listDatabasesForOwner(db: DatabaseHandle, ownerUserId: string): DatabaseSummary[] {
-  return baseQuery(db).where(eq(hostedDatabases.ownerUserId, ownerUserId)).all() as DatabaseSummary[];
+  return baseQuery(db)
+    .where(eq(hostedDatabases.ownerUserId, ownerUserId))
+    .all()
+    .map((row) => toSummary(row as Row));
 }
 
 export function listDatabasesForSite(db: DatabaseHandle, siteId: string): DatabaseSummary[] {
-  return baseQuery(db).where(eq(hostedDatabases.siteId, siteId)).all() as DatabaseSummary[];
+  return baseQuery(db)
+    .where(eq(hostedDatabases.siteId, siteId))
+    .all()
+    .map((row) => toSummary(row as Row));
 }
 
 export function getDatabase(db: DatabaseHandle, id: string): DatabaseSummary | null {
-  return (baseQuery(db).where(eq(hostedDatabases.id, id)).get() as DatabaseSummary | undefined) ?? null;
+  const row = baseQuery(db).where(eq(hostedDatabases.id, id)).get();
+  return row ? toSummary(row as Row) : null;
 }
 
 export function findDatabaseByName(
@@ -76,11 +108,11 @@ export function findDatabaseByName(
   engine: DatabaseEngine,
   name: string,
 ): DatabaseSummary | null {
-  return (
-    (baseQuery(db)
-      .where(and(eq(hostedDatabases.engine, engine), eq(hostedDatabases.name, name)))
-      .get() as DatabaseSummary | undefined) ?? null
-  );
+  const row = baseQuery(db)
+    .where(and(eq(hostedDatabases.engine, engine), eq(hostedDatabases.name, name)))
+    .get();
+
+  return row ? toSummary(row as Row) : null;
 }
 
 /** How many databases an account holds, which is what its allowance is against. */
@@ -130,4 +162,35 @@ export function recordDatabase(
 
 export function forgetDatabase(db: DatabaseHandle, id: string): void {
   db.db.delete(hostedDatabases).where(eq(hostedDatabases.id, id)).run();
+}
+
+/** Records who may reach one database from off the machine. */
+export function setDatabaseNetwork(
+  db: DatabaseHandle,
+  id: string,
+  policy: DatabaseNetworkPolicy,
+): void {
+  db.db
+    .update(hostedDatabases)
+    .set({ networkMode: policy.mode, networkCidrs: policy.remoteCidrs })
+    .where(eq(hostedDatabases.id, id))
+    .run();
+}
+
+/** Attaches a database to a website, or detaches it when given null. */
+export function setDatabaseSite(db: DatabaseHandle, id: string, siteId: string | null): void {
+  db.db.update(hostedDatabases).set({ siteId }).where(eq(hostedDatabases.id, id)).run();
+}
+
+/** Hands every database attached to a website to whoever now owns the website. */
+export function reassignSiteDatabases(
+  db: DatabaseHandle,
+  siteId: string,
+  ownerUserId: string | null,
+): number {
+  return db.db
+    .update(hostedDatabases)
+    .set({ ownerUserId })
+    .where(eq(hostedDatabases.siteId, siteId))
+    .run().changes;
 }

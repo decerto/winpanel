@@ -262,4 +262,36 @@ describe('what is offered', () => {
     // no database server still refuses it for the right reason.
     expect(refused.body.error.data.code).toBe('BAD_REQUEST');
   });
+
+  it('lets the owner of a database decide who may reach it, and nobody else', async () => {
+    // The person who connects is the customer or their developer, so the
+    // choice is theirs rather than an administrator's.
+    const mine = await call('GET', 'databases.networkAccess', freyaCookie, {
+      id: freyaDatabaseId,
+    });
+    expect(mine.body.result.data.policy).toEqual({ mode: 'loopback', remoteCidrs: [] });
+    // What the "add my IP" button offers: the address this request came from.
+    expect(mine.body.result.data.yourIp).toBe('127.0.0.1');
+
+    // Another customer is told it does not exist rather than that it is theirs.
+    const refused = await call('GET', 'databases.networkAccess', samCookie, {
+      id: freyaDatabaseId,
+    });
+    expect(refused.body.error.data.code).toBe('NOT_FOUND');
+
+    const blocked = await call('POST', 'databases.setNetworkAccess', samCookie, {
+      id: freyaDatabaseId,
+      mode: 'any',
+      remoteCidrs: [],
+    });
+    expect(blocked.body.error.data.code).toBe('NOT_FOUND');
+  });
+
+  it('refuses to tie somebody else\u2019s database to a website', async () => {
+    const refused = await call('POST', 'databases.attachSite', samCookie, {
+      id: freyaDatabaseId,
+      slug: 'kitora-io',
+    });
+    expect(refused.body.error.data.code).toBe('NOT_FOUND');
+  });
 });

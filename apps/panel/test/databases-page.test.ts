@@ -42,6 +42,8 @@ const state = vi.hoisted(() => ({
   },
   databases: [] as any[],
   created: [] as any[],
+  attachable: [] as Array<{ slug: string; name: string }>,
+  attached: [] as any[],
   revealPassword: 'revealed-secret',
 }));
 
@@ -64,7 +66,26 @@ vi.mock('../src/lib/api', () => ({
           problem: null,
         })),
       },
-      attachableSites: { query: vi.fn(async () => []) },
+      attachableSites: { query: vi.fn(async () => state.attachable) },
+      attachSite: {
+        mutate: vi.fn(async (input: any) => {
+          state.attached.push(input);
+          return { ok: true, siteSlug: input.slug };
+        }),
+      },
+      networkAccess: {
+        query: vi.fn(async () => ({
+          policy: { mode: 'loopback', remoteCidrs: [] },
+          yourIp: '203.0.113.9',
+          addresses: ['57.129.70.162'],
+          port: 5432,
+        })),
+      },
+      setNetworkAccess: {
+        mutate: vi.fn(async (input: any) => ({
+          policy: { mode: input.mode, remoteCidrs: input.remoteCidrs },
+        })),
+      },
       create: {
         mutate: vi.fn(async (input: any) => {
           state.created.push(input);
@@ -107,6 +128,7 @@ function database(over: Record<string, unknown> = {}) {
     siteSlug: null,
     siteName: null,
     ownerUsername: 'owner',
+    network: { mode: 'loopback', remoteCidrs: [] },
     createdAt: new Date(0),
     connection: {
       engine: 'postgres',
@@ -135,6 +157,8 @@ beforeEach(() => {
   state.me = { id: 'me', role: 'superadmin' };
   state.databases = [];
   state.created = [];
+  state.attachable = [];
+  state.attached = [];
   state.engines.unfinished = [];
 });
 
@@ -195,6 +219,28 @@ describe('an existing database', () => {
     );
   });
 
+  it('uses the server host when remote access is enabled', async () => {
+    state.databases = [
+      database({
+        connection: {
+          engine: 'postgres',
+          host: '203.0.113.10',
+          port: 5432,
+          database: 'u_me_shop',
+          username: 'u_me_shop',
+          uriTemplate: 'postgresql://u_me_shop:PASSWORD@203.0.113.10:5432/u_me_shop',
+        },
+      }),
+    ];
+    const wrapper = await render();
+
+    await button(wrapper, 'Connect')!.trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('postgresql://u_me_shop:PASSWORD@203.0.113.10:5432/u_me_shop');
+    expect(wrapper.text()).toContain('Remote access is enabled');
+  });
+
   it("tells a MongoDB database where its login lives", async () => {
     // A driver told nothing looks in `admin`, finds no such user, and reports
     // the password as wrong — so the authSource has to be on screen.
@@ -235,5 +281,56 @@ describe('what the page offers', () => {
 
     const options = wrapper.find('#db-engine').findAll('option');
     expect(options.map((option: any) => option.text())).toEqual(['PostgreSQL']);
+  });
+
+  /*
+   * A database is regularly made before anybody knows which website will use
+   * it, and the choice made at creation used to be the only one on offer —
+   * so getting it wrong meant deleting the database and starting again.
+   */
+  it('moves an existing database to another website', async () => {
+    state.databases = [database()];
+    state.attachable = [{ slug: 'kitora-io', name: 'Kitora' }];
+    const wrapper = await render();
+
+    const picker = wrapper.find('select[aria-label="Website using u_me_shop"]');
+    expect(picker.exists()).toBe(true);
+
+    await picker.setValue('kitora-io');
+    await flushPromises();
+
+    expect(state.attached).toEqual([{ id: 'db-1', slug: 'kitora-io' }]);
+  });
+
+  it('unties a database from its website', async () => {
+    state.databases = [database({ siteSlug: 'kitora-io', siteName: 'Kitora' })];
+    state.attachable = [{ slug: 'kitora-io', name: 'Kitora' }];
+    const wrapper = await render();
+
+    await wrapper.find('select[aria-label="Website using u_me_shop"]').setValue('');
+    await flushPromises();
+
+    expect(state.attached).toEqual([{ id: 'db-1', slug: null }]);
+  });
+
+  /*
+   * Remote access belongs to whoever owns the database, so it is offered here
+   * rather than in the server's settings — the panel's owner is not the person
+   * who connects to it.
+   */
+  it('offers remote access per database, with the address you are on', async () => {
+    state.databases = [database()];
+    const wrapper = await render();
+
+    await button(wrapper, 'Remote access')!.trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Who can reach u_me_shop');
+
+    const chosen = wrapper.findAll('button').find((node: any) => node.text() === 'Chosen addresses');
+    await chosen!.trigger('click');
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Add my IP (203.0.113.9)');
   });
 });

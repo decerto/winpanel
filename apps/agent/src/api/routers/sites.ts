@@ -18,7 +18,7 @@ import {
 import { protectedProcedure, adminProcedure, router } from '../trpc.js';
 import { SiteError, SiteService } from '../../sites/site-service.js';
 import { removeDatabase } from '../../databases/service.js';
-import { listDatabasesForSite } from '../../databases/store.js';
+import { listAllDatabases, listDatabasesForSite } from '../../databases/store.js';
 import { sites } from '../../db/schema.js';
 import { detectApp } from '../../detect/detector.js';
 import { discoverNodeVersions, matchVersion } from '../../sites/node-versions.js';
@@ -149,6 +149,13 @@ export const sitesRouter = router({
     // A customer sees their own hosting; an admin sees the server.
     const scope = ctx.user?.role === 'user' ? ctx.user.id : undefined;
 
+    // One query for the whole list rather than one per site: the websites page
+    // is the front door and already does enough work per row.
+    const databaseCounts = new Map<string, number>();
+    for (const record of listAllDatabases(ctx.app.db)) {
+      if (record.siteId) databaseCounts.set(record.siteId, (databaseCounts.get(record.siteId) ?? 0) + 1);
+    }
+
     return service.list(scope).map((site) => {
       // Ports are allocated when a site is created, so a port on its own says
       // nothing about whether anything is being served. The list is the front
@@ -168,6 +175,8 @@ export const sitesRouter = router({
         previewPort: site.previewPort,
         previewUrl: previewUrlFor(site.previewPort),
         lastDeploymentStatus: last?.status ?? null,
+        /** How many databases this website has, so the card can offer them. */
+        databaseCount: databaseCounts.get(site.id) ?? 0,
         updatedAt: site.updatedAt,
       };
     });

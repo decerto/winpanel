@@ -98,6 +98,19 @@ describe('buildFirewallArgs', () => {
     expect(args).toContain('enable=yes');
   });
 
+  it('restricts an allow rule to the selected remote sources', () => {
+    const args = buildFirewallArgs({
+      name: 'WinPanel - Database (MongoDB)',
+      port: 27017,
+      protocol: 'TCP',
+      action: 'allow',
+      remoteIp: '203.0.113.42,203.0.113.0/24',
+      purpose: 'testing',
+    });
+
+    expect(args).toContain('remoteip=203.0.113.42,203.0.113.0/24');
+  });
+
   it('passes the rule name as one argument, spaces and all', () => {
     // Split across two arguments, netsh would create a rule with the wrong
     // name and the uninstaller would never find it.

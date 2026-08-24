@@ -2,7 +2,9 @@ import { findExecutable } from '../components/archive.js';
 import { runCommand } from '../process/run-command.js';
 import { DatabaseError } from './errors.js';
 import { assertSafeDbName, sqlStringLiteral } from './names.js';
-import { readRootPassword } from './secrets.js';
+import { readDatabasePassword, readRootPassword } from './secrets.js';
+import type { DatabaseNetworkPolicy } from './network.js';
+import type { DatabaseSummary } from './store.js';
 import { engineBinDir, type DatabaseAccount, type DatabaseAdapter, type EngineContext } from './types.js';
 
 /**
@@ -72,6 +74,97 @@ async function runSql(ctx: EngineContext, sql: string): Promise<string> {
   return result.stdout;
 }
 
+/**
+ * The `user@host` values one database's policy calls for, beyond loopback.
+ *
+ * MariaDB checks the host a connection came from as part of the account, so
+ * the whitelist is enforced by the server and not only by the firewall. That
+ * matters here: the port is opened for the whole machine as soon as any one
+ * database asks for it, and without this every other database's login would
+ * then answer from anywhere too.
+ *
+ * IPv6 entries are skipped because the listener is IPv4, so an account for one
+ * could never be used.
+ */
+export function mariaDbRemoteHosts(policy: DatabaseNetworkPolicy): string[] {
+  if (policy.mode === 'any') return ['%'];
+  if (policy.mode !== 'whitelist') return [];
+
+  return policy.remoteCidrs.flatMap((source) => {
+    const [address, prefix] = source.split('/');
+    if (!address || address.includes(':')) return [];
+    if (prefix === undefined || prefix === '32') return [address];
+
+    const bits = Number(prefix);
+    const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0;
+    const dotted = [24, 16, 8, 0].map((shift) => (mask >>> shift) & 255).join('.');
+    return [`${address}/${dotted}`];
+  });
+}
+
+/** Rejects anything that could not have come out of an address we validated. */
+function hostLiteral(host: string): string {
+  if (!/^[0-9a-f.:%/]+$/i.test(host)) throw new DatabaseError(`Unusable database host: ${host}`);
+  return `'${host}'`;
+}
+
+/**
+ * The statements that bring one account's remote hosts in line with its policy.
+ *
+ * `existingHosts` is what the server currently has, so hosts that are no longer
+ * allowed are dropped rather than left behind quietly still working.
+ */
+export function mariaDbAccountPlan(
+  record: Pick<DatabaseSummary, 'name' | 'username' | 'network'>,
+  password: string,
+  existingHosts: readonly string[],
+): string[] {
+  const name = assertSafeDbName(record.name);
+  const username = assertSafeDbName(record.username);
+  const literal = sqlStringLiteral(password);
+  const wanted = mariaDbRemoteHosts(record.network);
+
+  const statements = existingHosts
+    .filter((host) => host !== '127.0.0.1' && host !== 'localhost' && !wanted.includes(host))
+    .map((host) => `DROP USER IF EXISTS '${username}'@${hostLiteral(host)}`);
+
+  for (const host of wanted) {
+    statements.push(
+      `CREATE USER IF NOT EXISTS '${username}'@${hostLiteral(host)} IDENTIFIED BY ${literal}`,
+      `ALTER USER '${username}'@${hostLiteral(host)} IDENTIFIED BY ${literal}`,
+      `GRANT ALL PRIVILEGES ON \`${name}\`.* TO '${username}'@${hostLiteral(host)}`,
+    );
+  }
+
+  return statements;
+}
+
+/** Brings every account's reachable hosts in line with its own database's policy. */
+export async function syncMariaDbRemoteAccounts(
+  ctx: EngineContext,
+  records: readonly DatabaseSummary[],
+): Promise<void> {
+  if (records.length === 0) return;
+
+  const statements: string[] = [];
+
+  for (const record of records) {
+    const password = readDatabasePassword(ctx.db, ctx.vault, record.engine, record.name, record.siteId);
+    if (!password) continue;
+
+    const hosts = (
+      await runSql(ctx, `SELECT Host FROM mysql.user WHERE User = ${sqlStringLiteral(record.username)};`)
+    )
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    statements.push(...mariaDbAccountPlan(record, password, hosts));
+  }
+
+  if (statements.length > 0) await runSql(ctx, `${statements.join('; ')}; FLUSH PRIVILEGES;`);
+}
+
 export const mariadbAdapter: DatabaseAdapter = {
   engine: 'mariadb',
 
@@ -91,25 +184,34 @@ export const mariadbAdapter: DatabaseAdapter = {
     // end the statement early.
     const literal = sqlStringLiteral(password);
 
-    await runSql(
-      ctx,
-      `CREATE DATABASE IF NOT EXISTS \`${name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; ` +
-        `CREATE USER IF NOT EXISTS '${username}'@'127.0.0.1' IDENTIFIED BY ${literal}; ` +
-        // Re-stating the password is what makes this also a password reset.
-        `ALTER USER '${username}'@'127.0.0.1' IDENTIFIED BY ${literal}; ` +
-        `GRANT ALL PRIVILEGES ON \`${name}\`.* TO '${username}'@'127.0.0.1'; FLUSH PRIVILEGES;`,
-    );
+    const statements = [
+      `CREATE DATABASE IF NOT EXISTS \`${name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+      `CREATE USER IF NOT EXISTS '${username}'@'127.0.0.1' IDENTIFIED BY ${literal}`,
+      `ALTER USER '${username}'@'127.0.0.1' IDENTIFIED BY ${literal}`,
+      `GRANT ALL PRIVILEGES ON \`${name}\`.* TO '${username}'@'127.0.0.1'`,
+    ];
+
+    await runSql(ctx, `${statements.join('; ')}; FLUSH PRIVILEGES;`);
   },
 
   async drop(ctx, account) {
     const name = assertSafeDbName(account.name);
     const username = assertSafeDbName(account.username);
 
-    await runSql(
-      ctx,
-      `DROP DATABASE IF EXISTS \`${name}\`; ` +
-        `DROP USER IF EXISTS '${username}'@'127.0.0.1'; FLUSH PRIVILEGES;`,
-    );
+    // Every host the account may have been reachable at, not just loopback:
+    // one left behind would keep working and block the name being reused.
+    const hosts = (
+      await runSql(ctx, `SELECT Host FROM mysql.user WHERE User = ${sqlStringLiteral(username)};`)
+    )
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+
+    const drops = [...new Set([...hosts, '127.0.0.1', '%'])]
+      .map((host) => `DROP USER IF EXISTS '${username}'@${hostLiteral(host)}`)
+      .join('; ');
+
+    await runSql(ctx, `DROP DATABASE IF EXISTS \`${name}\`; ${drops}; FLUSH PRIVILEGES;`);
   },
 
   async list(ctx) {

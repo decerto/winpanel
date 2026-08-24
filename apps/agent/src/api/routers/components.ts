@@ -7,7 +7,7 @@ import { COMPONENT_CATALOGUE, findComponent } from '../../components/catalogue.j
 import { findExecutable } from '../../components/archive.js';
 import { discoverNodeVersions } from '../../sites/node-versions.js';
 import { runCommand } from '../../process/run-command.js';
-import type { ComponentDefinition } from '@winpanel/shared';
+import { engineForComponent, type ComponentDefinition } from '@winpanel/shared';
 
 /**
  * The programs the panel drives: web server, mail server, git.
@@ -228,6 +228,10 @@ export const componentsRouter = router({
 
       try {
         await ctx.app.services[input.action](component.serviceName);
+        const engine = engineForComponent(component.id);
+        if (engine && input.action !== 'stop') {
+          await ctx.app.databaseNetwork.syncEngine(engine);
+        }
         return { ok: true, state: await ctx.app.services.getState(component.serviceName) };
       } catch (error) {
         throw new TRPCError({

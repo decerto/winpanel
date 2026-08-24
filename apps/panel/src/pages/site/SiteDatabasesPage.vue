@@ -8,6 +8,7 @@ import {
   KeyRound,
   Plug,
   Plus,
+  ShieldCheck,
   Table2,
   Trash2,
 } from 'lucide-vue-next';
@@ -15,6 +16,7 @@ import { roleAtLeast, type DatabaseConnection, type UserRole } from '@winpanel/s
 import { api, describeError } from '../../lib/api';
 import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
+import DatabaseAccessCard from '../../components/DatabaseAccessCard.vue';
 import DatabaseConnectionCard from '../../components/DatabaseConnectionCard.vue';
 import LoadingBlock from '../../components/LoadingBlock.vue';
 
@@ -64,6 +66,8 @@ const revealed = ref<{
 /** The database whose connection details are open, and its password if shown. */
 const expanded = ref<string | null>(null);
 const expandedPassword = ref<string | null>(null);
+/** The database whose remote-access panel is open. */
+const accessOpen = ref<string | null>(null);
 
 function toggleConnection(row: Row): void {
   if (expanded.value === row.id) {
@@ -73,6 +77,10 @@ function toggleConnection(row: Row): void {
   }
   expanded.value = row.id;
   expandedPassword.value = null;
+}
+
+function toggleAccess(row: Row): void {
+  accessOpen.value = accessOpen.value === row.id ? null : row.id;
 }
 
 const usable = computed(() => overview.value?.engines.filter((engine) => engine.ready) ?? []);
@@ -422,6 +430,16 @@ onMounted(load);
               <button
                 type="button"
                 class="btn btn-ghost btn-sm"
+                :aria-expanded="accessOpen === row.id"
+                @click="toggleAccess(row)"
+              >
+                <ShieldCheck :size="13" aria-hidden="true" />
+                {{ row.network.mode === 'loopback' ? 'Remote access' : 'Remote access on' }}
+              </button>
+
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
                 :disabled="busy !== null"
                 :aria-expanded="passwordReset?.row.id === row.id"
                 @click="openPasswordReset(row)"
@@ -453,6 +471,14 @@ onMounted(load);
               class="mt-3"
               :connection="row.connection"
               :password="expandedPassword"
+            />
+
+            <DatabaseAccessCard
+              v-if="accessOpen === row.id"
+              class="mt-3"
+              :database-id="row.id"
+              :name="row.name"
+              @saved="load"
             />
           </li>
         </ul>

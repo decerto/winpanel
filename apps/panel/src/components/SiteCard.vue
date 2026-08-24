@@ -247,10 +247,20 @@ const domainTiles = computed<Tile[]>(() => {
     },
   ];
 
-  if (isPhp.value) {
+  /*
+   * PHP sites nearly always have a database, so the tile is offered whether or
+   * not one exists yet. Every other runtime gets it once it actually has one —
+   * a Node or .NET site with a database had no way to reach it from here,
+   * which was most obvious after a website changed hands.
+   */
+  const databases = props.site.databaseCount ?? 0;
+  if (isPhp.value || databases > 0) {
     tiles.push({
       label: 'Databases',
-      detail: 'Where the site stores data',
+      detail:
+        databases > 0
+          ? `${databases} ${databases === 1 ? 'database' : 'databases'}`
+          : 'Where the site stores data',
       icon: Database,
       to: `/sites/${props.site.slug}/databases`,
       tint: 'text-info',

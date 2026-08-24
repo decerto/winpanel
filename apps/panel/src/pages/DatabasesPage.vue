@@ -8,12 +8,14 @@ import {
   KeyRound,
   Plug,
   Plus,
+  ShieldCheck,
   Table2,
   Trash2,
 } from 'lucide-vue-next';
 import { roleAtLeast, type DatabaseConnection, type UserRole } from '@winpanel/shared';
 import { api, describeError } from '../lib/api';
 import AlertMessage from '../components/AlertMessage.vue';
+import DatabaseAccessCard from '../components/DatabaseAccessCard.vue';
 import DatabaseConnectionCard from '../components/DatabaseConnectionCard.vue';
 import EmptyState from '../components/EmptyState.vue';
 import LoadingBlock from '../components/LoadingBlock.vue';
@@ -79,6 +81,8 @@ const revealed = ref<{
 const expanded = ref<string | null>(null);
 /** The password revealed for the expanded row, if it has been. */
 const expandedPassword = ref<string | null>(null);
+/** The row whose remote-access panel is open. */
+const accessOpen = ref<string | null>(null);
 
 function toggleConnection(row: Row): void {
   if (expanded.value === row.id) {
@@ -88,6 +92,24 @@ function toggleConnection(row: Row): void {
   }
   expanded.value = row.id;
   expandedPassword.value = null;
+}
+
+function toggleAccess(row: Row): void {
+  accessOpen.value = accessOpen.value === row.id ? null : row.id;
+}
+
+/**
+ * The websites this database could be tied to.
+ *
+ * Its current one is included even when it is not otherwise on offer, so the
+ * dropdown always shows where the database actually is.
+ */
+function siteOptions(row: Row): Array<{ slug: string; name: string }> {
+  const options = [...attachable.value];
+  if (row.siteSlug && !options.some((option) => option.slug === row.siteSlug)) {
+    options.unshift({ slug: row.siteSlug, name: row.siteName ?? row.siteSlug });
+  }
+  return options;
 }
 
 const usable = computed(() => engines.value?.engines.filter((engine) => engine.ready) ?? []);
@@ -237,6 +259,32 @@ async function showPassword(row: Row): Promise<void> {
     // password": on its own it is a string with nowhere to go.
     expanded.value = row.id;
     expandedPassword.value = result.password;
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    busy.value = null;
+  }
+}
+
+/**
+ * Ties a database to a website, or unties it.
+ *
+ * Which website a database serves is not decided once and for ever: projects
+ * get renamed, rebuilt and moved between sites, and before this the only way
+ * to correct the choice made at creation was to delete the database.
+ */
+async function attachSite(row: Row, slug: string): Promise<void> {
+  busy.value = `site:${row.id}`;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    await api.databases.attachSite.mutate({ id: row.id, slug: slug === '' ? null : slug });
+    notice.value =
+      slug === ''
+        ? `${row.name} is no longer tied to a website.`
+        : `${row.name} is now used by ${siteOptions(row).find((site) => site.slug === slug)?.name ?? slug}.`;
+    await load();
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -416,121 +464,142 @@ onMounted(load);
         @action="adding = true"
       />
 
-      <section v-else class="card overflow-hidden">
-        <table class="w-full text-sm">
-          <thead
-            class="border-b border-line text-left text-xs uppercase tracking-wide text-ink-faint"
+      <section v-else class="space-y-3">
+        <article v-for="row in paged" :key="row.id" class="card overflow-hidden">
+          <div
+            class="grid gap-4 p-4 sm:grid-cols-2 lg:items-center"
+            :class="
+              isAdmin
+                ? 'lg:grid-cols-[minmax(0,1.5fr)_minmax(8rem,0.7fr)_minmax(12rem,1.1fr)_minmax(8rem,0.8fr)]'
+                : 'lg:grid-cols-[minmax(0,1.7fr)_minmax(8rem,0.8fr)_minmax(12rem,1.2fr)]'
+            "
           >
-            <tr>
-              <th class="px-4 py-3 font-medium">Database</th>
-              <th class="px-4 py-3 font-medium">Kind</th>
-              <th class="px-4 py-3 font-medium">Used by</th>
-              <th v-if="isAdmin" class="px-4 py-3 font-medium">Owner</th>
-              <!-- w-px, or the actions column eats the spare width. -->
-              <th class="w-px px-4 py-3"><span class="sr-only">Actions</span></th>
-            </tr>
-          </thead>
+            <div class="min-w-0">
+              <span class="block truncate font-mono font-medium text-ink">{{ row.name }}</span>
+              <span class="mt-1 block truncate font-mono text-xs text-ink-faint">
+                {{ row.connection.host }}:{{ row.connection.port }}
+              </span>
+            </div>
 
-          <tbody class="divide-y divide-line">
-            <template v-for="row in paged" :key="row.id">
-              <tr class="align-middle">
-              <td class="max-w-xs px-4 py-3">
-                <span class="block truncate font-mono text-ink">{{ row.name }}</span>
-                <span class="block truncate text-xs text-ink-faint">
-                  {{ row.connection.host }}:{{ row.connection.port }}
-                </span>
-              </td>
-              <td class="px-4 py-3 text-ink-muted">{{ row.engineLabel }}</td>
-              <td class="px-4 py-3">
-                <RouterLink
-                  v-if="row.siteSlug"
-                  :to="`/sites/${row.siteSlug}`"
-                  class="text-brand-bright hover:underline"
-                >
-                  {{ row.siteName ?? row.siteSlug }}
-                </RouterLink>
-                <span v-else class="text-ink-faint">Not tied to a website</span>
-              </td>
-              <td v-if="isAdmin" class="px-4 py-3 text-ink-muted">
+            <div>
+              <span class="label mb-1 block">Kind</span>
+              <span class="text-sm text-ink-muted">{{ row.engineLabel }}</span>
+            </div>
+
+            <div class="min-w-0">
+              <span class="label mb-1 block">Used by</span>
+              <select
+                v-if="siteOptions(row).length > 0"
+                class="field w-full text-xs"
+                :value="row.siteSlug ?? ''"
+                :disabled="busy !== null"
+                :aria-label="`Website using ${row.name}`"
+                @change="attachSite(row, ($event.target as HTMLSelectElement).value)"
+              >
+                <option value="">Not tied to a website</option>
+                <option v-for="site in siteOptions(row)" :key="site.slug" :value="site.slug">
+                  {{ site.name }}
+                </option>
+              </select>
+              <RouterLink
+                v-else-if="row.siteSlug"
+                :to="`/sites/${row.siteSlug}`"
+                class="text-sm text-brand-bright hover:underline"
+              >
+                {{ row.siteName ?? row.siteSlug }}
+              </RouterLink>
+              <span v-else class="text-sm text-ink-faint">Not tied to a website</span>
+            </div>
+
+            <div v-if="isAdmin" class="min-w-0">
+              <span class="label mb-1 block">Owner</span>
+              <span class="block truncate text-sm text-ink-muted">
                 {{ row.ownerUsername ?? 'The server' }}
-              </td>
-              <td class="w-px whitespace-nowrap px-4 py-3">
-                <div class="flex items-center justify-end gap-1">
-                  <!--
-                    Two browsers, one button. Adminer covers the SQL engines
-                    and opens in its own tab; MongoDB is browsed inside the
-                    panel, because Adminer's driver for it needs a PHP
-                    extension Windows does not ship.
-                  -->
-                  <a
-                    v-if="row.browser === 'adminer'"
-                    :href="`/db/${encodeURIComponent(row.id)}`"
-                    target="_blank"
-                    rel="noopener"
-                    class="btn btn-ghost btn-sm"
-                  >
-                    <ExternalLink :size="13" aria-hidden="true" /> Open
-                  </a>
-                  <RouterLink v-else :to="`/databases/${row.id}/browse`" class="btn btn-ghost btn-sm">
-                    <Table2 :size="13" aria-hidden="true" /> Open
-                  </RouterLink>
+              </span>
+            </div>
+          </div>
 
-                  <button
-                    type="button"
-                    class="btn btn-ghost btn-sm"
-                    :aria-expanded="expanded === row.id"
-                    @click="toggleConnection(row)"
-                  >
-                    <Plug :size="13" aria-hidden="true" /> Connect
-                  </button>
+          <div class="flex flex-wrap gap-2 border-t border-line bg-black/10 p-3">
+            <!--
+              Two browsers, one button. Adminer covers the SQL engines and
+              opens in its own tab; MongoDB is browsed inside the panel.
+            -->
+            <a
+              v-if="row.browser === 'adminer'"
+              :href="`/db/${encodeURIComponent(row.id)}`"
+              target="_blank"
+              rel="noopener"
+              class="btn btn-ghost btn-sm"
+            >
+              <ExternalLink :size="13" aria-hidden="true" /> Open
+            </a>
+            <RouterLink v-else :to="`/databases/${row.id}/browse`" class="btn btn-ghost btn-sm">
+              <Table2 :size="13" aria-hidden="true" /> Open
+            </RouterLink>
 
-                  <button
-                    type="button"
-                    class="btn btn-ghost btn-sm"
-                    :disabled="busy !== null"
-                    @click="showPassword(row)"
-                  >
-                    <Eye :size="13" aria-hidden="true" />
-                    {{ busy === `reveal:${row.id}` ? 'Showing\u2026' : 'Show password' }}
-                  </button>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm"
+              :aria-expanded="expanded === row.id"
+              @click="toggleConnection(row)"
+            >
+              <Plug :size="13" aria-hidden="true" /> Connect
+            </button>
 
-                  <button
-                    type="button"
-                    class="btn btn-ghost btn-sm"
-                    :disabled="busy !== null"
-                    @click="resetPassword(row)"
-                  >
-                    <KeyRound :size="13" aria-hidden="true" />
-                    {{ busy === `password:${row.id}` ? 'Changing\u2026' : 'New password' }}
-                  </button>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm"
+              :aria-expanded="accessOpen === row.id"
+              @click="toggleAccess(row)"
+            >
+              <ShieldCheck :size="13" aria-hidden="true" />
+              {{ row.network.mode === 'loopback' ? 'Remote access' : 'Remote access on' }}
+            </button>
 
-                  <button
-                    type="button"
-                    class="btn btn-danger btn-sm"
-                    :disabled="busy !== null"
-                    @click="drop(row)"
-                  >
-                    <Trash2 :size="13" aria-hidden="true" />
-                    {{ busy === row.id ? 'Removing\u2026' : 'Delete' }}
-                  </button>
-                </div>
-              </td>
-            </tr>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm"
+              :disabled="busy !== null"
+              @click="showPassword(row)"
+            >
+              <Eye :size="13" aria-hidden="true" />
+              {{ busy === `reveal:${row.id}` ? 'Showing\u2026' : 'Show password' }}
+            </button>
 
-            <!-- The connection details, under the database they belong to. -->
-            <tr v-if="expanded === row.id">
-              <td :colspan="isAdmin ? 5 : 4" class="px-4 pb-4">
-                <DatabaseConnectionCard
-                  :connection="row.connection"
-                  :password="expandedPassword"
-                />
-              </td>
-            </tr>
-            </template>
-          </tbody>
-        </table>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm"
+              :disabled="busy !== null"
+              @click="resetPassword(row)"
+            >
+              <KeyRound :size="13" aria-hidden="true" />
+              {{ busy === `password:${row.id}` ? 'Changing\u2026' : 'New password' }}
+            </button>
 
-        <div class="px-4 pb-4">
+            <button
+              type="button"
+              class="btn btn-danger btn-sm"
+              :disabled="busy !== null"
+              @click="drop(row)"
+            >
+              <Trash2 :size="13" aria-hidden="true" />
+              {{ busy === row.id ? 'Removing\u2026' : 'Delete' }}
+            </button>
+          </div>
+
+          <div v-if="expanded === row.id" class="border-t border-line px-4 pb-4 pt-3">
+            <DatabaseConnectionCard
+              :connection="row.connection"
+              :password="expandedPassword"
+            />
+          </div>
+
+          <div v-if="accessOpen === row.id" class="border-t border-line px-4 pb-4 pt-3">
+            <DatabaseAccessCard :database-id="row.id" :name="row.name" @saved="load" />
+          </div>
+        </article>
+
+        <div class="px-1 pt-1">
           <PaginationBar
             v-model:page="page"
             :total="rows.length"

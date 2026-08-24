@@ -32,6 +32,7 @@ const uri = computed(() =>
         props.connection.username,
         props.connection.database,
         props.password,
+        props.connection.host,
       )
     : props.connection.uriTemplate,
 );
@@ -129,9 +130,13 @@ async function copy(what: string, value: string): Promise<void> {
       </div>
     </dl>
 
-    <p class="hint">
+    <p v-if="connection.host === '127.0.0.1'" class="hint">
       The database only answers on this machine, so use these from something running on
       this server.
+    </p>
+    <p v-else class="hint">
+      Remote access is enabled. Use the server address above from the developer&rsquo;s computer;
+      the selected firewall policy still controls which source addresses may connect.
     </p>
   </div>
 </template>

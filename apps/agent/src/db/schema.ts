@@ -240,6 +240,24 @@ export const hostedDatabases = sqliteTable(
     siteId: text('site_id').references(() => sites.id, { onDelete: 'set null' }),
     /** Whose it is. Null means it belongs to the server rather than a customer. */
     ownerUserId: text('owner_user_id').references(() => users.id, { onDelete: 'set null' }),
+    /**
+     * Who may reach this one database from off the machine.
+     *
+     * Per database rather than per engine because the person who decides is
+     * whoever owns it, not whoever owns the server. The listener and the
+     * firewall are machine-wide facts, so they are derived from every
+     * database on an engine at once; what keeps one customer's choice from
+     * exposing another's is that the login itself is restricted to these
+     * same sources.
+     */
+    networkMode: text('network_mode', { enum: ['loopback', 'any', 'whitelist'] })
+      .notNull()
+      .default('loopback'),
+    /** JSON array of IP addresses and CIDR ranges, for whitelist mode. */
+    networkCidrs: text('network_cidrs', { mode: 'json' })
+      .notNull()
+      .$type<string[]>()
+      .default([]),
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()
       .default(sql`(unixepoch() * 1000)`),

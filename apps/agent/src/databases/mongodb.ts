@@ -4,6 +4,8 @@ import { findExecutable } from '../components/archive.js';
 import { DatabaseError } from './errors.js';
 import { assertSafeDbName } from './names.js';
 import { readRootPassword } from './secrets.js';
+import type { DatabaseNetworkPolicy } from './network.js';
+import type { DatabaseSummary } from './store.js';
 import { engineBinDir, ENGINE_ROOT_USER, type DatabaseAdapter, type EngineContext } from './types.js';
 
 /**
@@ -79,6 +81,44 @@ async function asRoot<T>(ctx: EngineContext, work: (client: MongoClient) => Prom
 function isDuplicateUser(error: unknown): boolean {
   const code = (error as { code?: number } | null)?.code;
   return code === 51003 || /already exists/i.test(String((error as Error)?.message ?? ''));
+}
+
+/**
+ * Where one login is allowed to connect from.
+ *
+ * MongoDB has no per-host accounts the way MariaDB does, so the equivalent is
+ * an authentication restriction on the user itself. Without it, the moment any
+ * one database opened the port every other login on the server would answer to
+ * the whole internet as well.
+ *
+ * An empty list means unrestricted, which is only ever used when the owner
+ * asked for exactly that, or when the port is shut anyway.
+ */
+export function mongoAuthRestrictions(
+  policy: DatabaseNetworkPolicy,
+  engineRemote: boolean,
+): Array<{ clientSource: string[] }> {
+  if (!engineRemote || policy.mode === 'any') return [];
+
+  return [{ clientSource: ['127.0.0.1', '::1', ...policy.remoteCidrs] }];
+}
+
+/** Brings every login's allowed sources in line with its own database's policy. */
+export async function syncMongoAccessRestrictions(
+  ctx: EngineContext,
+  records: readonly DatabaseSummary[],
+  engineRemote: boolean,
+): Promise<void> {
+  if (records.length === 0) return;
+
+  await asRoot(ctx, async (client) => {
+    for (const record of records) {
+      await client.db(assertSafeDbName(record.name)).command({
+        updateUser: assertSafeDbName(record.username),
+        authenticationRestrictions: mongoAuthRestrictions(record.network, engineRemote),
+      });
+    }
+  });
 }
 
 export const mongodbAdapter: DatabaseAdapter = {

@@ -148,11 +148,13 @@ export function databaseUri(
   username: string,
   database: string,
   password: string,
+  host = '127.0.0.1',
 ): string {
   const info = databaseEngineInfo(engine);
+  const formattedHost = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
   const authority =
     `${encodeURIComponent(username)}:${encodeURIComponent(password)}` +
-    `@127.0.0.1:${info.port}`;
+    `@${formattedHost}:${info.port}`;
 
   switch (engine) {
     case 'mariadb':
@@ -173,6 +175,7 @@ export function databaseUriTemplate(
   username: string,
   database: string,
   placeholder = 'PASSWORD',
+  host = '127.0.0.1',
 ): string {
-  return databaseUri(engine, username, database, placeholder);
+  return databaseUri(engine, username, database, placeholder, host);
 }

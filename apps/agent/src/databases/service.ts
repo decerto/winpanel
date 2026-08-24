@@ -84,16 +84,16 @@ export function fullDatabaseName(
 }
 
 /** How the panel tells somebody to connect to their database. */
-export function connectionFor(record: DatabaseRecord): DatabaseConnection {
+export function connectionFor(record: DatabaseRecord, host = '127.0.0.1'): DatabaseConnection {
   const info = databaseEngineInfo(record.engine);
 
   return {
     engine: record.engine,
-    host: '127.0.0.1',
+    host,
     port: info.port,
     database: record.name,
     username: record.username,
-    uriTemplate: databaseUriTemplate(record.engine, record.username, record.name),
+    uriTemplate: databaseUriTemplate(record.engine, record.username, record.name, 'PASSWORD', host),
   };
 }
 

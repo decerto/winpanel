@@ -10,6 +10,7 @@ import {
 } from '@winpanel/shared';
 import { AuthError } from '../../services/auth-service.js';
 import { isSshUrl } from '../../sites/ssh-keys.js';
+import { reassignSiteDatabases } from '../../databases/store.js';
 import { adminProcedure, router } from '../trpc.js';
 import type { RequestContext } from '../trpc.js';
 
@@ -195,6 +196,14 @@ export const usersRouter = router({
 
       ctx.app.sites.setOwner(site.id, input.userId);
 
+      /*
+       * The databases go with it. They were made for this website and are
+       * named after it, and leaving them behind is worse than untidy: the new
+       * owner cannot see the password their own site is using, while the
+       * previous owner still can.
+       */
+      const databases = reassignSiteDatabases(ctx.app.db, site.id, input.userId);
+
       const source = site.source as SiteSource;
       const isSsh = source.kind === 'git' && isSshUrl(source.url);
       const needsOwnGitAccess =
@@ -203,6 +212,6 @@ export const usersRouter = router({
         input.userId !== null &&
         !ctx.app.sites.gitTokenHolders(site.id).some((holder) => holder.userId === input.userId);
 
-      return { ok: true, needsOwnGitAccess };
+      return { ok: true, needsOwnGitAccess, databases };
     }),
 });

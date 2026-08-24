@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import path from 'node:path';
 import { eq } from 'drizzle-orm';
+import os from 'node:os';
 import { TRPCError } from '@trpc/server';
 import {
   DATABASE_ENGINES,
@@ -30,6 +31,7 @@ import {
   listAllDatabases,
   listDatabasesForOwner,
   listDatabasesForSite,
+  setDatabaseSite,
   type DatabaseSummary,
 } from '../../databases/store.js';
 import {
@@ -40,7 +42,14 @@ import {
   updateDocuments,
 } from '../../databases/browser.js';
 import { rewriteWpConfigPassword } from '../../sites/wordpress.js';
-import type { EngineContext } from '../../databases/types.js';
+import { type EngineContext } from '../../databases/types.js';
+import {
+  DEFAULT_DATABASE_NETWORK_POLICY,
+  normaliseDatabaseNetworkPolicy,
+  unmapIpv4,
+  type DatabaseNetworkMode,
+} from '../../databases/network.js';
+import { localAddresses } from '../../tls/panel-certificate.js';
 
 /**
  * Databases, across every engine the server has.
@@ -116,8 +125,22 @@ function present(record: DatabaseSummary) {
     siteSlug: record.siteSlug,
     siteName: record.siteName,
     ownerUsername: record.ownerUsername,
+    network: record.network,
     createdAt: record.createdAt,
     connection: connectionFor(record),
+  };
+}
+
+function connectionHost(record: DatabaseSummary): string {
+  if (record.network.mode === 'loopback') return '127.0.0.1';
+  return localAddresses().find((address) => !address.includes(':')) ?? os.hostname();
+}
+
+function presentForConnection(record: DatabaseSummary) {
+  const result = present(record);
+  return {
+    ...result,
+    connection: connectionFor(record, connectionHost(record)),
   };
 }
 
@@ -174,6 +197,94 @@ export const databasesRouter = router({
   }),
 
   /**
+   * Who may reach one database from off the machine.
+   *
+   * Whoever owns the database decides, not whoever owns the server: the person
+   * connecting is the customer or their developer, and an administrator has no
+   * way of knowing which address that is. `mustGetDatabase` is what keeps a
+   * customer to their own.
+   *
+   * The listener and the firewall rule are machine-wide, so opening one
+   * database opens the port for its engine. What stops that reaching anybody
+   * else's data is that the login is restricted to the same addresses — a
+   * host-scoped account on MariaDB, a `pg_hba` line naming that one database
+   * on PostgreSQL, and an authentication restriction on MongoDB.
+   */
+  networkAccess: protectedProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .query(({ ctx, input }) => {
+      const record = mustGetDatabase(ctx, input.id);
+
+      return {
+        policy: record.network,
+        /** The address this request came from, for the one-click whitelist. */
+        yourIp: unmapIpv4(ctx.ip),
+        /** What to connect to once it is open. */
+        addresses: localAddresses().filter((address) => !address.includes(':')),
+        port: databaseEngineInfo(record.engine).port,
+      };
+    }),
+
+  setNetworkAccess: protectedProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        mode: z.enum(['loopback', 'any', 'whitelist']),
+        remoteCidrs: z.array(z.string().trim().min(1).max(128)).max(100).default([]),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const record = mustGetDatabase(ctx, input.id);
+
+      let policy: ReturnType<typeof normaliseDatabaseNetworkPolicy>;
+      try {
+        policy = normaliseDatabaseNetworkPolicy(input.mode as DatabaseNetworkMode, input.remoteCidrs);
+      } catch (error) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: error instanceof Error ? error.message : 'That network policy is not valid.',
+          cause: error,
+        });
+      }
+
+      try {
+        return { policy: await ctx.app.databaseNetwork.setForDatabase(record, policy) };
+      } catch (error) {
+        throw asTrpcError(error, 'The database network access could not be changed.');
+      }
+    }),
+
+  /**
+   * Attaches an existing database to a website, or detaches it.
+   *
+   * A database is often made before anybody knows which site will use it, and
+   * until now that decision was only offered while creating one — so the
+   * answer to "I picked the wrong site" was to delete the database and start
+   * again, losing whatever was in it.
+   */
+  attachSite: protectedProcedure
+    .input(z.object({ id: z.string().uuid(), slug: Slug.nullable() }))
+    .mutation(({ ctx, input }) => {
+      const record = mustGetDatabase(ctx, input.id);
+      const user = ctx.user!;
+
+      if (input.slug === null) {
+        setDatabaseSite(ctx.app.db, record.id, null);
+        return { ok: true, siteSlug: null };
+      }
+
+      const site = mustGetSite(ctx, input.slug);
+      // A customer may only tie their database to a website they hold, or the
+      // attachment would be a way to learn that somebody else's site exists.
+      if (user.role === 'user' && site.ownerUserId !== user.id) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
+      }
+
+      setDatabaseSite(ctx.app.db, record.id, site.id);
+      return { ok: true, siteSlug: site.slug };
+    }),
+
+  /**
    * Every database the caller may see, for the server-wide Databases page.
    *
    * An administrator sees the machine's; a customer sees their own. Unscoped
@@ -209,7 +320,7 @@ export const databasesRouter = router({
     return {
       databases: [...live]
         .sort((first, second) => second.createdAt.getTime() - first.createdAt.getTime())
-        .map(present),
+        .map((record) => presentForConnection(record)),
       limit: allowance?.limit ?? null,
       used: allowance?.used ?? live.length,
       problem: allowance?.problem ?? null,
@@ -262,7 +373,7 @@ export const databasesRouter = router({
           })),
         /** True when a database could be created here right now. */
         installed: availability.some((entry) => entry.ready),
-        databases: live.map(present),
+        databases: live.map((record) => presentForConnection(record)),
         limit: perSite.limit,
         used: perSite.used,
         problem: perSite.problem ?? account.problem,
@@ -339,6 +450,9 @@ export const databasesRouter = router({
             username: created.username,
             siteId: site?.id ?? null,
             ownerUserId,
+            // A new database is only reachable on this machine until its
+            // owner says otherwise.
+            network: { ...DEFAULT_DATABASE_NETWORK_POLICY },
             createdAt: new Date(),
           }),
         };
