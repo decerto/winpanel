@@ -7,6 +7,7 @@ import { and, eq } from 'drizzle-orm';
 import { GameServerCreateRequest, parseWorkshopReference, roleAtLeast } from '@winpanel/shared';
 import { accountProcedure, adminProcedure, router, type RequestContext } from '../trpc.js';
 import { GameServerError, GameServerService } from '../../game-servers/game-server-service.js';
+import { localAddresses } from '../../tls/panel-certificate.js';
 import {
   MAX_BROWSE_PAGE_SIZE,
   WORKSHOP_SORTS,
@@ -679,6 +680,7 @@ export const gameServersRouter = router({
         catalog: serviceCatalogEntry(ctx.app.gameServers as GameServerService, server.catalogId) ?? null,
         installAllowed: canInstallServer(ctx, server),
         installRequiresAdmin: serviceCatalogEntry(ctx.app.gameServers as GameServerService, server.catalogId)?.steamRequiresOwnership === true,
+        publicIpv4: localAddresses().find((address) => !address.includes(':')) ?? null,
         ports: ctx.app.db.db
           .select()
           .from(ctx.app.schema.gameServerPorts)

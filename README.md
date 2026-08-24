@@ -14,7 +14,7 @@ without IIS and without touching the command line.
 
 [Features](#what-it-does) · [Start here](#new-here) · [Websites](#websites) · [Game servers](#game-servers) · [DNS](#dns-control) · [Email](#email-control) · [People](#user-control-and-management) · [Compare](#how-it-compares) · [Live sites](#sites-running-on-it) · [FAQ](#frequently-asked-questions) · [Install](#installing) · [Support](#support) · [Licence](#licence) · [Develop](#development)
 
-[![Chat on Discord](https://img.shields.io/badge/Discord-Ask%20for%20help-5865F2?logo=discord&logoColor=white)](https://discord.gg/wT6mnfAnUD)
+[![Discord online](https://img.shields.io/discord/192745561844088832?label=Discord&logo=discord&logoColor=white&color=5865F2)](https://discord.gg/wT6mnfAnUD)
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Support-FFDD00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/decerto)
 
 </div>

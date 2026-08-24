@@ -81,7 +81,6 @@ const installJob = useJobLog({
 
 const isAdmin = computed(() => role.value !== null && roleAtLeast(role.value, 'admin'));
 const hasWorkshop = computed(() => server.value?.catalog?.workshop != null);
-const connectionHost = window.location.hostname;
 
 const tab = computed<Tab>(() => {
   const wanted = String(route.query['tab'] ?? 'overview');
@@ -550,7 +549,7 @@ onUnmounted(() => {
               <div v-for="port in server.ports" :key="port.id" class="flex justify-between gap-3">
                 <dt class="text-ink-faint">{{ port.name }} ({{ port.protocol.toUpperCase() }})</dt>
                 <dd class="font-mono text-ink-muted">
-                  {{ port.visibility === 'public' ? connectionHost : '127.0.0.1' }}:{{ port.port }}
+                  {{ port.visibility === 'public' ? (server.publicIpv4 ?? 'IP unavailable') : '127.0.0.1' }}:{{ port.port }}
                 </dd>
               </div>
             </dl>
