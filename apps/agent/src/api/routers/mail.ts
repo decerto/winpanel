@@ -886,9 +886,9 @@ export const mailRouter = router({
         /** Tells "never set up" apart from "set up but down" — the two read
          *  very differently to the person whose email just stopped. */
         reason: 'not-configured' as const,
-        message:
-          'Email is not set up on this server yet. Ask whoever runs it to connect the mail ' +
-          'server in Settings.',
+        message: roleAtLeast(ctx.user.role, 'admin')
+          ? 'Email is not set up on this server yet. Connect the mail server in Settings.'
+          : 'Email is not set up on this server yet. Ask an administrator to enable it.',
       };
     }
 

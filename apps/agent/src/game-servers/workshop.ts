@@ -305,7 +305,7 @@ export async function searchWorkshop(options: WorkshopBrowseOptions): Promise<Wo
   try {
     const response = await (options.fetchImpl ?? fetch)(`${QUERY_URL}?${query.toString()}`);
     if (response.status === 401 || response.status === 403) {
-      throw new WorkshopError('Steam rejected the Web API key. An administrator can replace it in Settings.');
+      throw new WorkshopError('Steam rejected the Web API key. An administrator can replace it.');
     }
     if (response.status === 429) {
       throw new WorkshopError('Steam is rate-limiting this panel. Try the search again shortly.');
@@ -561,7 +561,7 @@ export async function downloadWorkshopItem(options: WorkshopDownloadOptions): Pr
   }
   if (attempts.length === 0) {
     throw new WorkshopError(
-      'This game\'s Workshop needs a Steam account. An administrator can add one in Settings, ' +
+      'This game\'s Workshop needs a Steam account. An administrator can add one, ' +
         'and it is used by the server only — nobody has to sign in here.',
     );
   }
@@ -602,7 +602,7 @@ export async function downloadWorkshopItem(options: WorkshopDownloadOptions): Pr
   if (/Timeout downloading item|Failure/i.test(lastOutput) && !options.credentials) {
     throw new WorkshopError(
       'Steam refused an anonymous Workshop download for this item. An administrator can add the ' +
-        'server Steam account in Settings so the panel can fetch it.',
+        'server Steam account so the panel can fetch it.',
     );
   }
   const detail = redact(lastOutput.trim()).split(/\r?\n/).filter(Boolean).slice(-2).join(' ');

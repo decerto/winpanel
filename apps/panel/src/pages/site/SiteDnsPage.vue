@@ -2,7 +2,7 @@
 import { computed, inject, onUnmounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { CloudCog, ExternalLink, Globe2, RefreshCw, Trash2 } from 'lucide-vue-next';
-import { CLOUDFLARE_TOKEN_PERMISSION_ROWS } from '@winpanel/shared';
+import { CLOUDFLARE_TOKEN_PERMISSION_ROWS, roleAtLeast, type UserRole } from '@winpanel/shared';
 import { api, describeError } from '../../lib/api';
 import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
@@ -51,6 +51,8 @@ const notice = ref<string | null>(null);
 
 const token = ref('');
 const tokenBusy = ref(false);
+const role = ref<UserRole | null>(null);
+const isAdmin = computed(() => role.value !== null && roleAtLeast(role.value, 'admin'));
 
 const serverIpv4 = ref(localStorage.getItem(IP_STORAGE_KEY) ?? '');
 const proxied = ref(false);
@@ -96,11 +98,13 @@ async function load(): Promise<void> {
   error.value = null;
 
   try {
+    const me = await api.auth.me.query().catch(() => null);
+    role.value = me?.role ?? null;
     connection.value = await api.dns.status.query({ slug: slug.value });
 
-    if (!serverIpv4.value) {
-      const info = await api.system.info.query();
-      serverIpv4.value = info.suggestedIpv4 ?? '';
+    if (!serverIpv4.value && isAdmin.value) {
+      const info = await api.system.info.query().catch(() => null);
+      if (info?.suggestedIpv4) serverIpv4.value = info.suggestedIpv4;
     }
 
     if (!connection.value.connected) return;
@@ -171,8 +175,7 @@ async function forgetToken(): Promise<void> {
   if (
     !window.confirm(
       'Remove this website\u2019s own Cloudflare token?\n\n' +
-        'Its DNS records are untouched. If a shared token is set up in Settings, this website ' +
-        'falls back to that one.',
+        'Its DNS records are untouched. You can add a new token for this website afterwards.',
     )
   ) {
     return;
@@ -377,7 +380,9 @@ onUnmounted(() => clearTimeout(planTimer));
             {{
               connection.source === 'site'
                 ? 'Using this website\u2019s own Cloudflare token'
-                : 'Using the shared Cloudflare token from Settings'
+                : isAdmin
+                  ? 'Using the shared Cloudflare token from Settings'
+                  : 'Using the server\u2019s Cloudflare token'
             }}
           </span>
           <span class="min-w-0 flex-1 truncate text-xs text-ink-faint">
@@ -392,7 +397,7 @@ onUnmounted(() => clearTimeout(planTimer));
           >
             Remove this token
           </button>
-          <RouterLink v-else to="/settings" class="btn btn-ghost btn-sm">Manage in Settings</RouterLink>
+          <RouterLink v-else-if="isAdmin" to="/settings" class="btn btn-ghost btn-sm">Manage in Settings</RouterLink>
         </section>
 
         <section class="card p-5">

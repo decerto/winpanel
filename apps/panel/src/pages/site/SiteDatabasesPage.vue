@@ -2,6 +2,7 @@
 import { computed, inject, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { Copy, Database, ExternalLink, Eye, KeyRound, Plus, Trash2 } from 'lucide-vue-next';
+import { roleAtLeast, type UserRole } from '@winpanel/shared';
 import { api, describeError } from '../../lib/api';
 import { useRuntimeStatus } from '../../lib/runtime-status';
 import { siteContextKey } from '../../lib/site-context';
@@ -25,6 +26,8 @@ const slug = computed(() => route.params['slug'] as string);
 // The "Open" browser button only makes sense when the browser is installed.
 const { has } = useRuntimeStatus();
 const browserAvailable = computed(() => has('adminer'));
+const role = ref<UserRole | null>(null);
+const isAdmin = computed(() => role.value !== null && roleAtLeast(role.value, 'admin'));
 
 type Overview = Awaited<ReturnType<typeof api.databases.overview.query>>;
 
@@ -73,6 +76,8 @@ async function load(): Promise<void> {
   error.value = null;
 
   try {
+    const me = await api.auth.me.query().catch(() => null);
+    role.value = me?.role ?? null;
     overview.value = await api.databases.overview.query({ slug: slug.value });
   } catch (err) {
     error.value = describeError(err);
@@ -243,8 +248,14 @@ onMounted(load);
       <!-- The database server is a program like any other; offer to install it. -->
       <template v-else-if="overview && !overview.installed">
         <AlertMessage tone="warning" class="mt-4">
-          The database server isn't installed yet. Install the "Database server (MariaDB)"
-          program from the Programs section of Settings, then come back here.
+          <template v-if="isAdmin">
+            The database server isn't installed yet. Install the "Database server (MariaDB)"
+            program from the Programs section of Settings, then come back here.
+          </template>
+          <template v-else>
+            The database server is not available on this server yet. Ask an administrator to
+            install it.
+          </template>
         </AlertMessage>
       </template>
 

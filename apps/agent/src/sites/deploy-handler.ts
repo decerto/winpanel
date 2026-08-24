@@ -145,7 +145,7 @@ async function resolveRuntimeExecutable(
     const poolScript = path.join(deps.binDir, 'php', 'pool.js');
     if (!(await isFile(poolScript))) {
       throw new DeploymentError(
-        'PHP is not installed on this server yet. Install it from the Programs section of Settings, then deploy again.',
+        'PHP is not installed on this server yet. Ask an administrator to install it, then deploy again.',
       );
     }
     const node = await deps.tools.resolve('node');
@@ -175,7 +175,7 @@ export async function phpServiceEnv(
   const cgiExe = await findExecutable(phpDir, ['php-cgi.exe']);
   if (!cgiExe) {
     throw new DeploymentError(
-      'PHP is not installed on this server yet. Install it from the Programs section of Settings, then deploy again.',
+      'PHP is not installed on this server yet. Ask an administrator to install it, then deploy again.',
     );
   }
 

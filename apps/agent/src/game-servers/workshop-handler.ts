@@ -61,7 +61,7 @@ export function createInstallWorkshopItemsHandler(deps: WorkshopHandlerDependenc
     if (!deps.binDir) throw new Error('SteamCMD is not configured on this server.');
     const steamcmdPath = path.join(deps.binDir, 'steamcmd', 'steamcmd.exe');
     if (!(await exists(steamcmdPath))) {
-      throw new Error('SteamCMD is not installed. An administrator can install it from Settings.');
+      throw new Error('SteamCMD is not installed. An administrator can install it.');
     }
 
     const wanted = input.publishedFileIds ?? [];

@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import { Gamepad2, Plus, RefreshCw } from 'lucide-vue-next';
 import { RouterLink } from 'vue-router';
+import { roleAtLeast } from '@winpanel/shared';
 import { api, describeError } from '../lib/api';
 import AlertMessage from '../components/AlertMessage.vue';
 import EmptyState from '../components/EmptyState.vue';
@@ -13,6 +14,7 @@ type GameServer = Awaited<ReturnType<typeof api.gameServers.list.query>>[number]
 
 const servers = ref<GameServer[]>([]);
 const enabled = ref(false);
+const isAdmin = ref(false);
 const loading = ref(true);
 const busy = ref(false);
 const activeSlug = ref<string | null>(null);
@@ -31,12 +33,14 @@ async function refresh(): Promise<void> {
   error.value = null;
 
   try {
-    const [list, feature] = await Promise.all([
+    const [list, feature, me] = await Promise.all([
       api.gameServers.list.query(),
       api.gameServers.feature.query(),
+      api.auth.me.query().catch(() => null),
     ]);
     servers.value = list;
     enabled.value = feature.enabled;
+    isAdmin.value = me !== null && roleAtLeast(me.role, 'admin');
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -105,7 +109,13 @@ void refresh();
     <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
     <AlertMessage v-if="notice" tone="success" class="mb-4">{{ notice }}</AlertMessage>
     <AlertMessage v-if="!loading && !enabled" class="mb-4">
-      Game servers are currently disabled. An administrator can enable them from Settings.
+      <template v-if="isAdmin">
+        Game servers are currently disabled.
+        <RouterLink to="/settings" class="underline">Enable them in Settings</RouterLink>.
+      </template>
+      <template v-else>
+        Game servers are currently disabled. Ask an administrator to enable them.
+      </template>
     </AlertMessage>
 
     <section v-if="job.lines.value.length > 0" class="card mb-4 overflow-hidden">

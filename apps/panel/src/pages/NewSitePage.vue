@@ -19,6 +19,7 @@ import {
   Globe,
   LayoutGrid,
 } from 'lucide-vue-next';
+import { roleAtLeast } from '@winpanel/shared';
 import { api, describeError } from '../lib/api';
 import { useJobLog, LOG_LEVEL_CLASS } from '../lib/job-log';
 import { useRuntimeStatus } from '../lib/runtime-status';
@@ -50,19 +51,19 @@ const router = useRouter();
 type Kind = 'static' | 'upload' | 'git' | 'node' | 'php' | 'wordpress';
 
 /*
- * PHP and WordPress are only offerable when PHP is installed — and only the
- * server owner can install it. So the wizard learns both up front: whether
+ * PHP and WordPress are only offerable when PHP is installed — and only an
+ * administrator can install it. So the wizard learns both up front: whether
  * the runtime is there, and whether the person looking at the page is allowed
- * to add it. The two read differently, which is the point — an owner is told
- * to install it, everyone else is simply told it is not available.
+ * to add it. The two read differently, which is the point — an administrator
+ * is told to install it, a customer is simply told it is not available.
  */
 const { has } = useRuntimeStatus();
-const isOwner = ref(false);
+const isAdmin = ref(false);
 
 onMounted(async () => {
   try {
     const me = await api.auth.me.query();
-    isOwner.value = me?.role === 'superadmin';
+    isAdmin.value = me !== null && roleAtLeast(me.role, 'admin');
   } catch {
     // Leave it false; the install-yourself hint simply is not shown.
   }
@@ -73,12 +74,12 @@ function unavailableReason(kind: Kind): string | null {
   // WordPress needs PHP *and* the database server; PHP sites need PHP.
   if (kind === 'php' || kind === 'wordpress') {
     if (!has('php')) {
-      return isOwner.value
+      return isAdmin.value
         ? 'PHP is not installed yet. Install it from Settings → Programs, then come back.'
         : 'PHP is not available on this server yet. Ask your hosting provider to set it up.';
     }
     if (kind === 'wordpress' && !has('mariadb')) {
-      return isOwner.value
+      return isAdmin.value
         ? 'WordPress needs the database server. Install it from Settings → Programs, then come back.'
         : 'WordPress is not available on this server yet. Ask your hosting provider to set it up.';
     }
@@ -92,7 +93,7 @@ function unavailableReason(kind: Kind): string | null {
 
   // A git site needs git to clone the repository.
   if (kind === 'git' && !has('git')) {
-    return isOwner.value
+    return isAdmin.value
       ? 'Git is not installed yet. Install it from Settings → Programs, then come back.'
       : 'Deploying from a repository is not available on this server yet.';
   }

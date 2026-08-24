@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
-import { GameServerCreateRequest, parseWorkshopReference } from '@winpanel/shared';
+import { GameServerCreateRequest, parseWorkshopReference, roleAtLeast } from '@winpanel/shared';
 import { accountProcedure, adminProcedure, router, type RequestContext } from '../trpc.js';
 import { GameServerError, GameServerService } from '../../game-servers/game-server-service.js';
 import {
@@ -312,9 +312,9 @@ const workshopRouter = router({
       if (!apiKey) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
-          message:
-            'This panel cannot search the Workshop yet. An administrator can add a Steam Web API key ' +
-            'in Settings, or you can paste a Workshop link instead.',
+          message: roleAtLeast(ctx.user.role, 'admin')
+            ? 'This panel cannot search the Workshop yet. Add a Steam Web API key in Settings, or paste a Workshop link instead.'
+            : 'This panel cannot search the Workshop yet. Paste a Workshop link instead, or ask an administrator to enable search.',
         });
       }
 
@@ -758,7 +758,9 @@ export const gameServersRouter = router({
     if (!gameServersEnabled(ctx)) {
       throw new TRPCError({
         code: 'PRECONDITION_FAILED',
-        message: 'Game servers are disabled. An administrator can enable them in Settings.',
+        message: roleAtLeast(ctx.user.role, 'admin')
+          ? 'Game servers are disabled. Enable them in Settings.'
+          : 'Game servers are disabled. Ask an administrator to enable them.',
       });
     }
 

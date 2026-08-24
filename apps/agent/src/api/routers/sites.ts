@@ -12,6 +12,7 @@ import {
   RELEASE_DIR,
   Runtime,
   SiteManifest,
+  roleAtLeast,
   type SiteSource,
 } from '@winpanel/shared';
 import { protectedProcedure, adminProcedure, router } from '../trpc.js';
@@ -681,10 +682,9 @@ export const sitesRouter = router({
       if (wantsPhp && !(await isComponentInstalled(ctx.app.config.binDir, 'php'))) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
-          message:
-            ctx.user?.role === 'superadmin'
-              ? 'PHP is not installed yet. Install it from Settings → Programs, then try again.'
-              : 'PHP is not available on this server yet. Ask your hosting provider to set it up.',
+          message: roleAtLeast(ctx.user.role, 'admin')
+            ? 'PHP is not installed yet. Install it from Settings → Programs, then try again.'
+            : 'PHP is not available on this server yet. Ask your hosting provider to set it up.',
         });
       }
 
@@ -692,9 +692,10 @@ export const sitesRouter = router({
       if (panelClash) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
-          message:
-            `${panelClash} is the address this panel is reached at. Give the website a ` +
-            'different name, or change the panel\u2019s own address in Settings first.',
+          message: roleAtLeast(ctx.user.role, 'admin')
+            ? `${panelClash} is the address this panel is reached at. Give the website a ` +
+              'different name, or change the panel\u2019s own address in Settings first.'
+            : `${panelClash} is the address this panel is reached at. Give the website a different name.`,
         });
       }
 
@@ -860,9 +861,10 @@ export const sitesRouter = router({
       if (panelClash) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
-          message:
-            `${panelClash} is the address this panel is reached at. Give the website a ` +
-            'different name, or change the panel\u2019s own address in Settings first.',
+          message: roleAtLeast(ctx.user.role, 'admin')
+            ? `${panelClash} is the address this panel is reached at. Give the website a ` +
+              'different name, or change the panel\u2019s own address in Settings first.'
+            : `${panelClash} is the address this panel is reached at. Give the website a different name.`,
         });
       }
 

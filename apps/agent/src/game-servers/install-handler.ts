@@ -421,7 +421,7 @@ async function acquireSteam(
 
   const steamcmd = path.join(deps.binDir, 'steamcmd', 'steamcmd.exe');
   if (!(await exists(steamcmd))) {
-    throw new Error('SteamCMD is not installed. Install it from Settings before installing this server.');
+    throw new Error('SteamCMD is not installed. An administrator can install it before this server can be installed.');
   }
 
   await fs.mkdir(server.installPath, { recursive: true });
@@ -431,7 +431,7 @@ async function acquireSteam(
   if (entry.steamRequiresOwnership && (!steamUsername || !steamPassword)) {
     throw new Error(
       `${entry.name} requires a Steam account that owns the game. ` +
-        'Configure the Steam account in Settings before installing it; anonymous SteamCMD downloads are not available for this app.',
+        'An administrator must configure the Steam account before this app can be installed; anonymous SteamCMD downloads are not available.',
     );
   }
   const login = steamUsername && steamPassword
