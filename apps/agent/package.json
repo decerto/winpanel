@@ -1,6 +1,6 @@
 {
   "name": "@winpanel/agent",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE.md",
   "type": "module",
@@ -20,6 +20,7 @@
     "better-sqlite3": "^12.4.1",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.6.1",
+    "mongodb": "^7.6.0",
     "otpauth": "^9.4.1",
     "pino": "^9.13.1",
     "selfsigned": "^3.0.1",
