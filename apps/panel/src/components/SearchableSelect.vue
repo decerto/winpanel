@@ -21,6 +21,8 @@ export interface SearchableOption {
   hint?: string;
 }
 
+const DEFAULT_OPTION_LIMIT = 10;
+
 const props = defineProps<{
   /** The currently selected value, or '' for none. */
   modelValue: string;
@@ -59,6 +61,17 @@ const matching = computed(() => {
       option.label.toLowerCase().includes(needle) ||
       (option.hint ?? '').toLowerCase().includes(needle),
   );
+});
+
+const visibleOptions = computed(() => {
+  if (query.value.trim()) return matching.value;
+  if (matching.value.length <= DEFAULT_OPTION_LIMIT) return matching.value;
+
+  const initial = matching.value.slice(0, DEFAULT_OPTION_LIMIT);
+  if (selected.value && !initial.some((option) => option.value === selected.value!.value)) {
+    initial[DEFAULT_OPTION_LIMIT - 1] = selected.value;
+  }
+  return initial;
 });
 
 function choose(value: string): void {
@@ -150,7 +163,7 @@ defineExpose({ open });
           Nothing matches that.
         </li>
 
-        <li v-for="option in matching" :key="option.value">
+        <li v-for="option in visibleOptions" :key="option.value">
           <button
             type="button"
             role="option"

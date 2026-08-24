@@ -7,6 +7,7 @@ import QrCode from '../src/components/QrCode.vue';
 import TotpEnrolment from '../src/components/TotpEnrolment.vue';
 import RecoveryCodes from '../src/components/RecoveryCodes.vue';
 import PaginationBar from '../src/components/PaginationBar.vue';
+import SearchableSelect from '../src/components/SearchableSelect.vue';
 import { siteStatus } from '../src/lib/site-status';
 import { describeUserAgent, timeAgo } from '../src/lib/format';
 
@@ -53,6 +54,37 @@ describe('StatusBadge', () => {
   it('animates only the checking state', () => {
     expect(mount(StatusBadge, { props: { state: 'checking' } }).html()).toContain('animate-spin');
     expect(mount(StatusBadge, { props: { state: 'ok' } }).html()).not.toContain('animate-spin');
+  });
+});
+
+describe('SearchableSelect', () => {
+  const options = Array.from({ length: 15 }, (_, index) => ({
+    value: `site-${index + 1}`,
+    label: `Website ${index + 1}`,
+  }));
+
+  it('shows a capped initial set but searches the complete option list', async () => {
+    const wrapper = mount(SearchableSelect, {
+      props: { modelValue: '', options },
+    });
+
+    await wrapper.find('button[aria-expanded="false"]').trigger('click');
+    expect(wrapper.findAll('[role="option"]')).toHaveLength(10);
+
+    await wrapper.find('input[placeholder="Type to filter…"]').setValue('Website 15');
+    const matches = wrapper.findAll('[role="option"]');
+    expect(matches).toHaveLength(1);
+    expect(matches[0]!.text()).toContain('Website 15');
+  });
+
+  it('keeps a selected option visible when it falls outside the initial set', async () => {
+    const wrapper = mount(SearchableSelect, {
+      props: { modelValue: 'site-15', options },
+    });
+
+    await wrapper.find('button[aria-expanded="false"]').trigger('click');
+    expect(wrapper.findAll('[role="option"]')).toHaveLength(10);
+    expect(wrapper.find('[role="option"][aria-selected="true"]').text()).toContain('Website 15');
   });
 });
 

@@ -110,12 +110,14 @@ function siteOptions(row: Row): Array<{ slug: string; name: string }> {
   if (row.siteSlug && !options.some((option) => option.slug === row.siteSlug)) {
     options.unshift({ slug: row.siteSlug, name: row.siteName ?? row.siteSlug });
   }
-  return options;
+  return options.sort((left, right) => left.name.localeCompare(right.name));
 }
 
 const attachableOptions = computed(() => [
   { value: '', label: 'Not tied to a website' },
-  ...attachable.value.map((site) => ({ value: site.slug, label: site.name })),
+  ...[...attachable.value]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((site) => ({ value: site.slug, label: site.name })),
 ]);
 
 function sitePickerOptions(row: Row) {
