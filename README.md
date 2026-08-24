@@ -110,7 +110,7 @@ Windows equivalent.
 | --- | --- |
 | **Websites** | Static files, Node, .NET and PHP apps, from Git or managed by hand — plus one-click WordPress |
 | **Game servers** | Minecraft Java/Bedrock and Steam dedicated servers, with Windows Services, scoped files, Steam Workshop mods, and a config-driven library you can extend |
-| **Databases** | MariaDB with per-site databases and a built-in browser, each database limited to its own site |
+| **Databases** | MariaDB, PostgreSQL and MongoDB, each a one-click install, with per-account limits and a built-in browser |
 | **Releases** | Builds off to one side and swaps it in, so a failed build never touches the live site |
 | **HTTPS** | Free certificates, renewed automatically, using the DNS challenge |
 | **DNS** | Cloudflare records per website, including the proxy toggle and a one-click "point this domain here" |

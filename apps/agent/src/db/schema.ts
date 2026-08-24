@@ -52,6 +52,12 @@ export const users = sqliteTable(
     mailQuotaBytes: integer('mail_quota_bytes'),
     siteDiskQuotaBytes: integer('site_disk_quota_bytes'),
     gameServerLimit: integer('game_server_limit'),
+    /**
+     * How many databases this account may hold in total, across every engine
+     * and whether or not they belong to one of their websites. Null means no
+     * limit; zero means databases are not part of what they were sold.
+     */
+    databaseLimit: integer('database_limit'),
     gameServerProviders: text('game_server_providers', { mode: 'json' })
       .notNull()
       .default(sql`'[]'`),
@@ -200,6 +206,50 @@ export const sites = sqliteTable(
     ...timestamps,
   },
   (table) => [uniqueIndex('sites_slug_idx').on(table.slug), index('sites_owner_idx').on(table.ownerUserId)],
+);
+
+/**
+ * The databases the panel has created on the servers it runs.
+ *
+ * A record rather than a discovery: MongoDB does not list a database nothing
+ * has been written to, PostgreSQL will happily show you the system ones, and
+ * neither can tell you whose a database is. Ownership, the engine and the
+ * website a database belongs to are facts about the panel's arrangements, not
+ * about the database server, so the panel is the one that has to remember
+ * them. The server itself is still consulted — a database removed behind the
+ * panel's back stops being listed — but it is not the source of truth for
+ * who may see what.
+ *
+ * The password is not here. It lives in `secrets`, encrypted, like every other
+ * credential the panel holds.
+ */
+export const hostedDatabases = sqliteTable(
+  'hosted_databases',
+  {
+    id: text('id').primaryKey(),
+    engine: text('engine', { enum: ['mariadb', 'postgres', 'mongodb'] }).notNull(),
+    /** The full name on the server, owner prefix included. */
+    name: text('name').notNull(),
+    /** The login that can reach it. Always the same as the name. */
+    username: text('username').notNull(),
+    /**
+     * The website this database was made for, if any. Null is a database
+     * somebody created on its own — an application that is not a website on
+     * this server, or a customer's own project.
+     */
+    siteId: text('site_id').references(() => sites.id, { onDelete: 'set null' }),
+    /** Whose it is. Null means it belongs to the server rather than a customer. */
+    ownerUserId: text('owner_user_id').references(() => users.id, { onDelete: 'set null' }),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (table) => [
+    // One name per engine, which is what the owner prefix exists to guarantee.
+    uniqueIndex('hosted_databases_engine_name_idx').on(table.engine, table.name),
+    index('hosted_databases_owner_idx').on(table.ownerUserId),
+    index('hosted_databases_site_idx').on(table.siteId),
+  ],
 );
 
 export const portAllocations = sqliteTable(

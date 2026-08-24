@@ -3,6 +3,7 @@ import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
 import {
   Activity,
   ChevronRight,
+  Database,
   Globe,
   Gamepad2,
   History,
@@ -38,6 +39,7 @@ const router = useRouter();
 
 const NAV = [
   { to: '/sites', label: 'Websites', icon: Globe, hint: 'Everything you host' },
+  { to: '/databases', label: 'Databases', icon: Database, hint: 'Where your data lives' },
   { to: '/game-servers', label: 'Game Servers', icon: Gamepad2, hint: 'Games you host' },
   { to: '/health', label: 'Server health', icon: Activity, hint: 'Checks and fixes', minRole: 'admin' },
   {
@@ -67,13 +69,23 @@ const NAV = [
   minRole?: UserRole;
 }>;
 
-// Entries above someone's level are hidden rather than shown-and-refused: a
-// customer who only manages their own website has no use for a door they
-// cannot open.
+/*
+ * Entries above someone's level are hidden rather than shown-and-refused: a
+ * customer who only manages their own website has no use for a door they
+ * cannot open.
+ *
+ * Databases go further and are hidden from everybody, including the owner,
+ * until a database server is actually installed. A panel section whose only
+ * content is "this is not installed" is a section that wastes a click every
+ * time somebody reads the sidebar; installing one is done from Settings,
+ * where every other program is installed.
+ */
 const nav = computed(() =>
   NAV.filter(
     (item) =>
       item.to !== '/game-servers' || gameServersEnabled.value,
+  ).filter(
+    (item) => item.to !== '/databases' || databasesEnabled.value,
   ).filter(
     (item) =>
       !('minRole' in item) || (role.value !== null && roleAtLeast(role.value, item.minRole)),
@@ -119,16 +131,19 @@ const bare = computed(() => route.meta['bare'] === true);
 const username = ref('');
 const role = ref<UserRole | null>(null);
 const gameServersEnabled = ref(false);
+const databasesEnabled = ref(false);
 
 async function loadMe(): Promise<void> {
   try {
-    const [user, feature] = await Promise.all([
+    const [user, feature, databases] = await Promise.all([
       api.auth.me.query(),
       api.gameServers.feature.query(),
+      api.databases.engines.query().catch(() => ({ visible: false })),
     ]);
     username.value = user?.username ?? '';
     role.value = user?.role ?? null;
     gameServersEnabled.value = feature.enabled;
+    databasesEnabled.value = databases.visible;
   } catch {
     // Each page reports a dead agent in its own way; the shell staying as it
     // is beats a sidebar that empties itself over one failed request.

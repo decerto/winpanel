@@ -44,6 +44,19 @@ const BUN_VERSION = '1.3.14';
 const PHP_VERSION = '8.5.9';
 const VCREDIST_VERSION = '14.44.35211.0';
 const MARIADB_VERSION = '12.3.2';
+/*
+ * PostgreSQL is the binaries-only ZIP EDB publishes beside its installer: the
+ * same build, without the graphical setup program that would want to register
+ * its own Windows service and its own data directory. The panel does both
+ * itself, so the archive is the right shape and the installer is not.
+ */
+const POSTGRES_VERSION = '17.7-1';
+/*
+ * MongoDB's current long-term stable series. The download is the server only —
+ * the shell has shipped separately since 6.0 — which is why database work goes
+ * through the driver rather than a command-line client.
+ */
+const MONGODB_VERSION = '8.0.29';
 const COMPOSER_VERSION = '2.8.12';
 const ADMINER_VERSION = '6.0.0';
 const STEAMCMD_VERSION = 'latest';
@@ -262,6 +275,52 @@ export const COMPONENT_CATALOGUE: readonly ComponentDefinition[] = [
   },
   {
     /*
+     * PostgreSQL, from EDB's binaries archive rather than their installer.
+     * The archive unpacks to `pgsql/bin`, and the panel runs `postgres.exe`
+     * itself against a data directory it created with `initdb.exe` — so the
+     * databases live under the panel's own data folder alongside everything
+     * else it is responsible for backing up.
+     */
+    id: 'postgres',
+    name: 'Database server (PostgreSQL)',
+    description:
+      'Stores data for apps that use PostgreSQL, which most modern web frameworks default to.',
+    version: POSTGRES_VERSION,
+    kind: 'zip',
+    url: `https://get.enterprisedb.com/postgresql/postgresql-${POSTGRES_VERSION}-windows-x64-binaries.zip`,
+    // Computed from the pinned archive on get.enterprisedb.com, which
+    // publishes no checksum of its own.
+    sha256: '2aacc055d9bac49763ac0164759c13866bc0235123d7ffdbb6a6aaa20dc25d9a',
+    args: [],
+    serviceName: 'winpanel-postgres',
+    verifyArgs: ['--version'],
+    verifyExpect: 'postgres (postgresql)',
+    requires: [],
+  },
+  {
+    /*
+     * MongoDB Community. The archive is the server and its tools; the shell
+     * (`mongosh`) is a separate 50 MB download that the panel deliberately
+     * does not fetch — every database operation here goes through the driver
+     * the agent already speaks, and the browser is built into the panel.
+     */
+    id: 'mongodb',
+    name: 'Database server (MongoDB)',
+    description:
+      'Stores documents rather than rows. Common in Node.js and JavaScript projects.',
+    version: MONGODB_VERSION,
+    kind: 'zip',
+    url: `https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-${MONGODB_VERSION}.zip`,
+    // From MongoDB's own downloads manifest at downloads.mongodb.org.
+    sha256: '4b1fc74acbd7fbdc3bb9a70dc7f133cf401488196a9d6e6a3ee8471c58eea44b',
+    args: [],
+    serviceName: 'winpanel-mongodb',
+    verifyArgs: ['--version'],
+    verifyExpect: 'db version',
+    requires: [],
+  },
+  {
+    /*
      * Composer is a single PHP archive with no Windows program of its own, so
      * it is run through the PHP the panel installed. The SHA-256 is published
      * on getcomposer.org beside the download.
@@ -314,16 +373,28 @@ export const COMPONENT_CATALOGUE: readonly ComponentDefinition[] = [
       'A single-file page for browsing and editing a site\'s database, opened from the panel.',
     version: ADMINER_VERSION,
     kind: 'php-script',
-    url: `https://github.com/vrana/adminer/releases/download/v${ADMINER_VERSION}/adminer-${ADMINER_VERSION}-mysql-en.php`,
+    /*
+     * The all-driver build, not the MySQL-only one: the same page then browses
+     * PostgreSQL as well, which is the whole reason a second SQL engine is
+     * worth offering. MongoDB is not among its drivers on Windows — that one
+     * needs a PECL extension PHP does not ship — so the panel browses those
+     * itself.
+     */
+    url: `https://github.com/vrana/adminer/releases/download/v${ADMINER_VERSION}/adminer-${ADMINER_VERSION}-en.php`,
     // The single-file build has no published checksum; computed from the pinned
     // release asset on github.com/vrana/adminer.
-    sha256: '1582527dadc7f6733c299abc82d64440f62f493387e75593c61db182cf1bc074',
+    sha256: 'a53add52eb659deeabc8341b2ffe0479f0b6fa39908d0d1bc6e292c0d789dade',
     args: [],
     serviceName: null,
     // It is a web page, not a CLI program; there is nothing meaningful to run.
     verifyArgs: [],
     verifyExpect: null,
-    requires: ['php', 'mariadb'],
+    /*
+     * PHP is genuinely required. A database server is not: the browser is
+     * equally useful against PostgreSQL, and requiring MariaDB would install a
+     * second database server on a machine that deliberately runs only one.
+     */
+    requires: ['php'],
   },
 ];
 

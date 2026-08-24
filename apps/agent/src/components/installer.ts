@@ -2,13 +2,21 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { ComponentDefinition } from '@winpanel/shared';
+import { MONGODB_PORT, POSTGRES_PORT } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
 import type { SecretVault } from '../security/vault.js';
 import type { JobContext } from '../jobs/queue.js';
 import type { ServiceManager } from '../windows/service-manager.js';
 import { runCommand, spawnManaged } from '../process/run-command.js';
 import { writeSecret } from '../security/secret-store.js';
-import { sqlStringLiteral } from '../sites/databases.js';
+import { sqlStringLiteral } from '../databases/names.js';
+import { ENGINE_ROOT_SECRET, engineDataDir } from '../databases/types.js';
+import {
+  createMongoAdmin,
+  hardenPostgres,
+  setUpMongo,
+  setUpPostgres,
+} from '../databases/setup.js';
 import { buildStalwartBootstrap } from '../mail/stalwart-config.js';
 import { ensureMailAdminCredentials, mailServiceEnv } from '../mail/service.js';
 import { storeMailDomains } from '../mail/domains.js';
@@ -48,7 +56,7 @@ export interface InstallComponentPayload {
 }
 
 /** Vault key the MariaDB root password is stored under. */
-const MARIADB_ROOT_KEY = 'mariadb.rootPassword';
+const MARIADB_ROOT_KEY = ENGINE_ROOT_SECRET.mariadb;
 
 /** Reads a secret that may not exist yet, returning null instead of throwing. */
 async function readSecretOrNull(
@@ -99,6 +107,10 @@ function executableNames(component: ComponentDefinition): string[] {
     stalwart: ['stalwart.exe', 'stalwart-mail.exe'],
     php: ['php-cgi.exe', 'php.exe'],
     mariadb: ['mariadbd.exe', 'mysqld.exe'],
+    // The server, not `pg_ctl`: WinSW supervises a process directly, and
+    // pg_ctl is a launcher that exits as soon as it has started one.
+    postgres: ['postgres.exe'],
+    mongodb: ['mongod.exe'],
     composer: ['composer.phar'],
     adminer: ['adminer.php'],
   };
@@ -624,6 +636,24 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
     if (component.id === 'mariadb') {
       await prepareDatabaseServer(deps, installDir, ctx);
     }
+    if (component.id === 'postgres') {
+      await setUpPostgres({
+        db: deps.db,
+        vault: deps.vault,
+        installDir,
+        dataDir: engineDataDir(deps.dataDir, 'postgres'),
+        ctx,
+      });
+    }
+    if (component.id === 'mongodb') {
+      await setUpMongo({
+        db: deps.db,
+        vault: deps.vault,
+        installDir,
+        dataDir: engineDataDir(deps.dataDir, 'mongodb'),
+        ctx,
+      });
+    }
     if (component.id === 'php') {
       await installPhpPool(deps, installDir, ctx);
     }
@@ -642,8 +672,34 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
         : component.id === 'mariadb'
           ? // Loopback only: the databases are reached by sites on this machine,
             // never from the network, so there is no reason to listen on it.
-            [`--datadir=${path.join(deps.dataDir, 'database')}`, '--bind-address=127.0.0.1', '--port=3306']
-          : [...component.args];
+            [`--datadir=${engineDataDir(deps.dataDir, 'mariadb')}`, '--bind-address=127.0.0.1', '--port=3306']
+          : component.id === 'postgres'
+            ? [
+                '-D',
+                engineDataDir(deps.dataDir, 'postgres'),
+                '-h',
+                '127.0.0.1',
+                '-p',
+                String(POSTGRES_PORT),
+              ]
+            : component.id === 'mongodb'
+              ? [
+                  '--dbpath',
+                  engineDataDir(deps.dataDir, 'mongodb'),
+                  '--bind_ip',
+                  '127.0.0.1',
+                  '--port',
+                  String(MONGODB_PORT),
+                  /*
+                   * Access control on from the very first start. MongoDB's
+                   * reputation for being found open on the internet comes
+                   * entirely from installations that skipped this; the
+                   * localhost exception is what lets the panel still create
+                   * the first account afterwards.
+                   */
+                  '--auth',
+                ]
+              : [...component.args];
 
     // Caddy needs its data directory and, once Cloudflare is connected, the
     // token it answers the certificate challenge with. Reading it here means a
@@ -673,6 +729,19 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
     ctx.progress(90);
     ctx.log('Starting it\u2026');
     await deps.services.start(component.serviceName);
+
+    /*
+     * The two steps that can only happen once a server is actually answering.
+     * MongoDB has no superuser until one is made through its localhost
+     * exception, and PostgreSQL's default privileges can only be revoked over
+     * a connection.
+     */
+    if (component.id === 'mongodb') {
+      await createMongoAdmin({ db: deps.db, vault: deps.vault, ctx });
+    }
+    if (component.id === 'postgres') {
+      await hardenPostgres({ db: deps.db, vault: deps.vault, binDir: deps.binDir, ctx });
+    }
 
     ctx.log(`${component.name} is installed and running.`);
     ctx.progress(100);

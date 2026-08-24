@@ -110,6 +110,13 @@ export const AccountLimits = z.object({
   mailQuotaBytes: z.number().int().min(0).nullable().default(null),
   /** Disk given to each website they create. */
   siteDiskQuotaBytes: z.number().int().min(0).nullable().default(null),
+  /**
+   * How many databases this account may hold, across every engine and
+   * whether or not they belong to one of their websites. Zero is the default
+   * for a customer who was not sold databases, which is what keeps the whole
+   * feature out of their panel until somebody decides otherwise.
+   */
+  databaseLimit: z.number().int().min(0).max(1000).nullable().default(null),
   ...GameServerAccountPolicy.shape,
 });
 export type AccountLimits = z.infer<typeof AccountLimits>;

@@ -89,6 +89,7 @@ export const usersRouter = router({
         mailQuotaBytes: input.mailQuotaBytes,
         siteDiskQuotaBytes: input.siteDiskQuotaBytes,
         gameServerLimit: input.gameServerLimit,
+        databaseLimit: input.databaseLimit,
         gameServerProviders: input.gameServerProviders,
         createdBy: ctx.user?.id ?? null,
       });

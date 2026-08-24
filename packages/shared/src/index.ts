@@ -12,6 +12,7 @@ export * from './site.js';
 export * from './job.js';
 export * from './ports.js';
 export * from './component.js';
+export * from './database.js';
 export * from './user.js';
 export * from './dns.js';
 export * from './files.js';

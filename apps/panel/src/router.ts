@@ -51,6 +51,25 @@ export const router = createRouter({
       component: () => import('./pages/GameServersPage.vue'),
       meta: { title: 'Game Servers' },
     },
+    /*
+     * Databases are a destination of their own, not a tab under a website.
+     * A database does not have to belong to one — somebody self-hosting an
+     * application that is not a website on this server still needs somewhere
+     * to put its data — and the ones that do belong to a website are reached
+     * from here as well as from the website itself.
+     */
+    {
+      path: '/databases',
+      name: 'databases',
+      component: () => import('./pages/DatabasesPage.vue'),
+      meta: { title: 'Databases' },
+    },
+    {
+      path: '/databases/:id/browse',
+      name: 'database-browse',
+      component: () => import('./pages/DatabaseBrowserPage.vue'),
+      meta: { title: 'Browse database' },
+    },
     {
       path: '/game-servers/new',
       name: 'new-game-server',

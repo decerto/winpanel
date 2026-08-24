@@ -1,21 +1,31 @@
 <script setup lang="ts">
 import { computed, inject, onMounted, ref } from 'vue';
-import { useRoute } from 'vue-router';
-import { Copy, Database, ExternalLink, Eye, KeyRound, Plus, Trash2 } from 'lucide-vue-next';
-import { roleAtLeast, type UserRole } from '@winpanel/shared';
+import { RouterLink, useRoute } from 'vue-router';
+import {
+  Database,
+  ExternalLink,
+  Eye,
+  KeyRound,
+  Plug,
+  Plus,
+  Table2,
+  Trash2,
+} from 'lucide-vue-next';
+import { roleAtLeast, type DatabaseConnection, type UserRole } from '@winpanel/shared';
 import { api, describeError } from '../../lib/api';
-import { useRuntimeStatus } from '../../lib/runtime-status';
 import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
+import DatabaseConnectionCard from '../../components/DatabaseConnectionCard.vue';
 import LoadingBlock from '../../components/LoadingBlock.vue';
 
 /**
- * The databases a website can use.
+ * The databases this website uses.
  *
- * WordPress and other apps store their content here. Each database gets its
- * own login that can reach only that database, so one site's credentials can
- * never read another's. Passwords are shown once — when they are made — and
- * then live only on the server.
+ * The same databases as the server-wide Databases page, filtered to this site
+ * — a shortcut for the common case, not a separate feature. WordPress and
+ * other applications keep their content here. Each database gets its own login
+ * that can reach only that database, so one site's credentials can never read
+ * another's, and passwords are shown once and then live only on the server.
  */
 
 const route = useRoute();
@@ -23,15 +33,13 @@ inject(siteContextKey);
 
 const slug = computed(() => route.params['slug'] as string);
 
-// The "Open" browser button only makes sense when the browser is installed.
-const { has } = useRuntimeStatus();
-const browserAvailable = computed(() => has('adminer'));
+type Overview = Awaited<ReturnType<typeof api.databases.overview.query>>;
+type Row = Overview['databases'][number];
+
+const overview = ref<Overview | null>(null);
 const role = ref<UserRole | null>(null);
 const isAdmin = computed(() => role.value !== null && roleAtLeast(role.value, 'admin'));
 
-type Overview = Awaited<ReturnType<typeof api.databases.overview.query>>;
-
-const overview = ref<Overview | null>(null);
 const loading = ref(true);
 const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
@@ -39,19 +47,36 @@ const busy = ref<string | null>(null);
 
 // The "add a database" form.
 const adding = ref(false);
+const newEngine = ref<Row['engine'] | ''>('');
 const newName = ref('');
 const ownPassword = ref(false);
 const newPassword = ref('');
 
 // Shown once, then gone — the same reveal pattern as mailbox passwords.
-const revealed = ref<{ name: string; password: string; generated: boolean } | null>(null);
-const copied = ref(false);
+const revealed = ref<{
+  name: string;
+  username: string;
+  password: string;
+  generated: boolean;
+  connection: DatabaseConnection;
+} | null>(null);
 
-// The open "change this database's password" form, if any.
-const passwordReset = ref<{ name: string; own: boolean; password: string } | null>(null);
-const resetProblem = computed(() =>
-  passwordReset.value?.own ? passwordProblemFor(passwordReset.value.password) : null,
-);
+/** The database whose connection details are open, and its password if shown. */
+const expanded = ref<string | null>(null);
+const expandedPassword = ref<string | null>(null);
+
+function toggleConnection(row: Row): void {
+  if (expanded.value === row.id) {
+    expanded.value = null;
+    expandedPassword.value = null;
+    return;
+  }
+  expanded.value = row.id;
+  expandedPassword.value = null;
+}
+
+const usable = computed(() => overview.value?.engines.filter((engine) => engine.ready) ?? []);
+const atLimit = computed(() => overview.value !== null && overview.value.problem !== null);
 
 /** The same password rules as mailboxes, checked here as well as on the server. */
 function passwordProblemFor(value: string): string | null {
@@ -67,18 +92,23 @@ const passwordProblem = computed(() =>
   ownPassword.value ? passwordProblemFor(newPassword.value) : null,
 );
 
-const atLimit = computed(
-  () => overview.value?.limit !== null && overview.value !== null && overview.value.used >= (overview.value.limit ?? Infinity),
-);
+const nameProblem = computed(() => {
+  const value = newName.value.trim();
+  if (value.length === 0) return null;
+  if (!/^[a-z0-9_]+$/.test(value)) return 'Lowercase letters, numbers and underscores only.';
+  if (value.length > 24) return 'Keep it to 24 characters or fewer.';
+  return null;
+});
 
 async function load(): Promise<void> {
-  loading.value = true;
   error.value = null;
 
   try {
     const me = await api.auth.me.query().catch(() => null);
     role.value = me?.role ?? null;
     overview.value = await api.databases.overview.query({ slug: slug.value });
+
+    if (newEngine.value === '' && usable.value[0]) newEngine.value = usable.value[0].id;
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -87,7 +117,8 @@ async function load(): Promise<void> {
 }
 
 async function create(): Promise<void> {
-  if (!newName.value.trim() || passwordProblem.value) return;
+  if (!newName.value.trim() || nameProblem.value || passwordProblem.value) return;
+  if (newEngine.value === '') return;
 
   busy.value = 'create';
   error.value = null;
@@ -95,12 +126,20 @@ async function create(): Promise<void> {
 
   try {
     const result = await api.databases.create.mutate({
+      engine: newEngine.value,
       slug: slug.value,
       name: newName.value.trim(),
       ...(ownPassword.value && newPassword.value ? { password: newPassword.value } : {}),
     });
 
-    revealed.value = { name: result.name, password: result.password, generated: result.generated };
+    revealed.value = {
+      name: result.name,
+      username: result.username,
+      password: result.password,
+      generated: result.generated,
+      connection: result.connection,
+    };
+
     adding.value = false;
     newName.value = '';
     newPassword.value = '';
@@ -113,13 +152,21 @@ async function create(): Promise<void> {
   }
 }
 
-async function drop(name: string): Promise<void> {
-  busy.value = name;
+async function drop(row: Row): Promise<void> {
+  const warning =
+    `Delete ${row.name}?\n\n` +
+    'Everything in it goes with it, and there is no undo. If this website is using it, ' +
+    'the website will stop working.';
+
+  if (!window.confirm(warning)) return;
+
+  busy.value = row.id;
   error.value = null;
+  notice.value = null;
 
   try {
-    await api.databases.drop.mutate({ slug: slug.value, name });
-    notice.value = `The database ${name} was removed.`;
+    await api.databases.drop.mutate({ id: row.id });
+    notice.value = `The database ${row.name} was removed.`;
     await load();
   } catch (err) {
     error.value = describeError(err);
@@ -128,9 +175,15 @@ async function drop(name: string): Promise<void> {
   }
 }
 
-function openPasswordReset(name: string): void {
+/** The open "change this database's password" form, if any. */
+const passwordReset = ref<{ row: Row; own: boolean; password: string } | null>(null);
+const resetProblem = computed(() =>
+  passwordReset.value?.own ? passwordProblemFor(passwordReset.value.password) : null,
+);
+
+function openPasswordReset(row: Row): void {
   passwordReset.value =
-    passwordReset.value?.name === name ? null : { name, own: false, password: '' };
+    passwordReset.value?.row.id === row.id ? null : { row, own: false, password: '' };
 }
 
 async function changePassword(): Promise<void> {
@@ -144,11 +197,18 @@ async function changePassword(): Promise<void> {
 
   try {
     const result = await api.databases.setPassword.mutate({
-      slug: slug.value,
-      name: form.name,
-      password: form.own ? form.password : undefined,
+      id: form.row.id,
+      ...(form.own ? { password: form.password } : {}),
     });
-    revealed.value = { name: result.name, password: result.password, generated: result.generated };
+
+    revealed.value = {
+      name: result.name,
+      username: form.row.username,
+      password: result.password,
+      generated: result.generated,
+      connection: form.row.connection,
+    };
+    if (expanded.value === form.row.id) expandedPassword.value = result.password;
     passwordReset.value = null;
   } catch (err) {
     error.value = describeError(err);
@@ -157,29 +217,20 @@ async function changePassword(): Promise<void> {
   }
 }
 
-async function showPassword(name: string): Promise<void> {
-  busy.value = `reveal:${name}`;
+async function showPassword(row: Row): Promise<void> {
+  busy.value = `reveal:${row.id}`;
   error.value = null;
 
   try {
-    const result = await api.databases.revealPassword.query({ slug: slug.value, name });
-    revealed.value = { name, password: result.password, generated: false };
+    const result = await api.databases.revealPassword.query({ id: row.id });
+    // Opening the connection block is the useful half of "show me the
+    // password": on its own it is a string with nowhere to go.
+    expanded.value = row.id;
+    expandedPassword.value = result.password;
   } catch (err) {
     error.value = describeError(err);
   } finally {
     busy.value = null;
-  }
-}
-
-async function copyPassword(): Promise<void> {
-  if (!revealed.value) return;
-
-  try {
-    await navigator.clipboard.writeText(revealed.value.password);
-    copied.value = true;
-    setTimeout(() => (copied.value = false), 1500);
-  } catch {
-    // Clipboard access can be refused; the password is on screen to be read.
   }
 }
 
@@ -201,10 +252,14 @@ onMounted(load);
         <div class="min-w-0 flex-1">
           <h2 class="text-base font-semibold text-ink">Databases</h2>
           <p class="mt-1 text-sm text-ink-muted">
-            Databases this website can use. WordPress and other apps store their content here.
-            A database's username is the same as its name.
+            Databases this website can use. WordPress and other applications store their content
+            here. A database's username is the same as its name.
           </p>
         </div>
+
+        <RouterLink to="/databases" class="btn btn-ghost btn-sm shrink-0">
+          All databases
+        </RouterLink>
       </div>
 
       <AlertMessage v-if="error" tone="danger" class="mt-4">{{ error }}</AlertMessage>
@@ -212,49 +267,36 @@ onMounted(load);
 
       <!-- A password is shown once, the moment it is made, and then gone. -->
       <AlertMessage v-if="revealed" tone="success" class="mt-4">
-        <div class="space-y-2">
+        <div class="space-y-3">
           <p>
-            {{ revealed.generated ? 'A password was generated' : 'The password was set' }}
-            for this database. Wherever you sign in with it — the database browser,
-            WordPress, another app — the username is the same as the database name.
+            {{ revealed.name }} is ready.
+            {{
+              revealed.generated
+                ? 'A strong password was generated for it.'
+                : 'It uses the password you chose.'
+            }}
+            Keep these somewhere safe — the password is not shown again.
           </p>
-          <dl class="space-y-1.5 text-sm">
-            <div class="flex items-baseline gap-2">
-              <dt class="w-20 shrink-0 text-ink-muted">Database</dt>
-              <dd class="font-mono text-ink">{{ revealed.name }}</dd>
-            </div>
-            <div class="flex items-baseline gap-2">
-              <dt class="w-20 shrink-0 text-ink-muted">Username</dt>
-              <dd class="font-mono text-ink">{{ revealed.name }}</dd>
-            </div>
-            <div class="flex items-center gap-2">
-              <dt class="w-20 shrink-0 text-ink-muted">Password</dt>
-              <dd class="min-w-0 flex-1">
-                <code class="block truncate rounded-md bg-black/30 px-2 py-1 font-mono text-xs">
-                  {{ revealed.password }}
-                </code>
-              </dd>
-              <button type="button" class="btn btn-ghost btn-sm" @click="copyPassword">
-                <Copy :size="13" aria-hidden="true" /> {{ copied ? 'Copied' : 'Copy' }}
-              </button>
-            </div>
-          </dl>
-          <p class="text-xs">Keep the password somewhere safe — it is not shown again.</p>
+          <DatabaseConnectionCard
+            :connection="revealed.connection"
+            :password="revealed.password"
+            flush
+          />
         </div>
       </AlertMessage>
 
       <LoadingBlock v-if="loading" class="mt-5 h-40" />
 
-      <!-- The database server is a program like any other; offer to install it. -->
+      <!-- A database server is a program like any other; offer to install one. -->
       <template v-else-if="overview && !overview.installed">
         <AlertMessage tone="warning" class="mt-4">
           <template v-if="isAdmin">
-            The database server isn't installed yet. Install the "Database server (MariaDB)"
-            program from the Programs section of Settings, then come back here.
+            No database server is set up on this machine yet. Install MariaDB, PostgreSQL or
+            MongoDB from the Programs section of Settings, then come back here.
           </template>
           <template v-else>
-            The database server is not available on this server yet. Ask an administrator to
-            install it.
+            No database server is available on this server yet. Ask an administrator to
+            install one.
           </template>
         </AlertMessage>
       </template>
@@ -265,7 +307,9 @@ onMounted(load);
             <template v-if="overview.limit !== null">
               {{ overview.used }} of {{ overview.limit }} databases
             </template>
-            <template v-else>{{ overview.used }} {{ overview.used === 1 ? 'database' : 'databases' }}</template>
+            <template v-else>
+              {{ overview.used }} {{ overview.used === 1 ? 'database' : 'databases' }}
+            </template>
           </p>
 
           <button
@@ -279,22 +323,27 @@ onMounted(load);
           </button>
         </div>
 
-        <AlertMessage v-if="atLimit" tone="warning" class="mt-3">
-          This website has reached its database limit. Remove one, or ask your administrator
-          to raise the limit.
+        <AlertMessage v-if="overview.problem" tone="warning" class="mt-3">
+          {{ overview.problem }}
         </AlertMessage>
 
         <!-- The add form. -->
         <div v-if="adding" class="mt-4 space-y-3 rounded-lg border border-line bg-black/20 p-4">
+          <!-- One engine installed is not a choice worth making somebody make. -->
+          <div v-if="usable.length > 1">
+            <label for="site-db-engine" class="label">Kind</label>
+            <select id="site-db-engine" v-model="newEngine" class="field">
+              <option v-for="engine in usable" :key="engine.id" :value="engine.id">
+                {{ engine.label }}
+              </option>
+            </select>
+          </div>
+
           <div>
-            <label for="db-name" class="label">Name</label>
-            <input
-              id="db-name"
-              v-model="newName"
-              class="field font-mono"
-              placeholder="shop"
-            />
-            <p class="hint">Lowercase letters, numbers and underscores.</p>
+            <label for="site-db-name" class="label">Name</label>
+            <input id="site-db-name" v-model="newName" class="field font-mono" placeholder="shop" />
+            <p v-if="nameProblem" class="mt-1 text-xs text-danger">{{ nameProblem }}</p>
+            <p v-else class="hint">Lowercase letters, numbers and underscores.</p>
           </div>
 
           <label class="flex items-center gap-2 text-sm text-ink-muted">
@@ -308,6 +357,7 @@ onMounted(load);
               v-model="newPassword"
               type="password"
               class="field font-mono"
+              autocomplete="new-password"
               placeholder="At least 10 characters"
             />
             <p v-if="passwordProblem" class="mt-1 text-xs text-danger">{{ passwordProblem }}</p>
@@ -320,60 +370,90 @@ onMounted(load);
             <button
               type="button"
               class="btn btn-primary btn-sm"
-              :disabled="!newName.trim() || Boolean(passwordProblem) || busy === 'create'"
+              :disabled="
+                !newName.trim() ||
+                newEngine === '' ||
+                nameProblem !== null ||
+                passwordProblem !== null ||
+                busy === 'create'
+              "
               @click="create"
             >
-              {{ busy === 'create' ? 'Creating…' : 'Create database' }}
+              {{ busy === 'create' ? 'Creating\u2026' : 'Create database' }}
             </button>
           </div>
         </div>
 
         <!-- The list. -->
         <ul v-if="overview.databases.length > 0" class="mt-4 divide-y divide-line">
-          <li
-            v-for="db in overview.databases"
-            :key="db.name"
-            class="flex flex-wrap items-center gap-3 py-3"
-          >
-            <span class="min-w-0 flex-1 font-mono text-sm text-ink">{{ db.name }}</span>
-            <!-- Opens the database browser in a new tab, signed in — offered
-                 only when the browser is actually installed. -->
-            <a
-              v-if="browserAvailable"
-              :href="`/db/${encodeURIComponent(slug)}/${encodeURIComponent(db.name)}`"
-              target="_blank"
-              rel="noopener"
-              class="btn btn-ghost btn-sm"
-            >
-              <ExternalLink :size="13" aria-hidden="true" /> Open
-            </a>
-            <button
-              type="button"
-              class="btn btn-ghost btn-sm"
-              :disabled="busy !== null"
-              :aria-expanded="passwordReset?.name === db.name"
-              @click="openPasswordReset(db.name)"
-            >
-              <KeyRound :size="13" aria-hidden="true" /> Password
-            </button>
-            <button
-              type="button"
-              class="btn btn-ghost btn-sm"
-              :disabled="busy !== null"
-              @click="showPassword(db.name)"
-            >
-              <Eye :size="13" aria-hidden="true" />
-              {{ busy === `reveal:${db.name}` ? 'Showing\u2026' : 'Show' }}
-            </button>
-            <button
-              type="button"
-              class="btn btn-danger btn-sm"
-              :disabled="busy !== null"
-              @click="drop(db.name)"
-            >
-              <Trash2 :size="13" aria-hidden="true" />
-              {{ busy === db.name ? 'Removing…' : 'Remove' }}
-            </button>
+          <li v-for="row in overview.databases" :key="row.id" class="py-3">
+            <div class="flex flex-wrap items-center gap-3">
+              <span class="min-w-0 flex-1">
+                <span class="block truncate font-mono text-sm text-ink">{{ row.name }}</span>
+                <span class="block text-xs text-ink-faint">
+                  {{ row.engineLabel }} on {{ row.connection.host }}:{{ row.connection.port }}
+                </span>
+              </span>
+
+              <!-- Opens signed in: Adminer in its own tab for the SQL engines,
+                   the panel's own browser for MongoDB. -->
+              <a
+                v-if="row.browser === 'adminer'"
+                :href="`/db/${encodeURIComponent(row.id)}`"
+                target="_blank"
+                rel="noopener"
+                class="btn btn-ghost btn-sm"
+              >
+                <ExternalLink :size="13" aria-hidden="true" /> Open
+              </a>
+              <RouterLink v-else :to="`/databases/${row.id}/browse`" class="btn btn-ghost btn-sm">
+                <Table2 :size="13" aria-hidden="true" /> Open
+              </RouterLink>
+
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
+                :aria-expanded="expanded === row.id"
+                @click="toggleConnection(row)"
+              >
+                <Plug :size="13" aria-hidden="true" /> Connect
+              </button>
+
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
+                :disabled="busy !== null"
+                :aria-expanded="passwordReset?.row.id === row.id"
+                @click="openPasswordReset(row)"
+              >
+                <KeyRound :size="13" aria-hidden="true" /> Password
+              </button>
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
+                :disabled="busy !== null"
+                @click="showPassword(row)"
+              >
+                <Eye :size="13" aria-hidden="true" />
+                {{ busy === `reveal:${row.id}` ? 'Showing\u2026' : 'Show' }}
+              </button>
+              <button
+                type="button"
+                class="btn btn-danger btn-sm"
+                :disabled="busy !== null"
+                @click="drop(row)"
+              >
+                <Trash2 :size="13" aria-hidden="true" />
+                {{ busy === row.id ? 'Removing\u2026' : 'Remove' }}
+              </button>
+            </div>
+
+            <DatabaseConnectionCard
+              v-if="expanded === row.id"
+              class="mt-3"
+              :connection="row.connection"
+              :password="expandedPassword"
+            />
           </li>
         </ul>
 
@@ -384,7 +464,9 @@ onMounted(load);
           @submit.prevent="changePassword"
         >
           <div>
-            <label for="db-reset-mode" class="label">New password for {{ passwordReset.name }}</label>
+            <label for="db-reset-mode" class="label">
+              New password for {{ passwordReset.row.name }}
+            </label>
             <select id="db-reset-mode" v-model="passwordReset.own" class="field w-40">
               <option :value="false">Generate one</option>
               <option :value="true">Set my own</option>
@@ -426,7 +508,7 @@ onMounted(load);
           </p>
         </form>
 
-        <p v-else-if="!adding" class="mt-4 text-sm text-ink-faint">
+        <p v-else-if="!adding && overview.databases.length === 0" class="mt-4 text-sm text-ink-faint">
           No databases yet. WordPress creates its own when you add a WordPress site; add one
           here for anything else.
         </p>

@@ -17,6 +17,8 @@ import {
 } from '@winpanel/shared';
 import { protectedProcedure, adminProcedure, router } from '../trpc.js';
 import { SiteError, SiteService } from '../../sites/site-service.js';
+import { removeDatabase } from '../../databases/service.js';
+import { listDatabasesForSite } from '../../databases/store.js';
 import { sites } from '../../db/schema.js';
 import { detectApp } from '../../detect/detector.js';
 import { discoverNodeVersions, matchVersion } from '../../sites/node-versions.js';
@@ -184,10 +186,12 @@ export const sitesRouter = router({
    */
   runtimeStatus: protectedProcedure.query(async ({ ctx }) => {
     const binDir = ctx.app.config.binDir;
-    const [php, mariadb, composer, adminer, git, pnpm, yarn, bun, nodeVersions] =
+    const [php, mariadb, postgres, mongodb, composer, adminer, git, pnpm, yarn, bun, nodeVersions] =
       await Promise.all([
         isComponentInstalled(binDir, 'php'),
         isComponentInstalled(binDir, 'mariadb'),
+        isComponentInstalled(binDir, 'postgres'),
+        isComponentInstalled(binDir, 'mongodb'),
         isComponentInstalled(binDir, 'composer'),
         isComponentInstalled(binDir, 'adminer'),
         isComponentInstalled(binDir, 'git'),
@@ -200,6 +204,10 @@ export const sitesRouter = router({
     return {
       php,
       mariadb,
+      postgres,
+      mongodb,
+      /** True when any database server at all is on this machine. */
+      databases: mariadb || postgres || mongodb,
       composer,
       adminer,
       git,
@@ -1051,6 +1059,25 @@ export const sitesRouter = router({
           // A service that cannot be removed must not block deleting the site;
           // it is reported by the health checks instead.
         }
+      }
+
+      /*
+       * The site's databases go with it.
+       *
+       * They are named after the site and nothing else can reach them, so
+       * leaving them behind would mean data nobody can find still counting
+       * against its owner's allowance — and a name that could never be reused.
+       * Each one that will not drop is skipped rather than blocking the
+       * delete; the site row going is what the person asked for.
+       */
+      const engineContext = {
+        db: ctx.app.db,
+        vault: ctx.app.vault,
+        binDir: ctx.app.config.binDir,
+      };
+
+      for (const database of listDatabasesForSite(ctx.app.db, site.id)) {
+        await removeDatabase(engineContext, database).catch(() => undefined);
       }
 
       await service.remove(site.id, { deleteFiles: input.deleteFiles });

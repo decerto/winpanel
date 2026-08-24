@@ -1,7 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { databaseEngineInfo } from '@winpanel/shared';
 import type { AppContext } from '../app-context.js';
-import { SESSION_COOKIE, userMayAccessSite } from './trpc.js';
-import { SiteService } from '../sites/site-service.js';
+import { SESSION_COOKIE } from './trpc.js';
+import { getDatabase, type DatabaseSummary } from '../databases/store.js';
 import { dbBrowserAvailable, ensureDbBrowser, mintDbTicket } from '../sites/db-browser.js';
 
 /**
@@ -9,11 +10,14 @@ import { dbBrowserAvailable, ensureDbBrowser, mintDbTicket } from '../sites/db-b
  *
  * Adminer must never sit on a public domain — it is the first thing a scanner
  * looks for — so it is not part of any website. The panel runs it on a
- * private, loopback-only PHP server and proxies to it here, at
- * `/db/<slug>/<name>`, behind the same session cookie, network allowlist and
- * "not found, not forbidden" site scoping as the file routes. The browser
- * only ever talks to the panel; the panel is the only thing that can reach
- * Adminer at all.
+ * private, loopback-only PHP server and proxies to it here, at `/db/<id>`,
+ * behind the same session cookie, network allowlist and "not found, not
+ * forbidden" scoping as the file routes. The browser only ever talks to the
+ * panel; the panel is the only thing that can reach Adminer at all.
+ *
+ * The address is the database's own id rather than a website and a name,
+ * because a database does not have to belong to a website. Ownership is read
+ * off the database's record, which is the same check the router makes.
  *
  * The visitor never sees a password. Opening the browser mints a one-shot
  * ticket and posts it to Adminer through this same proxy; the plugin on the
@@ -45,32 +49,41 @@ const HOP_BY_HOP = new Set([
 /**
  * The guard every browser request passes through.
  *
- * Returns nothing on success; on refusal it has already sent the response.
- * Shared by the opening page and the proxy so the two can never drift apart
- * on who is allowed in.
+ * Returns the database on success; on refusal it has already sent the
+ * response. Shared by the opening page and the proxy so the two can never
+ * drift apart on who is allowed in.
  */
 function authorise(
   request: FastifyRequest,
   reply: FastifyReply,
   app: AppContext,
-  slug: string,
-): boolean {
+  id: string,
+): DatabaseSummary | null {
   const user = app.auth.resolveSession(request.cookies[SESSION_COOKIE]);
 
   if (!user) {
     void reply.code(401).send({ error: 'Please sign in.' });
-    return false;
+    return null;
   }
   if (!app.auth.isIpAllowed(request.ip)) {
     void reply.code(403).send({ error: 'This panel does not accept connections from your network.' });
-    return false;
+    return null;
   }
-  // "Not found" rather than "not allowed", matching the file routes.
-  if (!userMayAccessSite(app, user, slug)) {
-    void reply.code(404).send({ error: 'That website was not found.' });
-    return false;
+
+  const record = getDatabase(app.db, id);
+  // "Not found" rather than "not allowed", matching the file routes: an id
+  // that belongs to somebody else must be indistinguishable from one that
+  // does not exist.
+  const mine =
+    record !== null &&
+    (user.role !== 'user' || (record.ownerUserId !== null && record.ownerUserId === user.id));
+
+  if (!mine || !record) {
+    void reply.code(404).send({ error: 'That database was not found.' });
+    return null;
   }
-  return true;
+
+  return record;
 }
 
 /**
@@ -197,8 +210,8 @@ function encodeBody(request: FastifyRequest, body: unknown): string | Buffer {
  * under the browser's prefix; anything unexpected falls back to its front
  * page.
  */
-function signInRedirect(slug: string, name: string, location: string | null): string {
-  const base = `${DB_BROWSER_PREFIX}/${encodeURIComponent(slug)}/${encodeURIComponent(name)}`;
+function signInRedirect(id: string, location: string | null): string {
+  const base = `${DB_BROWSER_PREFIX}/${encodeURIComponent(id)}`;
   if (location?.startsWith('?')) return `${base}/adminer.php${location}`;
   if (location?.startsWith('/')) return `${base}${location}`;
   // Page-relative: `adminer.php?server=…`, resolved against the browser root.
@@ -218,14 +231,20 @@ export function registerDbBrowserRoutes(server: FastifyInstance, app: AppContext
    * through, so the visitor's next request lands on the proxy below already
    * signed in. Everything after that is the proxy below.
    */
-  server.get<{ Params: { slug: string; name: string } }>(
-    `${DB_BROWSER_PREFIX}/:slug/:name`,
+  server.get<{ Params: { id: string } }>(
+    `${DB_BROWSER_PREFIX}/:id`,
     async (request, reply) => {
-      const { slug, name } = request.params;
-      if (!authorise(request, reply, app, slug)) return;
+      const { id } = request.params;
+      const record = authorise(request, reply, app, id);
+      if (!record) return;
 
-      const site = new SiteService(app.db, app.vault, app.config.sitesRoot).get(slug);
-      if (!site) return await reply.code(404).send({ error: 'That website was not found.' });
+      const engine = databaseEngineInfo(record.engine);
+
+      if (engine.browser !== 'adminer') {
+        return await reply.code(400).send({
+          error: `${engine.product} databases are browsed inside the panel, not here.`,
+        });
+      }
 
       if (!(await dbBrowserAvailable(app.config.binDir))) {
         return await reply
@@ -238,21 +257,27 @@ export function registerDbBrowserRoutes(server: FastifyInstance, app: AppContext
       const { ticket, username } = await mintDbTicket({
         db: app.db,
         vault: app.vault,
-        siteId: site.id,
-        database: name,
+        engine: record.engine,
+        database: record.name,
+        siteId: record.siteId,
         dataDir: app.config.dataDir,
       });
 
-      // The sign-in form Adminer expects, posted through the same loopback
-      // server the proxy talks to. The password never enters the browser —
-      // only the one-shot ticket crosses this process, and Adminer's plugin
-      // on the far side swaps it for the real credentials.
+      /*
+       * The sign-in form Adminer expects, posted through the same loopback
+       * server the proxy talks to. The password never enters the browser —
+       * only the one-shot ticket crosses this process, and Adminer's plugin
+       * on the far side swaps it for the real credentials.
+       *
+       * The driver is what makes the same page reach either engine: `server`
+       * is Adminer's name for MySQL and MariaDB, `pgsql` for PostgreSQL.
+       */
       const form = new URLSearchParams({
-        'auth[driver]': 'server',
-        'auth[server]': '127.0.0.1',
+        'auth[driver]': record.engine === 'postgres' ? 'pgsql' : 'server',
+        'auth[server]': `127.0.0.1:${engine.port}`,
         'auth[username]': username,
         'auth[password]': ticket,
-        'auth[db]': name,
+        'auth[db]': record.name,
       });
 
       const response = await fetch(`${BROWSER_ORIGIN}/adminer.php`, {
@@ -270,7 +295,7 @@ export function registerDbBrowserRoutes(server: FastifyInstance, app: AppContext
       // passed through as-is: signing in by hand cannot work, but the page
       // explains itself better than a bare error would.
       const location = response.headers.get('location');
-      const cookiePath = `${DB_BROWSER_PREFIX}/${encodeURIComponent(slug)}/${encodeURIComponent(name)}`;
+      const cookiePath = `${DB_BROWSER_PREFIX}/${encodeURIComponent(id)}`;
       reply.code(response.status);
       response.headers.forEach((value, header) => {
         const lower = header.toLowerCase();
@@ -281,7 +306,7 @@ export function registerDbBrowserRoutes(server: FastifyInstance, app: AppContext
         }
         reply.header(header, value);
       });
-      reply.header('location', signInRedirect(slug, name, location));
+      reply.header('location', signInRedirect(id, location));
 
       const body = await response.arrayBuffer();
       return await reply.send(Buffer.from(body));
@@ -292,11 +317,11 @@ export function registerDbBrowserRoutes(server: FastifyInstance, app: AppContext
    * Every request the browser makes once signed in. Proxied to the private
    * Adminer server, with the path kept under the database's own prefix.
    */
-  server.all<{ Params: { slug: string; name: string; '*': string } }>(
-    `${DB_BROWSER_PREFIX}/:slug/:name/*`,
+  server.all<{ Params: { id: string; '*': string } }>(
+    `${DB_BROWSER_PREFIX}/:id/*`,
     async (request, reply) => {
-      const { slug, name } = request.params;
-      if (!authorise(request, reply, app, slug)) return;
+      const { id } = request.params;
+      if (!authorise(request, reply, app, id)) return;
 
       if (!(await dbBrowserAvailable(app.config.binDir))) {
         return await reply
@@ -306,7 +331,7 @@ export function registerDbBrowserRoutes(server: FastifyInstance, app: AppContext
 
       const rest = request.params['*'] ?? '';
       const query = request.url.includes('?') ? request.url.slice(request.url.indexOf('?')) : '';
-      const cookiePath = `${DB_BROWSER_PREFIX}/${encodeURIComponent(slug)}/${encodeURIComponent(name)}`;
+      const cookiePath = `${DB_BROWSER_PREFIX}/${encodeURIComponent(id)}`;
       await proxyToBrowser(request, reply, `/${rest}${query}`, cookiePath);
     },
   );

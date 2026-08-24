@@ -29,6 +29,8 @@ const GB = 1024 ** 3;
 const people = ref<Person[]>([]);
 const gameCatalogue = ref<ReadonlyArray<GameServerCatalogEntry>>([]);
 const me = ref<{ id: string; role: UserRole } | null>(null);
+/** Whether this machine runs a database server at all. */
+const databasesAvailable = ref(false);
 
 const loading = ref(true);
 const busy = ref<string | null>(null);
@@ -54,14 +56,22 @@ async function refresh(): Promise<void> {
 
   try {
     const catalogueRequest = api.gameServers?.catalogue?.query?.() ?? Promise.resolve([]);
-    const [list, current, catalogue] = await Promise.all([
+    const engineRequest =
+      api.databases?.engines?.query?.() ?? Promise.resolve({ engines: [] as unknown[] });
+
+    const [list, current, catalogue, engines] = await Promise.all([
       api.users.list.query(),
       api.auth.me.query(),
       catalogueRequest.catch(() => []),
+      engineRequest.catch(() => ({ engines: [] as unknown[] })),
     ]);
     people.value = list;
     gameCatalogue.value = catalogue.filter((entry) => entry.status === 'ready');
     me.value = current ? { id: current.id, role: current.role } : null;
+    // Not `visible`: an administrator is asking on somebody else's behalf, so
+    // what matters is whether the machine has a database server — setting the
+    // allowance is exactly how they make it visible to that customer.
+    databasesAvailable.value = engines.engines.length > 0;
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -100,6 +110,7 @@ interface FormState {
   mailQuotaGb: string;
   siteDiskQuotaGb: string;
   gameServerLimit: string;
+  databaseLimit: string;
   gameServerProviders: string[];
 }
 
@@ -114,6 +125,12 @@ function blankForm(): FormState {
     mailQuotaGb: '5',
     siteDiskQuotaGb: '20',
     gameServerLimit: '1',
+    /*
+     * Databases start at none. A customer who was not sold databases should
+     * not find the whole section waiting in their panel — raising this is how
+     * an administrator decides they were.
+     */
+    databaseLimit: '0',
     gameServerProviders: [],
   };
 }
@@ -142,6 +159,10 @@ function openEdit(person: Person): void {
       person.gameServerLimit === null || person.gameServerLimit === undefined
         ? ''
         : String(person.gameServerLimit),
+    databaseLimit:
+      person.databaseLimit === null || person.databaseLimit === undefined
+        ? ''
+        : String(person.databaseLimit),
     gameServerProviders: [...(person.gameServerProviders ?? [])],
   };
 }
@@ -182,6 +203,7 @@ async function submitForm(): Promise<void> {
           mailQuotaBytes: toLimit(state.mailQuotaGb, GB),
           siteDiskQuotaBytes: toLimit(state.siteDiskQuotaGb, GB),
           gameServerLimit: toLimit(state.gameServerLimit),
+          databaseLimit: toLimit(state.databaseLimit),
           gameServerProviders: state.gameServerProviders,
         }
       : { siteLimit: null, mailQuotaBytes: null, siteDiskQuotaBytes: null };
@@ -271,6 +293,14 @@ function describeGameServers(person: Person): string {
   return `${person.gameServerCount ?? 0} of ${person.gameServerLimit}`;
 }
 
+function describeDatabases(person: Person): string {
+  if (person.role !== 'user') return 'All databases';
+  if (person.databaseLimit === null || person.databaseLimit === undefined) {
+    return `${person.databaseCount ?? 0} of unlimited`;
+  }
+  return `${person.databaseCount ?? 0} of ${person.databaseLimit}`;
+}
+
 function toggleGameProvider(catalogId: string): void {
   const providers = form.value.gameServerProviders;
   form.value.gameServerProviders = providers.includes(catalogId)
@@ -347,6 +377,13 @@ function selectAllGames(): void {
             <th scope="col" class="px-5 py-3 font-medium">Role</th>
             <th scope="col" class="hidden px-5 py-3 font-medium sm:table-cell">Websites</th>
             <th scope="col" class="hidden px-5 py-3 font-medium lg:table-cell">Game servers</th>
+            <th
+              v-if="databasesAvailable"
+              scope="col"
+              class="hidden px-5 py-3 font-medium lg:table-cell"
+            >
+              Databases
+            </th>
             <th scope="col" class="hidden px-5 py-3 font-medium lg:table-cell">Email</th>
             <th scope="col" class="hidden px-5 py-3 font-medium md:table-cell">Last signed in</th>
             <th scope="col" class="px-5 py-3 text-right font-medium">Manage</th>
@@ -388,6 +425,13 @@ function selectAllGames(): void {
 
             <td class="hidden whitespace-nowrap px-5 py-3 text-ink-muted lg:table-cell">
               {{ describeGameServers(person) }}
+            </td>
+
+            <td
+              v-if="databasesAvailable"
+              class="hidden whitespace-nowrap px-5 py-3 text-ink-muted lg:table-cell"
+            >
+              {{ describeDatabases(person) }}
             </td>
 
             <td class="hidden whitespace-nowrap px-5 py-3 text-ink-muted lg:table-cell">
@@ -535,6 +579,22 @@ function selectAllGames(): void {
               inputmode="numeric"
               placeholder="No limit"
             />
+          </div>
+
+          <!--
+            Only asked when the machine has a database server. On one that has
+            none, the question is about a feature nobody here can use.
+          -->
+          <div v-if="databasesAvailable" class="space-y-1">
+            <label class="label" for="person-databases">Databases</label>
+            <input
+              id="person-databases"
+              v-model="form.databaseLimit"
+              class="field"
+              inputmode="numeric"
+              placeholder="No limit"
+            />
+            <p class="hint">0 keeps databases out of their panel entirely.</p>
           </div>
 
           <p class="text-xs text-ink-faint sm:col-span-3">

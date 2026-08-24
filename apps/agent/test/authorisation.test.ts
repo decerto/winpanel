@@ -61,10 +61,11 @@ function findProcedures(source: string): Array<{ name: string; procedure: string
  * The site-scope middleware can only check a request that says which website
  * it is about. Anything else on `protectedProcedure` is reachable by every
  * signed-in account, so each one is listed here deliberately — either it is
- * about the caller's own account, or it is harmless on its own.
+ * about the caller's own account, or it is harmless on its own, or it names a
+ * record whose ownership the handler checks for itself.
  *
  * A new unscoped `protectedProcedure` fails this test until somebody decides
- * which of those two it is, or moves it to `adminProcedure`.
+ * which of those it is, or moves it to `adminProcedure`.
  */
 const UNSCOPED_FOR_CUSTOMERS = new Set([
   // The caller's own account and its two-factor settings.
@@ -90,8 +91,9 @@ const UNSCOPED_FOR_CUSTOMERS = new Set([
   'deployKey',
   'testRepository',
   'inspect',
-  // Whether PHP and MariaDB are installed — two booleans the create-site
-  // wizard needs before offering those kinds. No names, paths, or secrets.
+  // Which optional programs are installed — a handful of booleans the
+  // create-site wizard needs before offering PHP, WordPress or a package
+  // manager. No names, paths, or secrets.
   'runtimeStatus',
   // Webmail, which authenticates against the mail server with its own
   // password and hands back a token that scopes everything after it.
@@ -111,7 +113,29 @@ const UNSCOPED_FOR_CUSTOMERS = new Set([
   // server's internals. The detailed status stays on `serverStatus`, which is
   // admin-only, precisely because it describes the machine.
   'available',
+  /*
+   * Databases. A database does not have to belong to a website — a customer
+   * can hold one for an application that is not hosted here — so these cannot
+   * be scoped by slug. The two that list are filtered by ownership in the
+   * handler; the rest name a database by id and resolve it through
+   * `mustGetDatabase`, which is asserted separately below.
+   */
+  'engines',
+  'listAll',
+  'attachableSites',
+  'mongoCollections',
+  'mongoDocuments',
 ]);
+
+/**
+ * How a databases handler proves it checked who is asking.
+ *
+ * `mustGetDatabase` reads the database's record and refuses one the caller
+ * does not own, reporting it as not found so ids cannot be probed. It is the
+ * database equivalent of the slug middleware, and the test below insists on
+ * seeing it.
+ */
+const DATABASE_SCOPE = /\bmustGetDatabase\(/;
 
 /**
  * How a handler names the website it is about.
@@ -237,10 +261,43 @@ describe('API authorisation', () => {
         if (!/^ {2}\w+:\s*protectedProcedure/.test(body)) continue;
         if (UNSCOPED_FOR_CUSTOMERS.has(name)) continue;
         if (SCOPE_KEYS.test(body)) continue;
+        // A database is a subject in its own right, resolved and ownership-
+        // checked by `mustGetDatabase` rather than by the slug middleware.
+        if (DATABASE_SCOPE.test(body)) continue;
 
         const input = /\.input\(([\s\S]*?)\)\s*\.(query|mutation)/.exec(body);
         if (!input || !SCOPE_FIELDS.test(input[1]!)) offenders.push(`${file}: ${name}`);
       }
+    }
+
+    expect(offenders).toEqual([]);
+  });
+
+  it('makes every database endpoint name a website or check the record', async () => {
+    /*
+     * The databases router is the one place a customer reaches something by an
+     * id rather than by a website. That is only safe while every one of those
+     * handlers goes through `mustGetDatabase`, which refuses a database the
+     * caller does not own — so the two listing endpoints, which filter by
+     * ownership themselves, are named here and everything else has to show
+     * either a slug or that call.
+     */
+    const source = await fs.readFile(path.join(ROUTERS_DIR, 'databases.ts'), 'utf8');
+    const filtersItself = new Set(['engines', 'listAll', 'attachableSites']);
+    const starts = [...source.matchAll(/^ {2}(\w+):\s*\w+Procedure/gm)];
+    const offenders: string[] = [];
+
+    expect(starts.length).toBeGreaterThan(0);
+
+    for (const [index, match] of starts.entries()) {
+      const name = match[1]!;
+      const body = source.slice(match.index, starts[index + 1]?.index ?? source.length);
+
+      if (!/^ {2}\w+:\s*protectedProcedure/.test(body)) continue;
+      if (filtersItself.has(name)) continue;
+      if (SCOPE_KEYS.test(body) || DATABASE_SCOPE.test(body)) continue;
+
+      offenders.push(`databases.${name}`);
     }
 
     expect(offenders).toEqual([]);

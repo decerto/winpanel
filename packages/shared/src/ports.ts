@@ -14,6 +14,17 @@ export const CADDY_ADMIN_PORT = 2019;
 export const STALWART_HTTP_PORT = 8080;
 
 /**
+ * The database servers, each on its product's standard port and each bound to
+ * loopback only. Hosted databases are reached by applications on this machine;
+ * nothing about them should be answering the internet.
+ */
+export const MARIADB_PORT = 3306;
+export const POSTGRES_PORT = 5432;
+export const MONGODB_PORT = 27017;
+
+export const DATABASE_PORTS = [MARIADB_PORT, POSTGRES_PORT, MONGODB_PORT] as const;
+
+/**
  * The edge. Caddy owns these and everything else is proxied through it, so any
  * other program that binds one of them takes the whole server's web traffic
  * down with it.
@@ -41,6 +52,13 @@ export const RESERVED_PORTS: ReadonlySet<number> = new Set<number>([
   CADDY_ADMIN_PORT,
   STALWART_HTTP_PORT,
   ...MAIL_PORTS,
+  /*
+   * The database servers. MariaDB's 3306 sits inside the Node application
+   * band and PostgreSQL's 5432 inside the .NET one, so without these a site
+   * could be handed the port its own database is listening on — and whichever
+   * started second would simply fail to bind.
+   */
+  ...DATABASE_PORTS,
   3389, // RDP — locking this out would end the session
   5985, 5986, // WinRM
 ]);

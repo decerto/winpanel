@@ -30,10 +30,15 @@
 - **PHP** sites run as a small pool of `php-cgi` workers, supervised by a Node script
   (`sites/php-pool.ts`) that WinSW owns; Caddy talks to the pool with its built-in
   FastCGI transport.
-- **MariaDB** is the database server, on loopback only. Per-site databases and users are
-  provisioned by `sites/databases.ts`; the browser-based editor is Adminer, run on a
-  private loopback-only PHP server and proxied by the panel at `/db/…`
+- **Databases** are three optional servers, each on loopback only: **MariaDB**,
+  **PostgreSQL** and **MongoDB**. Nothing is offered for one that is not installed. Each
+  engine has an adapter under `databases/` behind a common interface; `databases/store.ts`
+  keeps the panel's own record of who owns which database, since no engine can answer
+  that. The browser-based editor is Adminer (all-driver build), run on a private
+  loopback-only PHP server and proxied by the panel at `/db/<database-id>`
   (`api/db-browser.ts`) behind the panel's own sign-in, never on a public domain.
+  MongoDB has no Adminer driver on Windows, so the panel reads it directly through the
+  driver (`databases/browser.ts`) — read-only.
 - **Game servers** are stateful resources separate from `sites`. Installing is two stages:
   a small acquisition step per provider (Steam, a publisher's archive, Mojang's signed
   manifest), then one shared configure-and-register step that knows nothing about any
@@ -68,7 +73,8 @@ const app = await createAppContext({ databasePath, vaultKeyPath, setupTokenPath 
 | `caddy/reconciler.ts` | Pushes that config into Caddy and retries while it is starting |
 | `detect/` | Works out how to build a project, producing `winpanel.json` |
 | `jobs/queue.ts` | Runs deployments, installs and other long tasks |
-| `sites/` | Site lifecycle, deployments, port allocation, command running; also `php-pool.ts` (the PHP worker supervisor), `databases.ts` (MariaDB provisioning) and `wordpress.ts` (the WordPress install job) |
+| `sites/` | Site lifecycle, deployments, port allocation, command running; also `php-pool.ts` (the PHP worker supervisor) and `wordpress.ts` (the WordPress install job) |
+| `databases/` | One adapter per engine (MariaDB, PostgreSQL, MongoDB) behind a common interface, plus the panel's record of who owns which database, its install-time setup and the MongoDB document browser |
 | `game-servers/` | Provider catalogue, installation jobs, lifecycle metadata, data files and provider-specific Windows services |
 | `traffic/` | Reads Caddy's access logs into hourly per-site counters |
 | `mail/` | Stalwart client, readiness probes, certificate sync |

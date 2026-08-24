@@ -23,6 +23,10 @@ export const ComponentId = z.enum([
   'vcredist',
   'php',
   'mariadb',
+  /** PostgreSQL, for sites and apps that want a relational database. */
+  'postgres',
+  /** MongoDB, for the document-store half of the same job. */
+  'mongodb',
   'composer',
   /** The single-file database browser, served only through the panel itself. */
   'adminer',

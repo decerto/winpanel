@@ -10,7 +10,9 @@ import { downloadVerified } from '../components/download.js';
 import { extractZip } from '../components/archive.js';
 import { sites } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
-import { provisionDatabase, DatabaseError } from './databases.js';
+import { DatabaseError } from '../databases/errors.js';
+import { sitePrefix } from '../databases/names.js';
+import { provisionNamed } from '../databases/service.js';
 
 /**
  * Setting up a WordPress site, start to finish.
@@ -73,9 +75,13 @@ function tablePrefix(): string {
  * The database name for a site. Derived from its id rather than its slug so a
  * renamed site keeps its database, and prefixed so it sorts together and can
  * never collide with a database belonging to a different site.
+ *
+ * It is the site's whole prefix with nothing after it, which is what a site's
+ * databases have been named since before there was a page for creating them.
+ * Anything created from that page gets a chosen label after the same prefix.
  */
 export function wordpressDatabaseName(siteId: string): string {
-  return `wp_${siteId.replace(/-/g, '').slice(0, 24)}`;
+  return sitePrefix(siteId);
 }
 
 /**
@@ -238,12 +244,14 @@ export function createWordPressHandler(deps: WordPressDependencies) {
     // 3. Give it a database.
     ctx.log('Creating a database for WordPress…');
     ctx.progress(55);
-    const database = await provisionDatabase({
-      db: deps.db,
-      vault: deps.vault,
-      binDir: deps.binDir,
-      siteId,
+    const database = await provisionNamed({
+      ctx: { db: deps.db, vault: deps.vault, binDir: deps.binDir },
+      // WordPress wants MySQL, and MariaDB is what the panel runs for it.
+      engine: 'mariadb',
       name: wordpressDatabaseName(siteId),
+      siteId,
+      ownerUserId: site.ownerUserId,
+      label: 'WordPress',
     });
 
     // 4. Write wp-config.php outside the web root, so the database password

@@ -29,6 +29,8 @@ const PANEL_MANAGED = new Set([
   'vcredist',
   'php',
   'mariadb',
+  'postgres',
+  'mongodb',
   'composer',
   'adminer',
   'steamcmd',
@@ -39,6 +41,8 @@ const EXECUTABLES: Record<string, string[]> = {
   stalwart: ['stalwart.exe', 'stalwart-mail.exe'],
   php: ['php-cgi.exe', 'php.exe'],
   mariadb: ['mariadbd.exe', 'mysqld.exe'],
+  postgres: ['postgres.exe'],
+  mongodb: ['mongod.exe'],
 };
 
 function executablesFor(id: string): string[] {

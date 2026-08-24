@@ -1,12 +1,13 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import type { DatabaseEngine } from '@winpanel/shared';
 import { runDetached } from '../process/run-command.js';
 import { findExecutable } from '../components/archive.js';
 import { findStrayListeners, killProcessTree } from '../windows/stray-processes.js';
 import type { DatabaseHandle } from '../db/index.js';
 import type { SecretVault } from '../security/vault.js';
-import { readDatabasePassword } from './databases.js';
+import { readDatabasePassword } from '../databases/secrets.js';
 import { readSecret, writeSecret } from '../security/secret-store.js';
 
 /**
@@ -162,10 +163,13 @@ export async function ensureDbBrowser(
   await fs.writeFile(path.join(adminerDir, PROBE_NAME), PROBE_PHP);
 
   /*
-   * PHP loads no extensions at all without a php.ini, and Adminer needs
-   * mysqli to reach MariaDB — the per-site pools each get an ini for the
-   * same reason. The browser's is minimal: mysqli, and nothing a hosted
-   * page would want.
+   * PHP loads no extensions at all without a php.ini, and Adminer reaches a
+   * database through the extension for its driver — mysqli for MariaDB, pgsql
+   * for PostgreSQL. Both are enabled whether or not either server is
+   * installed: PHP simply warns about one it cannot use, and enabling them
+   * lazily would mean restarting this server every time a database server was
+   * installed. The ini is otherwise minimal — nothing a hosted page would
+   * want.
    */
   const iniPath = path.join(adminerDir, 'php.ini');
   const extensionDir = path.join(path.dirname(php), 'ext').replace(/\\/g, '/');
@@ -175,6 +179,7 @@ export async function ensureDbBrowser(
       '; Written by WinPanel for the database browser.',
       `extension_dir="${extensionDir}"`,
       'extension=mysqli',
+      'extension=pgsql',
       '',
     ].join('\r\n'),
   );
@@ -221,16 +226,23 @@ export async function ensureDbBrowser(
  * v1: the first probe, which checked only that mysqli was loaded.
  * v2: the plugin moved to the login() hook Adminer actually calls, gained the
  *     loader Adminer 6 requires, and the server got its own mysqli php.ini.
+ * v3: Adminer became the all-driver build and the ini gained pgsql, so a
+ *     server started by an older agent is running a page that cannot reach
+ *     PostgreSQL at all.
  */
 const PROBE_NAME = 'winpanel-probe.php';
 
-const PROBE_VERSION = 2;
+const PROBE_VERSION = 3;
 
 const PROBE_PHP = `<?php
-// Written by WinPanel. Reports whether this server can reach MariaDB at all,
+// Written by WinPanel. Reports which database drivers this server can use,
 // and which generation of the browser it is running.
 header('Content-Type: application/json');
-echo json_encode(array('mysqli' => extension_loaded('mysqli'), 'v' => ${PROBE_VERSION}));
+echo json_encode(array(
+  'mysqli' => extension_loaded('mysqli'),
+  'pgsql' => extension_loaded('pgsql'),
+  'v' => ${PROBE_VERSION},
+));
 `;
 
 async function probe(): Promise<boolean> {
@@ -258,12 +270,20 @@ async function probe(): Promise<boolean> {
 export async function mintDbTicket(options: {
   db: DatabaseHandle;
   vault: SecretVault;
-  siteId: string;
+  engine: DatabaseEngine;
   database: string;
+  /** The site the database belongs to, for finding a pre-engines password. */
+  siteId: string | null;
   /** The panel's data folder, already locked down to the service account. */
   dataDir: string;
 }): Promise<{ ticket: string; username: string }> {
-  const password = readDatabasePassword(options.db, options.vault, options.siteId, options.database);
+  const password = readDatabasePassword(
+    options.db,
+    options.vault,
+    options.engine,
+    options.database,
+    options.siteId,
+  );
   if (!password) {
     throw new Error('That database was not found.');
   }

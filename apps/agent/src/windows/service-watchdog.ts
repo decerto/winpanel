@@ -1,4 +1,11 @@
-import { CADDY_ADMIN_PORT, MAIL_PORTS, STALWART_HTTP_PORT } from '@winpanel/shared';
+import {
+  CADDY_ADMIN_PORT,
+  MAIL_PORTS,
+  MARIADB_PORT,
+  MONGODB_PORT,
+  POSTGRES_PORT,
+  STALWART_HTTP_PORT,
+} from '@winpanel/shared';
 import { allPortsSilent, isPortAnswered, type PortProbe } from './service-probe.js';
 import {
   describeHolder,
@@ -60,6 +67,31 @@ export const WATCHED_SERVICES: readonly WatchedService[] = [
     label: 'mail server',
     images: ['stalwart.exe', 'stalwart-mail.exe'],
     ports: [STALWART_HTTP_PORT, ...MAIL_PORTS],
+  },
+  /*
+   * The database servers. A website whose database is down is down, and the
+   * failure looks nothing like a broken site from the outside — so these are
+   * watched for exactly the same reasons the web server is: an orphan left
+   * holding the port after a sleep or a crash stops the service ever starting
+   * again, and nothing about that is visible without checking.
+   */
+  {
+    id: 'winpanel-mariadb',
+    label: 'MariaDB',
+    images: ['mariadbd.exe', 'mysqld.exe'],
+    ports: [MARIADB_PORT],
+  },
+  {
+    id: 'winpanel-postgres',
+    label: 'PostgreSQL',
+    images: ['postgres.exe'],
+    ports: [POSTGRES_PORT],
+  },
+  {
+    id: 'winpanel-mongodb',
+    label: 'MongoDB',
+    images: ['mongod.exe'],
+    ports: [MONGODB_PORT],
   },
 ];
 

@@ -14,6 +14,10 @@ import { api } from './api';
 export interface RuntimeStatus {
   php: boolean;
   mariadb: boolean;
+  postgres: boolean;
+  mongodb: boolean;
+  /** True when the server has any database engine at all. */
+  databases: boolean;
   composer: boolean;
   adminer: boolean;
   git: boolean;

@@ -7,7 +7,7 @@ import type { FastifyInstance } from 'fastify';
 import superjson from 'superjson';
 import { createAppContext, type AppContext } from '../src/app-context.js';
 import { createServer } from '../src/server.js';
-import { sites } from '../src/db/schema.js';
+import { hostedDatabases, sites } from '../src/db/schema.js';
 import { writeSecret } from '../src/security/secret-store.js';
 
 /**
@@ -42,6 +42,8 @@ let app: AppContext;
 let server: FastifyInstance;
 let adminer: http.Server;
 let cookie: string;
+/** The database the browser is opened against. Routes are keyed on its id. */
+let databaseId: string;
 
 /** What the stand-in Adminer last saw, for assertions about the proxy. */
 let seen: { method: string; url: string; body: string } | null = null;
@@ -156,7 +158,22 @@ beforeEach(async () => {
     .run();
 
   // The database's own password, in the vault the real mintDbTicket reads.
-  writeSecret(app.db, app.vault, `site.dbPass:${siteId}:shop_db`, 'the-real-password');
+  writeSecret(app.db, app.vault, 'db.pass:mariadb:shop_db', 'the-real-password');
+
+  // The record the route reads: it is what says which engine the database is
+  // on and who is allowed to open it.
+  databaseId = crypto.randomUUID();
+  app.db.db
+    .insert(hostedDatabases)
+    .values({
+      id: databaseId,
+      engine: 'mariadb',
+      name: 'shop_db',
+      username: 'shop_db',
+      siteId,
+      ownerUserId: null,
+    })
+    .run();
 
   seen = null;
   adminer = http.createServer(adminerHandler);
@@ -175,7 +192,7 @@ describe('opening the browser', () => {
   it('signs in server-side and keeps the session query in the redirect', async () => {
     const response = await server.inject({
       method: 'GET',
-      url: '/db/shop/shop_db',
+      url: `/db/${databaseId}`,
       headers: { cookie },
     });
 
@@ -184,7 +201,7 @@ describe('opening the browser', () => {
     // bounced the visitor back to a signed-out login form.
     expect(response.statusCode).toBe(302);
     expect(response.headers['location']).toBe(
-      '/db/shop/shop_db/adminer.php?server=127.0.0.1&username=shop_db&db=shop_db',
+      `/db/${databaseId}/adminer.php?server=127.0.0.1%3A3306&username=shop_db&db=shop_db`,
     );
 
     // The ticket was posted to Adminer as the password, server-side, and
@@ -194,6 +211,8 @@ describe('opening the browser', () => {
     const posted = new URLSearchParams(seen?.body ?? '');
     expect(posted.get('auth[username]')).toBe('shop_db');
     expect(posted.get('auth[password]')).toMatch(/^wpt_[a-f0-9]+$/);
+    // MariaDB is Adminer's plain `server` driver; PostgreSQL would be pgsql.
+    expect(posted.get('auth[driver]')).toBe('server');
     // Consumed at connect time, never left on disk.
     expect(await fs.readdir(path.join(app.config.dataDir, 'db-tickets'))).toEqual([]);
   });
@@ -201,7 +220,7 @@ describe('opening the browser', () => {
   it('hands the visitor Adminer session cookie across, re-scoped to the proxy path', async () => {
     const response = await server.inject({
       method: 'GET',
-      url: '/db/shop/shop_db',
+      url: `/db/${databaseId}`,
       headers: { cookie },
     });
 
@@ -209,12 +228,12 @@ describe('opening the browser', () => {
     // to /db/… — the proxy rewrites it, or every sign-in would look like
     // the first visit.
     expect(response.headers['set-cookie']).toContain(
-      'adminer_sid=testsession; path=/db/shop/shop_db; HttpOnly',
+      `adminer_sid=testsession; path=/db/${databaseId}; HttpOnly`,
     );
   });
 
   it('asks for the panel session before anything else', async () => {
-    const response = await server.inject({ method: 'GET', url: '/db/shop/shop_db' });
+    const response = await server.inject({ method: 'GET', url: `/db/${databaseId}` });
     expect(response.statusCode).toBe(401);
     expect(seen).toBeNull();
   });
@@ -226,7 +245,7 @@ describe('the proxy', () => {
     // carry Origin: null. That is an opaque origin, not a foreign one.
     const response = await server.inject({
       method: 'POST',
-      url: '/db/shop/shop_db/adminer.php',
+      url: `/db/${databaseId}/adminer.php`,
       headers: {
         cookie,
         origin: 'null',
@@ -243,7 +262,7 @@ describe('the proxy', () => {
   it('still refuses a write the browser says came from another site', async () => {
     const response = await server.inject({
       method: 'POST',
-      url: '/db/shop/shop_db/adminer.php',
+      url: `/db/${databaseId}/adminer.php`,
       headers: {
         cookie,
         origin: 'https://evil.example',
@@ -262,22 +281,35 @@ describe('the proxy', () => {
   it('re-anchors Adminer page-relative redirects on the proxy path', async () => {
     const response = await server.inject({
       method: 'GET',
-      url: '/db/shop/shop_db/adminer.php?redirect=1',
+      url: `/db/${databaseId}/adminer.php?redirect=1`,
       headers: { cookie },
     });
 
     expect(response.statusCode).toBe(302);
-    expect(response.headers['location']).toBe('/db/shop/shop_db/adminer.php?sql=SELECT');
+    expect(response.headers['location']).toBe(`/db/${databaseId}/adminer.php?sql=SELECT`);
   });
 
   it('re-anchors script-relative redirects on the proxy path', async () => {
     const response = await server.inject({
       method: 'GET',
-      url: '/db/shop/shop_db/adminer.php?redirect=script',
+      url: `/db/${databaseId}/adminer.php?redirect=script`,
       headers: { cookie },
     });
 
     expect(response.statusCode).toBe(302);
-    expect(response.headers['location']).toBe('/db/shop/shop_db/adminer.php?table=people');
+    expect(response.headers['location']).toBe(`/db/${databaseId}/adminer.php?table=people`);
+  });
+
+  it('reports a database that does not exist as not found', async () => {
+    // Never "not allowed": an id that belongs to somebody else has to be
+    // indistinguishable from one that was never issued.
+    const response = await server.inject({
+      method: 'GET',
+      url: `/db/${crypto.randomUUID()}`,
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(seen).toBeNull();
   });
 });

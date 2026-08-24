@@ -56,6 +56,12 @@ Minecraft, Palworld, Project Zomboid and other Steam dedicated servers on Window
 one a supervised Windows Service with its own ports, firewall rules, file manager and
 customer login, and a library you can extend with a config file.
 
+### [How to host your own databases on Windows](databases-on-windows.html)
+
+MariaDB, PostgreSQL and MongoDB, each a one-click install bound to loopback. Creating
+databases, how one customer's login is kept out of another's data, per-account allowances,
+and the browser built into the panel.
+
 ---
 
 ## What WinPanel is
@@ -74,7 +80,8 @@ by a bundled MariaDB database, with a database browser built in. It supports Win
   titles, each a Windows Service with its own ports and firewall rules. Any game not in the
   list is a JSON file away — the library is a config folder, not a code path
 - **WordPress & PHP** — one-click WordPress, and PHP sites on a supervised worker pool
-- **Databases** — MariaDB with per-site databases and a built-in browser
+- **Databases** — MariaDB, PostgreSQL and MongoDB, each a one-click install, with
+  per-account limits and a browser built in
 - **HTTPS** — free certificates, renewed automatically, over the DNS challenge
 - **DNS** — Cloudflare records per website, including a reviewed "point this domain here"
 - **Email** — self-hosted mailboxes with quotas, aliases, DKIM and webmail
@@ -99,4 +106,5 @@ installation instructions are in the
 - [Host your own email on Windows Server](https://github.com/decerto/winpanel/wiki/Host-Your-Own-Email-on-Windows-Server)
 - [Free Plesk alternative for Windows Server](https://github.com/decerto/winpanel/wiki/Free-Plesk-Alternative-for-Windows-Server)
 - [Host a Minecraft server on Windows](game-servers-on-windows.html)
+- [Host your own databases on Windows](databases-on-windows.html)
 - [Windows Server vs Linux for web hosting](https://github.com/decerto/winpanel/wiki/Windows-Server-vs-Linux-for-Web-Hosting)

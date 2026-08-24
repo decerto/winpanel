@@ -91,7 +91,6 @@ const deployLabel = computed(() => {
 const TABS = computed(() => {
   const runsAProcess = site.value?.runtime === 'node' || site.value?.runtime === 'dotnet';
   const isPhp = site.value?.runtime === 'php';
-  const hasDatabases = isPhp || site.value?.preset === 'wordpress';
 
   return [
     { name: 'site-detail', label: 'Overview', icon: Gauge, show: true },
@@ -104,7 +103,14 @@ const TABS = computed(() => {
       show: runsAProcess,
     },
     { name: 'site-php', label: 'PHP', icon: Code2, show: isPhp },
-    { name: 'site-databases', label: 'Databases', icon: Database, show: hasDatabases },
+    /*
+     * Databases used to be a PHP and WordPress affair, because MariaDB was
+     * the only engine and PHP was the only thing that asked for it. Now that
+     * a Node or .NET site can be given PostgreSQL or MongoDB just as easily,
+     * what decides the tab is whether this server has a database at all —
+     * not what the site happens to be written in.
+     */
+    { name: 'site-databases', label: 'Databases', icon: Database, show: hasDatabases.value },
     { name: 'site-traffic', label: 'Traffic', icon: Activity, show: true },
     { name: 'site-dns', label: 'DNS', icon: Globe2, show: true },
     { name: 'site-ssl', label: 'SSL', icon: ShieldCheck, show: true },
@@ -112,6 +118,14 @@ const TABS = computed(() => {
     { name: 'site-settings', label: 'Settings', icon: SlidersHorizontal, show: true },
   ].filter((tab) => tab.show);
 });
+
+/**
+ * Whether this server can offer databases at all.
+ *
+ * Asked of the server rather than assumed from the runtime, and false until
+ * the answer arrives, so the tab never appears and then disappears again.
+ */
+const hasDatabases = ref(false);
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -139,6 +153,13 @@ async function deploy(): Promise<void> {
 }
 
 watch(slug, load, { immediate: true });
+
+// Asked once for the whole layout: the answer is about the machine and the
+// account, not about this website, so it does not change between sites.
+void api.databases.engines
+  .query()
+  .then((result) => (hasDatabases.value = result.visible))
+  .catch(() => undefined);
 
 provide(siteContextKey, { site, reload: load, deploy, deploying });
 </script>
