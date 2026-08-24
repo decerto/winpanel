@@ -269,6 +269,37 @@ export class ServiceManager {
     );
   }
 
+  private async grantAccountAccess(
+    account: string,
+    target: string,
+    permissions: string,
+  ): Promise<void> {
+    const result = await runCommand({
+      exe: 'icacls.exe',
+      args: [target, '/grant', `${account}:${permissions}`],
+      timeoutMs: 60_000,
+    });
+
+    if (result.exitCode !== 0) {
+      throw new Error(`Could not grant ${account} access to ${target}.`);
+    }
+  }
+
+  private async grantServiceAccess(
+    definition: ServiceDefinition,
+    wrapperPath: string,
+    configPath: string,
+  ): Promise<void> {
+    if (!definition.account || process.platform !== 'win32') return;
+
+    const account = definition.account.username;
+    await this.grantAccountAccess(account, path.dirname(this.configDir), '(X)');
+    await this.grantAccountAccess(account, this.configDir, '(X)');
+    await this.grantAccountAccess(account, wrapperPath, '(RX)');
+    await this.grantAccountAccess(account, configPath, '(R)');
+    await this.grantAccountAccess(account, definition.logPath, '(OI)(CI)M');
+  }
+
   /** Writes the config and registers the service. */
   async install(definition: ServiceDefinition): Promise<void> {
     await fs.mkdir(this.configDir, { recursive: true });
@@ -288,6 +319,7 @@ export class ServiceManager {
     // The file may hold a service account password, so restrict it before it
     // ever contains one.
     await fs.writeFile(configPath, buildServiceXml(definition), { mode: 0o600 });
+    await this.grantServiceAccess(definition, wrapperPath, configPath);
 
     const result = await runCommand({
       exe: wrapperPath,

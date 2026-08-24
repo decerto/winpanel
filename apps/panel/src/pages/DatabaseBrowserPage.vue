@@ -169,7 +169,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="max-w-6xl">
+  <div class="mx-auto w-full max-w-6xl">
     <RouterLink
       to="/databases"
       class="mb-4 inline-flex items-center gap-1.5 text-sm text-ink-muted hover:text-ink"

@@ -248,7 +248,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="max-w-6xl">
+  <div class="mx-auto w-full max-w-6xl">
     <PageHeader
       title="Databases"
       description="Where your applications keep their data. Each database gets its own login that

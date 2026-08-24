@@ -458,17 +458,17 @@ onMounted(() => {
         <div v-if="token" class="flex items-center gap-2">
           <button
             type="button"
-            class="btn btn-ghost btn-sm"
+            class="btn btn-ghost"
             :disabled="loading"
             @click="loadFolders"
           >
             <RefreshCw :size="14" :class="loading ? 'animate-spin' : ''" aria-hidden="true" />
             Refresh
           </button>
-          <button type="button" class="btn btn-primary btn-sm" @click="compose">
+          <button type="button" class="btn btn-primary" @click="compose">
             <Pencil :size="14" aria-hidden="true" /> Write
           </button>
-          <button type="button" class="btn btn-ghost btn-sm" @click="signOut">
+          <button type="button" class="btn btn-ghost" @click="signOut">
             <LogOut :size="14" aria-hidden="true" /> Close mailbox
           </button>
         </div>

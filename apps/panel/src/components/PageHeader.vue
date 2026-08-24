@@ -16,7 +16,7 @@ defineProps<{ title: string; description?: string }>();
       <p v-if="description" class="mt-1 max-w-2xl text-sm text-ink-muted">{{ description }}</p>
     </div>
 
-    <div class="flex shrink-0 items-center gap-2">
+    <div class="page-header-actions flex shrink-0 items-center gap-2">
       <slot name="actions" />
     </div>
   </div>

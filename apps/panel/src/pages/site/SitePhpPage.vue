@@ -69,7 +69,7 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-3xl space-y-5">
+  <div class="space-y-5">
     <section class="card p-6">
       <div class="flex items-start gap-3">
         <span

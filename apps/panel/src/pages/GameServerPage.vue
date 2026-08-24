@@ -401,7 +401,7 @@ onUnmounted(() => {
           <button
             v-if="(server.state === 'uninstalled' || server.state === 'failed') && server.installAllowed"
             type="button"
-            class="btn btn-primary btn-sm"
+            class="btn btn-primary"
             :disabled="busy || installJob.running.value"
             @click="installServer(false)"
           >
@@ -417,7 +417,7 @@ onUnmounted(() => {
           <button
             v-if="server.serviceId && server.state !== 'running'"
             type="button"
-            class="btn btn-primary btn-sm"
+            class="btn btn-primary"
             :disabled="busy"
             @click="serviceAction('start')"
           >
@@ -426,7 +426,7 @@ onUnmounted(() => {
           <button
             v-if="server.serviceId && server.state === 'running'"
             type="button"
-            class="btn btn-ghost btn-sm"
+            class="btn btn-ghost"
             :disabled="busy"
             @click="serviceAction('stop')"
           >
@@ -435,7 +435,7 @@ onUnmounted(() => {
           <button
             v-if="server.serviceId"
             type="button"
-            class="btn btn-ghost btn-sm"
+            class="btn btn-ghost"
             :disabled="busy"
             @click="serviceAction('restart')"
           >
@@ -449,14 +449,14 @@ onUnmounted(() => {
           <button
             v-if="server.serviceId"
             type="button"
-            class="btn btn-ghost btn-sm"
+            class="btn btn-ghost"
             :disabled="busy || installJob.running.value"
             @click="updateServer"
           >
             <RefreshCw :size="14" aria-hidden="true" />
             {{ installJob.running.value ? 'Updating...' : 'Update' }}
           </button>
-          <button type="button" class="btn btn-danger btn-sm" :disabled="busy" @click="removeServer">
+          <button type="button" class="btn btn-danger" :disabled="busy" @click="removeServer">
             Delete
           </button>
         </template>

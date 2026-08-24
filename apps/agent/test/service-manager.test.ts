@@ -207,6 +207,32 @@ describe('buildServiceXml', () => {
   it('omits the account block entirely when none is given', () => {
     expect(buildServiceXml(base)).not.toContain('<serviceaccount>');
   });
+
+  it('lays out a service account configuration before registering it', async () => {
+    const configDir = path.join(os.tmpdir(), `winpanel-account-${Date.now()}`);
+    await fs.mkdir(configDir, { recursive: true });
+    const template = path.join(configDir, 'WinSW.exe');
+    await fs.writeFile(template, 'stand-in for the wrapper binary');
+
+    try {
+      const manager = new ServiceManager(template, path.join(configDir, 'services'));
+
+      await expect(
+        manager.install({
+          ...base,
+          id: 'winpanel-postgres',
+          account: { username: 'NT AUTHORITY\\NetworkService', password: '' },
+        }),
+      ).rejects.toThrow();
+
+      await expect(fs.access(manager.wrapperPathFor('winpanel-postgres'))).resolves.toBeUndefined();
+      await expect(
+        fs.readFile(path.join(configDir, 'services', 'winpanel-postgres.xml'), 'utf8'),
+      ).resolves.toContain('<username>NT AUTHORITY\\NetworkService</username>');
+    } finally {
+      await fs.rm(configDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('readServiceState', () => {
