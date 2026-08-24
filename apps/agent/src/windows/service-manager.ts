@@ -89,6 +89,35 @@ export interface ServiceDefinition {
   account?: { username: string; password: string };
 }
 
+/**
+ * Splits `DOMAIN\user` for WinSW, which wants the two parts separately.
+ *
+ * A built-in account is meaningless without its authority: `NetworkService`
+ * alone does not resolve, while `NT AUTHORITY\NetworkService` does.
+ */
+export function splitAccountName(username: string): { domain: string | null; user: string } {
+  const at = username.indexOf('\\');
+  if (at === -1) return { domain: null, user: username };
+
+  return { domain: username.slice(0, at), user: username.slice(at + 1) };
+}
+
+/** The account `sc qc` reports a service will run as. */
+export function readServiceAccount(output: string): string | null {
+  return /^\s*SERVICE_START_NAME\s*:\s*(.+)$/m.exec(output)?.[1]?.trim() ?? null;
+}
+
+/**
+ * Whether two account names mean the same Windows account.
+ *
+ * Only the name after the domain is compared, because Windows reports back a
+ * domain it has normalised — `.\name` becomes the machine name — and a check
+ * that failed on that would refuse installs that had in fact worked.
+ */
+function sameAccount(left: string, right: string): boolean {
+  return splitAccountName(left).user.toLowerCase() === splitAccountName(right).user.toLowerCase();
+}
+
 /** Escapes text for inclusion in an XML text node or attribute. */
 function escapeXml(value: string): string {
   return value
@@ -130,10 +159,22 @@ export function buildServiceXml(definition: ServiceDefinition): string {
     lines.push(`  <env name="${escapeXml(key)}" value="${escapeXml(value)}"/>`);
   }
 
+  /*
+   * WinSW v2 names these `<domain>` and `<user>`. The `<username>` of v3 is
+   * parsed without complaint and then ignored, so the service is registered as
+   * LocalSystem instead — which is how PostgreSQL came to be started with an
+   * administrator token, which it refuses to run under.
+   */
   if (definition.account) {
+    const { domain, user } = splitAccountName(definition.account.username);
+
     lines.push('  <serviceaccount>');
-    lines.push(`    <username>${escapeXml(definition.account.username)}</username>`);
-    lines.push(`    <password>${escapeXml(definition.account.password)}</password>`);
+    if (domain) lines.push(`    <domain>${escapeXml(domain)}</domain>`);
+    lines.push(`    <user>${escapeXml(user)}</user>`);
+    // The built-in accounts have no password, and WinSW ignores one given.
+    if (definition.account.password) {
+      lines.push(`    <password>${escapeXml(definition.account.password)}</password>`);
+    }
     lines.push('    <allowservicelogon>true</allowservicelogon>');
     lines.push('  </serviceaccount>');
   }
@@ -333,6 +374,28 @@ export class ServiceManager {
           describeFailure(result),
       );
     }
+
+    await this.verifyAccount(definition);
+  }
+
+  /**
+   * Confirms the service really was registered as the account that was asked
+   * for, because a wrapper that does not understand the request registers it
+   * as LocalSystem and reports success either way. Left unchecked, that turns
+   * into a program failing minutes later for a reason that names neither the
+   * account nor the configuration file it came from.
+   */
+  private async verifyAccount(definition: ServiceDefinition): Promise<void> {
+    if (!definition.account) return;
+
+    const query = await runCommand({ exe: 'sc.exe', args: ['qc', definition.id], timeoutMs: 15_000 });
+    const actual = readServiceAccount(query.stdout);
+    if (!actual || sameAccount(actual, definition.account.username)) return;
+
+    throw new Error(
+      `The "${definition.displayName}" service was registered as ${actual} rather than ` +
+        `${definition.account.username}, so it would run with the wrong permissions.`,
+    );
   }
 
   /**

@@ -6,8 +6,10 @@ import {
   ServiceManager,
   buildServiceXml,
   describeCrashLog,
+  readServiceAccount,
   readServiceState,
   replaceEnvironmentInXml,
+  splitAccountName,
   waitUntilGone,
   type ServiceState,
 } from '../src/windows/service-manager.js';
@@ -200,8 +202,38 @@ describe('buildServiceXml', () => {
       account: { username: '.\\winpanel-run', password: 'generated-secret' },
     });
 
-    expect(xml).toContain('<username>.\\winpanel-run</username>');
+    expect(xml).toContain('<domain>.</domain>');
+    expect(xml).toContain('<user>winpanel-run</user>');
+    expect(xml).toContain('<password>generated-secret</password>');
     expect(xml).toContain('<allowservicelogon>true</allowservicelogon>');
+  });
+
+  it('names the account the way WinSW v2 reads it, not the way v3 does', () => {
+    /*
+     * WinSW v2 reads <domain> and <user>. It accepts the <username> of v3
+     * without complaint and ignores it, registering the service as
+     * LocalSystem - which is how PostgreSQL came to be started with an
+     * administrator token and refused to run at all.
+     */
+    const xml = buildServiceXml({
+      ...base,
+      account: { username: 'NT AUTHORITY\\NetworkService', password: '' },
+    });
+
+    expect(xml).toContain('<domain>NT AUTHORITY</domain>');
+    expect(xml).toContain('<user>NetworkService</user>');
+    expect(xml).not.toContain('<username>');
+  });
+
+  it('leaves out the password of an account that has none', () => {
+    // The built-in accounts have no password, and an empty element is not the
+    // same as no element to every reader of this file.
+    const xml = buildServiceXml({
+      ...base,
+      account: { username: 'NT AUTHORITY\\NetworkService', password: '' },
+    });
+
+    expect(xml).not.toContain('<password>');
   });
 
   it('omits the account block entirely when none is given', () => {
@@ -228,10 +260,51 @@ describe('buildServiceXml', () => {
       await expect(fs.access(manager.wrapperPathFor('winpanel-postgres'))).resolves.toBeUndefined();
       await expect(
         fs.readFile(path.join(configDir, 'services', 'winpanel-postgres.xml'), 'utf8'),
-      ).resolves.toContain('<username>NT AUTHORITY\\NetworkService</username>');
+      ).resolves.toContain('<user>NetworkService</user>');
     } finally {
       await fs.rm(configDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('readServiceAccount', () => {
+  const qc = (account: string) =>
+    [
+      '[SC] QueryServiceConfig SUCCESS',
+      '',
+      'SERVICE_NAME: winpanel-postgres',
+      '        TYPE               : 10  WIN32_OWN_PROCESS',
+      '        BINARY_PATH_NAME   : C:\\WinPanel\\data\\services\\winpanel-postgres.exe',
+      `        SERVICE_START_NAME : ${account}`,
+    ].join('\r\n');
+
+  it('reads the account a service is registered to run as', () => {
+    expect(readServiceAccount(qc('NT AUTHORITY\\NetworkService'))).toBe(
+      'NT AUTHORITY\\NetworkService',
+    );
+  });
+
+  it('spots a service that silently fell back to LocalSystem', () => {
+    // The failure this exists to catch: PostgreSQL will not run under an
+    // administrator token, and LocalSystem is one.
+    expect(readServiceAccount(qc('LocalSystem'))).toBe('LocalSystem');
+  });
+
+  it('has nothing to report when the service is not there', () => {
+    expect(readServiceAccount('The specified service does not exist.')).toBeNull();
+  });
+});
+
+describe('splitAccountName', () => {
+  it('separates a built-in account from its authority', () => {
+    expect(splitAccountName('NT AUTHORITY\\NetworkService')).toEqual({
+      domain: 'NT AUTHORITY',
+      user: 'NetworkService',
+    });
+  });
+
+  it('treats a bare name as having no domain', () => {
+    expect(splitAccountName('LocalSystem')).toEqual({ domain: null, user: 'LocalSystem' });
   });
 });
 
