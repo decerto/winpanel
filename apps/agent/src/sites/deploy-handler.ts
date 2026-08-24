@@ -50,6 +50,12 @@ export interface DeployPayload {
   ref?: string;
   /** Set when deploying from an uploaded archive already extracted here. */
   uploadedReleaseDir?: string;
+  /**
+   * Who pressed the button, and therefore whose access token is used.
+   * A deploy with nobody behind it can only reach a public repository or one
+   * the website's own deploy key opens.
+   */
+  actorUserId?: string;
 }
 
 export interface DeployDependencies {
@@ -65,8 +71,8 @@ export interface DeployDependencies {
   binDir: string;
   /** Resolves a site's secrets from the vault. */
   loadEnv: (siteId: string) => Promise<Record<string, string>>;
-  /** Git token for private repositories, if configured. */
-  loadGitToken: (siteId: string) => Promise<string | undefined>;
+  /** Git token for private repositories, belonging to whoever is deploying. */
+  loadGitToken: (siteId: string, userId: string | undefined) => Promise<string | undefined>;
   /** Deploy key for private repositories reached over SSH, if configured. */
   loadGitSshKey: (siteId: string) => Promise<string | undefined>;
   /** Where SSH host keys are pinned after the first connection. */
@@ -376,7 +382,7 @@ export function createDeployHandler(deps: DeployDependencies) {
 
         const git = new GitClient({
           gitPath: deps.gitPath,
-          token: await deps.loadGitToken(site.id),
+          token: await deps.loadGitToken(site.id, payload.actorUserId),
           sshPrivateKey: await deps.loadGitSshKey(site.id),
           ...(deps.sshKnownHostsPath ? { knownHostsPath: deps.sshKnownHostsPath } : {}),
           onOutput: (line) => {

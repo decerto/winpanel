@@ -6,8 +6,10 @@ import {
   UpdateUserRequest,
   UserRole,
   roleAtLeast,
+  type SiteSource,
 } from '@winpanel/shared';
 import { AuthError } from '../../services/auth-service.js';
+import { isSshUrl } from '../../sites/ssh-keys.js';
 import { adminProcedure, router } from '../trpc.js';
 import type { RequestContext } from '../trpc.js';
 
@@ -164,6 +166,11 @@ export const usersRouter = router({
    *
    * The one way a site changes hands, and the reason deleting an account does
    * not delete its sites. Passing `userId: null` gives it back to the server.
+   *
+   * Nothing is done to the stored repository credentials, because there is
+   * nothing to do: an access token belongs to the person who added it, so it
+   * neither follows the website to its new owner nor is taken away from
+   * whoever set the site up. The new owner adds their own.
    */
   assignSite: adminProcedure
     .input(z.object({ slug: z.string().min(1).max(64), userId: z.string().uuid().nullable() }))
@@ -186,6 +193,15 @@ export const usersRouter = router({
       }
 
       ctx.app.sites.setOwner(site.id, input.userId);
-      return { ok: true };
+
+      const source = site.source as SiteSource;
+      const isSsh = source.kind === 'git' && isSshUrl(source.url);
+      const needsOwnGitAccess =
+        source.kind === 'git' &&
+        !isSsh &&
+        input.userId !== null &&
+        !ctx.app.sites.gitTokenHolders(site.id).some((holder) => holder.userId === input.userId);
+
+      return { ok: true, needsOwnGitAccess };
     }),
 });

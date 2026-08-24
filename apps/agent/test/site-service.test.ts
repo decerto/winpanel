@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -119,21 +120,133 @@ describe('SiteService.create', () => {
     expect(manifest.envVars).toEqual(['DATABASE_URL', 'PORT']);
   }, 30_000);
 
-  it('stores a repository token encrypted', async () => {
-    const { id } = await service.create({ ...baseInput, gitToken: 'ghp_secrettokenvalue' });
+  it('stores a repository token encrypted, against the person who added it', async () => {
+    const alice = crypto.randomUUID();
+    const bob = crypto.randomUUID();
+    const { id } = await service.create({
+      ...baseInput,
+      gitToken: { userId: alice, token: 'ghp_secrettokenvalue' },
+    });
 
     const row = handle.sqlite
       .prepare('SELECT ciphertext FROM secrets WHERE key = ?')
-      .get(`site.gitToken:${id}`) as { ciphertext: string };
+      .get(`site.gitToken:${id}:${alice}`) as { ciphertext: string };
 
     expect(row.ciphertext).not.toContain('ghp_secrettokenvalue');
-    expect(await service.getGitToken(id)).toBe('ghp_secrettokenvalue');
+    expect(await service.getGitToken(id, alice)).toBe('ghp_secrettokenvalue');
+
+    // The whole point: handing the site to Bob must not hand him Alice's
+    // credential, so his view of the same site has no token at all.
+    expect(await service.getGitToken(id, bob)).toBeUndefined();
+  }, 30_000);
+
+  it('lists who has stored access without decrypting anything', async () => {
+    const alice = crypto.randomUUID();
+    const bob = crypto.randomUUID();
+    const { id } = await service.create(baseInput);
+
+    await service.setGitToken(id, alice, 'ghp_alice');
+    await service.setGitToken(id, bob, 'ghp_bob');
+
+    expect(service.gitTokenHolders(id).map((holder) => holder.userId).sort()).toEqual(
+      [alice, bob].sort(),
+    );
+
+    service.clearGitToken(id, bob);
+    expect(service.gitTokenHolders(id).map((holder) => holder.userId)).toEqual([alice]);
+    expect(await service.getGitToken(id, alice)).toBe('ghp_alice');
+  }, 30_000);
+
+  it('forgets a token given an empty value rather than storing one', async () => {
+    const alice = crypto.randomUUID();
+    const { id } = await service.create(baseInput);
+
+    await service.setGitToken(id, alice, 'ghp_alice');
+    await service.setGitToken(id, alice, '   ');
+
+    expect(service.gitTokenHolders(id)).toEqual([]);
+    expect(await service.getGitToken(id, alice)).toBeUndefined();
   }, 30_000);
 
   it('returns nothing rather than throwing when a secret is absent', async () => {
     const { id } = await service.create(baseInput);
-    expect(await service.getGitToken(id)).toBeUndefined();
+    expect(await service.getGitToken(id, crypto.randomUUID())).toBeUndefined();
     expect(await service.getEnv(id)).toEqual({});
+  }, 30_000);
+});
+
+describe('SiteService.adoptLegacyGitTokens', () => {
+  const baseInput = {
+    displayName: 'Kitora',
+    domains: ['kitora.io'],
+    source: { kind: 'git' as const, url: 'https://example.com/x.git', branch: 'main', subdirectory: '' },
+    manifest: SiteManifest.parse({}),
+  };
+
+  /** A token from before tokens had an owner: keyed by site alone. */
+  function writeLegacyToken(siteId: string, token: string): void {
+    const key = `site.gitToken:${siteId}`;
+    handle.sqlite
+      .prepare('INSERT INTO secrets (key, ciphertext) VALUES (?, ?)')
+      .run(key, vault.encrypt(token, key));
+  }
+
+  it("gives the site's own token to the site's owner", async () => {
+    const owner = crypto.randomUUID();
+    handle.sqlite
+      .prepare('INSERT INTO users (id, username, password_hash, role) VALUES (?, ?, ?, ?)')
+      .run(owner, 'customer', 'x', 'user');
+
+    const { id } = await service.create({ ...baseInput, ownerUserId: owner });
+    writeLegacyToken(id, 'ghp_legacy');
+
+    expect(await service.adoptLegacyGitTokens(null)).toBe(1);
+
+    // Re-encrypted under the new key, which is bound to it as AAD, and the
+    // shared copy anyone could have used is gone.
+    expect(await service.getGitToken(id, owner)).toBe('ghp_legacy');
+    expect(service.gitTokenHolders(id).map((holder) => holder.userId)).toEqual([owner]);
+    expect(
+      handle.sqlite.prepare('SELECT count(*) as n FROM secrets WHERE key = ?').get(
+        `site.gitToken:${id}`,
+      ),
+    ).toEqual({ n: 0 });
+  }, 30_000);
+
+  it('gives a server-owned site\u2019s token to the first owner account', async () => {
+    const superadmin = crypto.randomUUID();
+    handle.sqlite
+      .prepare('INSERT INTO users (id, username, password_hash, role) VALUES (?, ?, ?, ?)')
+      .run(superadmin, 'jordan', 'x', 'superadmin');
+
+    const { id } = await service.create(baseInput);
+    writeLegacyToken(id, 'ghp_legacy');
+
+    expect(await service.adoptLegacyGitTokens(superadmin)).toBe(1);
+    expect(await service.getGitToken(id, superadmin)).toBe('ghp_legacy');
+  }, 30_000);
+
+  it('deletes a token it cannot give to anybody', async () => {
+    const { id } = await service.create(baseInput);
+    writeLegacyToken(id, 'ghp_legacy');
+
+    expect(await service.adoptLegacyGitTokens(null)).toBe(0);
+    expect(service.gitTokenHolders(id)).toEqual([]);
+    expect(
+      handle.sqlite.prepare('SELECT count(*) as n FROM secrets WHERE key LIKE ?').get(
+        `site.gitToken:${id}%`,
+      ),
+    ).toEqual({ n: 0 });
+  }, 30_000);
+
+  it('leaves tokens that already have an owner alone, and is safe to repeat', async () => {
+    const alice = crypto.randomUUID();
+    const { id } = await service.create(baseInput);
+    await service.setGitToken(id, alice, 'ghp_alice');
+
+    expect(await service.adoptLegacyGitTokens(crypto.randomUUID())).toBe(0);
+    expect(await service.adoptLegacyGitTokens(crypto.randomUUID())).toBe(0);
+    expect(await service.getGitToken(id, alice)).toBe('ghp_alice');
   }, 30_000);
 });
 
@@ -157,12 +270,15 @@ describe('SiteService.remove', () => {
   }, 30_000);
 
   it('removes the stored secrets', async () => {
-    const { id } = await service.create({ ...baseInput, gitToken: 'ghp_token' });
+    const { id } = await service.create({
+      ...baseInput,
+      gitToken: { userId: crypto.randomUUID(), token: 'ghp_token' },
+    });
     await service.remove(id, { deleteFiles: false });
 
     const remaining = handle.sqlite
       .prepare('SELECT count(*) as n FROM secrets WHERE key LIKE ?')
-      .get(`%${id}`) as { n: number };
+      .get(`%${id}%`) as { n: number };
 
     expect(remaining.n).toBe(0);
   }, 30_000);

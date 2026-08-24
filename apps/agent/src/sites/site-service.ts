@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { desc, eq, isNull } from 'drizzle-orm';
+import { desc, eq, isNull, like } from 'drizzle-orm';
 import {
   PUBLIC_DIR,
   RELEASE_DIR,
@@ -55,6 +55,18 @@ export function slugify(input: string): string {
   return cleaned;
 }
 
+/**
+ * Where one person's access token for one website is kept.
+ *
+ * Keyed by both, deliberately. A token is a credential for somebody's whole
+ * account on the git host, so it cannot belong to the website: handing the
+ * website to a customer would otherwise hand them the credential with it, and
+ * they could point the site at any repository that token can read.
+ */
+function gitTokenKey(siteId: string, userId: string): string {
+  return `site.gitToken:${siteId}:${userId}`;
+}
+
 export interface CreateSiteInput {
   displayName: string;
   /** May be empty: the site is then reachable on its preview port only. */
@@ -62,7 +74,8 @@ export interface CreateSiteInput {
   source: SiteSource;
   manifest: SiteManifest;
   envVars?: Record<string, string>;
-  gitToken?: string;
+  /** An access token belongs to the person who pasted it, not to the site. */
+  gitToken?: { userId: string; token: string };
   /** OpenSSH private key of a deploy key, for a private repository. */
   gitSshKey?: { privateKey: string; publicKey: string };
   diskQuotaBytes?: number;
@@ -369,7 +382,9 @@ export class SiteService {
           : [];
 
       if (input.envVars) await this.setEnv(id, input.envVars);
-      if (input.gitToken) await this.setGitToken(id, input.gitToken);
+      if (input.gitToken) {
+        await this.setGitToken(id, input.gitToken.userId, input.gitToken.token);
+      }
       if (input.gitSshKey) {
         await this.setGitSshKey(id, input.gitSshKey.privateKey, input.gitSshKey.publicKey);
       }
@@ -396,6 +411,7 @@ export class SiteService {
     this.ports.release(id);
     this.db.db.delete(secrets).where(eq(secrets.key, `site.env:${id}`)).run();
     this.db.db.delete(secrets).where(eq(secrets.key, `site.gitToken:${id}`)).run();
+    this.db.db.delete(secrets).where(like(secrets.key, `site.gitToken:${id}:%`)).run();
     this.db.db.delete(secrets).where(eq(secrets.key, `site.gitSshKey:${id}`)).run();
     this.db.db.delete(secrets).where(eq(secrets.key, `site.gitSshPublicKey:${id}`)).run();
     this.db.db.delete(secrets).where(eq(secrets.key, `site.cloudflareToken:${id}`)).run();
@@ -449,8 +465,14 @@ export class SiteService {
     }
   }
 
-  async setGitToken(siteId: string, token: string): Promise<void> {
-    const key = `site.gitToken:${siteId}`;
+  async setGitToken(siteId: string, userId: string, token: string): Promise<void> {
+    const key = gitTokenKey(siteId, userId);
+
+    if (token.trim().length === 0) {
+      this.db.db.delete(secrets).where(eq(secrets.key, key)).run();
+      return;
+    }
+
     const ciphertext = this.vault.encrypt(token, key);
 
     this.db.db
@@ -460,16 +482,68 @@ export class SiteService {
       .run();
   }
 
-  async getGitToken(siteId: string): Promise<string | undefined> {
-    const key = `site.gitToken:${siteId}`;
-    const row = this.db.db.select().from(secrets).where(eq(secrets.key, key)).get();
-    if (!row) return undefined;
+  async getGitToken(siteId: string, userId: string): Promise<string | undefined> {
+    return this.readSecret(gitTokenKey(siteId, userId));
+  }
 
-    try {
-      return this.vault.decrypt(row.ciphertext, key);
-    } catch {
-      return undefined;
+  /** Forgets one person's token for one website. */
+  clearGitToken(siteId: string, userId: string): void {
+    this.db.db.delete(secrets).where(eq(secrets.key, gitTokenKey(siteId, userId))).run();
+  }
+
+  /**
+   * Who has stored a token for this website, and when.
+   *
+   * Read straight off the vault keys, so there is no second list to keep in
+   * step with the secrets themselves. The tokens are never decrypted here:
+   * the page only needs to say whose access is in use, not what it is.
+   */
+  gitTokenHolders(siteId: string): { userId: string; addedAt: Date }[] {
+    const prefix = `site.gitToken:${siteId}:`;
+
+    return this.db.db
+      .select()
+      .from(secrets)
+      .where(like(secrets.key, `${prefix}%`))
+      .all()
+      .map((row) => ({ userId: row.key.slice(prefix.length), addedAt: row.updatedAt }));
+  }
+
+  /**
+   * Gives every pre-accounts git token an owner.
+   *
+   * Tokens used to belong to the website, so anybody who could open it could
+   * deploy with somebody else's credentials. They now belong to a person, and
+   * the only honest guess at who that was is whoever holds the site — or the
+   * first owner account, for a site that belongs to the server. Run once on
+   * boot; a token left unclaimed would silently stop deploys working.
+   */
+  async adoptLegacyGitTokens(fallbackUserId: string | null): Promise<number> {
+    const legacy = this.db.db
+      .select()
+      .from(secrets)
+      .where(like(secrets.key, 'site.gitToken:%'))
+      .all()
+      .filter((row) => row.key.split(':').length === 2);
+
+    let adopted = 0;
+
+    for (const row of legacy) {
+      const siteId = row.key.slice('site.gitToken:'.length);
+      const site = this.getById(siteId);
+      const userId = site?.ownerUserId ?? fallbackUserId;
+
+      // The ciphertext is bound to its key, so moving it means re-encrypting.
+      const token = userId ? this.readSecret(row.key) : undefined;
+      if (userId && token) {
+        await this.setGitToken(siteId, userId, token);
+        adopted += 1;
+      }
+
+      this.db.db.delete(secrets).where(eq(secrets.key, row.key)).run();
     }
+
+    return adopted;
   }
 
   /**

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { RELEASE_DIR, type SiteSource } from '@winpanel/shared';
+import { RELEASE_DIR, roleAtLeast, type SiteSource } from '@winpanel/shared';
 import { protectedProcedure, router } from '../trpc.js';
 import { SiteService } from '../../sites/site-service.js';
 import { sites } from '../../db/schema.js';
@@ -60,18 +60,35 @@ export const siteGitRouter = router({
     .input(z.object({ slug: z.string().min(1) }))
     .query(async ({ ctx, input }) => {
       const { service, site, source } = requireGitSite(ctx.app, input.slug);
-      const token = await service.getGitToken(site.id);
+      const holders = service.gitTokenHolders(site.id);
+      const yours = holders.find((holder) => holder.userId === ctx.user.id);
       const publicKey = await service.getGitSshPublicKey(site.id);
       const last = service.deploymentsFor(site.id, 1)[0];
+      const usesSsh = isSshUrl(source.url);
+
+      const accounts = new Map(ctx.app.auth.listUsers().map((user) => [user.id, user]));
 
       return {
         url: source.url,
         branch: source.branch,
         subdirectory: source.subdirectory ?? '',
-        /** Whether a token is stored, never the token itself. */
-        hasToken: token !== undefined,
+        /** Whether YOUR token is stored, never the token itself. */
+        hasToken: yours !== undefined,
         /** How this repository is signed in to, so the page can say so. */
-        authMethod: isSshUrl(source.url) ? 'deploy-key' : token ? 'token' : 'public',
+        authMethod: usesSsh ? 'deploy-key' : holders.length > 0 ? 'token' : 'public',
+        /**
+         * Who has stored access, so both sides of a handover can see whose
+         * credentials a deploy would use. Names only — no token ever leaves.
+         */
+        access: holders
+          .map((holder) => ({
+            userId: holder.userId,
+            username: accounts.get(holder.userId)?.username ?? 'a deleted account',
+            role: accounts.get(holder.userId)?.role ?? null,
+            addedAt: holder.addedAt,
+            isYou: holder.userId === ctx.user.id,
+          }))
+          .sort((a, b) => Number(b.isYou) - Number(a.isYou)),
         /** The public half of the deploy key, which is safe to show. */
         deployKey: publicKey ?? null,
         /** Where a successful deploy publishes to, in the site's own terms. */
@@ -89,6 +106,31 @@ export const siteGitRouter = router({
     }),
 
   /**
+   * Forgets a stored access token.
+   *
+   * Your own always; anybody else's only if you administer the server. A
+   * customer must be able to take their credential back off a machine they do
+   * not own, and an admin must be able to clean up after an account that has
+   * gone.
+   */
+  revokeAccess: protectedProcedure
+    .input(z.object({ slug: z.string().min(1), userId: z.string().uuid().optional() }))
+    .mutation(({ ctx, input }) => {
+      const { service, site } = requireGitSite(ctx.app, input.slug);
+      const userId = input.userId ?? ctx.user.id;
+
+      if (userId !== ctx.user.id && !roleAtLeast(ctx.user.role, 'admin')) {
+        throw new TRPCError({
+          code: 'FORBIDDEN',
+          message: 'You can only remove your own access to this repository.',
+        });
+      }
+
+      service.clearGitToken(site.id, userId);
+      return { ok: true };
+    }),
+
+  /**
    * Recent commits on the configured branch.
    *
    * A mutation rather than a query because it talks to the remote and writes
@@ -99,7 +141,7 @@ export const siteGitRouter = router({
     .mutation(async ({ ctx, input }) => {
       const { service, site, source } = requireGitSite(ctx.app, input.slug);
       const git = clientFor(ctx.app, {
-        token: await service.getGitToken(site.id),
+        token: await service.getGitToken(site.id, ctx.user.id),
         sshPrivateKey: await service.getGitSshKey(site.id),
       });
 
@@ -185,7 +227,9 @@ export const siteGitRouter = router({
       if (!refCheck.ok) throw new TRPCError({ code: 'BAD_REQUEST', message: refCheck.reason });
 
       const token =
-        input.token === undefined ? await service.getGitToken(site.id) : input.token.trim();
+        input.token === undefined
+          ? await service.getGitToken(site.id, ctx.user.id)
+          : input.token.trim();
 
       const git = clientFor(ctx.app, {
         ...(input.useDeployKey ? { sshPrivateKey } : { token: token && token.length > 0 ? token : undefined }),
@@ -195,7 +239,7 @@ export const siteGitRouter = router({
       if (!access.ok) throw new TRPCError({ code: 'BAD_REQUEST', message: access.message });
 
       if (input.token !== undefined) {
-        await service.setGitToken(site.id, input.token.trim());
+        await service.setGitToken(site.id, ctx.user.id, input.token.trim());
       }
 
       ctx.app.db.db

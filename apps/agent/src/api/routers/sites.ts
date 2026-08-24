@@ -744,7 +744,7 @@ export const sitesRouter = router({
             ? { diskQuotaBytes: owner.siteDiskQuotaBytes }
             : {}),
           ...(input.source.kind === 'git' && input.source.token
-            ? { gitToken: input.source.token }
+            ? { gitToken: { userId: ctx.user.id, token: input.source.token } }
             : {}),
           ...(deployKey ? { gitSshKey: deployKey } : {}),
         });
@@ -782,7 +782,7 @@ export const sitesRouter = router({
               source.kind === 'git'
                 ? `Deploying ${input.displayName}`
                 : `Publishing ${input.displayName}`,
-            payload: { siteId: created.id },
+            payload: { siteId: created.id, actorUserId: ctx.user.id },
             siteId: created.id,
           });
         } else {
@@ -816,7 +816,11 @@ export const sitesRouter = router({
       const jobId = ctx.app.jobs.enqueue({
         kind: 'deploy',
         title: `${isGit ? 'Deploying' : 'Publishing'} ${site.displayName}`,
-        payload: { siteId: site.id, ...(input.ref ? { ref: input.ref } : {}) },
+        payload: {
+          siteId: site.id,
+          actorUserId: ctx.user.id,
+          ...(input.ref ? { ref: input.ref } : {}),
+        },
         siteId: site.id,
       });
 

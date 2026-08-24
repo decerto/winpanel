@@ -163,7 +163,8 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
         sitesRoot: config.sitesRoot,
         binDir: config.binDir,
         loadEnv: (siteId) => sites.getEnv(siteId),
-        loadGitToken: (siteId) => sites.getGitToken(siteId),
+        loadGitToken: (siteId, userId) =>
+          userId ? sites.getGitToken(siteId, userId) : Promise.resolve(undefined),
         loadGitSshKey: (siteId) => sites.getGitSshKey(siteId),
         sshKnownHostsPath: path.join(config.dataDir, 'ssh', 'known_hosts'),
       }),

@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import superjson from 'superjson';
+import { eq } from 'drizzle-orm';
 import { createAppContext, type AppContext } from '../src/app-context.js';
 import { createServer } from '../src/server.js';
 import { sites } from '../src/db/schema.js';
@@ -335,5 +336,129 @@ describe('what only the owner can do', () => {
 
     expect(result.body.error).toBeUndefined();
     expect((await call('GET', 'sites.list', freyaCookie)).body.result.data).toEqual([]);
+  });
+});
+
+/**
+ * An access token is a credential for somebody's whole account on the git
+ * host, so it belongs to the person who pasted it and not to the website.
+ * Handing the website over must therefore hand over nothing: otherwise the new
+ * owner could point the site at any private repository that token can read and
+ * browse the clone in the file manager.
+ */
+describe('repository credentials do not change hands with the website', () => {
+  let siteId: string;
+  let ownerId: string;
+  let samId: string;
+
+  beforeEach(async () => {
+    siteId = crypto.randomUUID();
+    app.db.db
+      .insert(sites)
+      .values({
+        id: siteId,
+        slug: 'client-project',
+        displayName: 'client-project',
+        ownerUserId: null,
+        runtime: 'node',
+        domains: ['client.example.com'],
+        source: {
+          kind: 'git',
+          url: 'https://github.com/agency/client-project.git',
+          branch: 'main',
+          subdirectory: '',
+        },
+        manifest: {},
+      })
+      .run();
+
+    ownerId = app.auth.listUsers().find((person) => person.username === 'owner')!.id;
+    samId = app.auth.listUsers().find((person) => person.username === 'sam')!.id;
+
+    await app.sites.setGitToken(siteId, ownerId, 'ghp_the_agency_token');
+  });
+
+  it('leaves the token with the person who added it', async () => {
+    await call('POST', 'users.assignSite', ownerCookie, {
+      slug: 'client-project',
+      userId: samId,
+    });
+
+    expect(await app.sites.getGitToken(siteId, ownerId)).toBe('ghp_the_agency_token');
+    expect(await app.sites.getGitToken(siteId, samId)).toBeUndefined();
+  });
+
+  it('tells the admin the new owner will need their own access', async () => {
+    const result = await call('POST', 'users.assignSite', ownerCookie, {
+      slug: 'client-project',
+      userId: samId,
+    });
+
+    expect(result.body.result.data.needsOwnGitAccess).toBe(true);
+  });
+
+  it('shows the new owner whose access is stored, but not the token', async () => {
+    await call('POST', 'users.assignSite', ownerCookie, {
+      slug: 'client-project',
+      userId: samId,
+    });
+
+    const info = await call('GET', 'sites.git.info', samCookie, { slug: 'client-project' });
+    expect(info.body.error).toBeUndefined();
+
+    const data = info.body.result.data;
+    expect(data.hasToken).toBe(false);
+    expect(data.access).toEqual([
+      { userId: ownerId, username: 'owner', role: 'superadmin', addedAt: expect.any(Date), isYou: false },
+    ]);
+    expect(JSON.stringify(data)).not.toContain('ghp_the_agency_token');
+  });
+
+  it('lets each side remove their own access but not the other side\u2019s', async () => {
+    await call('POST', 'users.assignSite', ownerCookie, {
+      slug: 'client-project',
+      userId: samId,
+    });
+    await app.sites.setGitToken(siteId, samId, 'ghp_sams_own_token');
+
+    const refused = await call('POST', 'sites.git.revokeAccess', samCookie, {
+      slug: 'client-project',
+      userId: ownerId,
+    });
+    expect(refused.body.error.data.code).toBe('FORBIDDEN');
+    expect(await app.sites.getGitToken(siteId, ownerId)).toBe('ghp_the_agency_token');
+
+    const mine = await call('POST', 'sites.git.revokeAccess', samCookie, {
+      slug: 'client-project',
+    });
+    expect(mine.body.error).toBeUndefined();
+    expect(await app.sites.getGitToken(siteId, samId)).toBeUndefined();
+
+    // An administrator can clean up after anybody.
+    const byAdmin = await call('POST', 'sites.git.revokeAccess', adminCookie, {
+      slug: 'client-project',
+      userId: ownerId,
+    });
+    expect(byAdmin.body.error).toBeUndefined();
+    expect(app.sites.gitTokenHolders(siteId)).toEqual([]);
+  });
+
+  it('deploys as whoever pressed the button', async () => {
+    await call('POST', 'users.assignSite', ownerCookie, {
+      slug: 'client-project',
+      userId: samId,
+    });
+
+    const result = await call('POST', 'sites.deploy', samCookie, { slug: 'client-project' });
+    expect(result.body.error).toBeUndefined();
+
+    const job = app.db.db
+      .select()
+      .from(app.schema.jobs)
+      .where(eq(app.schema.jobs.id, result.body.result.data.jobId))
+      .get();
+
+    // Sam's deploy runs with Sam's credentials, of which there are none.
+    expect((job?.payload as { actorUserId: string }).actorUserId).toBe(samId);
   });
 });

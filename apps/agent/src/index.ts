@@ -254,6 +254,20 @@ async function main(): Promise<void> {
       server.log.warn({ err: error }, 'Could not remove the old release folders.');
     }
 
+    /*
+     * Git tokens used to belong to the website rather than to a person, so
+     * anybody the site was handed to inherited them. Give each one an owner.
+     */
+    try {
+      const firstOwner = app.auth.listUsers().find((user) => user.role === 'superadmin');
+      const adopted = await app.sites.adoptLegacyGitTokens(firstOwner?.id ?? null);
+      if (adopted > 0) {
+        server.log.info(`Assigned ${adopted} stored repository token(s) to an account.`);
+      }
+    } catch (error) {
+      server.log.warn({ err: error }, 'Could not assign the stored repository tokens.');
+    }
+
     const error = await app.routing.applyWhenReady();
     if (error) {
       server.log.warn({ err: error }, 'Could not apply the website configuration.');

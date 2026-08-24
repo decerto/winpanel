@@ -11,7 +11,10 @@ import {
   Pencil,
   RefreshCw,
   Rocket,
+  Trash2,
+  UserRound,
 } from 'lucide-vue-next';
+import { ROLE_LABELS } from '@winpanel/shared';
 import { api, describeError } from '../../lib/api';
 import { deployKeyPageFor, hostLabelFor, toHttpsUrl, toSshUrl } from '../../lib/repo-url';
 import { siteContextKey } from '../../lib/site-context';
@@ -63,6 +66,37 @@ const freshKey = ref<string | null>(null);
 const deployKey = computed(() => freshKey.value ?? info.value?.deployKey ?? null);
 const hostLabel = computed(() => hostLabelFor(form.value.url || info.value?.url || ''));
 const deployKeyUrl = computed(() => deployKeyPageFor(form.value.url || info.value?.url || ''));
+
+/**
+ * An access token belongs to the person who added it, never to the website,
+ * so a site that was handed over arrives with somebody else's access on it and
+ * none of your own. Saying so here is the difference between "add your token"
+ * and a deploy that fails minutes later as "repository not found".
+ */
+const othersWithAccess = computed(() => info.value?.access.filter((who) => !who.isYou) ?? []);
+const needsYourToken = computed(
+  () => info.value?.authMethod === 'token' && info.value.hasToken === false,
+);
+
+const revoking = ref<string | null>(null);
+
+async function revokeAccess(userId: string): Promise<void> {
+  revoking.value = userId;
+  error.value = null;
+
+  try {
+    await api.sites.git.revokeAccess.mutate({ slug: slug.value, userId });
+    await refreshInfo();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    revoking.value = null;
+  }
+}
+
+function roleLabel(role: string | null): string {
+  return role ? (ROLE_LABELS[role as keyof typeof ROLE_LABELS]?.label ?? role) : 'no account';
+}
 
 /** A deploy key only ever authenticates SSH, so the address has to match. */
 watch(
@@ -276,6 +310,45 @@ watch(slug, load, { immediate: true });
           </p>
         </div>
 
+        <AlertMessage v-if="needsYourToken" tone="warning">
+          You have not added your own access to this repository. The stored token belongs to
+          {{ othersWithAccess[0]?.username ?? 'someone else' }} and cannot be used on your behalf,
+          so a deploy you start will fail. Press <strong>Change</strong> above and paste your own
+          access token.
+        </AlertMessage>
+
+        <!-- Who can reach the repository, and as whom. A website changes hands;
+             the credentials behind it do not, so this has to be visible. -->
+        <div v-if="info.access.length > 0" class="rounded-xl border border-line bg-sunken/60 p-4">
+          <h4 class="mb-2 text-sm font-semibold text-ink">Who can deploy this</h4>
+          <ul class="space-y-1.5">
+            <li
+              v-for="who in info.access"
+              :key="who.userId"
+              class="flex flex-wrap items-center gap-2 text-sm text-ink-muted"
+            >
+              <UserRound :size="14" class="text-ink-faint" aria-hidden="true" />
+              <span class="text-ink">{{ who.isYou ? 'You' : who.username }}</span>
+              <span class="text-xs text-ink-faint">
+                {{ roleLabel(who.role) }} &middot; token added {{ when(who.addedAt) }}
+              </span>
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm ml-auto"
+                :disabled="revoking === who.userId"
+                @click="revokeAccess(who.userId)"
+              >
+                <Trash2 :size="13" aria-hidden="true" />
+                {{ who.isYou ? 'Remove mine' : 'Remove' }}
+              </button>
+            </li>
+          </ul>
+          <p class="hint mt-2">
+            Each token stays with the person who added it. Handing this website to someone else
+            does not hand over the token, and does not take yours away.
+          </p>
+        </div>
+
         <!-- Editing is deliberately behind a button: this is the one setting that
              can point a live website at somebody else's code. -->
         <form v-if="editing" class="grid gap-3 rounded-xl border border-line bg-sunken/60 p-4
@@ -348,8 +421,10 @@ watch(slug, load, { immediate: true });
                 </div>
               </div>
               <p class="hint">
-                Replacing the key stops the old one working straight away. You will have to add
-                the new one to the repository before the next deploy.
+                Unlike a token, a deploy key belongs to this website: anyone who administers it
+                can deploy with it, and it opens nothing but this one repository. Replacing the
+                key stops the old one working straight away. You will have to add the new one to
+                the repository before the next deploy.
               </p>
             </div>
 
@@ -374,7 +449,7 @@ watch(slug, load, { immediate: true });
           </div>
 
           <div v-else-if="form.access === 'token'" class="sm:col-span-2">
-            <label for="edit-token" class="label">Access token</label>
+            <label for="edit-token" class="label">Your access token</label>
             <input
               id="edit-token"
               v-model="form.token"
@@ -382,6 +457,10 @@ watch(slug, load, { immediate: true });
               class="field font-mono"
               :placeholder="info.hasToken ? 'Stored \u2014 leave blank to keep it' : 'Only needed for a private repository'"
             />
+            <p class="hint">
+              Kept against your account, not against the website. Nobody else on this server can
+              deploy with it, and it stays yours if the website is handed to someone else.
+            </p>
           </div>
 
           <div class="sm:col-span-2">

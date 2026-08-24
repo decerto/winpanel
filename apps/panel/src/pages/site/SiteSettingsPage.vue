@@ -120,12 +120,16 @@ async function handOver(): Promise<void> {
 
   try {
     const userId = handoverTo.value === '' ? null : handoverTo.value;
-    await api.users.assignSite.mutate({ slug: slug(), userId });
+    const result = await api.users.assignSite.mutate({ slug: slug(), userId });
     const name = people.value.find((person) => person.id === userId)?.username ?? null;
     await reload();
     notice.value = name
       ? `${site.value?.displayName ?? 'The website'} now belongs to ${name}. Nothing moves ` +
-        'and nothing restarts — they simply see it when they sign in, and you still do too.'
+        'and nothing restarts — they simply see it when they sign in, and you still do too.' +
+        (result.needsOwnGitAccess
+          ? ` Your repository token stays with you, so ${name} will need to add their own on ` +
+            'the Git tab before they can deploy.'
+          : '')
       : `${site.value?.displayName ?? 'The website'} belongs to the server again.`;
   } catch (err) {
     error.value = describeError(err);
