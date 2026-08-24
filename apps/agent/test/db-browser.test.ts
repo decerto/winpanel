@@ -42,6 +42,7 @@ let app: AppContext;
 let server: FastifyInstance;
 let adminer: http.Server;
 let cookie: string;
+let siteId: string;
 /** The database the browser is opened against. Routes are keyed on its id. */
 let databaseId: string;
 
@@ -64,11 +65,37 @@ function adminerHandler(request: http.IncomingMessage, response: http.ServerResp
     void (async () => {
     seen = { method: request.method ?? '', url: request.url ?? '', body };
 
+    if (request.method === 'GET' && request.url === '/adminer.php') {
+      // Adminer 6.0.0 has no login CSRF field, but it does set adminer_key,
+      // the key its session password is encrypted with.
+      response.writeHead(200, {
+        'content-type': 'text/html',
+        'set-cookie': [
+          'adminer_sid=bootstrap; path=/adminer.php; HttpOnly',
+          'adminer_key=bootstrapkey; path=/adminer.php; HttpOnly',
+        ],
+      });
+      response.end('<form method="post"></form>');
+      return;
+    }
+
     if (request.method === 'POST' && body.includes('auth%5Bdriver%5D')) {
       const form = new URLSearchParams(body);
       const username = form.get('auth[username]') ?? '';
       const db = form.get('auth[db]') ?? '';
       const password = form.get('auth[password]') ?? '';
+      // Adminer 6.0.0 accepts an auth post without a token. When an older
+      // build provides one, the panel carries it through unchanged.
+      const carried = request.headers.cookie ?? '';
+      if (
+        (form.get('token') !== null && form.get('token') !== 'test-token') ||
+        !carried.includes('adminer_sid=bootstrap') ||
+        !carried.includes('adminer_key=bootstrapkey')
+      ) {
+        response.writeHead(403, { 'content-type': 'text/plain' });
+        response.end('Invalid sign-in form');
+        return;
+      }
       // The real plugin consumes the ticket at connect time: read it, spend
       // it, refuse anything that is not a live one. The directory is the
       // config's, which the ensureDbBrowser stand-in created.
@@ -79,11 +106,12 @@ function adminerHandler(request: http.IncomingMessage, response: http.ServerResp
         return;
       }
       await fs.rm(ticketFile, { force: true });
+      const driver = form.get('auth[driver]') === 'pgsql' ? 'pgsql' : 'server';
       response.writeHead(302, {
         // Both details are what the real Adminer 6 answers: a page-relative
         // Location with no leading slash, and a cookie scoped to the path it
         // believes it lives at.
-        location: `adminer.php?server=${encodeURIComponent(form.get('auth[server]') ?? '')}` +
+        location: `adminer.php?${driver}=${encodeURIComponent(form.get('auth[server]') ?? '')}` +
           `&username=${encodeURIComponent(username)}&db=${encodeURIComponent(db)}`,
         'set-cookie': 'adminer_sid=testsession; path=/adminer.php; HttpOnly',
       });
@@ -142,7 +170,7 @@ beforeEach(async () => {
 
   // A website for the browser to be opened against. A row is all the
   // route asks for; no files are involved.
-  const siteId = crypto.randomUUID();
+  siteId = crypto.randomUUID();
   app.db.db
     .insert(sites)
     .values({
@@ -211,10 +239,43 @@ describe('opening the browser', () => {
     const posted = new URLSearchParams(seen?.body ?? '');
     expect(posted.get('auth[username]')).toBe('shop_db');
     expect(posted.get('auth[password]')).toMatch(/^wpt_[a-f0-9]+$/);
+    expect(posted.get('token')).toBeNull();
     // MariaDB is Adminer's plain `server` driver; PostgreSQL would be pgsql.
     expect(posted.get('auth[driver]')).toBe('server');
     // Consumed at connect time, never left on disk.
     expect(await fs.readdir(path.join(app.config.dataDir, 'db-tickets'))).toEqual([]);
+  });
+
+  it('selects PostgreSQL and carries its driver into Adminer', async () => {
+    const postgresId = crypto.randomUUID();
+    writeSecret(app.db, app.vault, 'db.pass:postgres:api_db', 'the-postgres-password');
+    app.db.db
+      .insert(hostedDatabases)
+      .values({
+        id: postgresId,
+        engine: 'postgres',
+        name: 'api_db',
+        username: 'api_db',
+        siteId,
+        ownerUserId: null,
+      })
+      .run();
+
+    const response = await server.inject({
+      method: 'GET',
+      url: `/db/${postgresId}`,
+      headers: { cookie },
+    });
+
+    expect(response.statusCode).toBe(302);
+    expect(response.headers['location']).toBe(
+      `/db/${postgresId}/adminer.php?pgsql=127.0.0.1%3A5432&username=api_db&db=api_db`,
+    );
+
+    const posted = new URLSearchParams(seen?.body ?? '');
+    expect(posted.get('auth[driver]')).toBe('pgsql');
+    expect(posted.get('auth[server]')).toBe('127.0.0.1:5432');
+    expect(posted.get('auth[password]')).toMatch(/^wpt_[a-f0-9]+$/);
   });
 
   it('hands the visitor Adminer session cookie across, re-scoped to the proxy path', async () => {
@@ -229,6 +290,13 @@ describe('opening the browser', () => {
     // the first visit.
     expect(response.headers['set-cookie']).toContain(
       `adminer_sid=testsession; path=/db/${databaseId}; HttpOnly`,
+    );
+
+    // adminer_key is only ever set on the login page, and the password stored
+    // in the session is encrypted with it. Dropping it leaves the visitor
+    // holding a session whose password cannot be decrypted.
+    expect(response.headers['set-cookie']).toContain(
+      `adminer_key=bootstrapkey; path=/db/${databaseId}; HttpOnly`,
     );
   });
 

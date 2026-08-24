@@ -219,6 +219,28 @@ function signInRedirect(id: string, location: string | null): string {
   return `${base}/adminer.php`;
 }
 
+/** Returns each Set-Cookie value without relying on Headers' combined form. */
+function responseCookies(response: Response): string[] {
+  const headers = response.headers as Headers & { getSetCookie?: () => string[] };
+  if (headers.getSetCookie) return headers.getSetCookie();
+
+  const combined = response.headers.get('set-cookie');
+  return combined ? combined.split(/,(?=\s*[^;,=\s]+=[^;,]*)/) : [];
+}
+
+function cookieHeader(cookies: readonly string[]): string {
+  return cookies
+    .map((cookie) => cookie.split(';', 1)[0] ?? '')
+    .filter((cookie) => cookie.length > 0)
+    .join('; ');
+}
+
+/** Extracts the optional token older Adminer builds put in the login page. */
+function loginToken(html: string): string | null {
+  const input = html.match(/<input\b[^>]*\bname=["']token["'][^>]*>/i)?.[0];
+  return input?.match(/\bvalue=["']([^"']*)["']/i)?.[1] ?? null;
+}
+
 export function registerDbBrowserRoutes(server: FastifyInstance, app: AppContext): void {
   /**
    * Opening the browser for one database signs the visitor in and hands them
@@ -272,6 +294,21 @@ export function registerDbBrowserRoutes(server: FastifyInstance, app: AppContext
        * The driver is what makes the same page reach either engine: `server`
        * is Adminer's name for MySQL and MariaDB, `pgsql` for PostgreSQL.
        */
+      // Fetch the login page first and carry its session into the POST. Older
+      // Adminer builds include a CSRF token here; Adminer 6.0.0 does not, so
+      // preserve it when present without making it a requirement.
+      const bootstrap = await fetch(`${BROWSER_ORIGIN}/adminer.php`, {
+        headers: { accept: 'text/html' },
+        redirect: 'manual',
+        signal: AbortSignal.timeout(30_000),
+      });
+      const bootstrapBody = await bootstrap.text();
+      const bootstrapCookies = responseCookies(bootstrap);
+      const token = loginToken(bootstrapBody);
+      if (!bootstrap.ok) {
+        throw new Error('The database browser could not prepare its sign-in form.');
+      }
+
       const form = new URLSearchParams({
         'auth[driver]': record.engine === 'postgres' ? 'pgsql' : 'server',
         'auth[server]': `127.0.0.1:${engine.port}`,
@@ -279,10 +316,14 @@ export function registerDbBrowserRoutes(server: FastifyInstance, app: AppContext
         'auth[password]': ticket,
         'auth[db]': record.name,
       });
+      if (token) form.set('token', token);
 
       const response = await fetch(`${BROWSER_ORIGIN}/adminer.php`, {
         method: 'POST',
-        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        headers: {
+          'content-type': 'application/x-www-form-urlencoded',
+          cookie: cookieHeader(bootstrapCookies),
+        },
         body: form.toString(),
         redirect: 'manual',
         signal: AbortSignal.timeout(30_000),
@@ -299,13 +340,16 @@ export function registerDbBrowserRoutes(server: FastifyInstance, app: AppContext
       reply.code(response.status);
       response.headers.forEach((value, header) => {
         const lower = header.toLowerCase();
-        if (HOP_BY_HOP.has(lower) || lower === 'location') return;
-        if (lower === 'set-cookie') {
-          reply.header(header, rewriteCookiePath(value, cookiePath));
-          return;
-        }
+        if (HOP_BY_HOP.has(lower) || lower === 'location' || lower === 'set-cookie') return;
         reply.header(header, value);
       });
+      const cookies = [...bootstrapCookies, ...responseCookies(response)];
+      if (cookies.length > 0) {
+        reply.header(
+          'set-cookie',
+          cookies.map((cookie) => rewriteCookiePath(cookie, cookiePath)),
+        );
+      }
       reply.header('location', signInRedirect(id, location));
 
       const body = await response.arrayBuffer();

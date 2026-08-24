@@ -45,12 +45,9 @@ const TICKET_TTL_MS = 60_000;
 /**
  * The Adminer plugin that turns a ticket into a sign-in.
  *
- * The swap happens in `login()`, the hook Adminer calls on the request after
- * the sign-in post, with the session's stored password — the ticket — in
- * hand. Swapping it for the real password there is what keeps the ticket out
- * of any stored state: Adminer opens the connection with the ticket, which
- * the database refuses, but the hook still runs, and returning true keeps the
- * signed-in session that the panel just established.
+ * The swap happens in `credentials()`, before Adminer opens the connection.
+ * Swapping there is essential: if the database sees the ticket, it rejects
+ * the connection before Adminer's later `login()` hook can run.
  *
  * Declared inside Adminer's own namespace so the plugin can call
  * `get_password()`/`set_password()` and read `SERVER`/`DRIVER` unqualified.
@@ -71,25 +68,32 @@ class WinpanelLogin {
   }
 
   /**
-   * Turns the one-shot ticket into the real sign-in.
+   * Turns the one-shot ticket into the real connection credentials.
    *
-   * Adminer passes the session's stored password — the ticket — and expects
-   * true to keep the session. Anything that is not a ticket is passed
-   * through untouched, so a resumed or manual session is unaffected.
+   * Anything that is not a ticket is passed through untouched, so a resumed
+   * or manual session is unaffected.
    */
-  function login($login, $password) {
-    if (is_string($password) && preg_match('/^wpt_[a-f0-9]+$/', $password)) {
-      $file = $this->dir . DIRECTORY_SEPARATOR . $password . '.json';
-      if (is_file($file)) {
-        $data = json_decode(file_get_contents($file), true);
-        // One-shot: the ticket is spent the moment it is read.
-        unlink($file);
-        if ($data && !empty($data['password']) && ($data['expires'] ?? 0) >= time()) {
-          set_password(DRIVER, SERVER, $_GET['username'], $data['password']);
-        }
+  function credentials() {
+    $password = get_password();
+    $username = $_GET['username'];
+    $fallback = array(SERVER, $username, $password);
+
+    if (!is_string($password) || !preg_match('/^wpt_[a-f0-9]+$/', $password)) {
+      return $fallback;
+    }
+
+    $file = $this->dir . DIRECTORY_SEPARATOR . $password . '.json';
+    if (is_file($file)) {
+      $data = json_decode(file_get_contents($file), true);
+      // One-shot: the ticket is spent the moment it is read.
+      unlink($file);
+      if ($data && !empty($data['password']) && ($data['expires'] ?? 0) >= time()) {
+        set_password(DRIVER, SERVER, $username, $data['password']);
+        return array(SERVER, $username, $data['password']);
       }
     }
-    return true;
+
+    return $fallback;
   }
 }
 `;
@@ -229,10 +233,12 @@ export async function ensureDbBrowser(
  * v3: Adminer became the all-driver build and the ini gained pgsql, so a
  *     server started by an older agent is running a page that cannot reach
  *     PostgreSQL at all.
+ * v4: the probe requires both SQL drivers, so a MariaDB-only stale server is
+ *     also replaced before a PostgreSQL database is opened.
  */
 const PROBE_NAME = 'winpanel-probe.php';
 
-const PROBE_VERSION = 3;
+const PROBE_VERSION = 4;
 
 const PROBE_PHP = `<?php
 // Written by WinPanel. Reports which database drivers this server can use,
@@ -251,8 +257,8 @@ async function probe(): Promise<boolean> {
       signal: AbortSignal.timeout(1_000),
     });
     if (!response.ok) return false;
-    const health = (await response.json()) as { mysqli?: boolean; v?: number };
-    return health.mysqli === true && health.v === PROBE_VERSION;
+    const health = (await response.json()) as { mysqli?: boolean; pgsql?: boolean; v?: number };
+    return health.mysqli === true && health.pgsql === true && health.v === PROBE_VERSION;
   } catch {
     return false;
   }
