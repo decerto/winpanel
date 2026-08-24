@@ -153,6 +153,22 @@ function button(wrapper: any, label: string) {
   return wrapper.findAll('button').find((node: any) => node.text().includes(label));
 }
 
+async function chooseSearchableOption(
+  wrapper: any,
+  triggerLabel: string,
+  optionLabel: string,
+  filter?: string,
+): Promise<void> {
+  await wrapper.find(`button[aria-label="${triggerLabel}"]`).trigger('click');
+  if (filter) await wrapper.find('input[placeholder*="filter"]').setValue(filter);
+
+  const option = wrapper
+    .findAll('button[role="option"]')
+    .find((node: any) => node.text().trim() === optionLabel);
+  expect(option).toBeDefined();
+  await option!.trigger('click');
+}
+
 beforeEach(() => {
   state.me = { id: 'me', role: 'superadmin' };
   state.databases = [];
@@ -290,13 +306,14 @@ describe('what the page offers', () => {
    */
   it('moves an existing database to another website', async () => {
     state.databases = [database()];
-    state.attachable = [{ slug: 'kitora-io', name: 'Kitora' }];
+    state.attachable = [
+      { slug: 'other-site', name: 'Another website' },
+      { slug: 'kitora-io', name: 'Kitora' },
+    ];
     const wrapper = await render();
 
-    const picker = wrapper.find('select[aria-label="Website using u_me_shop"]');
-    expect(picker.exists()).toBe(true);
-
-    await picker.setValue('kitora-io');
+    expect(wrapper.find('button[aria-label="Website using u_me_shop"]').exists()).toBe(true);
+    await chooseSearchableOption(wrapper, 'Website using u_me_shop', 'Kitora', 'kitora');
     await flushPromises();
 
     expect(state.attached).toEqual([{ id: 'db-1', slug: 'kitora-io' }]);
@@ -307,10 +324,24 @@ describe('what the page offers', () => {
     state.attachable = [{ slug: 'kitora-io', name: 'Kitora' }];
     const wrapper = await render();
 
-    await wrapper.find('select[aria-label="Website using u_me_shop"]').setValue('');
+    await chooseSearchableOption(
+      wrapper,
+      'Website using u_me_shop',
+      'Not tied to a website',
+    );
     await flushPromises();
 
     expect(state.attached).toEqual([{ id: 'db-1', slug: null }]);
+  });
+
+  it('does not show website assignment to customer accounts', async () => {
+    state.me = { id: 'me', role: 'user' };
+    state.databases = [database()];
+    state.attachable = [{ slug: 'kitora-io', name: 'Kitora' }];
+    const wrapper = await render();
+
+    expect(wrapper.find('button[aria-label="Website using u_me_shop"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain('Used by');
   });
 
   /*

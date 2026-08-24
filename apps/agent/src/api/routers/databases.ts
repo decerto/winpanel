@@ -131,6 +131,18 @@ function present(record: DatabaseSummary) {
   };
 }
 
+/** The small shape needed to choose a database for a website. */
+function presentForAttachment(record: DatabaseSummary) {
+  return {
+    id: record.id,
+    name: record.name,
+    engineLabel: databaseEngineInfo(record.engine).label,
+    siteSlug: record.siteSlug,
+    siteName: record.siteName,
+    ownerUsername: record.ownerUsername,
+  };
+}
+
 function connectionHost(record: DatabaseSummary): string {
   if (record.network.mode === 'loopback') return '127.0.0.1';
   return localAddresses().find((address) => !address.includes(':')) ?? os.hostname();
@@ -260,13 +272,13 @@ export const databasesRouter = router({
    * A database is often made before anybody knows which site will use it, and
    * until now that decision was only offered while creating one — so the
    * answer to "I picked the wrong site" was to delete the database and start
-   * again, losing whatever was in it.
+    * again, losing whatever was in it. Moving it also gives it to the target
+    * website's owner; detaching leaves its existing owner unchanged.
    */
-  attachSite: protectedProcedure
+  attachSite: adminProcedure
     .input(z.object({ id: z.string().uuid(), slug: Slug.nullable() }))
     .mutation(({ ctx, input }) => {
       const record = mustGetDatabase(ctx, input.id);
-      const user = ctx.user!;
 
       if (input.slug === null) {
         setDatabaseSite(ctx.app.db, record.id, null);
@@ -274,13 +286,7 @@ export const databasesRouter = router({
       }
 
       const site = mustGetSite(ctx, input.slug);
-      // A customer may only tie their database to a website they hold, or the
-      // attachment would be a way to learn that somebody else's site exists.
-      if (user.role === 'user' && site.ownerUserId !== user.id) {
-        throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
-      }
-
-      setDatabaseSite(ctx.app.db, record.id, site.id);
+      setDatabaseSite(ctx.app.db, record.id, site.id, site.ownerUserId);
       return { ok: true, siteSlug: site.slug };
     }),
 
@@ -330,17 +336,14 @@ export const databasesRouter = router({
   /**
    * The websites a new database may be attached to.
    *
-   * Offered on the server-wide page so a database can be made for a site
-   * without going to that site first. A customer only ever sees their own.
+  * Offered on the server-wide page so an administrator can make a database
+  * for any site without going to that site first.
    */
-  attachableSites: protectedProcedure.query(({ ctx }) => {
-    const user = ctx.user!;
-
+  attachableSites: adminProcedure.query(({ ctx }) => {
     return ctx.app.db.db
-      .select({ slug: sites.slug, displayName: sites.displayName, ownerUserId: sites.ownerUserId })
+      .select({ slug: sites.slug, displayName: sites.displayName })
       .from(sites)
       .all()
-      .filter((row) => user.role !== 'user' || row.ownerUserId === user.id)
       .map((row) => ({ slug: row.slug, name: row.displayName }));
   }),
 
@@ -362,6 +365,10 @@ export const databasesRouter = router({
       const live = await reconcile(context, listDatabasesForSite(ctx.app.db, site.id));
       const account = accountAllowance(context, site.ownerUserId);
       const perSite = siteAllowance(context, site.id);
+      const availableDatabases =
+        ctx.user!.role === 'user'
+          ? []
+          : listAllDatabases(ctx.app.db).map((record) => presentForAttachment(record));
 
       return {
         engines: availability
@@ -374,6 +381,8 @@ export const databasesRouter = router({
         /** True when a database could be created here right now. */
         installed: availability.some((entry) => entry.ready),
         databases: live.map((record) => presentForConnection(record)),
+        /** Existing databases an administrator may move to this website. */
+        availableDatabases,
         limit: perSite.limit,
         used: perSite.used,
         problem: perSite.problem ?? account.problem,

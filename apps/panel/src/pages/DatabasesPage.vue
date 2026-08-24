@@ -21,6 +21,7 @@ import EmptyState from '../components/EmptyState.vue';
 import LoadingBlock from '../components/LoadingBlock.vue';
 import PageHeader from '../components/PageHeader.vue';
 import PaginationBar from '../components/PaginationBar.vue';
+import SearchableSelect from '../components/SearchableSelect.vue';
 
 /**
  * Every database on the server, in one place.
@@ -110,6 +111,18 @@ function siteOptions(row: Row): Array<{ slug: string; name: string }> {
     options.unshift({ slug: row.siteSlug, name: row.siteName ?? row.siteSlug });
   }
   return options;
+}
+
+const attachableOptions = computed(() => [
+  { value: '', label: 'Not tied to a website' },
+  ...attachable.value.map((site) => ({ value: site.slug, label: site.name })),
+]);
+
+function sitePickerOptions(row: Row) {
+  return [
+    { value: '', label: 'Not tied to a website' },
+    ...siteOptions(row).map((site) => ({ value: site.slug, label: site.name })),
+  ];
 }
 
 const usable = computed(() => engines.value?.engines.filter((engine) => engine.ready) ?? []);
@@ -383,14 +396,14 @@ onMounted(load);
             </p>
           </div>
 
-          <div v-if="attachable.length > 0" class="space-y-1">
+          <div v-if="isAdmin && attachable.length > 0" class="space-y-1">
             <label class="label" for="db-site">For a website</label>
-            <select id="db-site" v-model="newSite" class="field">
-              <option value="">Not tied to a website</option>
-              <option v-for="site in attachable" :key="site.slug" :value="site.slug">
-                {{ site.name }}
-              </option>
-            </select>
+            <SearchableSelect
+              v-model="newSite"
+              :options="attachableOptions"
+              label="Website for new database"
+              placeholder="Not tied to a website"
+            />
             <p class="hint">
               A database made for a website shows up on that website's Databases tab too.
             </p>
@@ -471,7 +484,7 @@ onMounted(load);
             :class="
               isAdmin
                 ? 'lg:grid-cols-[minmax(0,1.5fr)_minmax(8rem,0.7fr)_minmax(12rem,1.1fr)_minmax(8rem,0.8fr)]'
-                : 'lg:grid-cols-[minmax(0,1.7fr)_minmax(8rem,0.8fr)_minmax(12rem,1.2fr)]'
+                : 'lg:grid-cols-[minmax(0,1.7fr)_minmax(8rem,0.8fr)]'
             "
           >
             <div class="min-w-0">
@@ -486,21 +499,16 @@ onMounted(load);
               <span class="text-sm text-ink-muted">{{ row.engineLabel }}</span>
             </div>
 
-            <div class="min-w-0">
+            <div v-if="isAdmin" class="min-w-0">
               <span class="label mb-1 block">Used by</span>
-              <select
+              <SearchableSelect
                 v-if="siteOptions(row).length > 0"
-                class="field w-full text-xs"
-                :value="row.siteSlug ?? ''"
+                :model-value="row.siteSlug ?? ''"
+                :options="sitePickerOptions(row)"
                 :disabled="busy !== null"
-                :aria-label="`Website using ${row.name}`"
-                @change="attachSite(row, ($event.target as HTMLSelectElement).value)"
-              >
-                <option value="">Not tied to a website</option>
-                <option v-for="site in siteOptions(row)" :key="site.slug" :value="site.slug">
-                  {{ site.name }}
-                </option>
-              </select>
+                :label="`Website using ${row.name}`"
+                @update:model-value="attachSite(row, $event)"
+              />
               <RouterLink
                 v-else-if="row.siteSlug"
                 :to="`/sites/${row.siteSlug}`"

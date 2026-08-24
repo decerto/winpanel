@@ -19,6 +19,7 @@ import AlertMessage from '../../components/AlertMessage.vue';
 import DatabaseAccessCard from '../../components/DatabaseAccessCard.vue';
 import DatabaseConnectionCard from '../../components/DatabaseConnectionCard.vue';
 import LoadingBlock from '../../components/LoadingBlock.vue';
+import SearchableSelect from '../../components/SearchableSelect.vue';
 
 /**
  * The databases this website uses.
@@ -68,6 +69,7 @@ const expanded = ref<string | null>(null);
 const expandedPassword = ref<string | null>(null);
 /** The database whose remote-access panel is open. */
 const accessOpen = ref<string | null>(null);
+const databaseToAttach = ref('');
 
 function toggleConnection(row: Row): void {
   if (expanded.value === row.id) {
@@ -85,6 +87,18 @@ function toggleAccess(row: Row): void {
 
 const usable = computed(() => overview.value?.engines.filter((engine) => engine.ready) ?? []);
 const atLimit = computed(() => overview.value !== null && overview.value.problem !== null);
+const attachableDatabases = computed(
+  () =>
+    overview.value?.availableDatabases.filter((database) => database.siteSlug !== slug.value) ??
+    [],
+);
+const attachmentOptions = computed(() =>
+  attachableDatabases.value.map((database) => ({
+    value: database.id,
+    label: database.name,
+    hint: database.siteName ? `Currently used by ${database.siteName}` : 'Not tied to a website',
+  })),
+);
 
 /** The same password rules as mailboxes, checked here as well as on the server. */
 function passwordProblemFor(value: string): string | null {
@@ -121,6 +135,28 @@ async function load(): Promise<void> {
     error.value = describeError(err);
   } finally {
     loading.value = false;
+  }
+}
+
+async function attachExistingDatabase(id: string): Promise<void> {
+  if (!isAdmin.value || !id) return;
+
+  const database = attachableDatabases.value.find((candidate) => candidate.id === id);
+  if (!database) return;
+
+  busy.value = `site:${id}`;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    await api.databases.attachSite.mutate({ id, slug: slug.value });
+    databaseToAttach.value = '';
+    notice.value = `${database.name} is now used by this website.`;
+    await load();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    busy.value = null;
   }
 }
 
@@ -391,6 +427,39 @@ onMounted(load);
             </button>
           </div>
         </div>
+
+        <section
+          v-if="isAdmin && attachableDatabases.length > 0"
+          class="mt-4 space-y-3 rounded-lg border border-line bg-black/20 p-4"
+        >
+          <div>
+            <h3 class="text-sm font-semibold text-ink">Use an existing database</h3>
+            <p class="mt-1 text-sm text-ink-muted">
+              Move a database from another website, or attach one that is not tied to a website.
+            </p>
+          </div>
+
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-end">
+            <div class="min-w-0 flex-1">
+              <label class="label">Database</label>
+              <SearchableSelect
+                v-model="databaseToAttach"
+                :options="attachmentOptions"
+                label="Existing database"
+                placeholder="Choose a database"
+                :disabled="busy !== null"
+              />
+            </div>
+            <button
+              type="button"
+              class="btn btn-primary btn-sm"
+              :disabled="!databaseToAttach || busy !== null"
+              @click="attachExistingDatabase(databaseToAttach)"
+            >
+              {{ busy?.startsWith('site:') ? 'Moving\u2026' : 'Use this database' }}
+            </button>
+          </div>
+        </section>
 
         <!-- The list. -->
         <ul v-if="overview.databases.length > 0" class="mt-4 divide-y divide-line">

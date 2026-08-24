@@ -178,8 +178,16 @@ export function setDatabaseNetwork(
 }
 
 /** Attaches a database to a website, or detaches it when given null. */
-export function setDatabaseSite(db: DatabaseHandle, id: string, siteId: string | null): void {
-  db.db.update(hostedDatabases).set({ siteId }).where(eq(hostedDatabases.id, id)).run();
+export function setDatabaseSite(
+  db: DatabaseHandle,
+  id: string,
+  siteId: string | null,
+  ownerUserId?: string | null,
+): void {
+  const values: { siteId: string | null; ownerUserId?: string | null } = { siteId };
+  if (ownerUserId !== undefined) values.ownerUserId = ownerUserId;
+
+  db.db.update(hostedDatabases).set(values).where(eq(hostedDatabases.id, id)).run();
 }
 
 /** Hands every database attached to a website to whoever now owns the website. */

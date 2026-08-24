@@ -7,7 +7,7 @@ import superjson from 'superjson';
 import { eq } from 'drizzle-orm';
 import { createAppContext, type AppContext } from '../src/app-context.js';
 import { createServer } from '../src/server.js';
-import { hostedDatabases, users } from '../src/db/schema.js';
+import { hostedDatabases, sites, users } from '../src/db/schema.js';
 
 /**
  * Who can see and touch which database, over real HTTP.
@@ -35,6 +35,7 @@ let ownerCookie: string;
 let freyaCookie: string;
 let samCookie: string;
 let freyaId: string;
+let samId: string;
 let freyaDatabaseId: string;
 
 async function call(
@@ -80,6 +81,26 @@ function giveDatabase(ownerUserId: string | null, name: string): string {
   return id;
 }
 
+function giveSite(ownerUserId: string | null, slug: string): string {
+  const id = crypto.randomUUID();
+
+  app.db.db
+    .insert(sites)
+    .values({
+      id,
+      slug,
+      displayName: slug,
+      ownerUserId,
+      runtime: 'php',
+      domains: [],
+      source: { kind: 'upload' },
+      manifest: {},
+    })
+    .run();
+
+  return id;
+}
+
 async function signIn(username: string): Promise<string> {
   const { token } = await app.auth.login({ username, password: PASSWORD, ip: '203.0.113.1' });
   return `winpanel_session=${token}`;
@@ -109,7 +130,7 @@ beforeEach(async () => {
     role: 'user',
     databaseLimit: 2,
   });
-  await app.auth.createUser({
+  const sam = await app.auth.createUser({
     username: 'sam',
     password: PASSWORD,
     role: 'user',
@@ -117,6 +138,7 @@ beforeEach(async () => {
   });
 
   freyaId = freya.id;
+  samId = sam.id;
   freyaDatabaseId = giveDatabase(freya.id, 'u_freya_shop');
   giveDatabase(null, 'srv_internal');
 
@@ -287,11 +309,32 @@ describe('what is offered', () => {
     expect(blocked.body.error.data.code).toBe('NOT_FOUND');
   });
 
-  it('refuses to tie somebody else\u2019s database to a website', async () => {
+  it('keeps database reassignment and website choices away from customers', async () => {
     const refused = await call('POST', 'databases.attachSite', samCookie, {
       id: freyaDatabaseId,
       slug: 'kitora-io',
     });
-    expect(refused.body.error.data.code).toBe('NOT_FOUND');
+    expect(refused.body.error.data.code).toBe('FORBIDDEN');
+
+    const choices = await call('GET', 'databases.attachableSites', freyaCookie);
+    expect(choices.body.error.data.code).toBe('FORBIDDEN');
+  });
+
+  it('lets an administrator move a database and transfers its ownership', async () => {
+    const siteId = giveSite(samId, 'kitora-io');
+
+    const moved = await call('POST', 'databases.attachSite', ownerCookie, {
+      id: freyaDatabaseId,
+      slug: 'kitora-io',
+    });
+    expect(moved.body.result.data).toEqual({ ok: true, siteSlug: 'kitora-io' });
+
+    const record = app.db.db
+      .select()
+      .from(hostedDatabases)
+      .where(eq(hostedDatabases.id, freyaDatabaseId))
+      .get();
+    expect(record?.siteId).toBe(siteId);
+    expect(record?.ownerUserId).toBe(samId);
   });
 });
