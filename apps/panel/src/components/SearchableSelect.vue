@@ -145,7 +145,7 @@ defineExpose({ open });
         />
       </div>
 
-      <ul class="max-h-56 overflow-y-auto py-1" role="listbox">
+      <ul class="max-h-96 overflow-y-auto py-1" role="listbox">
         <li v-if="matching.length === 0" class="px-3 py-2 text-sm text-ink-faint">
           Nothing matches that.
         </li>

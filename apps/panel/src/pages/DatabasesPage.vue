@@ -478,7 +478,7 @@ onMounted(load);
       />
 
       <section v-else class="space-y-3">
-        <article v-for="row in paged" :key="row.id" class="card overflow-hidden">
+        <article v-for="row in paged" :key="row.id" class="card overflow-visible">
           <div
             class="grid gap-4 p-4 sm:grid-cols-2 lg:items-center"
             :class="
