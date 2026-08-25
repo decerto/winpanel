@@ -23,6 +23,8 @@ type Row = Awaited<ReturnType<typeof api.sites.websiteHealth.query>>[number];
 
 const rows = ref<Row[]>([]);
 const loading = ref(true);
+const refreshing = ref(false);
+const lastRefreshedAt = ref<string | null>(null);
 const error = ref<string | null>(null);
 const page = ref(1);
 const PAGE_SIZE = 20;
@@ -34,13 +36,18 @@ const restartedSlug = ref<string | null>(null);
 let timer: ReturnType<typeof setInterval> | null = null;
 
 async function load(): Promise<void> {
+  if (refreshing.value) return;
+
+  refreshing.value = true;
   error.value = null;
   try {
     rows.value = await api.sites.websiteHealth.query();
+    lastRefreshedAt.value = new Date().toLocaleTimeString();
   } catch (err) {
     error.value = describeError(err);
   } finally {
     loading.value = false;
+    refreshing.value = false;
   }
 }
 
@@ -173,11 +180,17 @@ onUnmounted(() => {
         </div>
       </dl>
 
-      <div class="flex w-full gap-2 sm:w-auto">
-        <button type="button" class="btn btn-ghost" @click="load">
-          <RefreshCw :size="15" :class="loading ? 'animate-spin' : ''" aria-hidden="true" />
-          Refresh
+      <div class="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+        <button type="button" class="btn btn-ghost" :disabled="loading || refreshing" @click="load">
+          <RefreshCw :size="15" :class="refreshing ? 'animate-spin' : ''" aria-hidden="true" />
+          {{ refreshing ? 'Refreshing...' : 'Refresh' }}
         </button>
+        <span v-if="refreshing" class="text-xs text-ink-muted" role="status" aria-live="polite">
+          Checking websites...
+        </span>
+        <span v-else-if="lastRefreshedAt" class="text-xs text-ink-faint" role="status" aria-live="polite">
+          Updated {{ lastRefreshedAt }}
+        </span>
       </div>
     </section>
 
