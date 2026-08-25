@@ -15,11 +15,11 @@ let tmpDir: string;
 let handle: DatabaseHandle;
 let vault: SecretVault;
 
-function context(jobId: string): JobContext {
+function context(jobId: string, progressValues: number[] = []): JobContext {
   return {
     jobId,
     log: () => undefined,
-    progress: () => undefined,
+    progress: (percent) => progressValues.push(percent),
     isCancelled: () => false,
     throwIfCancelled: () => undefined,
   };
@@ -115,10 +115,13 @@ describe('panel backups', () => {
       backupDir,
     };
     const jobId = crypto.randomUUID();
+    const progressValues: number[] = [];
     await createBackupHandler(options)(
       { scope: 'panel', operation: 'create', includeGameServers: true },
-      context(jobId),
+      context(jobId, progressValues),
     );
+    expect(progressValues.some((percent) => percent > 0 && percent < 100)).toBe(true);
+    expect(progressValues.at(-1)).toBe(100);
 
     const archive = backupFilePath(backupDir, 'panel', jobId);
     const entries = await archiveEntries(archive);

@@ -14,6 +14,7 @@ import type { JobContext, JobQueue } from '../jobs/queue.js';
 import {
   listPanelServices,
   sortForStartup,
+  startPanelService,
   startSupportingServices,
   stopSupportingServices,
 } from '../windows/panel-services.js';
@@ -91,6 +92,46 @@ function archiveEntry(filePath: string): { parent: string; name: string } {
   return { parent: path.dirname(filePath), name: path.basename(filePath) };
 }
 
+const MAX_ESTIMATED_ARCHIVE_ENTRIES = 100_000;
+
+async function estimateArchiveEntries(entries: readonly string[]): Promise<number | undefined> {
+  let total = 0;
+  const pending: Array<{ filePath: string; directory: boolean }> = [];
+
+  try {
+    for (const entry of entries) {
+      const stat = await fs.lstat(entry);
+      pending.push({ filePath: entry, directory: stat.isDirectory() });
+    }
+
+    while (pending.length > 0) {
+      const current = pending.pop();
+      if (!current) continue;
+
+      total += 1;
+      if (total > MAX_ESTIMATED_ARCHIVE_ENTRIES) return undefined;
+      if (!current.directory) continue;
+
+      const directory = await fs.opendir(current.filePath);
+      try {
+        for await (const child of directory) {
+          if (total + pending.length + 1 > MAX_ESTIMATED_ARCHIVE_ENTRIES) return undefined;
+          pending.push({
+            filePath: path.join(current.filePath, child.name),
+            directory: child.isDirectory() && !child.isSymbolicLink(),
+          });
+        }
+      } finally {
+        await directory.close().catch(() => undefined);
+      }
+    }
+
+    return total;
+  } catch {
+    return undefined;
+  }
+}
+
 async function listPanelRootEntries(options: BackupServiceOptions): Promise<string[]> {
   if (!(await exists(options.root))) throw new Error('The panel installation folder does not exist.');
 
@@ -101,6 +142,48 @@ async function listPanelRootEntries(options: BackupServiceOptions): Promise<stri
   return entries
     .map((entry) => path.join(options.root, entry.name))
     .filter((entry) => !excluded.has(path.resolve(entry)));
+}
+
+async function withSupportingServicesStopped(
+  options: BackupServiceOptions,
+  ctx: JobContext,
+  operation: () => Promise<void>,
+): Promise<void> {
+  const services = await listPanelServices();
+  const recovery = createServiceRecovery(options.db);
+  const restart = services.filter((service) => service.kind !== 'panel' && service.state !== 'stopped');
+  let operationError: unknown;
+
+  try {
+    ctx.log('Preparing a consistent panel snapshot.');
+    ctx.progress(5);
+    const stopped = await stopSupportingServices(services, { unblock: recovery.unblock });
+    if (stopped.failed.length > 0) {
+      throw new Error(
+        `Could not stop ${stopped.failed[0]?.label ?? 'a panel service'} before creating the backup.`,
+      );
+    }
+    ctx.log('Capturing the panel state.');
+    ctx.progress(10);
+    await operation();
+  } catch (error) {
+    operationError = error;
+    throw error;
+  } finally {
+    const failed: string[] = [];
+    for (const service of restart) {
+      if (!(await startPanelService(service.id, { unblock: recovery.unblock }))) {
+        failed.push(service.label);
+      }
+    }
+
+    if (failed.length > 0 && operationError === undefined) {
+      throw new Error(`Could not restart ${failed.join(', ')} after creating the backup.`);
+    }
+    if (failed.length > 0) {
+      ctx.log(`Could not restart ${failed.join(', ')} after the backup operation.`, 'error');
+    }
+  }
 }
 
 function panelEntryNames(metadata: unknown): string[] {
@@ -124,25 +207,66 @@ async function createArchive(
   output: string,
   entries: readonly string[],
   format: 'zip' | 'tar.gz',
+  onProgress?: (percent: number) => void,
 ): Promise<void> {
   await fs.mkdir(path.dirname(output), { recursive: true });
   const present = entries.filter((entry) => entry.length > 0);
   if (present.length === 0) throw new Error('There is no data available to back up.');
 
+  const estimatedEntries = onProgress ? await estimateArchiveEntries(present) : undefined;
+  let archivedEntries = 0;
+  let lastProgress = 0;
+  const diagnostics: string[] = [];
+  const reportProgress = () => {
+    const percent =
+      estimatedEntries && estimatedEntries > 0
+        ? Math.min(99, Math.round((archivedEntries / estimatedEntries) * 99))
+        : Math.min(95, 5 + Math.floor(Math.log2(archivedEntries + 1) * 5));
+    if (percent > lastProgress) {
+      lastProgress = percent;
+      onProgress?.(percent);
+    }
+  };
+
   const result = await runCommand({
     exe: process.platform === 'win32' ? 'tar.exe' : 'tar',
-    args: ['-a', '-c', '-f', output, ...present.flatMap((entry) => {
-      const part = archiveEntry(entry);
-      return ['-C', part.parent, part.name];
-    })],
+    args: [
+      '-a',
+      '-c',
+      '-v',
+      '-f',
+      output,
+      ...present.flatMap((entry) => {
+        const part = archiveEntry(entry);
+        return ['-C', part.parent, part.name];
+      }),
+    ],
     timeoutMs: 60 * 60 * 1000,
+    onOutput: (line, stream) => {
+      const text = line.trim();
+      const isEntry = stream === 'stdout' || /^a\s+/.test(text);
+      if (isEntry) {
+        archivedEntries += 1;
+        reportProgress();
+      } else if (text) {
+        diagnostics.push(text);
+        if (diagnostics.length > 20) diagnostics.shift();
+      }
+    },
   });
 
   if (result.exitCode !== 0) {
+    await fs.rm(output, { force: true }).catch(() => undefined);
+    const detail = diagnostics.join('\n') || result.stderr.trim() || result.stdout.trim();
+    const status = result.timedOut
+      ? 'The archive tool exceeded its one-hour time limit.'
+      : `The archive tool exited with code ${result.exitCode}.`;
     throw new Error(
-      `The ${format} archive could not be created. ${result.stderr.trim() || 'The archive tool returned no details.'}`,
+      `The ${format} archive could not be created. ${status} ${detail || 'The archive tool returned no details.'}`,
     );
   }
+
+  onProgress?.(100);
 }
 
 async function extractArchive(archive: string, destination: string): Promise<void> {
@@ -375,8 +499,9 @@ async function createSiteArchive(
     );
 
     ctx.log('Compressing the website files and database exports.');
-    await createArchive(output, [siteRoot, metadata, databaseDir], 'zip');
-    ctx.progress(100);
+    await createArchive(output, [siteRoot, metadata, databaseDir], 'zip', (percent) => {
+      ctx.progress(60 + percent * 0.39);
+    });
     ctx.log('The website archive is ready to download.');
   } finally {
     await fs.rm(workDir, { recursive: true, force: true });
@@ -419,65 +544,68 @@ async function createPanelArchive(
   await fs.rm(workDir, { recursive: true, force: true });
   try {
     await fs.mkdir(workDir, { recursive: true });
-    const panelEntries = await listPanelRootEntries(options);
-    const panelDatabaseSnapshot = path.join(workDir, 'panel-database', 'panel.db');
-    await fs.mkdir(path.dirname(panelDatabaseSnapshot), { recursive: true });
-    await options.db.sqlite.backup(panelDatabaseSnapshot);
+    await withSupportingServicesStopped(options, ctx, async () => {
+      const panelEntries = await listPanelRootEntries(options);
+      const panelDatabaseSnapshot = path.join(workDir, 'panel-database', 'panel.db');
+      await fs.mkdir(path.dirname(panelDatabaseSnapshot), { recursive: true });
+      await options.db.sqlite.backup(panelDatabaseSnapshot);
 
-    const websiteManifest = siteRecords.map((site) => ({
-      slug: site.slug,
-      path: `${path.basename(options.sitesRoot)}/${site.slug}`,
-    }));
-    const databaseManifest = databaseRecords.map((record) => ({
-      engine: record.engine,
-      name: record.name,
-      siteId: record.siteId,
-      siteSlug: record.siteSlug,
-      storage: path.relative(options.root, engineDataDir(options.dataDir, record.engine)),
-    }));
+      const websiteManifest = siteRecords.map((site) => ({
+        slug: site.slug,
+        path: `${path.basename(options.sitesRoot)}/${site.slug}`,
+      }));
+      const databaseManifest = databaseRecords.map((record) => ({
+        engine: record.engine,
+        name: record.name,
+        siteId: record.siteId,
+        siteSlug: record.siteSlug,
+        storage: path.relative(options.root, engineDataDir(options.dataDir, record.engine)),
+      }));
 
-    await fs.writeFile(
-      metadata,
-      JSON.stringify(
-        {
-          format: 'winpanel-panel-backup',
-          version: 2,
-          createdAt: new Date().toISOString(),
-          panelEntries: panelEntries.map((entry) => path.basename(entry)),
-          panelDatabase: 'panel-database/panel.db',
-          websites: websiteManifest,
-          databases: databaseManifest,
-          includeGameServers,
-          roots: {
-            panel: options.root,
-            websites: options.sitesRoot,
-            gameServers: options.gameServersRoot,
+      await fs.writeFile(
+        metadata,
+        JSON.stringify(
+          {
+            format: 'winpanel-panel-backup',
+            version: 2,
+            createdAt: new Date().toISOString(),
+            panelEntries: panelEntries.map((entry) => path.basename(entry)),
+            panelDatabase: 'panel-database/panel.db',
+            websites: websiteManifest,
+            databases: databaseManifest,
+            includeGameServers,
+            roots: {
+              panel: options.root,
+              websites: options.sitesRoot,
+              gameServers: options.gameServersRoot,
+            },
           },
-        },
-        null,
-        2,
-      ),
-      'utf8',
-    );
+          null,
+          2,
+        ),
+        'utf8',
+      );
 
-    const entries = [
-      ...panelEntries,
-      ...(await exists(options.sitesRoot) ? [options.sitesRoot] : []),
-      ...(includeGameServers && (await exists(options.gameServersRoot))
-        ? [options.gameServersRoot]
-        : []),
-      path.dirname(panelDatabaseSnapshot),
-      metadata,
-    ];
+      const entries = [
+        ...panelEntries,
+        ...(await exists(options.sitesRoot) ? [options.sitesRoot] : []),
+        ...(includeGameServers && (await exists(options.gameServersRoot))
+          ? [options.gameServersRoot]
+          : []),
+        path.dirname(panelDatabaseSnapshot),
+        metadata,
+      ];
 
-    ctx.log(
-      `Compressing the panel, ${websiteManifest.length} website${websiteManifest.length === 1 ? '' : 's'}, ` +
-        `${databaseManifest.length} database${databaseManifest.length === 1 ? '' : 's'}` +
-        `${includeGameServers ? ' and game servers' : ''}.`,
-    );
-    await createArchive(output, entries, 'tar.gz');
-    ctx.progress(100);
-    ctx.log('The local panel backup is ready.');
+      ctx.log(
+        `Compressing the panel, ${websiteManifest.length} website${websiteManifest.length === 1 ? '' : 's'}, ` +
+          `${databaseManifest.length} database${databaseManifest.length === 1 ? '' : 's'}` +
+          `${includeGameServers ? ' and game servers' : ''}.`,
+      );
+      await createArchive(output, entries, 'tar.gz', (percent) => {
+        ctx.progress(10 + percent * 0.9);
+      });
+      ctx.log('The local panel backup is ready.');
+    });
   } finally {
     await fs.rm(workDir, { recursive: true, force: true });
   }
