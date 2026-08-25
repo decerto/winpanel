@@ -107,6 +107,12 @@ have connected it, the panel offers to point the domain at the server for you, s
 exactly what it is about to change, and does it when you agree. The padlock appears on its
 own within a minute or two.
 
+**Adding a subdomain** starts from the parent website. Choose one label, such as `blog`, and
+WinPanel creates a separate website at `blog.example.com` with its own files, runtime,
+settings and Git deployment history. It is still under the same account, but uses that
+account's separate subdomain allowance. Only one level is allowed, so a subdomain cannot
+become a parent itself.
+
 **Uploading files** is drag and drop, in the browser, with a proper editor for when you
 need to change one line. No FTP program to configure.
 

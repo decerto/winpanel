@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import type { AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
 
 /**
  * SQLite is the panel's own store. Deliberately local: the control panel has
@@ -49,6 +50,8 @@ export const users = sqliteTable(
      * Zero is a real answer: an account that may not create a website yet.
      */
     siteLimit: integer('site_limit'),
+    /** How many subdomain websites this account may own. Null means no limit. */
+    subdomainLimit: integer('subdomain_limit'),
     mailQuotaBytes: integer('mail_quota_bytes'),
     siteDiskQuotaBytes: integer('site_disk_quota_bytes'),
     gameServerLimit: integer('game_server_limit'),
@@ -180,6 +183,11 @@ export const sites = sqliteTable(
      * is treated as; only admins and the owner ever see those.
      */
     ownerUserId: text('owner_user_id').references(() => users.id, { onDelete: 'set null' }),
+    /** The main website this independently deployable subdomain belongs to. */
+    parentSiteId: text('parent_site_id').references(
+      (): AnySQLiteColumn => sites.id,
+      { onDelete: 'set null' },
+    ),
     runtime: text('runtime', { enum: ['node', 'static', 'dotnet', 'proxy', 'php'] }).notNull(),
     /** The flavour the site was created from, if any. Drives UI hints only. */
     preset: text('preset', { enum: ['wordpress'] }),
@@ -207,7 +215,11 @@ export const sites = sqliteTable(
     diskQuotaBytes: integer('disk_quota_bytes').notNull().default(21474836480),
     ...timestamps,
   },
-  (table) => [uniqueIndex('sites_slug_idx').on(table.slug), index('sites_owner_idx').on(table.ownerUserId)],
+  (table) => [
+    uniqueIndex('sites_slug_idx').on(table.slug),
+    index('sites_owner_idx').on(table.ownerUserId),
+    index('sites_parent_idx').on(table.parentSiteId),
+  ],
 );
 
 /**

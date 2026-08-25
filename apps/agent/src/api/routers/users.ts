@@ -89,6 +89,7 @@ export const usersRouter = router({
         password: input.password,
         role: input.role,
         siteLimit: input.siteLimit,
+        subdomainLimit: input.subdomainLimit,
         mailQuotaBytes: input.mailQuotaBytes,
         siteDiskQuotaBytes: input.siteDiskQuotaBytes,
         gameServerLimit: input.gameServerLimit,
@@ -183,11 +184,28 @@ export const usersRouter = router({
       const site = ctx.app.sites.get(input.slug);
       if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'No such website.' });
 
+      if (site.parentSiteId !== null) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Subdomains follow their parent website and cannot be assigned separately.',
+        });
+      }
+
+      const children = ctx.app.sites.childrenFor(site.id);
+      const relatedSites = [site, ...children];
+      const additionalSites = site.ownerUserId === input.userId ? 0 : 1;
+      const additionalSubdomains = children.filter(
+        (child) => child.ownerUserId !== input.userId,
+      ).length;
+
       if (input.userId !== null) {
         const target = ctx.app.auth.getUser(input.userId);
         if (!target) throw new TRPCError({ code: 'NOT_FOUND', message: 'No such account.' });
 
-        if (target.siteLimit !== null && target.siteCount >= target.siteLimit) {
+        if (
+          target.siteLimit !== null &&
+          target.siteCount + additionalSites > target.siteLimit
+        ) {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
             message:
@@ -196,7 +214,21 @@ export const usersRouter = router({
           });
         }
 
-        const siteDatabases = listDatabasesForSite(ctx.app.db, site.id);
+        if (
+          target.subdomainLimit !== null &&
+          target.subdomainCount + additionalSubdomains > target.subdomainLimit
+        ) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              `${target.username} is already at their limit of ${target.subdomainLimit} ` +
+              `${target.subdomainLimit === 1 ? 'subdomain' : 'subdomains'}. Raise it first.`,
+          });
+        }
+
+        const siteDatabases = relatedSites.flatMap((relatedSite) =>
+          listDatabasesForSite(ctx.app.db, relatedSite.id),
+        );
         const databasesToTransfer = siteDatabases.filter(
           (database) => database.ownerUserId !== input.userId,
         ).length;
@@ -231,7 +263,9 @@ export const usersRouter = router({
         }
       }
 
-      ctx.app.sites.setOwner(site.id, input.userId);
+      for (const relatedSite of relatedSites) {
+        ctx.app.sites.setOwner(relatedSite.id, input.userId);
+      }
 
       /*
        * The databases go with it. They were made for this website and are
@@ -239,15 +273,24 @@ export const usersRouter = router({
        * owner cannot see the password their own site is using, while the
        * previous owner still can.
        */
-      const databases = reassignSiteDatabases(ctx.app.db, site.id, input.userId);
+      const databases = relatedSites.reduce(
+        (total, relatedSite) =>
+          total + reassignSiteDatabases(ctx.app.db, relatedSite.id, input.userId),
+        0,
+      );
 
-      const source = site.source as SiteSource;
-      const isSsh = source.kind === 'git' && isSshUrl(source.url);
-      const needsOwnGitAccess =
-        source.kind === 'git' &&
-        !isSsh &&
-        input.userId !== null &&
-        !ctx.app.sites.gitTokenHolders(site.id).some((holder) => holder.userId === input.userId);
+      const needsOwnGitAccess = relatedSites.some((relatedSite) => {
+        const source = relatedSite.source as SiteSource;
+        const isSsh = source.kind === 'git' && isSshUrl(source.url);
+        return (
+          source.kind === 'git' &&
+          !isSsh &&
+          input.userId !== null &&
+          !ctx.app.sites
+            .gitTokenHolders(relatedSite.id)
+            .some((holder) => holder.userId === input.userId)
+        );
+      });
 
       return { ok: true, needsOwnGitAccess, databases };
     }),

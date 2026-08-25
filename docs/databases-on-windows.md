@@ -119,15 +119,14 @@ MongoDB Compass to see what is in it.
   own sign-in. The password never reaches your browser either - opening it mints a one-shot
   ticket that a small plugin swaps for the real credentials on the server side. Install
   **Database browser (Adminer)** from Settings to get this.
-- **MongoDB** opens a browser built into the panel: collections, document counts, and the
-  documents themselves with a JSON filter box. It **reads only**. MongoDB has no Adminer
-  driver that works on Windows - the one it has needs a PECL extension PHP does not ship -
-  so rather than leave MongoDB the one engine you cannot see into, WinPanel reads it
-  directly.
+- **MongoDB** opens a browser and editor built into the panel: collections, document counts,
+  paging, JSON filters and the documents themselves. Insert, update, replace and delete
+  documents without leaving WinPanel. MongoDB has no Adminer driver that works on Windows -
+  the one it has needs a PECL extension PHP does not ship - so WinPanel reads and writes it
+  directly through the database's own login.
 
-Desktop tools still work if you prefer them, or if you want to write to MongoDB rather than
-just read it. Paste the connection string into Compass, pgAdmin, DBeaver or `psql` and they
-will connect from the server itself.
+Desktop tools still work if you prefer them. Paste the connection string into Compass,
+pgAdmin, DBeaver or `psql` and they will connect from the server itself.
 
 ### Remote connections
 

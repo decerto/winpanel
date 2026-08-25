@@ -55,6 +55,7 @@ const person = (over: Record<string, unknown>) => ({
   disabled: false,
   totpEnrolled: false,
   siteLimit: null,
+  subdomainLimit: null,
   mailQuotaBytes: null,
   siteDiskQuotaBytes: null,
   gameServerLimit: null,
@@ -64,6 +65,7 @@ const person = (over: Record<string, unknown>) => ({
   lastLoginAt: null,
   createdAt: new Date(0),
   siteCount: 0,
+  subdomainCount: 0,
   gameServerCount: 0,
   databaseCount: 0,
   databaseAllocatedBytes: 0,
@@ -160,6 +162,43 @@ describe('the limits on the People page', () => {
     expect(wrapper.text()).toContain('1 of 2');
   });
 
+  it('shows and sends the separate subdomain allowance', async () => {
+    state.people[2] = person({
+      id: 'f',
+      username: 'freya',
+      subdomainLimit: 3,
+      subdomainCount: 2,
+    });
+    const wrapper = await render();
+    expect(wrapper.text()).toContain('2 of 3');
+
+    await wrapper.findAll('button').find((b: any) => b.text().includes('Add someone'))!.trigger('click');
+    await wrapper.find('#person-username').setValue('subdomain-user');
+    await wrapper.find('#person-password').setValue('a-password-long-enough');
+    await wrapper.find('#person-subdomains').setValue('8');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(state.created[0]).toMatchObject({
+      role: 'user',
+      subdomainLimit: 8,
+    });
+  });
+
+  it('loads the saved subdomain allowance when editing a customer', async () => {
+    state.people[2] = person({
+      id: 'f',
+      username: 'freya',
+      subdomainLimit: 7,
+      subdomainCount: 4,
+    });
+    const wrapper = await render();
+
+    await rowButtons(wrapper, 2)[0]!.trigger('click');
+
+    expect(wrapper.find('#person-subdomains').element).toHaveProperty('value', '7');
+  });
+
   it('describes a staff account as reaching everything', async () => {
     const wrapper = await render();
     expect(wrapper.text()).toContain('All websites');
@@ -189,6 +228,7 @@ describe('the limits on the People page', () => {
       username: 'sam',
       role: 'admin',
       siteLimit: null,
+      subdomainLimit: null,
       mailQuotaBytes: null,
       siteDiskQuotaBytes: null,
     });

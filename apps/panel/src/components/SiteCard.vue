@@ -294,7 +294,7 @@ const contentPath = computed(() => (isGit.value ? 'release' : 'public'));
 <template>
   <article class="card card-interactive overflow-hidden">
     <!-- Header: the website itself, its state, and the numbers worth a glance. -->
-    <header class="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-line px-5 py-3.5">
+    <header class="flex flex-wrap items-start gap-x-5 gap-y-2 border-b border-line px-5 py-3.5">
       <span
         class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-line
                bg-brand-soft/50 text-brand-bright"
@@ -304,14 +304,30 @@ const contentPath = computed(() => (isGit.value ? 'release' : 'public'));
       </span>
 
       <div class="min-w-0 flex-1">
-        <RouterLink
-          :to="`/sites/${site.slug}`"
-          class="block truncate text-base font-semibold text-ink hover:text-brand-bright"
-        >
-          {{ site.displayName }}
-        </RouterLink>
+        <div class="flex flex-wrap items-center gap-2">
+          <RouterLink
+            :to="`/sites/${site.slug}`"
+            class="truncate text-base font-semibold text-ink hover:text-brand-bright"
+          >
+            {{ site.displayName }}
+          </RouterLink>
+          <span
+            v-if="site.isSubdomain"
+            class="rounded-full bg-brand-soft/70 px-2 py-0.5 text-[0.65rem] font-medium
+                   uppercase tracking-wide text-brand-bright"
+          >
+            Subdomain
+          </span>
+        </div>
 
         <div class="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-3 text-sm">
+          <RouterLink
+            v-if="site.isSubdomain && site.parentSlug"
+            :to="`/sites/${site.parentSlug}`"
+            class="inline-flex min-w-0 items-center text-ink-muted hover:text-brand-bright"
+          >
+            Under {{ site.parentSlug }}
+          </RouterLink>
           <a
             v-for="domain in site.domains.slice(0, 2)"
             :key="domain"
@@ -328,7 +344,9 @@ const contentPath = computed(() => (isGit.value ? 'release' : 'public'));
         </div>
       </div>
 
-      <span class="flex shrink-0 items-center gap-2 text-xs">
+      <span
+        class="order-3 flex w-full shrink-0 items-center gap-2 text-xs sm:order-none sm:w-auto"
+      >
         <span class="h-1.5 w-1.5 rounded-full" :class="status.dot" aria-hidden="true" />
         <span :class="status.text">{{ status.label }}</span>
       </span>

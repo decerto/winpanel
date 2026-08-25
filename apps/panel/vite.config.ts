@@ -24,6 +24,7 @@ export default defineConfig({
       '/api': {
         target: 'https://127.0.0.1:8443',
         changeOrigin: true,
+        headers: { origin: 'https://127.0.0.1:8443' },
         // The agent uses a self-signed certificate in development.
         secure: false,
       },

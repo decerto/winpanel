@@ -78,6 +78,8 @@ export interface CreateSiteInput {
   gitToken?: { userId: string; token: string };
   /** OpenSSH private key of a deploy key, for a private repository. */
   gitSshKey?: { privateKey: string; publicKey: string };
+  /** Main website this independently deployable subdomain belongs to. */
+  parentSiteId?: string | null;
   diskQuotaBytes?: number;
   /** The flavour the site was created from, if any. */
   preset?: 'wordpress' | null;
@@ -188,6 +190,10 @@ export class SiteService {
 
   getById(id: string) {
     return this.db.db.select().from(sites).where(eq(sites.id, id)).get();
+  }
+
+  childrenFor(parentSiteId: string) {
+    return this.db.db.select().from(sites).where(eq(sites.parentSiteId, parentSiteId)).all();
   }
 
   deploymentsFor(siteId: string, limit = 20) {
@@ -327,6 +333,7 @@ export class SiteService {
         domains: input.domains,
         source: input.source,
         manifest: input.manifest,
+        parentSiteId: input.parentSiteId ?? null,
         ownerUserId: input.ownerUserId ?? null,
         ...(input.diskQuotaBytes !== undefined
           ? { diskQuotaBytes: input.diskQuotaBytes }

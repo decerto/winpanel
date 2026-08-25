@@ -72,20 +72,21 @@ Website ZIP downloads contain files and portable database exports for offsite st
 
 A free control panel for Windows that manages websites, game servers, HTTPS, DNS, email
 and customer accounts from one interface. Static sites, Node.js apps, ASP.NET Core apps,
-PHP sites and WordPress are
+PHP sites, WordPress and independently deployable subdomains are
 all first-class; each runs as a supervised Windows Service, with
 [Caddy](https://caddyserver.com/)
 in front handling domains, certificates and traffic. WordPress is a one-click install backed
 by a bundled MariaDB database, with a database browser built in. It supports Windows Server
 2022/2025 and Windows 11 Home or Pro - there is no Server-edition requirement.
 
-- **Websites** - from Git or managed by hand, with builds that swap in only if they start
+- **Websites** - from Git or managed by hand, with independently deployable subdomains and
+  builds that swap in only if they start
 - **Game servers** - Minecraft Java and Bedrock, Palworld, Project Zomboid and other Steam
   titles, each a Windows Service with its own ports and firewall rules. Any game not in the
   list is a JSON file away - the library is a config folder, not a code path
 - **WordPress & PHP** - one-click WordPress, and PHP sites on a supervised worker pool
 - **Databases** - MariaDB, PostgreSQL and MongoDB, each a one-click install, with
-  per-account limits and a browser built in
+  per-account limits and a browser and editor built in
 - **HTTPS** - free certificates, renewed automatically, over the DNS challenge
 - **DNS** - Cloudflare records per website, including a reviewed "point this domain here"
 - **Email** - self-hosted mailboxes with quotas, aliases, DKIM and webmail

@@ -150,6 +150,13 @@ export function scopeOf(input: unknown): { slug?: string; domain?: string } {
     if (typeof value === 'string' && value !== '') scope.slug = value;
   }
 
+  // Creating a subdomain names its parent instead of a child slug. It is the
+  // same website scope, so it must receive the same tenant guard.
+  if (scope.slug === undefined) {
+    const parentSlug = record['parentSiteSlug'];
+    if (typeof parentSlug === 'string' && parentSlug !== '') scope.slug = parentSlug;
+  }
+
   const domain = record['domain'];
   if (typeof domain === 'string' && domain !== '') scope.domain = domain.toLowerCase();
 

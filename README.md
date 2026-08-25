@@ -108,9 +108,9 @@ Windows equivalent.
 
 | Area | Capability |
 | --- | --- |
-| **Websites** | Static files, Node, .NET and PHP apps, from Git or managed by hand - plus one-click WordPress |
+| **Websites** | Static files, Node, .NET and PHP apps, from Git or managed by hand - plus one-click WordPress and independently deployable subdomains |
 | **Game servers** | Minecraft Java/Bedrock and Steam dedicated servers, with Windows Services, scoped files, Steam Workshop mods, and a config-driven library you can extend |
-| **Databases** | MariaDB, PostgreSQL and MongoDB, each a one-click install, with per-account limits and a built-in browser |
+| **Databases** | MariaDB, PostgreSQL and MongoDB, each a one-click install, with per-account limits and a built-in browser and editor |
 | **Releases** | Builds off to one side and swaps it in, so a failed build never touches the live site |
 | **HTTPS** | Free certificates, renewed automatically, using the DNS challenge |
 | **DNS** | Cloudflare records per website, including the proxy toggle and a one-click "point this domain here" |
@@ -160,6 +160,11 @@ everything after it.
 The first two, and the last, keep their files in the site's `public` folder.
 Nothing the panel does ever overwrites that folder - it is yours. Only sites
 built from Git use `release`, which *is* replaced on every deploy.
+
+From a website with a primary domain, you can add a subdomain as a separate website. It
+gets its own folder, runtime, settings and deployment history, including full Git support;
+WinPanel derives its address from one label and the parent domain, such as `blog.example.com`.
+Subdomains are counted against a customer's separate subdomain allowance.
 
 ### Reaching a site before it has a domain
 
@@ -310,9 +315,10 @@ Three roles, because a hosting panel has three genuinely different jobs to do.
 | **Administrator** (`admin`) | Every website, mailbox and server setting - but not the panel's own lifecycle |
 | **Customer** (`user`) | Only their own websites, files, DNS and mailboxes |
 
-Each customer account carries its own limits: how many websites they may own, how much disk
-each of their websites gets, and how much mail storage they may use in total. `No limit` is
-a real setting, and so is zero.
+Each customer account carries its own limits: how many websites and subdomains they may own,
+how much disk each of their websites gets, and how much mail storage they may use in total.
+`No limit` is a real setting, and so is zero. A parent website with subdomains cannot change
+its primary domain until those child websites are removed.
 
 Ownership is enforced in the API, not hidden in the interface. A customer cannot list
 another customer's sites, cannot reach the shared Cloudflare token, and cannot see the

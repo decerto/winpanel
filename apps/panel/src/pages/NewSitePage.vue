@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import { RouterLink, useRouter } from 'vue-router';
+import { RouterLink, useRoute, useRouter } from 'vue-router';
 import {
   ArrowLeft,
   Check,
@@ -47,6 +47,26 @@ import HowTo from '../components/HowTo.vue';
  */
 
 const router = useRouter();
+const route = useRoute();
+
+type ParentSite = Awaited<ReturnType<typeof api.sites.get.query>>;
+
+const parentSlug = computed(() => {
+  const value = route.query.parent;
+  return typeof value === 'string' ? value.trim() : '';
+});
+const parentSite = ref<ParentSite | null>(null);
+const parentLoading = ref(false);
+const isSubdomain = computed(() => parentSlug.value.length > 0);
+const parentDomain = computed(() => parentSite.value?.domains[0] ?? '');
+const subdomainLabel = ref('');
+const SUBDOMAIN_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const childDomain = computed(() => {
+  const label = subdomainLabel.value.trim().toLowerCase();
+  return isSubdomain.value && parentDomain.value && SUBDOMAIN_LABEL.test(label)
+    ? `${label}.${parentDomain.value}`
+    : null;
+});
 
 type Kind = 'static' | 'upload' | 'git' | 'node' | 'php' | 'wordpress';
 
@@ -248,6 +268,28 @@ const busy = ref(false);
 const error = ref<string | null>(null);
 const testResult = ref<{ ok: boolean; message: string } | null>(null);
 
+async function loadParentSite(): Promise<void> {
+  parentSite.value = null;
+  if (!parentSlug.value) return;
+
+  parentLoading.value = true;
+  error.value = null;
+
+  try {
+    const candidate = await api.sites.get.query({ slug: parentSlug.value });
+    if (candidate.isSubdomain) {
+      throw new Error('A subdomain can only be added to a main website.');
+    }
+    parentSite.value = candidate;
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    parentLoading.value = false;
+  }
+}
+
+onMounted(() => void loadParentSite());
+
 /*
  * WordPress setup runs as a job once the site exists, and this page streams
  * it. `useJobLog` polls the job and hands back its lines as they arrive.
@@ -286,10 +328,20 @@ const documentRoot = ref('');
 const envRows = ref<Array<{ key: string; value: string }>>([]);
 
 const domainList = computed(() =>
-  domains.value
-    .split(/[\s,]+/)
-    .map((d) => d.trim().toLowerCase())
-    .filter((d) => d.length > 0),
+  isSubdomain.value
+    ? childDomain.value
+      ? [childDomain.value]
+      : []
+    : domains.value
+        .split(/[\s,]+/)
+        .map((d) => d.trim().toLowerCase())
+        .filter((d) => d.length > 0),
+);
+
+const canSubmitDomain = computed(
+  () =>
+    displayName.value.trim().length > 0 &&
+    (!isSubdomain.value || (parentSite.value !== null && childDomain.value !== null)),
 );
 
 const lowConfidence = computed(
@@ -437,6 +489,9 @@ async function createSite(): Promise<void> {
       spaFallback: spaFallback.value,
       envVars,
       deployNow: true,
+      ...(isSubdomain.value
+        ? { parentSiteSlug: parentSlug.value, subdomain: subdomainLabel.value.trim() }
+        : {}),
     });
 
     /*
@@ -531,11 +586,35 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
 <template>
   <div class="mx-auto w-full max-w-2xl">
     <RouterLink
-      to="/sites"
+      :to="isSubdomain ? `/sites/${parentSlug}` : '/sites'"
       class="mb-4 inline-flex items-center gap-1.5 text-sm text-ink-muted hover:text-ink"
     >
-      <ArrowLeft :size="15" aria-hidden="true" /> All websites
+      <ArrowLeft :size="15" aria-hidden="true" />
+      {{ isSubdomain ? 'Back to parent website' : 'All websites' }}
     </RouterLink>
+
+    <div
+      v-if="isSubdomain"
+      class="mb-6 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-brand/30
+             bg-brand-soft/30 px-4 py-3 text-sm"
+    >
+      <span class="text-ink-faint">Adding a subdomain to</span>
+      <RouterLink
+        v-if="parentSite"
+        :to="`/sites/${parentSite.slug}`"
+        class="font-medium text-brand-bright hover:underline"
+      >
+        {{ parentSite.displayName }}
+      </RouterLink>
+      <span v-else-if="parentLoading" class="text-ink-muted">Loading parent website&hellip;</span>
+      <span v-else class="text-danger">The parent website could not be loaded.</span>
+      <span
+        v-if="parentDomain"
+        class="min-w-0 max-w-full break-all font-mono text-xs text-ink-muted"
+      >
+        {{ parentDomain }}
+      </span>
+    </div>
 
     <!-- Where you are, and how much is left. -->
     <ol class="mb-6 flex items-center gap-2">
@@ -1009,8 +1088,14 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
 
       <!-- Name and, optionally, a web address. -->
       <template v-else-if="step === 'domain'">
-        <h2 class="text-lg font-semibold tracking-tight text-ink">What should it be called?</h2>
-        <p class="mt-1 text-sm text-ink-muted">
+        <h2 class="text-lg font-semibold tracking-tight text-ink">
+          {{ isSubdomain ? 'Choose the subdomain' : 'What should it be called?' }}
+        </h2>
+        <p v-if="isSubdomain" class="mt-1 text-sm text-ink-muted">
+          This website is independent, but its address will live beneath the parent website.
+          Choose one label; the panel will use it with the parent domain.
+        </p>
+        <p v-else class="mt-1 text-sm text-ink-muted">
           A web address is optional. Without one you still get a link that works immediately, and
           you can add a domain whenever you have it.
         </p>
@@ -1021,18 +1106,50 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
             <input id="name" v-model="displayName" class="field" placeholder="My website" />
           </div>
 
-          <div>
-            <label for="domains" class="label">
-              Web address <span class="font-normal text-ink-faint">(optional)</span>
-            </label>
-            <input
-              id="domains"
-              v-model="domains"
-              class="field font-mono"
-              placeholder="example.com, www.example.com"
-            />
-            <p class="hint">Separate several with commas. Leave empty to decide later.</p>
-          </div>
+          <template v-if="isSubdomain">
+            <div>
+              <label for="subdomain" class="label">Subdomain label</label>
+              <div class="flex items-center gap-2">
+                <input
+                  id="subdomain"
+                  v-model="subdomainLabel"
+                  class="field min-w-0 flex-1 font-mono"
+                  placeholder="blog"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <span
+                  class="min-w-0 max-w-[55%] truncate font-mono text-sm text-ink-muted
+                         sm:max-w-none sm:shrink-0"
+                  :title="parentDomain || 'parent.example.com'"
+                >
+                  .{{ parentDomain || 'parent.example.com' }}
+                </span>
+              </div>
+              <p v-if="parentDomain" class="hint">
+                This website will answer at
+                <span class="font-mono text-ink-muted">{{ childDomain || 'label.' + parentDomain }}</span>.
+                Use letters, numbers and hyphens, without a leading or trailing hyphen.
+              </p>
+              <p v-else class="hint text-danger">
+                The parent website needs a primary domain before it can have subdomains.
+              </p>
+            </div>
+          </template>
+          <template v-else>
+            <div>
+              <label for="domains" class="label">
+                Web address <span class="font-normal text-ink-faint">(optional)</span>
+              </label>
+              <input
+                id="domains"
+                v-model="domains"
+                class="field font-mono"
+                placeholder="example.com, www.example.com"
+              />
+              <p class="hint">Separate several with commas. Leave empty to decide later.</p>
+            </div>
+          </template>
 
           <!-- The half of the job that happens on somebody else's screen. -->
           <HowTo v-if="domainList.length > 0" title="How to point this address at the server">
@@ -1051,7 +1168,7 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
             </li>
           </HowTo>
 
-          <HowTo v-else :title="afterCreation.title">
+          <HowTo v-else-if="!isSubdomain" :title="afterCreation.title">
             <li v-for="line in afterCreation.steps" :key="line">{{ line }}</li>
           </HowTo>
 
@@ -1082,7 +1199,7 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
               v-if="hasSecrets"
               type="button"
               class="btn btn-primary flex-1"
-              :disabled="!displayName"
+              :disabled="!canSubmitDomain"
               @click="step = 'secrets'"
             >
               Continue
@@ -1091,7 +1208,7 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
               v-else
               type="button"
               class="btn btn-primary flex-1"
-              :disabled="!displayName || busy"
+              :disabled="!canSubmitDomain || busy"
               @click="createSite"
             >
               <Loader v-if="busy" :size="14" class="animate-spin" aria-hidden="true" />

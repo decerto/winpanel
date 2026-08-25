@@ -139,6 +139,35 @@ function knownHostsPathFor(dataDir: string): string {
   return path.join(dataDir, 'ssh', 'known_hosts');
 }
 
+const SUBDOMAIN_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+
+function normaliseSubdomainLabel(value: string): string | null {
+  const label = value.trim().toLowerCase().replace(/\.$/, '');
+  return SUBDOMAIN_LABEL.test(label) ? label : null;
+}
+
+function childDomainFor(parentDomain: string | undefined, label: string): string | null {
+  if (!parentDomain) return null;
+
+  const normalisedLabel = normaliseSubdomainLabel(label);
+  const base = parentDomain.trim().toLowerCase();
+  if (!normalisedLabel || !Hostname.safeParse(base).success) return null;
+
+  const domain = `${normalisedLabel}.${base}`;
+  return Hostname.safeParse(domain).success ? domain : null;
+}
+
+function subdomainLabelFor(domain: string, parentDomain: string | undefined): string | null {
+  if (!parentDomain) return null;
+
+  const candidate = domain.trim().toLowerCase();
+  const base = parentDomain.trim().toLowerCase();
+  const suffix = `.${base}`;
+  if (!candidate.endsWith(suffix)) return null;
+
+  return normaliseSubdomainLabel(candidate.slice(0, -suffix.length));
+}
+
 export const sitesRouter = router({
   git: siteGitRouter,
   app: siteAppRouter,
@@ -156,7 +185,10 @@ export const sitesRouter = router({
       if (record.siteId) databaseCounts.set(record.siteId, (databaseCounts.get(record.siteId) ?? 0) + 1);
     }
 
-    return service.list(scope).map((site) => {
+    const listed = service.list(scope);
+    const listedById = new Map(listed.map((site) => [site.id, site]));
+
+    return listed.map((site) => {
       // Ports are allocated when a site is created, so a port on its own says
       // nothing about whether anything is being served. The list is the front
       // door of the panel and must not claim a site is live before it is.
@@ -170,6 +202,8 @@ export const sitesRouter = router({
         preset: site.preset,
         sourceKind: (site.source as SiteSource).kind,
         domains: site.domains as string[],
+        isSubdomain: site.parentSiteId !== null,
+        parentSlug: site.parentSiteId ? listedById.get(site.parentSiteId)?.slug ?? null : null,
         enabled: site.enabled,
         activePort: site.activeColour === 'blue' ? site.portBlue : site.portGreen,
         previewPort: site.previewPort,
@@ -245,6 +279,8 @@ export const sitesRouter = router({
          */
         ownerUserId: ctx.user?.role === 'user' ? null : site.ownerUserId,
         domains: site.domains as string[],
+        isSubdomain: site.parentSiteId !== null,
+        parentSlug: site.parentSiteId ? service.getById(site.parentSiteId)?.slug ?? null : null,
         sourceKind: (site.source as SiteSource).kind,
         previewUrl: previewUrlFor(site.previewPort),
         /** How many databases this website may have; null means no limit. */
@@ -641,6 +677,10 @@ export const sitesRouter = router({
         displayName: z.string().min(1).max(120),
         /** May be empty. The site is then reachable on its preview port. */
         domains: z.array(Hostname).max(20).default([]),
+        /** Main website whose primary domain supplies the subdomain suffix. */
+        parentSiteSlug: z.string().min(1).max(48).optional(),
+        /** One DNS label, such as `blog`, when creating a subdomain. */
+        subdomain: z.string().max(63).optional(),
         source: z.discriminatedUnion('kind', [
           GitSourceInput,
           UploadSourceInput,
@@ -666,19 +706,54 @@ export const sitesRouter = router({
     .mutation(async ({ ctx, input }) => {
       const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
 
-      // A customer's websites belong to them, and their allowance is checked
-      // here rather than in the UI, which is only ever a hint.
-      const owner = ctx.user?.role === 'user' ? ctx.app.auth.getUser(ctx.user.id) : null;
+      const parent = input.parentSiteSlug ? service.get(input.parentSiteSlug.trim()) : undefined;
+      if (input.parentSiteSlug && !parent) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'That parent website was not found.' });
+      }
 
-      if (owner && owner.siteLimit !== null && owner.siteCount >= owner.siteLimit) {
+      if (parent && parent.parentSiteId !== null) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'A subdomain must belong to a main website, not another subdomain.',
+        });
+      }
+
+      let domains = input.domains.map((domain) => domain.toLowerCase());
+      if (parent) {
+        const domain = childDomainFor((parent.domains as string[])[0], input.subdomain ?? '');
+        if (!domain) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Enter one valid subdomain label, such as blog or shop.',
+          });
+        }
+        domains = [domain];
+      } else if (input.subdomain !== undefined) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'A subdomain label needs a parent website.',
+        });
+      }
+
+      // Staff creating under a customer's website creates it for that same
+      // customer; a standalone staff-created website remains server-owned.
+      const ownerUserId =
+        ctx.user?.role === 'user' ? ctx.user.id : parent?.ownerUserId ?? null;
+      const owner = ownerUserId ? ctx.app.auth.getUser(ownerUserId) : null;
+      const isSubdomain = parent !== undefined;
+      const limit = isSubdomain ? owner?.subdomainLimit : owner?.siteLimit;
+      const count = isSubdomain ? owner?.subdomainCount : owner?.siteCount;
+
+      if (owner && limit !== null && limit !== undefined && count !== undefined && count >= limit) {
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
           message:
-            owner.siteLimit === 0
-              ? 'Your account cannot host websites yet. Ask your hosting provider to enable it.'
-              : `Your account is limited to ${owner.siteLimit} ` +
-                `${owner.siteLimit === 1 ? 'website' : 'websites'}. Remove one, or ask your ` +
-                'hosting provider to raise the limit.',
+            limit === 0
+              ? `This account cannot host ${isSubdomain ? 'subdomains' : 'websites'} yet. Ask ` +
+                'your hosting provider to enable it.'
+              : `This account is limited to ${limit} ` +
+                `${isSubdomain ? 'subdomains' : limit === 1 ? 'website' : 'websites'}. Remove one, or ask ` +
+                'your hosting provider to raise the limit.',
         });
       }
 
@@ -705,7 +780,20 @@ export const sitesRouter = router({
         });
       }
 
-      const panelClash = panelHostnameAmong(ctx.app.db, input.domains);
+      const requestedDomains = new Set(domains);
+      const clash = service
+        .list()
+        .flatMap((other) => other.domains as string[])
+        .find((domain) => requestedDomains.has(domain.toLowerCase()));
+
+      if (clash) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: `${clash} is already used by another website on this server.`,
+        });
+      }
+
+      const panelClash = panelHostnameAmong(ctx.app.db, domains);
       if (panelClash) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
@@ -751,12 +839,13 @@ export const sitesRouter = router({
 
         const created = await service.create({
           displayName: input.displayName,
-          domains: input.domains,
+          domains,
           source,
           manifest,
           envVars: input.envVars,
           preset: input.preset ?? null,
-          ownerUserId: ctx.user?.role === 'user' ? ctx.user.id : null,
+          parentSiteId: parent?.id ?? null,
+          ownerUserId,
           ...(owner?.siteDiskQuotaBytes != null
             ? { diskQuotaBytes: owner.siteDiskQuotaBytes }
             : {}),
@@ -863,13 +952,38 @@ export const sitesRouter = router({
       const site = service.get(input.slug);
       if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
 
+      let domains = input.domains.map((domain) => domain.toLowerCase());
+      if (site.parentSiteId !== null) {
+        const parent = service.getById(site.parentSiteId);
+        const parentDomain = (parent?.domains as string[] | undefined)?.[0];
+        const domain = domains.length === 1
+          ? subdomainLabelFor(domains[0]!, parentDomain)
+          : null;
+        if (!domain || !parentDomain) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'A subdomain must keep one address beneath its parent website.',
+          });
+        }
+        domains = [`${domain}.${parentDomain.toLowerCase()}`];
+      } else if (service.childrenFor(site.id).length > 0) {
+        const currentPrimary = (site.domains as string[])[0]?.toLowerCase();
+        const nextPrimary = domains[0]?.toLowerCase();
+        if (currentPrimary !== nextPrimary) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: 'Change or remove this website\'s subdomains before changing its primary domain.',
+          });
+        }
+      }
+
       // Two sites answering on the same host is a config Caddy accepts and
       // then resolves unpredictably, so it is refused here instead.
       const clash = service
         .list()
         .filter((other) => other.id !== site.id)
         .flatMap((other) => other.domains as string[])
-        .find((domain) => input.domains.includes(domain));
+        .find((domain) => domains.includes(domain.toLowerCase()));
 
       if (clash) {
         throw new TRPCError({
@@ -878,7 +992,7 @@ export const sitesRouter = router({
         });
       }
 
-      const panelClash = panelHostnameAmong(ctx.app.db, input.domains);
+      const panelClash = panelHostnameAmong(ctx.app.db, domains);
       if (panelClash) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
@@ -891,7 +1005,7 @@ export const sitesRouter = router({
 
       ctx.app.db.db
         .update(sites)
-        .set({ domains: input.domains, updatedAt: new Date() })
+        .set({ domains, updatedAt: new Date() })
         .where(eq(sites.id, site.id))
         .run();
 
@@ -1046,6 +1160,16 @@ export const sitesRouter = router({
       const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
       const site = service.get(input.slug);
       if (!site) return { ok: true };
+
+      const children = service.childrenFor(site.id);
+      if (children.length > 0) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message:
+            `Remove the ${children.length === 1 ? 'subdomain' : 'subdomains'} under this website ` +
+            'first.',
+        });
+      }
 
       /*
        * Stop the site's processes before its records go.

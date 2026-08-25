@@ -9,7 +9,7 @@ import {
 } from '../src/databases/names.js';
 import { DatabaseError } from '../src/databases/errors.js';
 import { fullDatabaseName } from '../src/databases/service.js';
-import { parseDocument, parseFilter } from '../src/databases/browser.js';
+import { parseDocument, parseDocumentId, parseFilter } from '../src/databases/browser.js';
 
 /**
  * A database name is interpolated into SQL, so the validator is the whole
@@ -150,6 +150,14 @@ describe('parseFilter', () => {
     expect(parseFilter('{"name":"Ada"}')).toEqual({ name: 'Ada' });
   });
 
+  it('keeps Extended JSON ids typed', () => {
+    const filter = parseFilter('{"_id":{"$oid":"507f1f77bcf86cd799439011"}}');
+
+    expect(filter['_id']).toEqual(
+      expect.objectContaining({ toHexString: expect.any(Function) }),
+    );
+  });
+
   it('refuses text that is not JSON', () => {
     expect(() => parseFilter('{name: Ada}')).toThrow(DatabaseError);
   });
@@ -166,9 +174,32 @@ describe('parseDocument', () => {
     expect(parseDocument('{"name":"Ada"}')).toEqual({ name: 'Ada' });
   });
 
+  it('keeps MongoDB Extended JSON values typed', () => {
+    const document = parseDocument(
+      '{"id":{"$oid":"507f1f77bcf86cd799439011"},"when":{"$date":"2026-01-02T03:04:05Z"}}',
+    );
+
+    expect(document['id']).toEqual(
+      expect.objectContaining({ toHexString: expect.any(Function) }),
+    );
+    expect(document['when']).toBeInstanceOf(Date);
+  });
+
   it('refuses invalid or non-object JSON', () => {
     for (const bad of ['{name: Ada}', '[1,2]', '"Ada"', 'null']) {
       expect(() => parseDocument(bad), bad).toThrow(DatabaseError);
     }
+  });
+});
+
+describe('parseDocumentId', () => {
+  it('accepts extended JSON ids', () => {
+    expect(parseDocumentId('{"$oid":"507f1f77bcf86cd799439011"}')).toEqual(
+      expect.objectContaining({ toHexString: expect.any(Function) }),
+    );
+  });
+
+  it('refuses malformed ids', () => {
+    expect(() => parseDocumentId('{not-json}')).toThrow(DatabaseError);
   });
 });

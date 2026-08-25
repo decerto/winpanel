@@ -1,4 +1,4 @@
-import type { Document } from 'mongodb';
+import { BSON, type Document } from 'mongodb';
 import { DatabaseError } from './errors.js';
 import { assertSafeDbName } from './names.js';
 import { withMongo } from './mongodb.js';
@@ -102,7 +102,7 @@ export function parseFilter(text: string | undefined): Document {
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(trimmed);
+    parsed = BSON.EJSON.parse(trimmed);
   } catch {
     throw new DatabaseError('That filter is not valid JSON.');
   }
@@ -121,7 +121,7 @@ export function parseDocument(text: string): Document {
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text);
+    parsed = BSON.EJSON.parse(text);
   } catch {
     throw new DatabaseError('That document is not valid JSON.');
   }
@@ -133,13 +133,38 @@ export function parseDocument(text: string): Document {
   return parsed as Document;
 }
 
+type MongoDocumentId = object | string | number | boolean | bigint;
+
+export function parseDocumentId(text: string): MongoDocumentId {
+  if (text.length > MAX_DOCUMENT_BYTES) {
+    throw new DatabaseError(`Document identifiers are limited to ${MAX_DOCUMENT_BYTES} bytes.`);
+  }
+
+  try {
+    const parsed = BSON.EJSON.parse(text) as unknown;
+    if (parsed === null || parsed === undefined) {
+      throw new Error('An id cannot be null.');
+    }
+    return parsed as MongoDocumentId;
+  } catch {
+    throw new DatabaseError('That document identifier is not valid JSON.');
+  }
+}
+
+export interface DocumentRow {
+  /** Extended JSON for the original `_id`, kept separate from editable JSON. */
+  id: string;
+  /** Formatted JSON ready to show in the browser. */
+  json: string;
+  truncated: boolean;
+}
+
 export interface DocumentPage {
   collection: string;
   total: number;
   page: number;
   pageSize: number;
-  /** Each document rendered as formatted JSON, ready to show. */
-  documents: string[];
+  documents: DocumentRow[];
   /** True when a document was too large to send whole. */
   truncated: boolean;
 }
@@ -172,13 +197,15 @@ export async function browseDocuments(
     let truncated = false;
 
     const documents = rows.map((row) => {
-      // The driver's own JSON shape, which keeps ObjectIds and dates legible
-      // rather than turning them into empty objects.
-      const text = JSON.stringify(row, jsonSafeReplacer, 2);
-      if (text.length <= MAX_DOCUMENT_BYTES) return text;
+      const text = BSON.EJSON.stringify(row, null, 2);
+      const rowTruncated = text.length > MAX_DOCUMENT_BYTES;
+      const json =
+        !rowTruncated
+          ? text
+          : `${text.slice(0, MAX_DOCUMENT_BYTES)}\n\u2026 (this document is too large to show in full)`;
 
-      truncated = true;
-      return `${text.slice(0, MAX_DOCUMENT_BYTES)}\n\u2026 (this document is too large to show in full)`;
+      if (rowTruncated) truncated = true;
+      return { id: BSON.EJSON.stringify(row['_id']), json, truncated: rowTruncated };
     });
 
     return {
@@ -223,6 +250,30 @@ export async function updateDocuments(
   });
 }
 
+export async function replaceDocument(
+  ctx: EngineContext,
+  record: DatabaseRecord,
+  options: { collection: string; documentId: string; document: string },
+): Promise<void> {
+  const credentials = credentialsFor(ctx, record);
+  const documentId = parseDocumentId(options.documentId);
+  const document = parseDocument(options.document);
+
+  // The id is deliberately taken from the row originally read. Compass keeps
+  // it stable too, even when the editable JSON displays it in a friendlier form.
+  document['_id'] = documentId;
+
+  await withMongo(credentials, async (client) => {
+    const collection = client.db(record.name).collection(options.collection);
+    const filter: Document = { _id: { $eq: documentId } };
+    const result = await collection.replaceOne(filter, document);
+
+    if (result.matchedCount === 0) {
+      throw new DatabaseError('That document no longer exists. Refresh the collection and try again.');
+    }
+  });
+}
+
 export async function deleteDocuments(
   ctx: EngineContext,
   record: DatabaseRecord,
@@ -238,25 +289,4 @@ export async function deleteDocuments(
       : await collection.deleteOne(filter);
     return result.deletedCount;
   });
-}
-
-/**
- * Renders the types a MongoDB document holds but JSON does not.
- *
- * Without this an ObjectId serialises as `{}` and a Buffer as a wall of byte
- * indices, which makes the browser useless for exactly the documents people
- * most want to look at.
- */
-function jsonSafeReplacer(_key: string, value: unknown): unknown {
-  if (value instanceof Date) return value.toISOString();
-  if (value instanceof Uint8Array) return `<${value.byteLength} bytes>`;
-  if (typeof value === 'bigint') return value.toString();
-  if (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as { toHexString?: unknown }).toHexString === 'function'
-  ) {
-    return (value as { toHexString: () => string }).toHexString();
-  }
-  return value;
 }

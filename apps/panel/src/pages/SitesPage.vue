@@ -68,15 +68,50 @@ const TOOLS = [
 // screen rather than one number that suits neither.
 const pageSize = computed(() => (view.value === 'cards' ? 5 : 25));
 
+/** Keep a child beside the website that owns its hostname. */
+function orderSites(entries: Site[]): Site[] {
+  const childrenByParent = new Map<string, Site[]>();
+
+  for (const entry of entries) {
+    if (!entry.isSubdomain || !entry.parentSlug) continue;
+    const children = childrenByParent.get(entry.parentSlug) ?? [];
+    children.push(entry);
+    childrenByParent.set(entry.parentSlug, children);
+  }
+
+  const ordered: Site[] = [];
+  const included = new Set<string>();
+
+  for (const entry of entries) {
+    if (entry.isSubdomain) continue;
+
+    ordered.push(entry);
+    included.add(entry.id);
+
+    for (const child of childrenByParent.get(entry.slug) ?? []) {
+      ordered.push(child);
+      included.add(child.id);
+    }
+  }
+
+  // Keep an orphaned child visible if its parent was filtered out or removed.
+  for (const entry of entries) {
+    if (!included.has(entry.id)) ordered.push(entry);
+  }
+
+  return ordered;
+}
+
 const matching = computed(() => {
   const needle = query.value.trim().toLowerCase();
-  if (!needle) return sites.value;
+  if (!needle) return orderSites(sites.value);
 
-  return sites.value.filter(
+  return orderSites(sites.value.filter(
     (site) =>
       site.displayName.toLowerCase().includes(needle) ||
-      site.domains.some((domain) => domain.toLowerCase().includes(needle)),
-  );
+      site.domains.some((domain) => domain.toLowerCase().includes(needle)) ||
+      site.parentSlug?.toLowerCase().includes(needle),
+  ));
 });
 
 const visible = computed(() =>
@@ -169,17 +204,24 @@ onMounted(load);
     </p>
 
     <template v-else>
-      <div v-if="view === 'cards'" class="space-y-4">
-        <SiteCard
+      <div v-if="view === 'cards'" class="space-y-6">
+        <div
           v-for="site in visible"
           :key="site.id"
-          :site="site"
-          :certificate="certificates[site.slug]"
-        />
+          class="min-w-0"
+          :class="
+            site.isSubdomain
+              ? 'ml-2 border-l-2 border-brand/30 pl-3 sm:ml-6 sm:pl-4'
+              : ''
+          "
+        >
+          <SiteCard :site="site" :certificate="certificates[site.slug]" />
+        </div>
       </div>
 
       <div v-else class="card overflow-hidden">
-        <table class="w-full text-sm">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
           <thead>
             <tr class="border-b border-line text-left text-xs uppercase tracking-wide text-ink-faint">
               <th scope="col" class="px-4 py-2.5 font-medium">Website</th>
@@ -198,7 +240,10 @@ onMounted(load);
               :key="site.id"
               class="transition-colors hover:bg-white/[0.03]"
             >
-              <td class="max-w-0 px-4 py-2">
+              <td
+                class="max-w-0 px-4 py-2"
+                :class="site.isSubdomain ? 'border-l-2 border-brand/30' : ''"
+              >
                 <RouterLink
                   :to="`/sites/${site.slug}`"
                   class="block truncate font-medium text-ink hover:text-brand-bright"
@@ -206,6 +251,13 @@ onMounted(load);
                   {{ site.displayName }}
                 </RouterLink>
                 <span class="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-ink-muted">
+                  <RouterLink
+                    v-if="site.isSubdomain && site.parentSlug"
+                    :to="`/sites/${site.parentSlug}`"
+                    class="min-w-0 truncate text-brand-bright hover:underline"
+                  >
+                    Subdomain of {{ site.parentSlug }}
+                  </RouterLink>
                   <a
                     v-if="site.domains[0]"
                     :href="`https://${site.domains[0]}`"
@@ -258,8 +310,9 @@ onMounted(load);
                 </div>
               </td>
             </tr>
-          </tbody>
-        </table>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <PaginationBar

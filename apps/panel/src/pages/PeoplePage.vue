@@ -107,6 +107,7 @@ interface FormState {
   role: UserRole;
   /** Empty means no limit, which is what a blank field should mean. */
   siteLimit: string;
+  subdomainLimit: string;
   mailQuotaGb: string;
   siteDiskQuotaGb: string;
   gameServerLimit: string;
@@ -123,6 +124,7 @@ function blankForm(): FormState {
     password: '',
     role: 'user',
     siteLimit: '1',
+    subdomainLimit: '5',
     mailQuotaGb: '5',
     siteDiskQuotaGb: '20',
     gameServerLimit: '1',
@@ -154,6 +156,10 @@ function openEdit(person: Person): void {
     password: '',
     role: person.role,
     siteLimit: person.siteLimit === null ? '' : String(person.siteLimit),
+    subdomainLimit:
+      person.subdomainLimit === null || person.subdomainLimit === undefined
+        ? ''
+        : String(person.subdomainLimit),
     mailQuotaGb: person.mailQuotaBytes === null ? '' : String(person.mailQuotaBytes / GB),
     siteDiskQuotaGb:
       person.siteDiskQuotaBytes === null ? '' : String(person.siteDiskQuotaBytes / GB),
@@ -208,6 +214,7 @@ async function submitForm(): Promise<void> {
     state.role === 'user'
       ? {
           siteLimit: toLimit(state.siteLimit),
+          subdomainLimit: toLimit(state.subdomainLimit),
           mailQuotaBytes: toLimit(state.mailQuotaGb, GB),
           siteDiskQuotaBytes: toLimit(state.siteDiskQuotaGb, GB),
           gameServerLimit: toLimit(state.gameServerLimit),
@@ -217,6 +224,7 @@ async function submitForm(): Promise<void> {
         }
       : {
           siteLimit: null,
+          subdomainLimit: null,
           mailQuotaBytes: null,
           siteDiskQuotaBytes: null,
           databaseQuotaBytes: 0,
@@ -292,6 +300,14 @@ function describeSites(person: Person): string {
   if (person.role !== 'user') return 'All websites';
   if (person.siteLimit === null) return `${person.siteCount} of unlimited`;
   return `${person.siteCount} of ${person.siteLimit}`;
+}
+
+function describeSubdomains(person: Person): string {
+  if (person.role !== 'user') return 'All subdomains';
+  if (person.subdomainLimit === null || person.subdomainLimit === undefined) {
+    return `${person.subdomainCount ?? 0} of unlimited`;
+  }
+  return `${person.subdomainCount ?? 0} of ${person.subdomainLimit}`;
 }
 
 function describeMail(person: Person): string {
@@ -464,10 +480,14 @@ function selectAllGames(): void {
             </div>
           </div>
 
-          <dl class="mt-4 grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3 lg:grid-cols-6">
+          <dl class="mt-4 grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3 lg:grid-cols-7">
             <div>
               <dt class="text-xs text-ink-faint">Websites</dt>
               <dd class="mt-0.5 text-sm text-ink-muted">{{ describeSites(person) }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-ink-faint">Subdomains</dt>
+              <dd class="mt-0.5 text-sm text-ink-muted">{{ describeSubdomains(person) }}</dd>
             </div>
             <div>
               <dt class="text-xs text-ink-faint">Game servers</dt>
@@ -549,6 +569,17 @@ function selectAllGames(): void {
             <input
               id="person-sites"
               v-model="form.siteLimit"
+              class="field"
+              inputmode="numeric"
+              placeholder="No limit"
+            />
+          </div>
+
+          <div class="space-y-1">
+            <label class="label" for="person-subdomains">Subdomains</label>
+            <input
+              id="person-subdomains"
+              v-model="form.subdomainLimit"
               class="field"
               inputmode="numeric"
               placeholder="No limit"

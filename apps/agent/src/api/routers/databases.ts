@@ -42,6 +42,7 @@ import {
   browseDocuments,
   deleteDocuments,
   insertDocument,
+  replaceDocument,
   updateDocuments,
 } from '../../databases/browser.js';
 import { rewriteWpConfigPassword } from '../../sites/wordpress.js';
@@ -740,6 +741,26 @@ export const databasesRouter = router({
         };
       } catch (error) {
         throw asTrpcError(error, 'Those documents could not be updated.');
+      }
+    }),
+
+  mongoReplace: protectedProcedure
+    .input(
+      z.object({
+        id: z.string().min(1),
+        collection: z.string().min(1).max(120),
+        documentId: z.string().min(1).max(64 * 1024),
+        document: z.string().min(1).max(64 * 1024),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const record = mustGetDatabase(ctx, input.id);
+
+      try {
+        await replaceDocument(engineContext(ctx), record, input);
+        return { ok: true };
+      } catch (error) {
+        throw asTrpcError(error, 'That document could not be updated.');
       }
     }),
 

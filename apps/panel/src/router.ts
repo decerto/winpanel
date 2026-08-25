@@ -166,7 +166,7 @@ export const router = createRouter({
       path: '/email',
       name: 'email',
       component: () => import('./pages/MailPage.vue'),
-      meta: { title: 'Email', minRole: 'admin' },
+      meta: { title: 'Email' },
     },
     {
       path: '/webmail',

@@ -14,6 +14,7 @@ import {
   Gauge,
   GitBranch,
   Globe2,
+  Plus,
   RefreshCw,
   Rocket,
   ShieldCheck,
@@ -43,6 +44,8 @@ const route = useRoute();
 const slug = computed(() => route.params['slug'] as string);
 
 const site = ref<SiteDetail | null>(null);
+type ListedSite = Awaited<ReturnType<typeof api.sites.list.query>>[number];
+const children = ref<ListedSite[]>([]);
 const loading = ref(true);
 const error = ref<string | null>(null);
 
@@ -81,6 +84,10 @@ const deployLabel = computed(() => {
       return 'Unknown';
   }
 });
+
+const canAddSubdomain = computed(
+  () => site.value !== null && !site.value.isSubdomain && site.value.domains.length > 0,
+);
 
 /*
  * Tabs are filtered by what the website actually is.
@@ -132,9 +139,20 @@ const hasDatabases = ref(false);
 async function load(): Promise<void> {
   loading.value = true;
   error.value = null;
+  children.value = [];
 
   try {
-    site.value = await api.sites.get.query({ slug: slug.value });
+    const loaded = await api.sites.get.query({ slug: slug.value });
+    site.value = loaded;
+
+    if (!loaded.isSubdomain) {
+      try {
+        const listed = await api.sites.list.query();
+        children.value = listed.filter((entry) => entry.parentSlug === loaded.slug);
+      } catch {
+        // The site itself is still useful when the list decoration is unavailable.
+      }
+    }
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -191,6 +209,13 @@ provide(siteContextKey, { site, reload: load, deploy, deploying });
             </div>
 
             <div class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+              <RouterLink
+                v-if="site.isSubdomain && site.parentSlug"
+                :to="`/sites/${site.parentSlug}`"
+                class="inline-flex items-center gap-1 text-sm text-ink-muted hover:text-brand-bright"
+              >
+                Subdomain of {{ site.parentSlug }}
+              </RouterLink>
               <a
                 v-for="domain in site.domains"
                 :key="domain"
@@ -221,23 +246,35 @@ provide(siteContextKey, { site, reload: load, deploy, deploying });
             </div>
           </div>
 
-          <button type="button" class="btn btn-primary" :disabled="deploying" @click="deploy">
-            <component
-              :is="deploying ? RefreshCw : Rocket"
-              :size="15"
-              :class="deploying ? 'animate-spin' : ''"
-              aria-hidden="true"
-            />
-            {{ deploying ? 'Deploying\u2026' : 'Deploy now' }}
-          </button>
+          <div class="flex flex-wrap items-center justify-end gap-2">
+            <RouterLink
+              v-if="canAddSubdomain"
+              :to="{ path: '/sites/new', query: { parent: site.slug } }"
+              class="btn btn-ghost"
+            >
+              <Plus :size="15" aria-hidden="true" /> Add subdomain
+            </RouterLink>
+            <button type="button" class="btn btn-primary" :disabled="deploying" @click="deploy">
+              <component
+                :is="deploying ? RefreshCw : Rocket"
+                :size="15"
+                :class="deploying ? 'animate-spin' : ''"
+                aria-hidden="true"
+              />
+              {{ deploying ? 'Deploying\u2026' : 'Deploy now' }}
+            </button>
+          </div>
         </div>
 
-        <nav class="-mb-1 mt-4 flex gap-6 border-t border-line pt-1" aria-label="Website tools">
+        <nav
+          class="-mb-1 mt-4 flex gap-6 overflow-x-auto border-t border-line pt-1"
+          aria-label="Website tools"
+        >
           <RouterLink
             v-for="tab in TABS"
             :key="tab.name"
             :to="{ name: tab.name, params: { slug } }"
-            class="tab"
+            class="tab shrink-0 whitespace-nowrap"
             :class="route.name === tab.name ? 'tab-active' : ''"
           >
             <component :is="tab.icon" :size="15" aria-hidden="true" />
@@ -245,6 +282,46 @@ provide(siteContextKey, { site, reload: load, deploy, deploying });
           </RouterLink>
         </nav>
       </header>
+
+      <section v-if="!site.isSubdomain && children.length > 0" class="card mb-6 p-5">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 class="text-sm font-semibold text-ink">Subdomains</h3>
+            <p class="mt-0.5 text-sm text-ink-muted">
+              Independent websites hosted beneath {{ site.domains[0] }}.
+            </p>
+          </div>
+          <span class="text-xs text-ink-faint">
+            {{ children.length }} {{ children.length === 1 ? 'website' : 'websites' }}
+          </span>
+        </div>
+
+        <div class="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          <RouterLink
+            v-for="child in children"
+            :key="child.id"
+            :to="`/sites/${child.slug}`"
+            class="group flex min-w-0 items-center gap-3 rounded-lg border border-line
+                   bg-black/20 px-3 py-2.5 transition-colors hover:border-brand/40 hover:bg-brand-soft/20"
+          >
+            <span
+              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-line
+                     bg-elevated/70 text-brand-bright"
+              aria-hidden="true"
+            >
+              <Globe2 :size="16" />
+            </span>
+            <span class="min-w-0">
+              <span class="block truncate text-sm font-medium text-ink group-hover:text-brand-bright">
+                {{ child.displayName }}
+              </span>
+              <span class="block truncate font-mono text-xs text-ink-muted">
+                {{ child.domains[0] ?? 'No web address yet' }}
+              </span>
+            </span>
+          </RouterLink>
+        </div>
+      </section>
 
       <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
 

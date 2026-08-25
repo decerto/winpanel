@@ -190,6 +190,98 @@ describe('creating a website', () => {
     expect(result.body.result.data.slug).toBe('no-domain-yet');
   }, 30_000);
 
+  it('creates a subdomain as its own Git-backed website', async () => {
+    const parent = await call('POST', 'sites.create', {
+      displayName: 'Main site',
+      domains: ['example.com'],
+      source: { kind: 'blank' },
+      runtime: 'static',
+      deployNow: false,
+    });
+
+    const child = await call('POST', 'sites.create', {
+      displayName: 'Blog',
+      // The server derives this from the parent and label.
+      domains: ['ignored.example'],
+      parentSiteSlug: parent.body.result.data.slug,
+      subdomain: 'blog',
+      source: {
+        kind: 'git',
+        url: 'https://github.com/example/blog.git',
+        branch: 'main',
+        subdirectory: '',
+      },
+      manifest: { runtime: 'static' },
+      deployNow: false,
+    });
+
+    expect(child.body.error).toBeUndefined();
+    expect(child.body.result.data.slug).toBe('blog-example-com');
+
+    const detail = await call('GET', 'sites.get', {
+      slug: child.body.result.data.slug,
+    });
+    expect(detail.body.result.data.domains).toEqual(['blog.example.com']);
+    expect(detail.body.result.data.isSubdomain).toBe(true);
+    expect(detail.body.result.data.parentSlug).toBe('example-com');
+    expect(detail.body.result.data.source.kind).toBe('git');
+  }, 30_000);
+
+  it('does not allow a parent website to be removed before its subdomains', async () => {
+    const parent = await call('POST', 'sites.create', {
+      displayName: 'Main site',
+      domains: ['example.com'],
+      source: { kind: 'blank' },
+      runtime: 'static',
+      deployNow: false,
+    });
+    await call('POST', 'sites.create', {
+      displayName: 'Blog',
+      domains: [],
+      parentSiteSlug: parent.body.result.data.slug,
+      subdomain: 'blog',
+      source: { kind: 'upload' },
+      runtime: 'static',
+      deployNow: false,
+    });
+
+    const removed = await call('POST', 'sites.remove', {
+      slug: parent.body.result.data.slug,
+      confirmSlug: parent.body.result.data.slug,
+      deleteFiles: true,
+    });
+
+    expect(removed.body.error.data.code).toBe('PRECONDITION_FAILED');
+    expect(removed.body.error.message).toMatch(/subdomain/i);
+  }, 30_000);
+
+  it('keeps a parent primary domain stable while it has subdomains', async () => {
+    const parent = await call('POST', 'sites.create', {
+      displayName: 'Main site',
+      domains: ['example.com'],
+      source: { kind: 'blank' },
+      runtime: 'static',
+      deployNow: false,
+    });
+    await call('POST', 'sites.create', {
+      displayName: 'Blog',
+      domains: [],
+      parentSiteSlug: parent.body.result.data.slug,
+      subdomain: 'blog',
+      source: { kind: 'upload' },
+      runtime: 'static',
+      deployNow: false,
+    });
+
+    const changed = await call('POST', 'sites.setDomains', {
+      slug: parent.body.result.data.slug,
+      domains: ['new-example.com'],
+    });
+
+    expect(changed.body.error.data.code).toBe('PRECONDITION_FAILED');
+    expect(changed.body.error.message).toMatch(/subdomains/i);
+  }, 30_000);
+
   it('gives every website a preview address that works without a domain', async () => {
     const result = await call('POST', 'sites.create', { ...validInput, domains: [] });
 

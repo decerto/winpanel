@@ -5,6 +5,7 @@ import { ArrowLeft, Search, Table2, Trash2 } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
 import AlertMessage from '../components/AlertMessage.vue';
 import EmptyState from '../components/EmptyState.vue';
+import JsonDocumentCard from '../components/JsonDocumentCard.vue';
 import LoadingBlock from '../components/LoadingBlock.vue';
 import PageHeader from '../components/PageHeader.vue';
 import PaginationBar from '../components/PaginationBar.vue';
@@ -43,6 +44,8 @@ const deleteFilter = ref('');
 const updateMany = ref(false);
 const deleteMany = ref(false);
 const writing = ref(false);
+const savingDocumentId = ref<string | null>(null);
+const savedDocumentId = ref<string | null>(null);
 
 const loading = ref(true);
 const loadingDocuments = ref(false);
@@ -53,8 +56,12 @@ async function loadCollections(): Promise<void> {
   error.value = null;
 
   try {
+    const previous = selected.value;
     collections.value = await api.databases.mongoCollections.query({ id: id.value });
-    selected.value = collections.value.collections[0]?.name ?? null;
+    selected.value =
+      previous && collections.value.collections.some((collection) => collection.name === previous)
+        ? previous
+        : (collections.value.collections[0]?.name ?? null);
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -92,6 +99,7 @@ function choose(name: string): void {
   page.value = 1;
   appliedFilter.value = '';
   filter.value = '';
+  savedDocumentId.value = null;
 }
 
 function applyFilter(): void {
@@ -137,6 +145,30 @@ async function update(): Promise<void> {
     error.value = describeError(err);
   } finally {
     writing.value = false;
+  }
+}
+
+async function saveDocument(documentId: string, document: string): Promise<void> {
+  if (!selected.value) return;
+  writing.value = true;
+  savingDocumentId.value = documentId;
+  savedDocumentId.value = null;
+  error.value = null;
+  try {
+    await api.databases.mongoReplace.mutate({
+      id: id.value,
+      collection: selected.value,
+      documentId,
+      document,
+    });
+    await loadCollections();
+    await loadDocuments();
+    savedDocumentId.value = documentId;
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    writing.value = false;
+    savingDocumentId.value = null;
   }
 }
 
@@ -232,7 +264,7 @@ onMounted(async () => {
           </button>
         </form>
 
-        <div class="grid gap-4 xl:grid-cols-3">
+        <div class="grid items-start gap-4 xl:grid-cols-3">
           <form class="card space-y-3 p-4" @submit.prevent="insert">
             <h3 class="text-sm font-semibold text-ink">Insert document</h3>
             <textarea
@@ -306,16 +338,15 @@ onMounted(async () => {
           </p>
 
           <ul class="space-y-3">
-            <li
+            <JsonDocumentCard
               v-for="(document, index) in documents.documents"
-              :key="`${documents.page}-${index}`"
-              class="card overflow-hidden"
-            >
-              <pre
-                class="max-h-96 overflow-auto whitespace-pre-wrap break-words bg-black/25 p-4
-                       font-mono text-xs leading-relaxed text-ink"
-              >{{ document }}</pre>
-            </li>
+              :key="`${documents.page}-${document.id}-${index}`"
+              :document="document"
+              :saving="savingDocumentId === document.id"
+              :saved="savedDocumentId === document.id"
+              :disabled="writing && savingDocumentId !== document.id"
+              @save="saveDocument"
+            />
           </ul>
 
           <PaginationBar

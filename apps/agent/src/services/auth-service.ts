@@ -83,6 +83,7 @@ export interface ManagedUser {
   disabled: boolean;
   totpEnrolled: boolean;
   siteLimit: number | null;
+  subdomainLimit: number | null;
   mailQuotaBytes: number | null;
   siteDiskQuotaBytes: number | null;
   gameServerLimit: number | null;
@@ -93,6 +94,8 @@ export interface ManagedUser {
   createdAt: Date;
   /** How many websites they currently own, so limits mean something. */
   siteCount: number;
+  /** How many independently deployable subdomains they currently own. */
+  subdomainCount: number;
   /** How many game servers they currently own, so limits mean something. */
   gameServerCount: number;
   /** How many databases they currently hold, for the same reason. */
@@ -139,6 +142,7 @@ function publicSessionId(tokenHash: string): string {
 function toManagedUser(
   row: typeof users.$inferSelect,
   siteCount: number,
+  subdomainCount: number,
   gameServerCount: number,
   databaseCount: number,
   databaseAllocatedBytes: number,
@@ -150,6 +154,7 @@ function toManagedUser(
     disabled: row.disabled,
     totpEnrolled: row.totpEnrolled,
     siteLimit: row.siteLimit,
+    subdomainLimit: row.subdomainLimit,
     mailQuotaBytes: row.mailQuotaBytes,
     siteDiskQuotaBytes: row.siteDiskQuotaBytes,
     gameServerLimit: row.gameServerLimit,
@@ -159,6 +164,7 @@ function toManagedUser(
     lastLoginAt: row.lastLoginAt,
     createdAt: row.createdAt,
     siteCount,
+    subdomainCount,
     gameServerCount,
     databaseCount,
     databaseAllocatedBytes,
@@ -269,7 +275,7 @@ export class AuthService {
         siteCount: count(sites.id),
       })
       .from(users)
-      .leftJoin(sites, eq(sites.ownerUserId, users.id))
+      .leftJoin(sites, and(eq(sites.ownerUserId, users.id), isNull(sites.parentSiteId)))
       .groupBy(users.id)
       .orderBy(users.username)
       .all();
@@ -278,6 +284,7 @@ export class AuthService {
       toManagedUser(
         row.user,
         row.siteCount,
+        this.subdomainCountFor(row.user.id),
         this.gameServerCountFor(row.user.id),
         this.databaseCountFor(row.user.id),
         this.databaseAllocatedBytesFor(row.user.id),
@@ -291,6 +298,7 @@ export class AuthService {
     return toManagedUser(
       row,
       this.siteCountFor(userId),
+      this.subdomainCountFor(userId),
       this.gameServerCountFor(userId),
       this.databaseCountFor(userId),
       this.databaseAllocatedBytesFor(userId),
@@ -324,7 +332,16 @@ export class AuthService {
     const row = this.handle.db
       .select({ total: count() })
       .from(sites)
-      .where(eq(sites.ownerUserId, userId))
+      .where(and(eq(sites.ownerUserId, userId), isNull(sites.parentSiteId)))
+      .get();
+    return row?.total ?? 0;
+  }
+
+  subdomainCountFor(userId: string): number {
+    const row = this.handle.db
+      .select({ total: count() })
+      .from(sites)
+      .where(and(eq(sites.ownerUserId, userId), sql`${sites.parentSiteId} IS NOT NULL`))
       .get();
     return row?.total ?? 0;
   }
@@ -349,6 +366,7 @@ export class AuthService {
     password: string;
     role: UserRole;
     siteLimit?: number | null;
+    subdomainLimit?: number | null;
     mailQuotaBytes?: number | null;
     siteDiskQuotaBytes?: number | null;
     gameServerLimit?: number | null;
@@ -375,6 +393,7 @@ export class AuthService {
         // Limits only mean anything for a customer; an admin who could be
         // capped at two websites would be an admin in name only.
         siteLimit: input.role === 'user' ? (input.siteLimit ?? null) : null,
+        subdomainLimit: input.role === 'user' ? (input.subdomainLimit ?? null) : null,
         mailQuotaBytes: input.role === 'user' ? (input.mailQuotaBytes ?? null) : null,
         siteDiskQuotaBytes: input.role === 'user' ? (input.siteDiskQuotaBytes ?? null) : null,
         gameServerLimit: input.role === 'user' ? (input.gameServerLimit ?? null) : null,
@@ -405,6 +424,7 @@ export class AuthService {
       role?: UserRole;
       disabled?: boolean;
       siteLimit?: number | null;
+      subdomainLimit?: number | null;
       mailQuotaBytes?: number | null;
       siteDiskQuotaBytes?: number | null;
       gameServerLimit?: number | null;
@@ -460,6 +480,10 @@ export class AuthService {
       role === 'user'
         ? {
             siteLimit: changes.siteLimit === undefined ? existing.siteLimit : changes.siteLimit,
+            subdomainLimit:
+              changes.subdomainLimit === undefined
+                ? existing.subdomainLimit
+                : changes.subdomainLimit,
             mailQuotaBytes:
               changes.mailQuotaBytes === undefined
                 ? existing.mailQuotaBytes
@@ -481,6 +505,7 @@ export class AuthService {
           }
         : {
             siteLimit: null,
+            subdomainLimit: null,
             mailQuotaBytes: null,
             siteDiskQuotaBytes: null,
             gameServerLimit: null,

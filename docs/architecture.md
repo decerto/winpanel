@@ -37,8 +37,8 @@
   that. The browser-based editor is Adminer (all-driver build), run on a private
   loopback-only PHP server and proxied by the panel at `/db/<database-id>`
   (`api/db-browser.ts`) behind the panel's own sign-in, never on a public domain.
-  MongoDB has no Adminer driver on Windows, so the panel reads it directly through the
-  driver (`databases/browser.ts`) - read-only.
+  MongoDB has no Adminer driver on Windows, so the panel reads and writes it directly
+  through the database's own login and the driver (`databases/browser.ts`).
 - **Game servers** are stateful resources separate from `sites`. Installing is two stages:
   a small acquisition step per provider (Steam, a publisher's archive, Mojang's signed
   manifest), then one shared configure-and-register step that knows nothing about any
@@ -105,6 +105,14 @@ served". It:
 4. retries while Caddy is still starting - but not a config Caddy actively rejected.
 
 Caddy runs with `--resume`, so a config the panel loaded survives a service restart.
+
+Websites may have one level of child websites. A child stores `parentSiteId`, is processed
+through the same create and deploy path as any other site, and therefore supports static
+files, uploads, Node, PHP, WordPress and Git repositories independently. The child hostname
+is derived from one DNS label and the parent's primary domain. Root websites count against
+an account's `siteLimit`; children count against its separate `subdomainLimit`. The API keeps
+the parent primary domain stable while children exist so their derived hostnames do not go
+stale.
 
 ## Processes
 

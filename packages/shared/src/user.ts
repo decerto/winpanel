@@ -106,6 +106,8 @@ export type SetupRequest = z.infer<typeof SetupRequest>;
 export const AccountLimits = z.object({
   /** How many websites this account may own. Null for no limit. */
   siteLimit: z.number().int().min(0).max(1000).nullable().default(null),
+  /** How many independently deployable subdomains this account may own. */
+  subdomainLimit: z.number().int().min(0).max(1000).nullable().default(null),
   /** Total mailbox storage across their domains, in bytes. Null for no limit. */
   mailQuotaBytes: z.number().int().min(0).nullable().default(null),
   /** Disk given to each website they create. */

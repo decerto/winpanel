@@ -108,6 +108,7 @@ beforeEach(async () => {
     password: PASSWORD,
     role: 'user',
     siteLimit: 1,
+    subdomainLimit: 1,
   });
   await app.auth.createUser({ username: 'sam', password: PASSWORD, role: 'user' });
 
@@ -195,6 +196,51 @@ describe('what a customer can see', () => {
     expect(result.body.error.message).toContain('1');
     expect(app.auth.getUser(freyaId)?.siteCount).toBe(1);
   });
+
+  it('creates subdomains under their website up to the separate allowance', async () => {
+    const first = await call('POST', 'sites.create', freyaCookie, {
+      displayName: 'Blog',
+      domains: [],
+      parentSiteSlug: 'freya-io',
+      subdomain: 'blog',
+      source: { kind: 'upload' },
+      manifest: { runtime: 'static' },
+      deployNow: false,
+    });
+
+    expect(first.body.error).toBeUndefined();
+    expect(first.body.result.data.slug).toBe('blog-freya-io');
+    expect(first.body.result.data.previewUrl).toMatch(/^http:\/\/.+:\d+$/);
+    expect(app.auth.getUser(freyaId)?.siteCount).toBe(1);
+    expect(app.auth.getUser(freyaId)?.subdomainCount).toBe(1);
+
+    const second = await call('POST', 'sites.create', freyaCookie, {
+      displayName: 'Shop',
+      domains: [],
+      parentSiteSlug: 'freya-io',
+      subdomain: 'shop',
+      source: { kind: 'upload' },
+      manifest: { runtime: 'static' },
+      deployNow: false,
+    });
+
+    expect(second.body.error.data.code).toBe('PRECONDITION_FAILED');
+    expect(second.body.error.message).toMatch(/subdomain/i);
+  }, 30_000);
+
+  it('does not let a customer use another account website as a parent', async () => {
+    const result = await call('POST', 'sites.create', samCookie, {
+      displayName: 'Not theirs',
+      domains: [],
+      parentSiteSlug: 'freya-io',
+      subdomain: 'private',
+      source: { kind: 'upload' },
+      manifest: { runtime: 'static' },
+      deployNow: false,
+    });
+
+    expect(result.body.error.data.code).toBe('NOT_FOUND');
+  }, 30_000);
 });
 
 describe('what an administrator can do', () => {

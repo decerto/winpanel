@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { RouterLink } from 'vue-router';
 import { AtSign, ChevronRight, Globe, Inbox, Search, Server } from 'lucide-vue-next';
-import { mailHostnameFor } from '@winpanel/shared';
+import { mailHostnameFor, roleAtLeast } from '@winpanel/shared';
 import { api, describeError } from '../lib/api';
 import { formatBytes } from '../lib/format';
 import PageHeader from '../components/PageHeader.vue';
@@ -12,20 +12,20 @@ import LoadingBlock from '../components/LoadingBlock.vue';
 import PaginationBar from '../components/PaginationBar.vue';
 
 /**
- * Email across the whole server.
+ * Email across the websites visible to this account.
  *
  * Deliberately not a place to manage mailboxes. A mailbox belongs to a domain
  * and a domain belongs to a website, so this page answers "which website?" and
  * then gets out of the way. What it is good for is the two facts that belong
  * to no single site: whether the mail server is running at all, and how much
- * mail is sitting on this machine.
+ * mail is sitting on the visible websites.
  *
  * Counts are fetched for the visible page only. Asking the mail server about
  * every domain on a server with a hundred of them would be a hundred requests
  * to render one screen.
  */
 
-type ServerStatus = Awaited<ReturnType<typeof api.mail.serverStatus.query>>;
+type MailStatus = Pick<Awaited<ReturnType<typeof api.mail.serverStatus.query>>, 'connected' | 'message'>;
 
 interface DomainRow {
   slug: string;
@@ -40,7 +40,7 @@ interface DomainRow {
 
 const PAGE_SIZE = 12;
 
-const status = ref<ServerStatus | null>(null);
+const status = ref<MailStatus | null>(null);
 const rows = ref<DomainRow[]>([]);
 const loading = ref(true);
 const error = ref<string | null>(null);
@@ -94,11 +94,11 @@ async function load(): Promise<void> {
   error.value = null;
 
   try {
-    const [serverStatus, sites] = await Promise.all([
-      api.mail.serverStatus.query(),
-      api.sites.list.query(),
-    ]);
-    status.value = serverStatus;
+    const [me, sites] = await Promise.all([api.auth.me.query(), api.sites.list.query()]);
+    status.value =
+      me && roleAtLeast(me.role, 'admin')
+        ? await api.mail.serverStatus.query()
+        : await api.mail.available.query();
 
     // One row per site, on its primary domain. `www.` is skipped: nobody
     // wants a mailbox at www.example.com.

@@ -60,6 +60,7 @@ stop being there.
 | Limit | Meaning |
 | --- | --- |
 | `siteLimit` | How many websites the account may own |
+| `subdomainLimit` | How many independently deployable subdomain websites the account may own |
 | `mailQuotaBytes` | Total mailbox storage across all of their domains |
 | `siteDiskQuotaBytes` | Disk given to each website they create |
 | `gameServerLimit` | How many game servers the account may own |
@@ -69,6 +70,13 @@ stop being there.
 `null` means no limit, which is what an `admin` and the owner always get. `0` is a real
 answer too - an account that may hold no websites yet. Database storage is the exception:
 its non-nullable `0` means unlimited.
+
+A subdomain is a full website rather than an alias: it has its own files, runtime, ports,
+deployments and settings, and can be created from Git just like a main website. It belongs
+to the same account as its parent and consumes `subdomainLimit`, not `siteLimit`. WinPanel
+allows one level of nesting, and derives the hostname from the child label and the parent's
+primary domain, such as `blog.example.com`. A parent with children cannot change or remove
+its primary domain until those children have been removed.
 
 ## Passwords and second factors
 
