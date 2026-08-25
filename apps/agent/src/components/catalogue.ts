@@ -27,7 +27,7 @@ import type { ComponentDefinition } from '@winpanel/shared';
 const CADDY_VERSION = 'latest';
 const STALWART_VERSION = '0.16.16';
 const GIT_VERSION = '2.51.0';
-const NODE_LTS_VERSION = '22.21.1';
+const NODE_LTS_VERSION = '24.18.1';
 const JAVA_VERSION = '21.0.12+8';
 const PNPM_VERSION = '11.20.0';
 const YARN_VERSION = '1.22.22';
@@ -138,7 +138,7 @@ export const COMPONENT_CATALOGUE: readonly ComponentDefinition[] = [
     version: NODE_LTS_VERSION,
     kind: 'zip',
     url: `https://nodejs.org/dist/v${NODE_LTS_VERSION}/node-v${NODE_LTS_VERSION}-win-x64.zip`,
-    sha256: '3c624e9fbe07e3217552ec52a0f84e2bdc2e6ffa7348f3fdfb9fbf8f42e23fcf',
+    sha256: 'af4a0651a26f04ac240f00fec872f305547ca2aa56301c41dfd63a29eb2ab836',
     args: [],
     serviceName: null,
     verifyArgs: ['--version'],

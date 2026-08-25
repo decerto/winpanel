@@ -18,6 +18,7 @@ export const JobKind = z.enum([
   'rollback',
   'install-component',
   'uninstall-component',
+  'update-package-manager',
   'issue-certificate',
   'apply-server-fix',
   'apply-dns-records',

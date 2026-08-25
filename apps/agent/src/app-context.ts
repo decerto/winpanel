@@ -28,11 +28,13 @@ import { createRunCommandHandler } from './sites/command-runner.js';
 import {
   createInstallComponentHandler,
   createUninstallComponentHandler,
+  createUpdatePackageManagerHandler,
 } from './components/installer.js';
 import { createPanelUpdateHandler } from './components/panel-update.js';
 import { createWordPressHandler } from './sites/wordpress.js';
 import { resolveToolInvocation } from './sites/tool-paths.js';
 import { localAddresses, type PanelTls } from './tls/panel-certificate.js';
+import { BackupScheduler, createBackupHandler } from './backups/service.js';
 
 /**
  * Composition root.
@@ -48,6 +50,7 @@ export interface AppContext {
   vault: SecretVault;
   auth: AuthService;
   jobs: JobQueue;
+  backupScheduler: BackupScheduler;
   caddy: CaddyClient;
   /** Pushes the panel's view of what should be served into Caddy. */
   routing: CaddyReconciler;
@@ -93,6 +96,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
   const auth = new AuthService(db, vault, options.setupTokenPath ?? paths.setupToken());
 
   const jobs = new JobQueue(db);
+  const backupScheduler = new BackupScheduler(db, jobs);
   // Anything left `running` when the process died is not running now.
   jobs.reconcileOrphans();
 
@@ -200,6 +204,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
       firewall,
       databaseNetwork,
       binDir: config.binDir,
+      sitesRoot: config.sitesRoot,
       dataDir: config.dataDir,
       logDir: config.logDir,
       caddyDir: config.caddyDir,
@@ -215,6 +220,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
 
     jobs.register('install-component', createInstallComponentHandler(installerDeps));
     jobs.register('uninstall-component', createUninstallComponentHandler(installerDeps));
+    jobs.register('update-package-manager', createUpdatePackageManagerHandler(installerDeps));
     jobs.register(
       'install-wordpress',
       createWordPressHandler({
@@ -253,6 +259,19 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
       'install-workshop-items',
       createInstallWorkshopItemsHandler({ db, binDir: config.binDir, vault, catalogue: gameCatalogue }),
     );
+    jobs.register(
+      'backup',
+      createBackupHandler({
+        db,
+        vault,
+        root: config.root,
+        dataDir: config.dataDir,
+        sitesRoot: config.sitesRoot,
+        gameServersRoot: config.gameServersRoot,
+        binDir: config.binDir,
+        backupDir: config.backupDir,
+      }),
+    );
   }
 
   return {
@@ -262,6 +281,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     vault,
     auth,
     jobs,
+    backupScheduler,
     caddy,
     routing,
     services,
@@ -270,6 +290,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     gameServers,
     traffic,
     shutdown: async () => {
+      backupScheduler.stop();
       await jobs.stop();
       traffic.stop();
       vault.lock();

@@ -959,9 +959,8 @@ export const sitesRouter = router({
   /**
    * Pins which Node this website builds and runs on.
    *
-   * Only versions already on the server are accepted: the panel does not
-   * install runtimes, so offering one it cannot provide would turn a settings
-   * change into a failed deployment much later.
+  * Only versions already on the server are accepted: this setting chooses a
+  * runtime but does not silently start an installation job.
    */
   setNodeVersion: protectedProcedure
     .input(

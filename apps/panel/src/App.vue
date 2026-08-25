@@ -2,6 +2,7 @@
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router';
 import {
   Activity,
+  ArchiveRestore,
   ChevronRight,
   Database,
   Globe,
@@ -52,6 +53,7 @@ const NAV = [
   { to: '/email', label: 'Email', icon: Mail, hint: 'Mailboxes and delivery', minRole: 'admin' },
   { to: '/webmail', label: 'Webmail', icon: Inbox, hint: 'Read and send mail' },
   { to: '/security', label: 'Security', icon: ShieldCheck, hint: 'Sign-in protection' },
+  { to: '/backups', label: 'Backup', icon: ArchiveRestore, hint: 'Recover this server', minRole: 'superadmin' },
   { to: '/people', label: 'People', icon: UsersRound, hint: 'Accounts and limits', minRole: 'admin' },
   {
     to: '/sign-ins',

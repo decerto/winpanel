@@ -38,7 +38,7 @@
   loopback-only PHP server and proxied by the panel at `/db/<database-id>`
   (`api/db-browser.ts`) behind the panel's own sign-in, never on a public domain.
   MongoDB has no Adminer driver on Windows, so the panel reads it directly through the
-  driver (`databases/browser.ts`) — read-only.
+  driver (`databases/browser.ts`) - read-only.
 - **Game servers** are stateful resources separate from `sites`. Installing is two stages:
   a small acquisition step per provider (Steam, a publisher's archive, Mojang's signed
   manifest), then one shared configure-and-register step that knows nothing about any
@@ -90,7 +90,7 @@ SQLite through Drizzle, at `<root>/data/panel.db`. Migrations live in
 its own database.
 
 Secrets are never stored in the database in plain text. `SecretVault` encrypts them with
-a key file held outside the database, and the browser is never sent a decrypted secret —
+a key file held outside the database, and the browser is never sent a decrypted secret -
 API responses carry the *effects* of a token (zones, records, status), not the token.
 
 ## Routing and websites
@@ -102,7 +102,7 @@ served". It:
 2. builds one complete Caddy JSON config, including the per-site access loggers and the
    `preview_<slug>` servers that make `http://<ip>:7000+` work,
 3. POSTs it to Caddy's admin API, and
-4. retries while Caddy is still starting — but not a config Caddy actively rejected.
+4. retries while Caddy is still starting - but not a config Caddy actively rejected.
 
 Caddy runs with `--resume`, so a config the panel loaded survives a service restart.
 
@@ -114,12 +114,12 @@ only then repoints Caddy. A failed build or a failed start leaves the live site
 untouched.
 
 The pair is allocated once, when the site is created, and reused for the life of the
-site — deploys alternate between the two numbers rather than taking new ones. Static
+site - deploys alternate between the two numbers rather than taking new ones. Static
 sites get no pair at all, because Caddy serves them from disk. Allocation scans from
 `3001` upward and takes the first free numbers, so anything a deleted site gave back is
 reused before the range grows; `PortAllocator.reclaimStalePorts()` runs at startup to
 return rows that outlived their site. If a new site still starts higher than expected,
-the usual cause is Windows having reserved a block for Hyper-V, WSL or Docker — the
+the usual cause is Windows having reserved a block for Hyper-V, WSL or Docker - the
 `server.website-port-ranges` health check reports exactly which numbers those are.
 
 `windows/service-watchdog.ts` exists because a WinSW wrapper killed without a clean stop
@@ -133,7 +133,7 @@ running. Windows then reports the service as **stopped** while the program is st
 there: still bound to its port, still holding its files open. Sleep/wake is the usual
 cause; ending the wrapper in Task Manager does it too.
 
-For Caddy that is a plain outage — `:80` and `:443` stay bound, so every restart fails to
+For Caddy that is a plain outage - `:80` and `:443` stay bound, so every restart fails to
 bind and the service flaps on the failure-action interval until somebody intervenes.
 
 For a website it is worse, because nothing looks wrong from outside:
@@ -160,7 +160,7 @@ Everything below obeys both, and they are what keep this from being dangerous:
 `windows/watched-services.ts` is what makes the second rule checkable: it maps a service
 id to the ports and executables it owns. The components are a fixed list; websites are
 read from the database every time, because the panel allocated their ports and so knows
-them exactly — guessing a port out of the app's own environment would eventually match
+them exactly - guessing a port out of the app's own environment would eventually match
 something like `SMTP_PORT` and aim a kill at the wrong process.
 
 ### Where recovery happens
@@ -172,14 +172,14 @@ something like `SMTP_PORT` and aim a kill at the wrong process.
 | Stop, Stop everything | Ends the leftover after the service reports stopped, so "stopped" means the program is gone and its files are released |
 | Deploy | `claimPort` frees the port *before* the new process starts, so the health check cannot be satisfied by an impostor |
 | Site deleted, component removed | The service's process is ended before the service is unregistered, which Windows will not do while it is running |
-| Update, uninstall | `stop-all` visits services already reporting stopped — the state an orphan hides behind — and ends what it finds |
+| Update, uninstall | `stop-all` visits services already reporting stopped - the state an orphan hides behind - and ends what it finds |
 | Panel start-up | `listenClearingStrays` clears a previous copy of the panel off the panel's own port before giving up on `EADDRINUSE` |
 
 ### Deliberate gaps
 
 - **The panel is never watched.** The watchdog runs inside the panel, so the only process
   it could find on the panel's port while that service reads as stopped is itself. It is
-  unblockable — stopping it before an update has to release `bin\node\node.exe` — but it
+  unblockable - stopping it before an update has to release `bin\node\node.exe` - but it
   is not in the swept list.
 - **Sites mid-deploy are skipped.** A deploy stops the service on purpose and swaps the
   folder underneath it. Anything else starting it in the middle is fighting the deploy
@@ -200,7 +200,7 @@ something like `SMTP_PORT` and aim a kill at the wrong process.
 
 Two details worth knowing before editing any of it. `netstat` output is matched on the
 port and a zero foreign port rather than on the word `LISTENING`, and service state is
-read from `sc.exe`'s numeric `STATE` code rather than the word beside it — both are
+read from `sc.exe`'s numeric `STATE` code rather than the word beside it - both are
 translated strings on a server installed in another language, and searching the whole
 output for `RUNNING` also matches a site whose slug contains it.
 

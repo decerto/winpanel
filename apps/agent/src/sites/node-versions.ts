@@ -1,14 +1,13 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { runCommand } from '../process/run-command.js';
+import { findExecutable } from '../components/archive.js';
 
 /**
  * Which versions of Node this server has.
  *
- * The panel never installs Node. On a managed server that is the hosting
- * provider's job, and a control panel quietly adding a second copy of a
- * runtime is how you end up with a site running on something nobody chose.
- * So this finds what is already here and lets a website pick from it.
+ * The panel keeps its own versioned copies alongside Node installations that
+ * already exist on the server, then lets each website choose from the result.
  *
  * Discovery covers the places Node actually ends up on Windows: the panel's
  * own folder, the standard installer location, and the two version managers
@@ -27,13 +26,6 @@ export interface NodeInstallation {
 const CACHE_MS = 60_000;
 let cache: { at: number; installations: NodeInstallation[] } | null = null;
 
-async function exists(candidate: string): Promise<boolean> {
-  return await fs.access(candidate).then(
-    () => true,
-    () => false,
-  );
-}
-
 async function subdirectories(root: string): Promise<string[]> {
   try {
     const entries = await fs.readdir(root, { withFileTypes: true });
@@ -44,15 +36,17 @@ async function subdirectories(root: string): Promise<string[]> {
 }
 
 /** Asks the binary what it is, rather than trusting the folder name. */
-async function versionOf(directory: string): Promise<string | null> {
-  const executable = path.join(directory, 'node.exe');
-  if (!(await exists(executable))) return null;
+async function versionOf(
+  directory: string,
+): Promise<{ version: string; directory: string } | null> {
+  const executable = await findExecutable(directory, ['node.exe']);
+  if (!executable) return null;
 
   const result = await runCommand({ exe: executable, args: ['--version'], timeoutMs: 15_000 });
   if (result.exitCode !== 0) return null;
 
   const match = /v?(\d+\.\d+\.\d+)/.exec(result.stdout.trim());
-  return match?.[1] ?? null;
+  return match ? { version: match[1]!, directory: path.dirname(executable) } : null;
 }
 
 async function candidateDirectories(binDir: string): Promise<Array<[string, NodeInstallation['source']]>> {
@@ -109,13 +103,13 @@ export async function discoverNodeVersions(binDir: string): Promise<NodeInstalla
     if (seen.has(key)) continue;
     seen.add(key);
 
-    const version = await versionOf(directory);
-    if (!version) continue;
+    const installation = await versionOf(directory);
+    if (!installation) continue;
 
     // The same version installed twice is one choice, not two.
-    if (installations.some((installation) => installation.version === version)) continue;
+    if (installations.some((entry) => entry.version === installation.version)) continue;
 
-    installations.push({ version, directory, source });
+    installations.push({ ...installation, source });
   }
 
   installations.sort((a, b) => compareVersions(b.version, a.version));
@@ -158,7 +152,28 @@ export function matchVersion(
   );
 }
 
+/** Uses a requested pin when it exists, otherwise the newest available Node. */
+export function selectNodeVersion(
+  installations: readonly NodeInstallation[],
+  requested?: string,
+): NodeInstallation | null {
+  return (requested?.trim() ? matchVersion(installations, requested) : null) ?? installations[0] ?? null;
+}
+
 /** Drops the cache so a newly installed runtime is seen straight away. */
 export function forgetNodeVersions(): void {
   cache = null;
+}
+
+/** True only for a version installed in the panel's own version directory. */
+export function isPanelManagedNode(installation: NodeInstallation, binDir: string): boolean {
+  if (installation.source !== 'panel') return false;
+
+  const root = path.resolve(binDir, 'node');
+  const relative = path.relative(root, path.resolve(installation.directory));
+  const [versionFolder] = relative.split(path.sep);
+  return (
+    versionFolder?.toLowerCase() === installation.version.toLowerCase() &&
+    !relative.startsWith(`..${path.sep}`)
+  );
 }

@@ -102,6 +102,7 @@ async function main(): Promise<void> {
   registerSiteChecks(app.db);
 
   app.jobs.start();
+  app.backupScheduler.start();
 
   /*
    * Push the site configuration into Caddy on every start.

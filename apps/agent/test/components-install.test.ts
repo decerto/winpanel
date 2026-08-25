@@ -3,7 +3,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildStalwartBootstrap } from '../src/mail/stalwart-config.js';
-import { compareVersions, matchVersion } from '../src/sites/node-versions.js';
+import {
+  compareVersions,
+  isPanelManagedNode,
+  matchVersion,
+  selectNodeVersion,
+} from '../src/sites/node-versions.js';
 import {
   ExtractionError,
   extractZip,
@@ -72,6 +77,26 @@ describe('choosing a Node version', () => {
     // nobody chose, which is the failure this whole feature exists to avoid.
     expect(matchVersion(installed, '18')).toBeNull();
     expect(matchVersion(installed, '')).toBeNull();
+  });
+
+  it('falls back to the newest runtime when a saved pin is gone', () => {
+    expect(selectNodeVersion(installed, '18')?.version).toBe('22.14.0');
+    expect(selectNodeVersion(installed)?.version).toBe('22.14.0');
+  });
+
+  it('only marks versioned folders inside the panel store as removable', () => {
+    expect(
+      isPanelManagedNode(
+        { version: '22.14.0', directory: 'C:/WinPanel/bin/node/22.14.0/node-v22', source: 'panel' },
+        'C:/WinPanel/bin',
+      ),
+    ).toBe(true);
+    expect(
+      isPanelManagedNode(
+        { version: '22.14.0', directory: 'C:/Program Files/nodejs', source: 'system' },
+        'C:/WinPanel/bin',
+      ),
+    ).toBe(false);
   });
 });
 

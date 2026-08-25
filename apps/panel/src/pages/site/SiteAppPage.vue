@@ -473,6 +473,10 @@ watch(slug, load, { immediate: true });
           <div class="flex flex-wrap items-center gap-3 py-3">
             <dt class="w-52 shrink-0 text-ink-muted">Node version</dt>
             <dd class="flex flex-1 flex-wrap items-center gap-2">
+              <AlertMessage v-if="info.nodeVersionFallback" tone="warning" class="basis-full">
+                Node {{ info.nodeVersion }} is no longer installed. This website is using Node
+                {{ info.resolvedNodeVersion }} until you choose another version.
+              </AlertMessage>
               <select
                 v-model="form.nodeVersion"
                 class="field max-w-64 py-1.5"

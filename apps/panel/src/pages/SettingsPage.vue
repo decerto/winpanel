@@ -737,7 +737,7 @@ async function installUpdate(): Promise<void> {
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-3xl">
+  <div class="mx-auto w-full max-w-5xl">
     <PageHeader
       title="Settings"
       description="Services this panel drives on your behalf, and the facts about this machine

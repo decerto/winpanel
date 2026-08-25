@@ -6,7 +6,7 @@ those licences are met.
 
 Nothing distributed *inside* the installer is under a copyleft licence, so none of it
 places conditions on how WinPanel itself is licensed. Two components the panel can
-download afterwards — Stalwart and Git for Windows — are copyleft; see [Downloaded by the
+download afterwards - Stalwart and Git for Windows - are copyleft; see [Downloaded by the
 panel, not distributed with it](#downloaded-by-the-panel-not-distributed-with-it) for what
 that does and does not mean here.
 
@@ -21,7 +21,7 @@ Distributed inside `WinPanel-Setup-x64.exe` and installed to `C:\WinPanel`.
 | Node.js 22 runtime | MIT, with the notices of its own bundled components | `bin\node\LICENSE` |
 | WinSW service wrapper | MIT | `bin\WinSW.LICENSE.txt` |
 | The agent's npm dependencies | MIT, ISC, BSD, Apache-2.0 and Blue Oak 1.0.0 | Each package's own file under `agent\node_modules\` |
-| The panel's npm dependencies | MIT and ISC | This file — Vite minifies them into one bundle, so per-package files cannot travel with them |
+| The panel's npm dependencies | MIT and ISC | This file - Vite minifies them into one bundle, so per-package files cannot travel with them |
 
 The panel bundle contains Vue (with `@vue/*` runtime, `vue-demi` and `csstype`), Vue Router,
 Pinia, TanStack Query (`@tanstack/vue-query`, `@tanstack/query-core`,
@@ -69,5 +69,5 @@ command line. No Stalwart or Git code is compiled into, linked with, or shipped 
 WinPanel. The obligations of AGPL-3.0 and GPL-2.0 attach to those programs and to whoever
 distributes them, which here is their own publisher rather than this project.
 
-If that ever changes — if a future version bundles either binary in the installer — the
+If that ever changes - if a future version bundles either binary in the installer - the
 position has to be looked at again before it ships.

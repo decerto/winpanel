@@ -67,6 +67,8 @@ export const config = {
    */
   sitesRoot: envPath('WINPANEL_SITES_ROOT', DEFAULT_SITES_ROOT),
   gameServersRoot: envPath('WINPANEL_GAME_SERVERS_ROOT', DEFAULT_GAME_SERVERS_ROOT),
+  /** Local panel recovery archives; website downloads are kept here briefly too. */
+  backupDir: envPath('WINPANEL_BACKUP_DIR', path.join(root, 'backups')),
 
   /**
    * The panel listens here. Fixed rather than random so it is easy to

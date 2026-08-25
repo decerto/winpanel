@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Node 22 or newer (Node 24 works, with one caveat — see [Gotchas](#gotchas))
+- Node 22 or newer (Node 24 works, with one caveat - see [Gotchas](#gotchas))
 - pnpm 10
 - Windows, for anything touching services, the firewall or the mail server. The API,
   database and detection layers run fine on other platforms; those parts are what the
@@ -83,8 +83,8 @@ accept the banner in a scratch environment.
 
 ## Releasing
 
-A release is made by hand, not by an action. The notes a release carries — what
-changed, and why someone should care — are written by a person, and an action cannot
+A release is made by hand, not by an action. The notes a release carries - what
+changed, and why someone should care - are written by a person, and an action cannot
 know them from a commit list. The GitHub **Build installer** workflow still runs, but
 only to compile a clean installer from a fresh checkout as a cross-check on the one
 built locally; it publishes nothing.
@@ -98,18 +98,18 @@ built locally; it publishes nothing.
    git push origin main --tags
    ```
 
-2. **Build the installer.** Either run it locally —
+2. **Build the installer.** Either run it locally -
 
    ```powershell
    pnpm installer
    ```
 
-   — or run the **Build installer** workflow from the Actions tab with the version, and
+   - or run the **Build installer** workflow from the Actions tab with the version, and
    download the artefacts it uploads. Both produce `dist\WinPanel-Setup-x64.exe` and
    print its SHA-256.
 
 3. **Write the release.** Create the GitHub release yourself, titled
-   `v1.2.3 - What this release is`, and write what changed in plain terms — lead with
+   `v1.2.3 - What this release is`, and write what changed in plain terms - lead with
    the headline, then the detail, then a "Fixed along the way" list. Embed the SHA-256
    in the verifying block (the build printed it) and end with the compare link:
 

@@ -1,8 +1,11 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { eq } from 'drizzle-orm';
+import { SiteManifest } from '@winpanel/shared';
 import type { ComponentDefinition } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
+import { sites } from '../db/schema.js';
 import type { SecretVault } from '../security/vault.js';
 import type { JobContext } from '../jobs/queue.js';
 import type { ServiceManager } from '../windows/service-manager.js';
@@ -23,6 +26,7 @@ import { caddyServiceEnv, cloudflareTokenEnvironment } from '../caddy/service.js
 import { downloadVerified } from './download.js';
 import { extractZip, findExecutable, listExecutables, sniffPayload } from './archive.js';
 import { findComponent } from './catalogue.js';
+import { findNodeVersion } from './node-catalogue.js';
 import { forgetDatabase, listAllDatabases } from '../databases/store.js';
 import {
   databaseFirewallRuleName,
@@ -30,6 +34,14 @@ import {
 } from '../databases/network.js';
 import { engineNetworkPolicy, type DatabaseNetworkService } from '../databases/network-service.js';
 import type { FirewallManager } from '../bootstrap/windows-setup.js';
+import { appRootFor, SiteService } from '../sites/site-service.js';
+import { serviceIdFor } from '../sites/deploy-handler.js';
+import {
+  discoverNodeVersions,
+  forgetNodeVersions,
+  isPanelManagedNode,
+  matchVersion,
+} from '../sites/node-versions.js';
 
 /**
  * Installing the pieces the panel drives.
@@ -50,6 +62,7 @@ export interface InstallerDependencies {
   firewall?: FirewallManager;
   databaseNetwork?: DatabaseNetworkService;
   binDir: string;
+  sitesRoot: string;
   dataDir: string;
   logDir: string;
   caddyDir: string;
@@ -62,6 +75,7 @@ export interface InstallerDependencies {
 export interface InstallComponentPayload {
   componentId: string;
   deleteData?: boolean;
+  nodeVersion?: string;
 }
 
 const POSTGRES_SERVICE_ACCOUNT = 'NT AUTHORITY\\NetworkService';
@@ -72,6 +86,12 @@ function componentDataPath(deps: InstallerDependencies, componentId: string): st
     return engineDataDir(deps.dataDir, componentId);
   }
   return null;
+}
+
+function componentInstallDir(deps: InstallerDependencies, component: ComponentDefinition): string {
+  return component.id === 'node'
+    ? path.join(deps.binDir, 'node', component.version)
+    : path.join(deps.binDir, component.id);
 }
 
 /** Vault key the MariaDB root password is stored under. */
@@ -96,7 +116,7 @@ async function isInstalled(
   deps: InstallerDependencies,
   component: ComponentDefinition,
 ): Promise<boolean> {
-  const installDir = path.join(deps.binDir, component.id);
+  const installDir = componentInstallDir(deps, component);
 
   if (component.kind === 'node-script' || component.kind === 'php-script') {
     // Adminer is a web page renamed to adminer.php; the other php-scripts keep
@@ -442,7 +462,7 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
         await deps.services.uninstall(component.serviceName);
       }
 
-      await fs.rm(path.join(deps.binDir, component.id), {
+      await fs.rm(componentInstallDir(deps, component), {
         recursive: true,
         force: true,
         maxRetries: 5,
@@ -519,7 +539,7 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
     ctx.throwIfCancelled();
     ctx.progress(55);
 
-    const installDir = path.join(deps.binDir, component.id);
+    const installDir = componentInstallDir(deps, component);
     const wanted = executableNames(component);
 
     if (component.kind === 'node-script') {
@@ -764,14 +784,23 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
   };
 
   return async (payload: unknown, ctx: JobContext): Promise<void> => {
-    const { componentId } = payload as InstallComponentPayload;
-    const component = findComponent(componentId);
+    const { componentId, nodeVersion } = payload as InstallComponentPayload;
+    const baseComponent = findComponent(componentId);
 
-    if (!component) throw new Error(`There is no component called "${componentId}".`);
-    if (component.id === 'node') {
-      throw new Error(
-        'Node.js is provided by the server itself and is not installed by the panel.',
-      );
+    if (!baseComponent) throw new Error(`There is no component called "${componentId}".`);
+
+    const component =
+      baseComponent.id === 'node'
+        ? (() => {
+            const version = nodeVersion?.trim() ?? '';
+            const definition = findNodeVersion(version);
+            if (!definition) throw new Error(`Node ${version || 'version'} is not in the catalogue.`);
+            return { ...baseComponent, ...definition };
+          })()
+        : baseComponent;
+
+    if (component.id === 'node' && !nodeVersion) {
+      throw new Error('Choose a Node.js version before installing it.');
     }
 
     /*
@@ -784,14 +813,105 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
      * pointing back at itself.
      */
     await installWithRequires(component, ctx, new Set(), false);
+    if (component.id === 'node') forgetNodeVersions();
   };
+}
+
+async function prepareNodeSitesForRemoval(
+  deps: InstallerDependencies,
+  removed: Awaited<ReturnType<typeof discoverNodeVersions>>[number],
+  remaining: Awaited<ReturnType<typeof discoverNodeVersions>>,
+  ctx: JobContext,
+): Promise<number> {
+  const siteService = new SiteService(deps.db, deps.vault, deps.sitesRoot);
+  const affected = siteService.list().filter((site) => {
+    const manifest = SiteManifest.safeParse(site.manifest);
+    return (
+      manifest.success &&
+      manifest.data.runtime === 'node' &&
+      manifest.data.nodeVersion !== undefined &&
+      matchVersion([removed], manifest.data.nodeVersion) !== null
+    );
+  });
+
+  const fallback = remaining[0];
+  if (affected.length > 0 && !fallback) {
+    throw new Error(
+      `Node ${removed.version} cannot be removed because ${affected.length} website${affected.length === 1 ? '' : 's'} ` +
+        'use it and there is no other Node version to switch to. Install another version first.',
+    );
+  }
+
+  for (const site of affected) {
+    const manifest = SiteManifest.parse(site.manifest);
+    const port = site.activeColour === 'blue' ? site.portBlue : site.portGreen;
+    const serviceId = serviceIdFor(site.slug, site.activeColour);
+
+    if (fallback && port !== null && (await deps.services.isInstalled(serviceId))) {
+      const env = await siteService.getEnv(site.id);
+      await deps.services.reconfigure({
+        id: serviceId,
+        displayName: site.displayName,
+        description: `Website: ${site.displayName}`,
+        executable: path.join(fallback.directory, 'node.exe'),
+        args: [manifest.app.entry ?? 'index.js'],
+        workingDirectory: appRootFor(deps.sitesRoot, site),
+        env: {
+          ...env,
+          [manifest.app.portEnvVar]: String(port),
+          NODE_ENV: 'production',
+          HOST: '127.0.0.1',
+        },
+        logPath: path.join(deps.sitesRoot, site.slug, 'logs'),
+      });
+    }
+
+    const nextManifest = { ...(site.manifest as Record<string, unknown>) };
+    nextManifest['nodeVersion'] = fallback!.version;
+    deps.db.db
+      .update(sites)
+      .set({ manifest: nextManifest, updatedAt: new Date() })
+      .where(eq(sites.id, site.id))
+      .run();
+    ctx.log(`${site.displayName} will use Node ${fallback!.version} from now on.`);
+  }
+
+  return affected.length;
 }
 
 export function createUninstallComponentHandler(deps: InstallerDependencies) {
   return async (payload: unknown, ctx: JobContext): Promise<void> => {
-    const { componentId, deleteData = false } = payload as InstallComponentPayload;
+    const { componentId, deleteData = false, nodeVersion } = payload as InstallComponentPayload;
     const component = findComponent(componentId);
     if (!component) throw new Error(`There is no component called "${componentId}".`);
+
+    if (component.id === 'node') {
+      const requested = nodeVersion?.trim() ?? '';
+      const installed = await discoverNodeVersions(deps.binDir);
+      const target = installed.find((entry) => entry.version === requested);
+
+      if (!target || !isPanelManagedNode(target, deps.binDir)) {
+        throw new Error('Only Node versions installed by this panel can be removed.');
+      }
+
+      const remaining = installed.filter((entry) => entry.version !== target.version);
+      const affected = await prepareNodeSitesForRemoval(deps, target, remaining, ctx);
+      ctx.log(
+        affected > 0
+          ? `Switched ${affected} website${affected === 1 ? '' : 's'} to Node ${remaining[0]!.version}.`
+          : 'No website was using this Node version.',
+      );
+      await fs.rm(path.join(deps.binDir, 'node', target.version), {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 250,
+      });
+      forgetNodeVersions();
+      ctx.log(`Node ${target.version} has been removed.`);
+      ctx.progress(100);
+      return;
+    }
 
     if (component.serviceName) {
       ctx.log('Stopping and removing the Windows service\u2026');
@@ -844,5 +964,49 @@ export function createUninstallComponentHandler(deps: InstallerDependencies) {
       ctx.log(`${component.name} has been removed. Its data was left in place.`);
     }
     ctx.progress(100);
+  };
+}
+
+export interface UpdatePackageManagerPayload {
+  packageManager: 'npm';
+}
+
+export function createUpdatePackageManagerHandler(deps: InstallerDependencies) {
+  return async (payload: unknown, ctx: JobContext): Promise<void> => {
+    const { packageManager } = payload as UpdatePackageManagerPayload;
+    if (packageManager !== 'npm') {
+      throw new Error(`The ${packageManager} update is handled by its component installer.`);
+    }
+
+    const installations = (await discoverNodeVersions(deps.binDir)).filter((entry) =>
+      isPanelManagedNode(entry, deps.binDir),
+    );
+    if (installations.length === 0) {
+      throw new Error('npm is bundled with Node.js. Install a panel-managed Node version first.');
+    }
+
+    for (const [index, installation] of installations.entries()) {
+      const node = path.join(installation.directory, 'node.exe');
+      const npmScript = path.join(installation.directory, 'node_modules', 'npm', 'bin', 'npm-cli.js');
+      if (!(await fs.access(npmScript).then(() => true, () => false))) {
+        throw new Error(`Node ${installation.version} does not contain its npm CLI.`);
+      }
+
+      ctx.log(`Updating npm bundled with Node ${installation.version}…`);
+      const result = await runCommand({
+        exe: node,
+        args: [npmScript, 'install', '--global', 'npm@latest', '--prefix', installation.directory, '--no-audit', '--no-fund'],
+        cwd: installation.directory,
+        timeoutMs: 15 * 60_000,
+      });
+      if (result.exitCode !== 0) {
+        throw new Error(
+          `npm could not be updated for Node ${installation.version}: ${result.stderr.trim() || result.stdout.trim()}`,
+        );
+      }
+      ctx.progress(Math.floor(((index + 1) / installations.length) * 100));
+    }
+
+    ctx.log('npm is up to date for every panel-managed Node version.');
   };
 }

@@ -17,7 +17,7 @@ So tokens are held **per website**, falling back to a shared one:
 | Shared token | `storeCloudflareToken` | A request names no site, or the site has no token |
 
 `cloudflareTokenForSite` resolves the pair. Both are encrypted by `SecretVault` and never
-leave the server — the API returns zones, records and status, never the token.
+leave the server - the API returns zones, records and status, never the token.
 
 `requireOwnSite` in the DNS router refuses to let a `user` account fall back to the shared
 token: several endpoints take the site as optional and answer for the shared token when it
@@ -41,7 +41,7 @@ What the planner does:
 - adds a `CAA` record for Let's Encrypt **only if** no `issue "letsencrypt.org"` CAA
   already exists, because CAA is additive and overwriting someone else's would break
   their renewals
-- never touches `MX`, `TXT`, `SRV`, `NS` or existing `CAA` records — that is how mail and
+- never touches `MX`, `TXT`, `SRV`, `NS` or existing `CAA` records - that is how mail and
   domain verification keep working
 - optionally (`repointStale`, on by default) moves any other `A` record whose content is
   one of the addresses the apex used to resolve to. That is what makes offering to
@@ -73,7 +73,7 @@ next.
 
 ## Certificates the user supplies
 
-`ssl.uploadCertificate` stores a certificate and key the user obtained elsewhere — almost
+`ssl.uploadCertificate` stores a certificate and key the user obtained elsewhere - almost
 always a Cloudflare Origin certificate, occasionally one from a company's own authority.
 The certificate goes in `site_certificates`; the private key goes in the vault under
 `site.certificateKey:<siteId>`, never in the table and never back over the API.
@@ -81,7 +81,7 @@ The certificate goes in `site_certificates`; the private key goes in the vault u
 `writeCustomCertificateFiles` rewrites `<dataDir>\certificates\<siteId>.{crt,key}` from
 the database on *every* reconcile rather than once at upload, and deletes files belonging
 to sites that no longer have one. Caddy needs a path, and a config pointing at a file
-that is not there fails the entire load — including every other website on the machine.
+that is not there fails the entire load - including every other website on the machine.
 Rebuilding from the database means a restored backup or a half-finished write repairs
 itself.
 
@@ -94,7 +94,7 @@ Three things follow from that same "one bad certificate takes everything down" p
   uploading a certificate that claims it.
 - The subjects go into `automatic_https.skip_certificates`. Caddy will not manage a name
   it already holds, but saying so explicitly is what keeps the HTTP-to-HTTPS redirect
-  alive — a name that fails issuance is otherwise dropped from the server entirely.
+  alive - a name that fails issuance is otherwise dropped from the server entirely.
 
 Nothing renews these, so `notAfter` is stored and shown rather than left inside the file.
 A Cloudflare Origin certificate is flagged `originOnly`, because it is trusted by

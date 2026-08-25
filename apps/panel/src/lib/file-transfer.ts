@@ -76,6 +76,10 @@ export function gameDownloadUrl(gameServerSlug: string, path: string): string {
   return `/api/game-servers/${encodeURIComponent(gameServerSlug)}/files/download?path=${encodeURIComponent(path)}`;
 }
 
+export function backupDownloadUrl(scope: 'site' | 'panel', id: string): string {
+  return `/api/backups/${scope}/${encodeURIComponent(id)}/download`;
+}
+
 export function uploadGameFile(
   gameServerSlug: string,
   folder: string,

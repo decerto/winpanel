@@ -10,7 +10,7 @@ image: /winpanel/banner.png
 
 WordPress is three things: some PHP code, a web server to run it, and a database to store
 its content. None of that needs IIS, and none of it needs Linux. On Windows it runs the
-same way it runs everywhere else — you just need the three parts and a way to start them
+same way it runs everywhere else - you just need the three parts and a way to start them
 again after a reboot.
 
 This page explains how WordPress actually runs on Windows, and the much shorter way to do
@@ -20,7 +20,7 @@ the whole thing up for you.
 ## The three parts
 
 **PHP.** WordPress is written in PHP. On Windows the right build is the *Non-Thread-Safe*
-one, run through FastCGI — which is what PHP's own documentation recommends for exactly
+one, run through FastCGI - which is what PHP's own documentation recommends for exactly
 this. One thing to know: a single PHP process on Windows answers one request at a time,
 so a real site runs a small pool of them and the web server shares requests across the
 pool. PHP also needs Microsoft's Visual C++ runtime installed, or it will not start at all.
@@ -53,11 +53,11 @@ WinPanel does all of it from one button.
 The panel downloads the current WordPress from wordpress.org while you watch, creates a
 MariaDB database and a login scoped to just that database, writes the configuration, and
 starts everything as services that come back on their own after a reboot. When it
-finishes it opens WordPress' own one-minute setup — the page where you name the site and
-make your login — and from there it is an ordinary WordPress.
+finishes it opens WordPress' own one-minute setup - the page where you name the site and
+make your login - and from there it is an ordinary WordPress.
 
 The database server (MariaDB) and PHP are ordinary programs in the panel's **Programs**
-list, so you can install them once and use them for as many sites as you like — WordPress
+list, so you can install them once and use them for as many sites as you like - WordPress
 or your own PHP code. Each site's **Databases** tab shows what it has, and a database
 browser is built into the panel, so you can look at and edit a site's tables without
 installing anything else.
@@ -65,7 +65,7 @@ installing anything else.
 ## Your own PHP code
 
 WordPress is just the common case. A site written in PHP works the same way: choose **A
-PHP website** when you add a site, or point the panel at a Git repository — a repository
+PHP website** when you add a site, or point the panel at a Git repository - a repository
 with an `index.php` is recognised automatically, including a `public` web root and a
 Composer install on each deploy when the project has a `composer.json`.
 

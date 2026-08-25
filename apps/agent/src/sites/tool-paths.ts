@@ -3,7 +3,7 @@ import path from 'node:path';
 import { config } from '../config.js';
 import { findExecutable } from '../components/archive.js';
 import { runCommand } from '../process/run-command.js';
-import { discoverNodeVersions, matchVersion } from './node-versions.js';
+import { discoverNodeVersions, selectNodeVersion } from './node-versions.js';
 
 /**
  * Finds the executables a build step is allowed to run.
@@ -48,8 +48,8 @@ export class NodeVersionNotFoundError extends Error {
   constructor(version: string) {
     super(
       `This website is set to build with Node ${version}, which is not installed on this ` +
-        'server. Pick one of the installed versions in the website\u2019s settings, or ask ' +
-        'your hosting provider to add it.',
+        'server. Pick one of the installed versions in the website\u2019s settings, or ask an ' +
+        'administrator to install it from Settings > Programs.',
     );
     this.name = 'NodeVersionNotFoundError';
   }
@@ -105,19 +105,22 @@ async function findOnPath(command: string): Promise<string | null> {
  * `nodeVersion` selects the Node installation used for the whole build, so a
  * site pinned to an older version gets that version's npm as well as its node.
  * The version is looked up among the ones actually present rather than assumed
- * to sit in a folder named after it — the panel does not install Node, so the
- * layout is whoever installed it's choice, not ours.
+ * to sit in a folder named after it — system and version-manager layouts are
+ * not controlled by the panel.
  */
 export async function resolveTool(command: string, nodeVersion?: string): Promise<string> {
-  if (nodeVersion && ['node', 'npm', 'npx'].includes(command)) {
+  if (['node', 'npm', 'npx'].includes(command)) {
     const installed = await discoverNodeVersions(config.binDir);
-    const match = matchVersion(installed, nodeVersion);
+    const match = selectNodeVersion(installed, nodeVersion);
 
-    if (!match) throw new NodeVersionNotFoundError(nodeVersion);
+    if (!match && nodeVersion?.trim()) throw new NodeVersionNotFoundError(nodeVersion);
 
-    const file = command === 'node' ? 'node.exe' : `${command}.cmd`;
-    const candidate = path.join(match.directory, file);
-    if (await exists(candidate)) return candidate;
+    if (match) {
+      const file = command === 'node' ? 'node.exe' : `${command}.cmd`;
+      const candidate = path.join(match.directory, file);
+      if (await exists(candidate)) return candidate;
+      throw new ToolNotFoundError(`${command} for Node ${match.version}`);
+    }
   }
 
   const nodeDir = nodeDirFor(nodeVersion);

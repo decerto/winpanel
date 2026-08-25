@@ -32,13 +32,13 @@ server's `description` field, shown as the sender's name on outgoing mail) and a
 Both `mail.createMailbox` and `mail.setMailboxPassword` take an optional `password`: supply
 one to choose it, or omit it and the panel generates one. Either way it is returned once and
 never stored here. A customer account additionally has a total mail allowance across all of
-their domains — see [users-and-roles.md](users-and-roles.md).
+their domains - see [users-and-roles.md](users-and-roles.md).
 
 ### Aliases
 
 `mail.setMailboxAliases` replaces the whole list rather than adding to it, so an address
 removed in the panel is removed on the server. Every alias must be in a domain the mail
-server already handles, and one that already has its own mailbox is refused — the mail
+server already handles, and one that already has its own mailbox is refused - the mail
 server's own complaint does not say which of the two addresses is at fault.
 
 Aliases matter for sending, not only receiving. Stalwart rejects a message whose envelope
@@ -59,7 +59,7 @@ Defined once in `packages/shared/src/mail.ts` (`MAIL_CLIENT_PORTS`):
 | --- | --- |
 | 993 | IMAP, implicit TLS |
 | 995 | POP3, implicit TLS |
-| 465 | SMTP submission, implicit TLS — what Outlook picks |
+| 465 | SMTP submission, implicit TLS - what Outlook picks |
 | 587 | SMTP submission, STARTTLS |
 | 25 | SMTP between servers |
 
@@ -69,8 +69,8 @@ Port 995 was added after the first releases, so installs older than that need th
 ## The certificate problem
 
 Stalwart issues itself an `rcgen` self-signed certificate on first start and never
-replaces it. The panel's own webmail works fine — it connects over loopback and validates
-nothing — but Outlook, Apple Mail and phone clients refuse it, usually with a message that
+replaces it. The panel's own webmail works fine - it connects over loopback and validates
+nothing - but Outlook, Apple Mail and phone clients refuse it, usually with a message that
 never mentions certificates ("Something went wrong while setting up your account"). This
 is *the* cause of "webmail works, Outlook doesn't".
 
@@ -84,14 +84,14 @@ is *the* cause of "webmail works, Outlook doesn't".
 
 It runs at startup and every six hours, and is also exposed as `mail.installCertificate`.
 Renewal is the same code path: Caddy renews on disk and nothing tells Stalwart, so the
-timer re-copies. Expiry comparison has a ±60s tolerance — an exact millisecond comparison
+timer re-copies. Expiry comparison has a ±60s tolerance - an exact millisecond comparison
 eventually drifts and restarts the mail server twice a day. Each hostname has its own
 try/catch, because one rejected hostname used to abort the loop and silently stop every
 later domain renewing.
 
 For Caddy to have a certificate to copy, the name has to be in its config:
 `CaddyReconciler.buildConfig` adds `mail.<domain>` for every non-`www` site domain. There
-is no "issue now" admin endpoint — listing the name and reloading the config *is* the
+is no "issue now" admin endpoint - listing the name and reloading the config *is* the
 mechanism.
 
 ## Readiness checks

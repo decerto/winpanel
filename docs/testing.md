@@ -8,7 +8,7 @@ pnpm -C apps/panel test         # panel only
 
 The agent's suite runs against a temporary directory. `createAppContext` takes explicit
 paths for the database, vault key and setup token precisely so a test can build a
-complete, isolated instance — there are no module-level singletons to reset between
+complete, isolated instance - there are no module-level singletons to reset between
 files.
 
 `test/global-setup.ts` runs once before everything else and warms PowerShell's
@@ -25,7 +25,7 @@ examples to imitate:
   the site folder and asserts the read is refused. A test that only checks `../` string
   handling would pass while the code is broken.
 - `test/components.test.ts` serves a **tampered download** and asserts nothing is left on
-  disk afterwards — a partially written binary is worse than a failed install.
+  disk afterwards - a partially written binary is worse than a failed install.
 
 New code touching paths, process launching or downloads is expected to add tests in the
 same style.

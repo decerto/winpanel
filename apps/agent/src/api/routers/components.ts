@@ -2,20 +2,24 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { z } from 'zod';
 import { TRPCError } from '@trpc/server';
+import { SiteManifest } from '@winpanel/shared';
 import { adminProcedure, router, superadminProcedure } from '../trpc.js';
 import { COMPONENT_CATALOGUE, findComponent } from '../../components/catalogue.js';
+import { NODE_VERSION_CATALOGUE, findNodeVersion } from '../../components/node-catalogue.js';
 import { findExecutable } from '../../components/archive.js';
-import { discoverNodeVersions } from '../../sites/node-versions.js';
+import {
+  discoverNodeVersions,
+  isPanelManagedNode,
+  matchVersion,
+} from '../../sites/node-versions.js';
 import { runCommand } from '../../process/run-command.js';
 import { engineForComponent, type ComponentDefinition } from '@winpanel/shared';
 
 /**
- * The programs the panel drives: web server, mail server, git.
+ * The programs the panel drives: web server, mail server, git and runtimes.
  *
- * Node is in the catalogue but is deliberately not installable here. On a
- * managed server the runtime is the hosting provider's to decide, and a panel
- * that quietly adds a second copy is how a site ends up running on something
- * nobody chose. The panel finds the versions that exist and uses one of them.
+ * Node versions are kept in their own versioned folders so a website can stay
+ * on the runtime it needs while another one moves forward.
  */
 
 const PANEL_MANAGED = new Set([
@@ -96,9 +100,139 @@ async function isVcredistInstalled(): Promise<boolean> {
 }
 
 export const componentsRouter = router({
+  nodeVersions: router({
+    list: adminProcedure.query(async ({ ctx }) => {
+      const installed = await discoverNodeVersions(ctx.app.config.binDir);
+      const sites = ctx.app.sites.list();
+
+      return {
+        installed: installed.map((entry) => {
+          const affectedSites = sites.filter((site) => {
+            const manifest = SiteManifest.safeParse(site.manifest);
+            return (
+              manifest.success &&
+              manifest.data.runtime === 'node' &&
+              manifest.data.nodeVersion !== undefined &&
+              matchVersion([entry], manifest.data.nodeVersion) !== null
+            );
+          }).length;
+          const fallback = installed.find((candidate) => candidate.version !== entry.version);
+
+          return {
+            ...entry,
+            managed: isPanelManagedNode(entry, ctx.app.config.binDir),
+            affectedSites,
+            fallbackVersion: fallback?.version ?? null,
+            canRemove:
+              isPanelManagedNode(entry, ctx.app.config.binDir) &&
+              (affectedSites === 0 || fallback !== undefined),
+          };
+        }),
+        available: NODE_VERSION_CATALOGUE.map(({ version, codename }) => ({ version, codename })),
+      };
+    }),
+
+    install: adminProcedure
+      .input(z.object({ version: z.string().regex(/^\d+\.\d+\.\d+$/) }))
+      .mutation(({ ctx, input }) => {
+        const definition = findNodeVersion(input.version);
+        if (!definition) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: `Node ${input.version} is not available in the panel catalogue.`,
+          });
+        }
+
+        const installed = ctx.app.jobs.enqueue({
+          kind: 'install-component',
+          title: `Installing Node.js ${definition.version}`,
+          payload: { componentId: 'node', nodeVersion: definition.version },
+        });
+        return { jobId: installed };
+      }),
+
+    uninstall: superadminProcedure
+      .input(
+        z.object({
+          version: z.string().regex(/^\d+\.\d+\.\d+$/),
+          confirmation: z.string().min(1),
+        }),
+      )
+      .mutation(async ({ ctx, input }) => {
+        const installed = await discoverNodeVersions(ctx.app.config.binDir);
+        const target = installed.find((entry) => entry.version === input.version);
+
+        if (!target || !isPanelManagedNode(target, ctx.app.config.binDir)) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'Only Node versions installed by this panel can be removed.',
+          });
+        }
+        if (input.confirmation !== input.version) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: `Type "${input.version}" to confirm removing this Node version.`,
+          });
+        }
+
+        const affectedSites = ctx.app.sites.list().filter((site) => {
+          const manifest = SiteManifest.safeParse(site.manifest);
+          return (
+            manifest.success &&
+            manifest.data.runtime === 'node' &&
+            manifest.data.nodeVersion !== undefined &&
+            matchVersion([target], manifest.data.nodeVersion) !== null
+          );
+        });
+        const fallback = installed.find((entry) => entry.version !== target.version);
+        if (affectedSites.length > 0 && !fallback) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              `Node ${target.version} is used by ${affectedSites.length} website${affectedSites.length === 1 ? '' : 's'} ` +
+              'and cannot be the last installed runtime. Install another version first.',
+          });
+        }
+
+        const jobId = ctx.app.jobs.enqueue({
+          kind: 'uninstall-component',
+          title: `Removing Node.js ${target.version}`,
+          payload: { componentId: 'node', nodeVersion: target.version },
+        });
+        return { jobId };
+      }),
+  }),
+
+  packageManagers: router({
+    update: adminProcedure
+      .input(z.object({ packageManager: z.enum(['npm', 'pnpm', 'yarn', 'bun']) }))
+      .mutation(({ ctx, input }) => {
+        if (input.packageManager === 'npm') {
+          return {
+            jobId: ctx.app.jobs.enqueue({
+              kind: 'update-package-manager',
+              title: 'Updating npm',
+              payload: { packageManager: 'npm' },
+            }),
+          };
+        }
+
+        const component = findComponent(input.packageManager);
+        if (!component) throw new TRPCError({ code: 'BAD_REQUEST', message: 'Unknown package manager.' });
+
+        return {
+          jobId: ctx.app.jobs.enqueue({
+            kind: 'install-component',
+            title: `Updating ${component.name}`,
+            payload: { componentId: component.id },
+          }),
+        };
+      }),
+  }),
+
   list: adminProcedure.query(async ({ ctx }) => {
-    // Node is not installed by the panel, so "is it there" means "did we find
-    // one", not "did we put one there".
+    // The generic component row remains for compatibility; the versioned Node
+    // controls below it are the source of truth for installation ownership.
     const nodeVersions = await discoverNodeVersions(ctx.app.config.binDir);
 
     return await Promise.all(

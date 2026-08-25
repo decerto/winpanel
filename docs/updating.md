@@ -19,8 +19,8 @@ the process serving that log is about to be stopped.
 The upload is a plain streamed `POST` rather than a tRPC procedure. A browser hands over a
 file's contents and never its path, and an installer is far too large to hold in memory
 while also serving the panel. It is written straight to
-`bin\.downloads\winpanel-upload.exe` — a fixed path, so an upload can only ever replace the
-last one — and refused past 400 MB or if the first two bytes are not `MZ`.
+`bin\.downloads\winpanel-upload.exe` - a fixed path, so an upload can only ever replace the
+last one - and refused past 400 MB or if the first two bytes are not `MZ`.
 
 Being outside tRPC, it gets none of the middleware, so the session, the network allowlist
 and the owner check are all written out by hand in that file. They have to be: what lands
@@ -41,14 +41,14 @@ The order is the whole point:
 
 ## Why a scheduled task
 
-The installer's first act is to stop every WinPanel service — including the one that
+The installer's first act is to stop every WinPanel service - including the one that
 started it. WinSW stops a service by killing its process *and everything below it*, so an
 installer launched as a child of the agent is killed halfway through replacing the program
 files. That is the one outcome worse than not updating at all.
 
 So the handler registers a one-off task, `WinPanelUpdate`, running as `SYSTEM` with highest
 privileges, and triggers it. The task belongs to Windows, so nothing that happens to the
-agent process can touch it. Its `ONCE` trigger is dated 01/01/2099 — far enough ahead that
+agent process can touch it. Its `ONCE` trigger is dated 01/01/2099 - far enough ahead that
 Windows can never decide to fire it on its own.
 
 If `schtasks.exe` refuses, the installer is started directly as a detached process and the
@@ -56,7 +56,7 @@ job log says so. Worse, but a server that cannot schedule a task can usually sti
 an install, and the alternative is an update that cannot be applied at all.
 
 Silent flags: `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /LOG=...`. `/NORESTART`
-matters — the installer must never decide on its own to reboot a server hosting other
+matters - the installer must never decide on its own to reboot a server hosting other
 people's websites.
 
 ## What the installer does
@@ -82,7 +82,7 @@ A service that does not come back afterwards is named in the wizard's final page
 with the program holding the port it needed if something else has taken it.
 
 That file is the reason the panel does not come back alone. Everything is set to start
-automatically, so a reboot would bring it all back — but an in-place update never reboots,
+automatically, so a reboot would bring it all back - but an in-place update never reboots,
 and without the record every site on the server would stay dark until somebody noticed.
 
 The installer keeps a stable `AppId`, so Windows treats this as an upgrade. `C:\WinPanel\data`

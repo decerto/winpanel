@@ -4,6 +4,7 @@ import { RouterLink, RouterView, useRoute } from 'vue-router';
 import {
   Activity,
   ArrowLeft,
+  Archive,
   AtSign,
   Boxes,
   Code2,
@@ -112,6 +113,7 @@ const TABS = computed(() => {
      */
     { name: 'site-databases', label: 'Databases', icon: Database, show: hasDatabases.value },
     { name: 'site-traffic', label: 'Traffic', icon: Activity, show: true },
+    { name: 'site-backup', label: 'Backup', icon: Archive, show: true },
     { name: 'site-dns', label: 'DNS', icon: Globe2, show: true },
     { name: 'site-ssl', label: 'SSL', icon: ShieldCheck, show: true },
     { name: 'site-email', label: 'Email', icon: AtSign, show: true },

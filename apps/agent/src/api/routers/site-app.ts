@@ -203,7 +203,8 @@ export const siteAppRouter = router({
       const domain = (site.domains as string[])[0] ?? null;
 
       const pinned = manifest.nodeVersion ?? '';
-      const resolved = pinned ? matchVersion(installed, pinned) : installed[0];
+      const matched = pinned ? matchVersion(installed, pinned) : null;
+      const resolved = matched ?? installed[0];
 
       // The deploy stops short of starting when it cannot tell what to run,
       // and what it needs is a decision, not a retry.
@@ -232,6 +233,7 @@ export const siteAppRouter = router({
         packageManager: manifest.packageManager,
         nodeVersion: pinned,
         resolvedNodeVersion: resolved?.version ?? null,
+        nodeVersionFallback: pinned.length > 0 && matched === null && resolved !== undefined,
         installedNodeVersions: installed.map((one) => one.version),
         /** Whatever the app itself will read from NODE_ENV. */
         applicationMode: env['NODE_ENV'] ?? 'production',

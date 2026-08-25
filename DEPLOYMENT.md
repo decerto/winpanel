@@ -2,13 +2,13 @@
 
 How to go from a fresh OVH Windows Server 2025 box to your websites running with HTTPS.
 
-The examples name real sites running this way — [kitora.io](https://kitora.io),
+The examples name real sites running this way - [kitora.io](https://kitora.io),
 [diminished-studios.com](https://diminished-studios.com),
 [taskbarlegends.com](https://taskbarlegends.com) and
-[jean-kseafishing.com](https://www.jean-kseafishing.com) — because between them they cover
+[jean-kseafishing.com](https://www.jean-kseafishing.com) - because between them they cover
 every kind of site the panel hosts.
 
-Read the [Before you start](#before-you-start) section first — two of the steps have to be
+Read the [Before you start](#before-you-start) section first - two of the steps have to be
 requested from OVH and can take a day or two, so it's worth starting them early.
 
 ---
@@ -32,7 +32,7 @@ Have these ready:
    server's IP to `mail.yourdomain.com`. Mail providers reject or spam-folder email from
    servers without one.
 
-Neither can be done from WinPanel — it can only check them, which it does automatically
+Neither can be done from WinPanel - it can only check them, which it does automatically
 and repeatedly.
 
 ---
@@ -84,7 +84,7 @@ Connect over Remote Desktop and check the basics:
 Copy `WinPanel-Setup-x64.exe` to the server and run it as administrator.
 
 It will create the folders, register the service, open the firewall, and generate a
-one-time setup code. **The final page shows your panel address and setup code — write the
+one-time setup code. **The final page shows your panel address and setup code - write the
 code down.**
 
 Nothing else needs installing first. The installer carries its own Node runtime.
@@ -97,7 +97,7 @@ Open `https://<your-server-ip>:8443` from your own machine.
 
 > **Your browser will warn about the certificate.** This is expected. The panel is reached
 > by IP address rather than a domain name, so its certificate is self-signed. Click through
-> the warning — the panel shows you the certificate fingerprint so you can confirm you're
+> the warning - the panel shows you the certificate fingerprint so you can confirm you're
 > trusting the right one. Once you're in, **Settings → Panel address and certificate** lets
 > you give the panel a domain of its own, which gets it a certificate browsers trust.
 
@@ -105,7 +105,7 @@ Then:
 
 1. Enter the **setup code** from the installer
 2. Choose a username and password (12 characters minimum)
-3. **Set up two-factor authentication** — scan the QR code with your authenticator app and
+3. **Set up two-factor authentication** - scan the QR code with your authenticator app and
    enter a code, or choose **Skip for now**
 4. If you turned it on, **save the ten recovery codes** shown on the next screen
 
@@ -119,15 +119,15 @@ of it. You can turn it on, replace it or turn it off at any time from **Security
 
 ### Fix anything the Health page flags
 
-The Health page runs automatically. Work through anything red or amber — most have a
+The Health page runs automatically. Work through anything red or amber - most have a
 **Fix** button that tells you exactly what it will change before you press it, and can be
 undone afterwards.
 
 Expect to see at least:
 
-- **Long file names** — turn this on. Node projects create very deeply nested folders and
+- **Long file names** - turn this on. Node projects create very deeply nested folders and
   installs fail confusingly without it.
-- **The built-in web server (IIS)** — turn it off if present, or Caddy cannot bind to
+- **The built-in web server (IIS)** - turn it off if present, or Caddy cannot bind to
   ports 80 and 443.
 
 ---
@@ -166,30 +166,30 @@ Install **Git** too, which the panel uses to fetch your code.
 
 Start with the simplest one. **Websites → Add a website**.
 
-### Step 1 — Your code
+### Step 1 - Your code
 
-Paste the address of your repository — either the **https://** one or the **SSH** one. The
+Paste the address of your repository - either the **https://** one or the **SSH** one. The
 panel converts it to whichever form the sign-in method needs.
 
 Then say how the server should sign in:
 
-- **It's public** — nothing to do.
-- **With a deploy key** (recommended for a private repository) — the panel makes a key
+- **It's public** - nothing to do.
+- **With a deploy key** (recommended for a private repository) - the panel makes a key
   pair, keeps the private half encrypted on the server, and shows you the public half.
   Copy it, then on GitHub open the repository's **Settings → Deploy keys → Add deploy
   key**, give it any title, paste the key, and leave **Allow write access** unticked. The
   key reads that one repository, belongs to the server rather than to a person, and never
   expires. GitLab and Bitbucket call the same thing "deploy keys" and "access keys".
-- **With an access token** — for hosts or company policies that do not allow deploy keys.
+- **With an access token** - for hosts or company policies that do not allow deploy keys.
   For GitHub, create one at [github.com/settings/tokens](https://github.com/settings/tokens)
   with the **`repo`** scope. It's stored encrypted on the server and never written into
   your project files. Remember that tokens expire, and deployments stop working when they
   do.
 
-Press **Test connection** before continuing — an unreachable repository is the most common
+Press **Test connection** before continuing - an unreachable repository is the most common
 reason a first deployment fails.
 
-### Step 2 — What we found
+### Step 2 - What we found
 
 The panel clones your project and works out how to build it. Check the folder roles and
 build steps it shows you.
@@ -197,18 +197,18 @@ build steps it shows you.
 For a repository with `frontend/` and `backend/`, where the frontend builds into the
 backend, you should see three steps:
 
-1. Install frontend packages — in `frontend`
-2. Build the frontend — in `frontend`
-3. Install backend packages — in `backend`
+1. Install frontend packages - in `frontend`
+2. Build the frontend - in `frontend`
+3. Install backend packages - in `backend`
 
 …and the app running from `backend`. If that's right, continue. If the confidence warning
 appears, read the steps carefully before proceeding.
 
-### Step 3 — Web address
+### Step 3 - Web address
 
 Enter your domain, for example `diminished-studios.com, www.diminished-studios.com`.
 
-### Step 4 — Secrets
+### Step 4 - Secrets
 
 Add any database URLs or API keys your app reads from the environment. These are stored
 encrypted and are only ever visible to your app.
@@ -227,7 +227,7 @@ Cloudflare:
 - a `CAA` record restricting who may issue your certificates
 
 **Leave "Route traffic through Cloudflare" off for your first deployment.** Turn it on once
-the site is confirmed working — it's much easier to diagnose a problem with one moving part
+the site is confirmed working - it's much easier to diagnose a problem with one moving part
 rather than two.
 
 Certificates are obtained automatically within a minute or two of DNS resolving.
@@ -246,21 +246,21 @@ You want `HTTP/2 200` and no certificate warning.
 
 Repeat step 7 for each. Notes for specific setups:
 
-**Nuxt (kitora.io)** — detected automatically. The panel knows Nuxt reads `NITRO_PORT`
+**Nuxt (kitora.io)** - detected automatically. The panel knows Nuxt reads `NITRO_PORT`
 rather than `PORT` and runs `.output/server/index.mjs`.
 
-**A site using WebSockets (taskbarlegends.com)** — detected from your `socket.io`
+**A site using WebSockets (taskbarlegends.com)** - detected from your `socket.io`
 dependency. Caddy passes WebSocket connections through with no extra configuration.
 
 > **If you put this site behind Cloudflare's proxy**, set socket.io's `pingInterval` below
 > 100 seconds. Cloudflare closes idle WebSocket connections at around that point, and the
 > disconnects look like random client faults.
 
-**A plain HTML site (jean-kseafishing.com)** — no repository and no build. Add it as **I
+**A plain HTML site (jean-kseafishing.com)** - no repository and no build. Add it as **I
 already have the files**, then upload them from the Files tab. Changes are live as soon as
 they finish uploading.
 
-**Your .NET application** — publish it, then add it as a website with type **proxy**
+**Your .NET application** - publish it, then add it as a website with type **proxy**
 pointing at the port Kestrel listens on. WinPanel handles the domain and HTTPS; you keep
 running the app as you do now.
 
@@ -273,7 +273,7 @@ actioned your unblock request yet, everything else will fail confusingly.
 
 1. **Components → Install the mail server**
 2. **Mail → Readiness**, enter your domain
-3. Publish the records it lists — MX, SPF, DKIM, DMARC — through the DNS page
+3. Publish the records it lists - MX, SPF, DKIM, DMARC - through the DNS page
 
 > **Mail records must never be proxied through Cloudflare.** WinPanel enforces this and
 > will refuse to write such a record. Cloudflare's proxy only handles web traffic, so
@@ -292,7 +292,7 @@ Press **Deploy now** on the site page, or use the API from CI.
 
 Each deployment builds into a fresh folder and starts on the **spare port**, then only
 switches traffic across once the new version answers a health check. If anything fails, the
-version currently serving visitors is untouched — a failed deployment is a failed
+version currently serving visitors is untouched - a failed deployment is a failed
 deployment, not an outage.
 
 ### Zero-click deployments
@@ -310,7 +310,7 @@ point at a copy already on the server's disk. Running the new
 `WinPanel-Setup-x64.exe` on the server by hand does the same job, and is the fallback if
 the panel is too broken to update itself.
 
-It is an upgrade in place — sites, mailboxes, certificates, users and settings are all
+It is an upgrade in place - sites, mailboxes, certificates, users and settings are all
 kept. Every service is stopped while the files are replaced and started again afterwards,
 so **websites and email are offline for a minute or two**. The record is in
 `C:\WinPanel\logs\winpanel-update.log`.
@@ -330,7 +330,7 @@ releases page.
 | Websites still down after an update | The panel came back alone. Settings → Background programs → **Start everything** |
 | Website shows 503 | Never deployed successfully. Check the deployment log |
 | Certificate not issued | Domain isn't pointing here yet, or the Cloudflare token is missing `Zone → Zone → Read` or `Zone → DNS → Edit` |
-| Deployment fails installing packages | Long file names not enabled — see the Health page |
+| Deployment fails installing packages | Long file names not enabled - see the Health page |
 | Blank page after deploying | Build output is gitignored; the panel should build on the server |
 | Email not sending | OVH block not lifted yet. Mail → Readiness re-checks automatically |
 
@@ -341,12 +341,12 @@ Get-Content C:\WinPanel\logs\winpanel-agent.out.log -Tail 50   # the panel
 Get-Content C:\Sites\<site>\logs\*.out.log -Tail 50            # a website
 ```
 
-**A failed deploy** — the previous version is put back automatically. The build
+**A failed deploy** - the previous version is put back automatically. The build
 that failed is left in the site's hidden `.staging` folder so it can be
 inspected, and the next deploy clears it.
 
 **Still stuck?** Ask on [Discord](https://discord.gg/wT6mnfAnUD). Bring the WinPanel
-version, your Windows build and the exact wording of the error — that is usually enough
+version, your Windows build and the exact wording of the error - that is usually enough
 to identify it straight away.
 
 ---
@@ -362,14 +362,14 @@ WinPanel doesn't yet back itself up. Until it does, copy these somewhere off the
 | `C:\Sites\*\shared\` | Environment files and uploads |
 
 > `vault.key` is tied to this machine. Restoring it to a different server will not decrypt
-> your secrets — you'd re-enter them instead. Back it up anyway, so a rebuild of *this*
+> your secrets - you'd re-enter them instead. Back it up anyway, so a rebuild of *this*
 > machine can recover.
 
 ---
 
 ## Known limitations
 
-Being straight about what isn't here. None of these are bugs — they're things that were
+Being straight about what isn't here. None of these are bugs - they're things that were
 left out, and you should know before you put a server behind this.
 
 - **Backups aren't built in.** There is no scheduled backup, no snapshot, no restore
@@ -378,7 +378,7 @@ left out, and you should know before you put a server behind this.
   full disk when you look at it. Nothing pages you, emails you or exports metrics, so at
   three in the morning the panel is not what tells you.
 - **A panel update is not signature-checked.** The installer you apply is verified by HTTPS
-  transport, an optional SHA-256 you supply, and a check that it is a Windows executable —
+  transport, an optional SHA-256 you supply, and a check that it is a Windows executable -
   not by Authenticode. Take the checksum from the release page and paste it in.
 - **No rollback of the panel itself.** Blue/green rollback covers *website* deploys. There
   is no snapshot of the previous panel install; going back means installing the older

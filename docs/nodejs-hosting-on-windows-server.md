@@ -14,7 +14,7 @@ and put a reverse proxy in front of it for the domain and the HTTPS certificate.
 the whole pattern. This page explains it, shows you how to do it by hand, and then shows
 what [WinPanel](https://github.com/decerto/winpanel#readme) automates.
 
-Applies to Windows Server 2022 and 2025, and to Windows 11 Home and Pro — none of
+Applies to Windows Server 2022 and 2025, and to Windows 11 Home and Pro - none of
 this needs a Server edition. The same approach works for Express, Fastify,
 Next.js, Nuxt, NestJS, Astro, SvelteKit, Remix, Strapi, Socket.IO, Bun-style servers and
 anything else that listens on a port.
@@ -30,7 +30,7 @@ order, that:
 - it can be done, but only through `iisnode`;
 - you should give up and rent a Linux box.
 
-None of that is true. Node.js has been a first-class Windows citizen since 2011 — the
+None of that is true. Node.js has been a first-class Windows citizen since 2011 - the
 official installer is an `.msi`, and `node.exe` is a normal Windows program. What is
 genuinely missing on Windows is not the runtime. It is the **hosting furniture**: the
 thing that keeps the app running, the thing that maps a domain to it, and the thing that
@@ -43,7 +43,7 @@ It can. The pieces just have different names.
 | On Linux | On Windows |
 | --- | --- |
 | systemd unit | A Windows Service (via WinSW, NSSM or `sc.exe`) |
-| nginx / Caddy / Apache | Caddy — the same program, it runs natively on Windows |
+| nginx / Caddy / Apache | Caddy - the same program, it runs natively on Windows |
 | Certbot / Let's Encrypt | Caddy again; it obtains and renews certificates itself |
 | `ufw` / `iptables` | Windows Defender Firewall |
 | cPanel / Plesk / aaPanel | WinPanel, or Plesk for Windows |
@@ -52,7 +52,7 @@ It can. The pieces just have different names.
 
 ## The four ways to run Node on Windows Server, ranked
 
-### 1. As a Windows Service behind a reverse proxy — recommended
+### 1. As a Windows Service behind a reverse proxy - recommended
 
 Your app listens on `127.0.0.1:3001`. A reverse proxy owns ports 80 and 443, terminates
 HTTPS, and forwards requests to the app based on the hostname. A service wrapper starts
@@ -71,14 +71,14 @@ and recycling behaviour that exist for ASP.NET rather than for Node. If IIS is a
 hosting your .NET applications and you only want to add one Node app, this is a reasonable
 choice. Otherwise it is a lot of ceremony for a reverse proxy.
 
-### 3. `iisnode` — do not start here in 2026
+### 3. `iisnode` - do not start here in 2026
 
 `iisnode` is the answer most search results still give. It has not had a release in nine
 years, still lists Windows Server 2012 as a prerequisite, and pre-dates most of what
 modern Node applications assume. Existing installations keep working; nothing about it
 recommends it for something you are building today.
 
-### 4. `pm2` on its own — not enough by itself
+### 4. `pm2` on its own - not enough by itself
 
 `pm2` is a fine process manager and it runs on Windows, but on its own it does not survive
 a reboot: it needs a service wrapper underneath it, and `pm2-windows-service` /
@@ -93,7 +93,7 @@ register the app itself and skip the extra layer.
 Four steps. Roughly thirty minutes the first time, and you should do it once even if you
 end up using a panel, because then you know what the panel is doing.
 
-### Step 1 — Make the app listen on a port it is given
+### Step 1 - Make the app listen on a port it is given
 
 ```js
 const port = process.env.PORT || 3001;
@@ -104,15 +104,15 @@ Binding to `127.0.0.1` rather than `0.0.0.0` means the app cannot be reached fro
 the machine except through the proxy. Reading the port from the environment means you can
 run two copies during a deploy.
 
-### Step 2 — Run it as a Windows Service
+### Step 2 - Run it as a Windows Service
 
 Node itself has no "run me at boot" facility, and a scheduled task or an open PowerShell
 window is not a substitute. Use a service wrapper:
 
-- **[WinSW](https://github.com/winsw/winsw)** — an XML file next to a renamed `.exe`. This
+- **[WinSW](https://github.com/winsw/winsw)** - an XML file next to a renamed `.exe`. This
   is what WinPanel uses.
-- **[NSSM](https://nssm.cc/)** — an interactive dialog for people who prefer one.
-- **`sc.exe create`** — built in, but it can only run a real service binary, so on its own
+- **[NSSM](https://nssm.cc/)** - an interactive dialog for people who prefer one.
+- **`sc.exe create`** - built in, but it can only run a real service binary, so on its own
   it will not run `node.exe`.
 
 A minimal WinSW configuration:
@@ -133,9 +133,9 @@ A minimal WinSW configuration:
 
 Then `my-app.exe install` and `my-app.exe start`.
 
-### Step 3 — Put a reverse proxy in front
+### Step 3 - Put a reverse proxy in front
 
-Install [Caddy](https://caddyserver.com/) — it is a single `.exe`, it runs as a Windows
+Install [Caddy](https://caddyserver.com/) - it is a single `.exe`, it runs as a Windows
 Service too, and it obtains and renews Let's Encrypt certificates without being asked.
 
 ```caddyfile
@@ -150,7 +150,7 @@ and proxied with nothing extra to write.
 nginx for Windows works too, but it has no certificate automation and its Windows build
 carries long-standing performance caveats.
 
-### Step 4 — Open the firewall and point DNS
+### Step 4 - Open the firewall and point DNS
 
 Allow inbound 80 and 443 in Windows Defender Firewall, then create an `A` record for your
 domain pointing at the server's public IP address, and a `www` record beside it. Port 80
@@ -167,10 +167,10 @@ them is a five-minute fix once you know the name of it.
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `EADDRINUSE :443` when the proxy starts | IIS installed and holding 80/443 by default | Stop and disable the *W3SVC* / Default Web Site, or uninstall IIS |
-| Service says **stopped**, but the site is still up | The wrapper was killed without a clean stop — usually a sleep/wake — and the app underneath survived, still holding the port | End the orphaned `node.exe`, then start the service. WinPanel detects and clears this automatically |
+| Service says **stopped**, but the site is still up | The wrapper was killed without a clean stop - usually a sleep/wake - and the app underneath survived, still holding the port | End the orphaned `node.exe`, then start the service. WinPanel detects and clears this automatically |
 | `ENAMETOOLONG` / `EPERM` during `npm install` | The 260-character path limit | Enable long paths: `LongPathsEnabled` = 1 in `HKLM\SYSTEM\CurrentControlSet\Control\FileSystem` |
 | `spawn EINVAL` when your code runs `npm`/`pnpm` | Node 20.12+ refuses to spawn `.cmd`/`.bat` without a shell | Invoke the CLI's `.js` entry point with `node`, or pass `shell: true` |
-| Certificate issuance fails every time | Port 80 blocked at the firewall or by your host | Use the DNS-01 challenge instead — no inbound port needed |
+| Certificate issuance fails every time | Port 80 blocked at the firewall or by your host | Use the DNS-01 challenge instead - no inbound port needed |
 | Everything is slow, or TLS fails intermittently | The Windows Time service is stopped, so the clock has drifted | Start `W32Time` and set it to automatic |
 | App runs from your session but not as a service | The service account has a different `PATH` and no user profile | Set absolute paths and the environment explicitly in the service definition |
 | Deploy overwrites files that are in use | The old process still has the folder open | Build into a second folder and swap, rather than writing over a running app |
@@ -185,7 +185,7 @@ Everything above, for every site, from a web interface:
 - writes and reloads the Caddy configuration when domains change;
 - obtains and renews certificates, over DNS-01 if you connect Cloudflare, so port 80 does
   not have to be open;
-- deploys from Git — builds into a staging folder, swaps it in only if it starts, and
+- deploys from Git - builds into a staging folder, swaps it in only if it starts, and
   rolls back if it does not;
 - watches for the orphaned-process failure above every minute and clears it;
 - checks the Windows settings in that table and fixes the safe ones for you;
@@ -202,7 +202,7 @@ your apps keep running whether or not the panel is.
 ### Can Node.js run on Windows Server?
 
 Yes. Node has shipped official Windows builds since 2011 and runs as a normal Windows
-program. What needs setting up is not Node but the hosting around it — a service to keep
+program. What needs setting up is not Node but the hosting around it - a service to keep
 it running, and a reverse proxy for the domain and the certificate.
 
 ### Do I need IIS to host a Node app on Windows?
@@ -229,7 +229,7 @@ will not survive a reboot reliably.
 ### Can I host several Node apps on one Windows Server?
 
 Yes. Give each one its own port and its own service, and let the reverse proxy route by
-hostname. That is exactly what a hosting panel automates — WinPanel allocates ports from
+hostname. That is exactly what a hosting panel automates - WinPanel allocates ports from
 3001 upwards and keeps the routing in step.
 
 ### Do WebSockets and Socket.IO work behind the proxy?
@@ -238,21 +238,21 @@ Yes. Caddy upgrades and proxies the connection with no configuration.
 
 ### Does ASP.NET Core work the same way?
 
-Yes — Kestrel is a web server in exactly the same shape as a Node HTTP server, so it is
+Yes - Kestrel is a web server in exactly the same shape as a Node HTTP server, so it is
 published, run as a service on a loopback port, and proxied identically.
 
 ### Is Windows Server hosting slower than Linux for Node?
 
 For real applications the difference is dominated by your database, your I/O and your
 code, not by the platform. File-system-heavy work (large `npm install` runs, thousands of
-small files) is measurably slower on NTFS with Defender scanning it — excluding your sites
+small files) is measurably slower on NTFS with Defender scanning it - excluding your sites
 folder and your Node installation from real-time scanning is the single biggest win
 available.
 
 ### What Windows versions does it need?
 
 Windows Server 2022 or 2025, or Windows 11 Home or Pro. A Windows Service, a firewall rule and a
-reverse proxy are not Server features — the architecture on this page works on any modern
+reverse proxy are not Server features - the architecture on this page works on any modern
 Windows. Desktop editions even avoid the commonest problem, since IIS is not installed by
 default.
 

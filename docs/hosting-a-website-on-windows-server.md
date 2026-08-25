@@ -7,8 +7,8 @@ description: >-
 
 # How to put a website on your own Windows PC or server
 
-Written for people who are not sysadmins. If you have a Windows machine — a rented server,
-a box under a desk, or a spare PC at home — and you want your website, your customers'
+Written for people who are not sysadmins. If you have a Windows machine - a rented server,
+a box under a desk, or a spare PC at home - and you want your website, your customers'
 websites or your company's email running on it, this page explains what is involved, in
 plain words.
 
@@ -23,13 +23,13 @@ the bottom.
 Putting a website online means four separate things, which is why it feels harder than it
 sounds. In order:
 
-1. **The files have to live somewhere** — the pages, pictures and code that make up the
+1. **The files have to live somewhere** - the pages, pictures and code that make up the
    site, sitting in a folder on the server.
-2. **Something has to answer visitors** — a program that listens for people asking for
+2. **Something has to answer visitors** - a program that listens for people asking for
    your site and hands them the pages. This is the "web server".
-3. **Your web address has to point at the machine** — so that typing `example.com` sends
+3. **Your web address has to point at the machine** - so that typing `example.com` sends
    people to your server and not somewhere else. This is DNS.
-4. **The padlock has to appear** — a certificate, so browsers show `https` and not "Not
+4. **The padlock has to appear** - a certificate, so browsers show `https` and not "Not
    secure". These are free and automatic now; nobody should be paying for one or
    installing them by hand.
 
@@ -47,7 +47,7 @@ Windows.
 Yes. This question comes up constantly and gets bad answers, so, clearly:
 
 - **You can host a normal website on Windows.** Pages, images, contact forms, the lot.
-- **You can host a modern web app on Windows** — the kind built with Node.js, which covers
+- **You can host a modern web app on Windows** - the kind built with Node.js, which covers
   most sites a developer has built for you in the last decade.
 - **You can host your own email on Windows**, with real mailboxes at your own domain.
 - **You do not need to buy Plesk**, and you do not need to move to Linux.
@@ -62,18 +62,18 @@ website than most people build today. The gap is what a control panel fills.
 
 | | |
 | --- | --- |
-| **The server** | Whatever you already pay. A small Windows VPS is typically £15–£40 a month; a machine in your office is free apart from electricity; a PC you already own costs nothing. |
+| **The server** | Whatever you already pay. A small Windows VPS is typically £15-£40 a month; a machine in your office is free apart from electricity; a PC you already own costs nothing. |
 | **Windows licence** | Included if you rent; bought once if you own the hardware; already paid for if you are reusing a PC. |
 | **WinPanel** | Free. No per-site fee, no per-customer fee, no licence key. |
-| **Plesk, the paid alternative** | Roughly £10–£60 per server per month depending on edition. |
+| **Plesk, the paid alternative** | Roughly £10-£60 per server per month depending on edition. |
 | **Certificates (the padlock)** | Free, issued and renewed automatically. |
-| **Your domain name** | £8–£15 a year, from wherever you bought it. |
+| **Your domain name** | £8-£15 a year, from wherever you bought it. |
 
 ---
 
 ## Does it have to be Windows *Server*?
 
-No. A Windows 11 PC will do — nothing here needs a Server edition, and a desktop machine
+No. A Windows 11 PC will do - nothing here needs a Server edition, and a desktop machine
 avoids the commonest problem of all, because IIS is not installed on it to fight over the
 ports.
 
@@ -97,8 +97,8 @@ arrive whatever you configure.
 
 ## What it looks like in practice
 
-**Adding a website** is one form. You say what kind of site it is — a simple one you will
-upload files to, or one built from a code repository — and it is created, running, and
+**Adding a website** is one form. You say what kind of site it is - a simple one you will
+upload files to, or one built from a code repository - and it is created, running, and
 reachable immediately at a temporary address like `http://203.0.113.10:7001`. You do not
 need a domain to start.
 
@@ -112,7 +112,7 @@ need to change one line. No FTP program to configure.
 
 **Adding email** is picking a mailbox name and a password. The panel then checks the
 half-dozen invisible settings that decide whether your mail reaches people's inboxes
-instead of their spam folder — and tells you in plain English which one is wrong and
+instead of their spam folder - and tells you in plain English which one is wrong and
 offers to fix it.
 
 **Giving a client access** is creating an account for them and assigning their site to it.
@@ -123,8 +123,8 @@ much space they get.
 
 ## Do I need a developer?
 
-For the panel itself, no. Installing it is a normal Windows installer — next, next,
-finish — and everything after that is a web page you click around in.
+For the panel itself, no. Installing it is a normal Windows installer - next, next,
+finish - and everything after that is a web page you click around in.
 
 You will want a developer for the site itself if it is an application rather than a set of
 pages, because somebody has to have written it. But the hosting, the domains, the
@@ -140,10 +140,10 @@ If you got as far as installing Windows, you are already past the hard part.
 | --- | --- | --- |
 | "Not secure" in the address bar | The site has no certificate yet, usually because the domain is not pointing at the server yet | Check the domain first; the certificate follows on its own |
 | The site was fine and now shows an error after a restart | The program behind the site did not come back up | The panel restarts it for you, and shows the reason it stopped |
-| Your emails land in spam | One of the invisible DNS records — SPF, DKIM, DMARC — is missing or wrong | The email page checks all of them and offers to publish the missing ones |
+| Your emails land in spam | One of the invisible DNS records - SPF, DKIM, DMARC - is missing or wrong | The email page checks all of them and offers to publish the missing ones |
 | "This site can't be reached" on a brand-new domain | DNS changes take time to spread, up to a few hours | Use the temporary address meanwhile; it works immediately |
 | The panel warns about the certificate the first time you sign in | You are reaching it by IP address, which no certificate can cover | Expected. Give the panel its own domain in Settings and the warning goes |
-| Everything is down at once | Something is holding the ports the web server needs — usually IIS, which Windows enables by default | The Health page detects exactly this and offers to fix it |
+| Everything is down at once | Something is holding the ports the web server needs - usually IIS, which Windows enables by default | The Health page detects exactly this and offers to fix it |
 
 ---
 
@@ -162,7 +162,7 @@ If you got as far as installing Windows, you are already past the hard part.
 | **Windows Service** | A program Windows keeps running in the background, starting it at boot and restarting it if it stops. Each of your sites gets one. |
 | **Port** | A numbered door on the server. Websites use 80 and 443; each of your apps gets a private one. |
 | **Deploy** | Publishing a new version of a site. |
-| **Control panel** | The website you sign in to that manages all of the above — this. |
+| **Control panel** | The website you sign in to that manages all of the above - this. |
 | **Hosting** | Owning the machine the site lives on, instead of renting a slice of somebody else's. |
 | **Mailbox** | An email account at your own domain, with its own password and storage limit. |
 | **SPF, DKIM, DMARC** | Three DNS records that prove your email is really from you. Get them wrong and your mail goes to spam. |
@@ -179,7 +179,7 @@ first.
 
 ### Can I host my own website instead of paying for hosting?
 
-Yes, and that is usually the reason people end up here — one server can hold as many sites
+Yes, and that is usually the reason people end up here - one server can hold as many sites
 as it has room for, at no extra cost per site.
 
 ### Can I host websites for my clients and charge them?
@@ -201,7 +201,7 @@ Windows updates current.
 
 ### What if I get stuck?
 
-[Ask on Discord](https://discord.gg/wT6mnfAnUD) — plain questions are welcome and nobody
+[Ask on Discord](https://discord.gg/wT6mnfAnUD) - plain questions are welcome and nobody
 will tell you to read the source code.
 
 ---

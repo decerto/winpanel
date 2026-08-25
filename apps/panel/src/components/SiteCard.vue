@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 import {
   Activity,
+  Archive,
   AtSign,
   Boxes,
   Code2,
@@ -177,6 +178,13 @@ const fileTiles = computed<Tile[]>(() => [
     to: `/sites/${props.site.slug}`,
     tint: 'text-brand-bright',
   },
+  {
+    label: 'Backups',
+    detail: 'Download a site ZIP',
+    icon: Archive,
+    to: `/sites/${props.site.slug}/backup`,
+    tint: 'text-ok',
+  },
 ]);
 
 const devTiles = computed<Tile[]>(() => {
@@ -247,25 +255,17 @@ const domainTiles = computed<Tile[]>(() => {
     },
   ];
 
-  /*
-   * PHP sites nearly always have a database, so the tile is offered whether or
-   * not one exists yet. Every other runtime gets it once it actually has one —
-   * a Node or .NET site with a database had no way to reach it from here,
-   * which was most obvious after a website changed hands.
-   */
   const databases = props.site.databaseCount ?? 0;
-  if (isPhp.value || databases > 0) {
-    tiles.push({
-      label: 'Databases',
-      detail:
-        databases > 0
-          ? `${databases} ${databases === 1 ? 'database' : 'databases'}`
-          : 'Where the site stores data',
-      icon: Database,
-      to: `/sites/${props.site.slug}/databases`,
-      tint: 'text-info',
-    });
-  }
+  tiles.push({
+    label: 'Databases',
+    detail:
+      databases > 0
+        ? `${databases} ${databases === 1 ? 'database' : 'databases'}`
+        : 'Where the site stores data',
+    icon: Database,
+    to: `/sites/${props.site.slug}/databases`,
+    tint: 'text-info',
+  });
 
   if (props.site.previewUrl) {
     tiles.push({
@@ -284,7 +284,7 @@ const groups = computed(() =>
   [
     { title: 'Files & Settings', tiles: fileTiles.value },
     { title: 'Dev Tools', tiles: devTiles.value },
-    { title: 'Domains & Mail', tiles: domainTiles.value },
+    { title: 'Domains & Mail & Database', tiles: domainTiles.value },
   ].filter((group) => group.tiles.length > 0),
 );
 

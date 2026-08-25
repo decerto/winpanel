@@ -25,7 +25,7 @@ Please give a reasonable window for a fix before disclosing publicly.
 In scope:
 
 - authentication, session handling, two-factor and recovery codes,
-- authorisation between accounts — anything letting one customer reach another's website,
+- authorisation between accounts - anything letting one customer reach another's website,
   files or mailboxes,
 - path handling in the file manager and deployments,
 - the secret vault and anything that could leak a stored token or key,
@@ -33,7 +33,7 @@ In scope:
 
 Out of scope:
 
-- vulnerabilities in Caddy, Stalwart or Node.js themselves — report those upstream, though
+- vulnerabilities in Caddy, Stalwart or Node.js themselves - report those upstream, though
   do tell us if WinPanel ships an affected version,
 - anything requiring Administrator access to the server already, since that is game over
   by definition,

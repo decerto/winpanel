@@ -24,7 +24,7 @@ Three procedure builders in `apps/agent/src/api/trpc.ts`:
 | `superadminProcedure` | `superadmin` |
 
 `enforceSiteScope` is the interesting one. When the caller is a `user` and the raw input
-carries a `slug` or a `domain`, it checks that the site is theirs — and answers
+carries a `slug` or a `domain`, it checks that the site is theirs - and answers
 `NOT_FOUND` rather than `FORBIDDEN`, so the panel cannot be used to enumerate which slugs
 and domains exist on the server.
 
@@ -46,7 +46,7 @@ zone in the server owner's Cloudflare account.
 Three routes cannot be tRPC procedures, because a browser will only hand a file's bytes to
 a stream: the site file download and upload in `api/site-files.ts`, and the installer
 upload in `api/installer-upload.ts`. No middleware runs for any of them, so each writes
-its own checks — session, network allowlist, and then `userMayAccessSite` for the two
+its own checks - session, network allowlist, and then `userMayAccessSite` for the two
 site-scoped ones, or an owner check for the installer.
 
 This is the weak spot in the arrangement above, since nothing visibly breaks when a guard
@@ -67,7 +67,7 @@ stop being there.
 | `databaseQuotaBytes` | Storage that may be allocated across the account's databases; `0` is unlimited |
 
 `null` means no limit, which is what an `admin` and the owner always get. `0` is a real
-answer too — an account that may hold no websites yet. Database storage is the exception:
+answer too - an account that may hold no websites yet. Database storage is the exception:
 its non-nullable `0` means unlimited.
 
 ## Passwords and second factors
@@ -79,7 +79,7 @@ its non-nullable `0` means unlimited.
 - TOTP: 6 digits, 30-second period, ±1 step validation window. The pending secret is held
   encrypted until the first correct code confirms enrolment.
 - A code is spendable once. `users.last_totp_step` records the step last accepted, and
-  anything at or below it is refused — otherwise the same six digits keep working for the
+  anything at or below it is refused - otherwise the same six digits keep working for the
   minute and a half the window spans, which is ample time for whoever read them over a
   shoulder. The count resets when the secret does, since a step number means nothing
   against a secret it was never issued for. Sign-in reports a spent code as simply wrong,
@@ -87,8 +87,8 @@ its non-nullable `0` means unlimited.
   re-confirm is told to wait for the next code, because "that code is not correct" is a
   dead end when you are looking straight at it.
 - Ten recovery codes are issued when two-factor is turned on, 64 bits each, spendable
-  once. They are stored under a fast hash rather than Argon2 — the same as session tokens
-  — so the entropy has to do the work. They are accepted in any case and with or without
+  once. They are stored under a fast hash rather than Argon2 - the same as session tokens
+  - so the entropy has to do the work. They are accepted in any case and with or without
   dashes, because they are read off paper.
 
 ## Sessions
@@ -109,12 +109,12 @@ A correct password clears both the ban and the failure counter for that address.
 only the ban would leave the escalating delay in place for someone who has just proved who
 they are.
 
-Bans are per address, and the Sign-in activity page says so — a whole office usually shares
+Bans are per address, and the Sign-in activity page says so - a whole office usually shares
 one address, so unblocking is one click.
 
 ## Secrets
 
 `SecretVault` (`apps/agent/src/security/vault.ts`) encrypts stored secrets with AES-GCM.
-The master key is wrapped with Windows DPAPI at machine scope. On non-Windows — tests and
-CI only — the key is stored unwrapped and the panel shows a warning; production is always
+The master key is wrapped with Windows DPAPI at machine scope. On non-Windows - tests and
+CI only - the key is stored unwrapped and the panel shows a warning; production is always
 Windows.

@@ -146,9 +146,9 @@ export const systemRouter = router({
 
   /**
    * The Node versions this machine has.
-   *
-   * Read-only on purpose: the panel does not install runtimes, so this is a
-   * list of what the server was given, not a menu of what it could fetch.
+  *
+  * Read-only on purpose: this endpoint serves website-level selectors. The
+  * admin install and removal controls live under components.nodeVersions.
    */
   nodeVersions: adminProcedure.query(async ({ ctx }) => {
     return await discoverNodeVersions(ctx.app.config.binDir);

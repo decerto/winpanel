@@ -27,6 +27,7 @@ export function useJobLog(options: UseJobLogOptions = {}) {
   const jobId = ref<string | null>(null);
   const lines = ref<JobLogLine[]>([]);
   const status = ref<string | null>(null);
+  const progress = ref(0);
 
   let timer: ReturnType<typeof setInterval> | null = null;
   /** A slow tick must not overlap the next one, or lines arrive twice. */
@@ -48,6 +49,7 @@ export function useJobLog(options: UseJobLogOptions = {}) {
     try {
       const job = await api.jobs.get.query({ jobId: jobId.value });
       status.value = job?.status ?? null;
+      progress.value = job?.progress ?? 0;
 
       const lastSeq = lines.value.at(-1)?.seq ?? -1;
       const fresh = await api.jobs.logs.query({ jobId: jobId.value, afterSeq: lastSeq });
@@ -70,6 +72,7 @@ export function useJobLog(options: UseJobLogOptions = {}) {
     jobId.value = id;
     lines.value = [];
     status.value = 'pending';
+    progress.value = 0;
     timer = setInterval(() => void poll(), options.pollMs ?? 1000);
     void poll();
   }
@@ -79,11 +82,12 @@ export function useJobLog(options: UseJobLogOptions = {}) {
     jobId.value = null;
     lines.value = [];
     status.value = null;
+    progress.value = 0;
   }
 
   onUnmounted(stop);
 
-  return { jobId, lines, status, running, watchJob, stop, reset };
+  return { jobId, lines, status, progress, running, watchJob, stop, reset };
 }
 
 export const LOG_LEVEL_CLASS: Record<string, string> = {

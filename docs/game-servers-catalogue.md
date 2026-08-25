@@ -1,7 +1,7 @@
 ---
 title: Add a game to WinPanel with a config file
 description: >-
-  The game server catalog is data, not code — add Minecraft-style or Steam dedicated
+  The game server catalog is data, not code - add Minecraft-style or Steam dedicated
   servers to WinPanel on Windows by dropping a JSON config file into a folder. The
   fields, the merge order, and the validation rules.
 ---
@@ -16,8 +16,8 @@ data directory at runtime. Adding a game means adding a file, not editing TypeSc
 
 Two folders are merged at startup:
 
-- `game-servers/catalogue/` in the repo — the seed set that ships with the installer.
-- `<data>/game-servers/catalogue/` in the installed panel — where an administrator drops
+- `game-servers/catalogue/` in the repo - the seed set that ships with the installer.
+- `<data>/game-servers/catalogue/` in the installed panel - where an administrator drops
   or overrides configs without a rebuild.
 
 A file in the data folder with a built-in ID replaces the built-in. That is how a local
@@ -27,7 +27,7 @@ loaded.
 
 The built-ins themselves are refreshed on each update, so a correction shipped in a
 release reaches installs that already have the old copy. A shipped config you have edited
-is left exactly as you left it — the panel says so on startup rather than silently keeping
+is left exactly as you left it - the panel says so on startup rather than silently keeping
 you on an old version. To customise a built-in and still receive updates to the rest, add
 your own file with a different name and the same `id`: it overrides by ID, and the shipped
 file stays shipped.
@@ -49,7 +49,7 @@ file stays shipped.
 | `executable` / `launchExecutable` | The file that proves a download completed, and the binary the service actually runs. |
 | `runtime` | `native`, or `java` to run the panel's own Java runtime instead of a binary from the download. |
 | `launchArgs` | The service's arguments, with placeholders expanded at install time. |
-| `workingDirectory` | `install` (default), `data`, or `executable` — the folder the service runs from. |
+| `workingDirectory` | `install` (default), `data`, or `executable` - the folder the service runs from. |
 | `seedFiles` | Config files written before the first start, so the game learns its allocated ports and generated passwords. |
 | `secrets` | Passwords the panel generates, stores in the vault, and expands as `{secret:name}`. |
 | `heap` | `minMb` / `maxMb` / `reserveMb` for JVM games. Enables `{heapMb}`, sized from the memory free at install time. |
@@ -102,7 +102,7 @@ about it:
 - `format` is `properties`, `ini`, `json`, or `text`. `text` writes `content` verbatim.
 - `mode: "create"` writes the file only when it is absent, so a server its owner has
   since configured by hand is not reset by a reinstall. `mode: "merge"` keeps every other
-  line and rewrites only the keys listed — which is what a port allocation needs to do to
+  line and rewrites only the keys listed - which is what a port allocation needs to do to
   a file the game owns.
 - `eol: "crlf"` for games that only parse their own settings file with Windows line
   endings.
@@ -115,7 +115,7 @@ about it:
 
 A `workshop` block is all it takes for a game to get a Workshop tab, where the server's
 owner searches for mods and adds them. The download runs on the machine, under the
-operator's own SteamCMD — a customer never signs in to Steam, and never sees the
+operator's own SteamCMD - a customer never signs in to Steam, and never sees the
 operator's account:
 
 ```json
@@ -146,7 +146,7 @@ operator's account:
   the data folder. Items for games that read mods straight out of the Steam download can
   leave it out.
 - `modManifestFile` / `modManifestKey` name the file inside a mod folder that declares the
-  id the game's config expects — for Project Zomboid, `id=` in `mod.info`. The panel looks
+  id the game's config expects - for Project Zomboid, `id=` in `mod.info`. The panel looks
   a few folders deep, because build-42 items nest theirs.
 - `config` names the settings file and the two keys the mod list is written into after
   every add and remove. Only those keys are touched. Leave `config` out and the download
@@ -162,7 +162,7 @@ is used instead. The actual binding is shown on the server's Connection panel.
 
 Some games let you set player limits in launch arguments; others, like Nomad, keep them
 in the config file. A config can describe either shape, because `launchArgs` and
-`dataDirectory` are separate. The panel does not enforce a universal max-players field —
+`dataDirectory` are separate. The panel does not enforce a universal max-players field -
 that is provider-specific, and pretending otherwise would produce a setting that does
 nothing on half the catalog.
 
@@ -195,9 +195,9 @@ The panel validates the file at startup, and the game appears in the library the
 time it loads. A bad file is skipped with its name in the log, so a typo never takes the
 catalog down.
 
-Everything the built-in games do is expressible this way. Project Zomboid — a Steam
+Everything the built-in games do is expressible this way. Project Zomboid - a Steam
 download, run through its own bundled JVM, with a generated admin password, a sized heap
-and a CRLF settings file in a folder the game insists on — is a catalog file and no
+and a CRLF settings file in a folder the game insists on - is a catalog file and no
 TypeScript at all. If a game needs something the schema cannot describe, that is a gap in
 the schema worth reporting, not a reason to special-case the installer.
 
@@ -233,7 +233,7 @@ every game:
 
 A config that works on your server works on everyone's. If you have written one for a
 game that is not in the library, open a pull request that adds the file to
-`game-servers/catalogue/` — nothing else. No TypeScript, no release notes; the loader
+`game-servers/catalogue/` - nothing else. No TypeScript, no release notes; the loader
 finds it and the next release carries it.
 
 Before opening it, check the file against the list below. These are the things a review
@@ -254,7 +254,7 @@ will ask about, in the order it will ask them:
   declare it in `secrets` and pass it as an argument.
 - **The server is reachable, not just running.** Start it and connect from another
   machine. A game that has to announce itself to a public browser usually needs a flag in
-  its settings file — seed it, or the server will look healthy and be invisible.
+  its settings file - seed it, or the server will look healthy and be invisible.
 - **The config has been run.** Install it through the panel on a real machine, start it,
   and connect to it. A config that has never been run is a guess.
 

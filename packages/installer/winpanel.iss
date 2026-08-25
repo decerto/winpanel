@@ -79,7 +79,7 @@ Name: "{#SitesRoot}"
 [Run]
 ; Creates folders and permissions, the restricted build account, firewall
 ; rules, the service, and the one-time setup code.
-Filename: "{app}\bin\node\node.exe"; \
+Filename: "{app}\bin\node\22.21.1\node.exe"; \
   Parameters: """{app}\agent\dist\bootstrap-cli.js"" install"; \
   WorkingDir: "{app}"; \
   StatusMsg: "Setting up WinPanel..."; \
@@ -91,7 +91,7 @@ Filename: "{code:GetPanelUrl}"; \
 
 [UninstallRun]
 ; Sites are kept by default; the wizard asks before removing them.
-Filename: "{app}\bin\node\node.exe"; \
+Filename: "{app}\bin\node\22.21.1\node.exe"; \
   Parameters: """{app}\agent\dist\bootstrap-cli.js"" uninstall{code:GetRemoveSitesFlag}"; \
   WorkingDir: "{app}"; \
   Flags: runhidden waituntilterminated; \
@@ -132,10 +132,10 @@ begin
   Result := '';
   Bootstrap := ExpandConstant('{app}\agent\dist\bootstrap-cli.js');
 
-  if FileExists(Bootstrap) and FileExists(ExpandConstant('{app}\bin\node\node.exe')) then
+  if FileExists(Bootstrap) and FileExists(ExpandConstant('{app}\bin\node\22.21.1\node.exe')) then
   begin
     Exec(
-      ExpandConstant('{app}\bin\node\node.exe'),
+      ExpandConstant('{app}\bin\node\22.21.1\node.exe'),
       '"' + Bootstrap + '" stop-all',
       ExpandConstant('{app}'),
       SW_HIDE,

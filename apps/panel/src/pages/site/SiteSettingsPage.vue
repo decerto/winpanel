@@ -42,6 +42,15 @@ const pinnedNode = computed(
   () => ((site.value?.manifest as { nodeVersion?: string } | undefined)?.nodeVersion ?? ''),
 );
 
+const pinnedNodeMissing = computed(() => {
+  if (!pinnedNode.value) return false;
+  return !nodeVersions.value.some(
+    (installation) =>
+      installation.version === pinnedNode.value ||
+      installation.version.startsWith(`${pinnedNode.value.replace(/^v/, '')}.`),
+  );
+});
+
 const SOURCE_LABEL: Record<string, string> = {
   panel: 'in the panel folder',
   system: 'installed on the server',
@@ -240,10 +249,14 @@ watch(
         <Cpu :size="15" class="text-ink-faint" aria-hidden="true" /> Node version
       </h3>
       <p class="mt-1 text-sm text-ink-muted">
-        Which Node this website is built and run with. The panel does not install runtimes —
-        these are the versions already on the server, and only your hosting provider can add
-        another.
+        Which Node this website is built and run with. Administrators can install supported
+        versions from Settings, while this website can stay pinned to the version it needs.
       </p>
+
+      <AlertMessage v-if="pinnedNodeMissing" tone="warning" class="mt-4">
+        This website was pinned to Node {{ pinnedNode }}, which is no longer installed. It will
+        use the newest available version until you choose a new pin.
+      </AlertMessage>
 
       <div v-if="nodeVersions.length === 0" class="mt-4">
         <AlertMessage tone="warning">
@@ -257,6 +270,9 @@ watch(
           <label for="node-version" class="label">Version</label>
           <select id="node-version" v-model="chosenNode" class="field">
             <option value="">Whatever the server defaults to</option>
+            <option v-if="pinnedNodeMissing" :value="pinnedNode" disabled>
+              Node {{ pinnedNode }} (no longer installed)
+            </option>
             <option
               v-for="installation in nodeVersions"
               :key="installation.version"

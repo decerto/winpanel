@@ -79,7 +79,7 @@ async function expectedNodeHash(): Promise<string> {
 }
 
 async function stageNode(): Promise<void> {
-  const target = path.join(STAGING, 'bin', 'node');
+  const target = path.join(STAGING, 'bin', 'node', NODE_VERSION);
   const archive = path.join(INSTALLER_DIR, '.cache', `node-${NODE_VERSION}.zip`);
 
   await log(`Downloading Node ${NODE_VERSION}\u2026`);
@@ -276,7 +276,7 @@ async function stageAgent(): Promise<void> {
  * napi binaries are ABI-stable across Node versions by design.
  */
 async function ensureNativeAbi(target: string): Promise<void> {
-  const node = path.join(STAGING, 'bin', 'node', 'node.exe');
+  const node = path.join(STAGING, 'bin', 'node', NODE_VERSION, 'node.exe');
   const { stdout } = await run(node, ['-p', 'process.versions.modules']);
   const abi = stdout.trim();
 
@@ -321,7 +321,7 @@ async function ensureNativeAbi(target: string): Promise<void> {
  */
 async function verifyAgent(): Promise<void> {
   const target = path.join(STAGING, 'agent');
-  const node = path.join(STAGING, 'bin', 'node', 'node.exe');
+  const node = path.join(STAGING, 'bin', 'node', NODE_VERSION, 'node.exe');
   const scratch = path.join(INSTALLER_DIR, '.cache', 'verify');
   const port = 18_443;
 

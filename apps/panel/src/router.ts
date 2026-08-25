@@ -136,6 +136,11 @@ export const router = createRouter({
           component: () => import('./pages/site/SiteTrafficPage.vue'),
         },
         {
+          path: 'backup',
+          name: 'site-backup',
+          component: () => import('./pages/site/SiteBackupPage.vue'),
+        },
+        {
           path: 'dns',
           name: 'site-dns',
           component: () => import('./pages/site/SiteDnsPage.vue'),
@@ -186,6 +191,12 @@ export const router = createRouter({
       name: 'access',
       component: () => import('./pages/AccessPage.vue'),
       meta: { title: 'Sign-in activity', minRole: 'superadmin' },
+    },
+    {
+      path: '/backups',
+      name: 'backup',
+      component: () => import('./pages/BackupPage.vue'),
+      meta: { title: 'Backup', minRole: 'superadmin' },
     },
     {
       path: '/settings',
