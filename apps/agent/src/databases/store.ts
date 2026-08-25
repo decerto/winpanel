@@ -23,6 +23,8 @@ export interface DatabaseRecord {
   username: string;
   siteId: string | null;
   ownerUserId: string | null;
+  /** Storage allocated to this database. Zero means unlimited. */
+  sizeLimitBytes: number;
   /** Who may reach this database from off the machine. */
   network: DatabaseNetworkPolicy;
   createdAt: Date;
@@ -42,6 +44,7 @@ const SELECTION = {
   username: hostedDatabases.username,
   siteId: hostedDatabases.siteId,
   ownerUserId: hostedDatabases.ownerUserId,
+  sizeLimitBytes: hostedDatabases.sizeLimitBytes,
   networkMode: hostedDatabases.networkMode,
   networkCidrs: hostedDatabases.networkCidrs,
   createdAt: hostedDatabases.createdAt,
@@ -124,6 +127,22 @@ export function countDatabasesForOwner(db: DatabaseHandle, ownerUserId: string):
     .all().length;
 }
 
+/** Storage allocated across an account's databases. */
+export function allocatedDatabaseBytesForOwner(
+  db: DatabaseHandle,
+  ownerUserId: string,
+  excludingIds: readonly string[] = [],
+): number {
+  const excluded = new Set(excludingIds);
+  return db.db
+    .select({ id: hostedDatabases.id, sizeLimitBytes: hostedDatabases.sizeLimitBytes })
+    .from(hostedDatabases)
+    .where(eq(hostedDatabases.ownerUserId, ownerUserId))
+    .all()
+    .filter((database) => !excluded.has(database.id))
+    .reduce((total, database) => total + database.sizeLimitBytes, 0);
+}
+
 /** Databases nobody owns — made by an administrator for the server itself. */
 export function countUnownedDatabases(db: DatabaseHandle): number {
   return db.db
@@ -141,6 +160,7 @@ export function recordDatabase(
     username: string;
     siteId: string | null;
     ownerUserId: string | null;
+    sizeLimitBytes?: number;
   },
 ): string {
   const id = crypto.randomUUID();
@@ -154,6 +174,7 @@ export function recordDatabase(
       username: entry.username,
       siteId: entry.siteId,
       ownerUserId: entry.ownerUserId,
+      sizeLimitBytes: entry.sizeLimitBytes ?? 0,
     })
     .run();
 
@@ -162,6 +183,14 @@ export function recordDatabase(
 
 export function forgetDatabase(db: DatabaseHandle, id: string): void {
   db.db.delete(hostedDatabases).where(eq(hostedDatabases.id, id)).run();
+}
+
+export function setDatabaseSizeLimit(db: DatabaseHandle, id: string, sizeLimitBytes: number): void {
+  db.db
+    .update(hostedDatabases)
+    .set({ sizeLimitBytes })
+    .where(eq(hostedDatabases.id, id))
+    .run();
 }
 
 /** Records who may reach one database from off the machine. */

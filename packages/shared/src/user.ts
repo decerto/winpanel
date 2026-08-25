@@ -117,6 +117,8 @@ export const AccountLimits = z.object({
    * feature out of their panel until somebody decides otherwise.
    */
   databaseLimit: z.number().int().min(0).max(1000).nullable().default(null),
+  /** Total storage allocated across this account's databases. Zero means unlimited. */
+  databaseQuotaBytes: z.number().int().min(0).default(0),
   ...GameServerAccountPolicy.shape,
 });
 export type AccountLimits = z.infer<typeof AccountLimits>;

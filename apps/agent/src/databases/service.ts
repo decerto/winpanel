@@ -6,7 +6,7 @@ import {
   type DatabaseEngine,
 } from '@winpanel/shared';
 import { sites, users } from '../db/schema.js';
-import { DatabaseError } from './errors.js';
+import { DatabaseAllocationError, DatabaseError } from './errors.js';
 import {
   assertSafeDbName,
   assertSafeLabel,
@@ -21,6 +21,7 @@ import {
   writeDatabasePassword,
 } from './secrets.js';
 import {
+  allocatedDatabaseBytesForOwner,
   countDatabasesForOwner,
   findDatabaseByName,
   forgetDatabase,
@@ -53,6 +54,8 @@ export interface CreateDatabaseOptions {
   ownerUserId: string | null;
   /** Their own password, or nothing to have one generated. */
   password?: string | undefined;
+  /** Storage allocated to this database. Zero means unlimited. */
+  sizeLimitBytes: number;
 }
 
 export interface CreatedDatabase {
@@ -105,6 +108,7 @@ export async function createDatabase(options: CreateDatabaseOptions): Promise<Cr
     siteId: options.site?.id ?? null,
     ownerUserId: options.ownerUserId,
     password: options.password,
+    sizeLimitBytes: options.sizeLimitBytes,
     label: options.label,
   });
 }
@@ -124,10 +128,20 @@ export async function provisionNamed(options: {
   siteId: string | null;
   ownerUserId: string | null;
   password?: string | undefined;
+  sizeLimitBytes?: number;
   /** What to call it in an error, if it is not the name itself. */
   label?: string;
 }): Promise<CreatedDatabase> {
   const { ctx, engine } = options;
+  const sizeLimitBytes = options.sizeLimitBytes ?? 0;
+  const countAllowance = accountAllowance(ctx, options.ownerUserId);
+
+  if (countAllowance.problem) {
+    throw new DatabaseAllocationError(countAllowance.problem);
+  }
+
+  assertDatabaseStorageAllocation(ctx, options.ownerUserId, [sizeLimitBytes]);
+
   const adapter = adapterFor(engine);
 
   if (!(await adapter.installed(ctx.binDir))) {
@@ -162,6 +176,7 @@ export async function provisionNamed(options: {
     username: name,
     siteId: options.siteId,
     ownerUserId: options.ownerUserId,
+    sizeLimitBytes,
   });
 
   return { id, engine, name, username: name, password, generated: chosen === null };
@@ -314,6 +329,67 @@ export interface Allowance {
   used: number;
   /** Set when something is in the way, phrased for the person reading it. */
   problem: string | null;
+}
+
+export interface StorageAllowance {
+  /** Zero means unlimited. */
+  quotaBytes: number;
+  allocatedBytes: number;
+}
+
+export function accountStorageAllowance(
+  ctx: EngineContext,
+  ownerUserId: string | null,
+  excludingIds: readonly string[] = [],
+): StorageAllowance {
+  if (!ownerUserId) return { quotaBytes: 0, allocatedBytes: 0 };
+
+  const owner = ctx.db.db
+    .select({ quotaBytes: users.databaseQuotaBytes })
+    .from(users)
+    .where(eq(users.id, ownerUserId))
+    .get();
+
+  return {
+    quotaBytes: owner?.quotaBytes ?? 0,
+    allocatedBytes: allocatedDatabaseBytesForOwner(ctx.db, ownerUserId, excludingIds),
+  };
+}
+
+/**
+ * Refuses database allocations that do not fit their owner's account quota.
+ * A zero database limit is unlimited and therefore cannot fit inside a finite
+ * account quota.
+ */
+export function assertDatabaseStorageAllocation(
+  ctx: EngineContext,
+  ownerUserId: string | null,
+  sizeLimits: readonly number[],
+  excludingIds: readonly string[] = [],
+): void {
+  const allowance = accountStorageAllowance(ctx, ownerUserId, excludingIds);
+  if (allowance.quotaBytes === 0) return;
+
+  if (sizeLimits.some((limit) => limit === 0)) {
+    throw new DatabaseAllocationError(
+      `This account has a ${formatGigabytes(allowance.quotaBytes)} database storage quota. ` +
+        'Choose a size for every database; unlimited would exceed that quota.',
+    );
+  }
+
+  const requestedBytes = sizeLimits.reduce((total, limit) => total + limit, 0);
+  if (allowance.allocatedBytes + requestedBytes > allowance.quotaBytes) {
+    const remainingBytes = Math.max(0, allowance.quotaBytes - allowance.allocatedBytes);
+    throw new DatabaseAllocationError(
+      `That would go over this account's database storage quota. ` +
+        `${formatGigabytes(remainingBytes)} remains of ${formatGigabytes(allowance.quotaBytes)}.`,
+    );
+  }
+}
+
+function formatGigabytes(bytes: number): string {
+  const gigabytes = bytes / 1024 ** 3;
+  return `${gigabytes >= 10 ? Math.round(gigabytes) : Math.round(gigabytes * 10) / 10} GB`;
 }
 
 export function accountAllowance(

@@ -58,6 +58,8 @@ export const users = sqliteTable(
      * limit; zero means databases are not part of what they were sold.
      */
     databaseLimit: integer('database_limit'),
+    /** Total database storage allocated to this account. Zero means unlimited. */
+    databaseQuotaBytes: integer('database_quota_bytes').notNull().default(0),
     gameServerProviders: text('game_server_providers', { mode: 'json' })
       .notNull()
       .default(sql`'[]'`),
@@ -240,6 +242,8 @@ export const hostedDatabases = sqliteTable(
     siteId: text('site_id').references(() => sites.id, { onDelete: 'set null' }),
     /** Whose it is. Null means it belongs to the server rather than a customer. */
     ownerUserId: text('owner_user_id').references(() => users.id, { onDelete: 'set null' }),
+    /** Storage allocated to this database. Zero means unlimited. */
+    sizeLimitBytes: integer('size_limit_bytes').notNull().default(0),
     /**
      * Who may reach this one database from off the machine.
      *

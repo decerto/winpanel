@@ -57,6 +57,7 @@ export class AuthError extends Error {
       | 'already-setup'
       | 'ip-blocked'
       | 'invalid-token'
+      | 'invalid-input'
       | 'username-taken'
       | 'not-found'
       | 'last-owner',
@@ -86,6 +87,7 @@ export interface ManagedUser {
   siteDiskQuotaBytes: number | null;
   gameServerLimit: number | null;
   databaseLimit: number | null;
+  databaseQuotaBytes: number;
   gameServerProviders: string[];
   lastLoginAt: Date | null;
   createdAt: Date;
@@ -95,6 +97,8 @@ export interface ManagedUser {
   gameServerCount: number;
   /** How many databases they currently hold, for the same reason. */
   databaseCount: number;
+  /** How much storage has been allocated across those databases. */
+  databaseAllocatedBytes: number;
 }
 
 /** A live sign-in, as shown to the owner. */
@@ -137,6 +141,7 @@ function toManagedUser(
   siteCount: number,
   gameServerCount: number,
   databaseCount: number,
+  databaseAllocatedBytes: number,
 ): ManagedUser {
   return {
     id: row.id,
@@ -149,12 +154,14 @@ function toManagedUser(
     siteDiskQuotaBytes: row.siteDiskQuotaBytes,
     gameServerLimit: row.gameServerLimit,
     databaseLimit: row.databaseLimit,
+    databaseQuotaBytes: row.databaseQuotaBytes,
     gameServerProviders: (row.gameServerProviders as string[]) ?? [],
     lastLoginAt: row.lastLoginAt,
     createdAt: row.createdAt,
     siteCount,
     gameServerCount,
     databaseCount,
+    databaseAllocatedBytes,
   };
 }
 
@@ -273,6 +280,7 @@ export class AuthService {
         row.siteCount,
         this.gameServerCountFor(row.user.id),
         this.databaseCountFor(row.user.id),
+        this.databaseAllocatedBytesFor(row.user.id),
       ),
     );
   }
@@ -285,6 +293,7 @@ export class AuthService {
       this.siteCountFor(userId),
       this.gameServerCountFor(userId),
       this.databaseCountFor(userId),
+      this.databaseAllocatedBytesFor(userId),
     );
   }
 
@@ -295,6 +304,20 @@ export class AuthService {
       .where(eq(hostedDatabases.ownerUserId, userId))
       .get();
     return row?.total ?? 0;
+  }
+
+  databaseAllocatedBytesFor(userId: string): number {
+    return this.databaseSizeLimitsFor(userId)
+      .reduce((total, sizeLimitBytes) => total + sizeLimitBytes, 0);
+  }
+
+  databaseSizeLimitsFor(userId: string): number[] {
+    return this.handle.db
+      .select({ sizeLimitBytes: hostedDatabases.sizeLimitBytes })
+      .from(hostedDatabases)
+      .where(eq(hostedDatabases.ownerUserId, userId))
+      .all()
+      .map((database) => database.sizeLimitBytes);
   }
 
   siteCountFor(userId: string): number {
@@ -330,6 +353,7 @@ export class AuthService {
     siteDiskQuotaBytes?: number | null;
     gameServerLimit?: number | null;
     databaseLimit?: number | null;
+    databaseQuotaBytes?: number;
     gameServerProviders?: string[];
     createdBy?: string | null;
   }): Promise<ManagedUser> {
@@ -355,6 +379,7 @@ export class AuthService {
         siteDiskQuotaBytes: input.role === 'user' ? (input.siteDiskQuotaBytes ?? null) : null,
         gameServerLimit: input.role === 'user' ? (input.gameServerLimit ?? null) : null,
         databaseLimit: input.role === 'user' ? (input.databaseLimit ?? null) : null,
+        databaseQuotaBytes: input.role === 'user' ? (input.databaseQuotaBytes ?? 0) : 0,
         gameServerProviders:
           input.role === 'user' ? (input.gameServerProviders ?? []) : [],
         createdBy: input.createdBy ?? null,
@@ -384,6 +409,7 @@ export class AuthService {
       siteDiskQuotaBytes?: number | null;
       gameServerLimit?: number | null;
       databaseLimit?: number | null;
+      databaseQuotaBytes?: number;
       gameServerProviders?: string[];
     },
   ): ManagedUser {
@@ -391,6 +417,40 @@ export class AuthService {
     if (!existing) throw new AuthError('No such account.', 'not-found');
 
     const role = changes.role ?? existing.role;
+
+    const databaseQuotaBytes =
+      role === 'user'
+        ? (changes.databaseQuotaBytes ?? existing.databaseQuotaBytes)
+        : 0;
+    const databaseSizeLimits = this.databaseSizeLimitsFor(userId);
+    const databaseAllocatedBytes = databaseSizeLimits.reduce(
+      (total, sizeLimitBytes) => total + sizeLimitBytes,
+      0,
+    );
+    const databaseLimit =
+      role === 'user'
+        ? (changes.databaseLimit === undefined ? existing.databaseLimit : changes.databaseLimit)
+        : null;
+    if (databaseLimit !== null && databaseSizeLimits.length > databaseLimit) {
+      throw new AuthError(
+        `This account already owns ${databaseSizeLimits.length} databases. ` +
+          'Raise the database limit or remove databases first.',
+        'invalid-input',
+      );
+    }
+    if (databaseQuotaBytes > 0 && databaseSizeLimits.some((limit) => limit === 0)) {
+      throw new AuthError(
+        'This account owns an unlimited database. Set an allowance on every database first.',
+        'invalid-input',
+      );
+    }
+    if (databaseQuotaBytes > 0 && databaseAllocatedBytes > databaseQuotaBytes) {
+      throw new AuthError(
+        `This account already has ${databaseAllocatedBytes} bytes allocated to databases. ` +
+          'Raise the storage quota or reduce those database allowances first.',
+        'invalid-input',
+      );
+    }
 
     if (existing.role === 'superadmin' && (role !== 'superadmin' || changes.disabled === true)) {
       this.assertNotLastOwner(userId);
@@ -412,10 +472,8 @@ export class AuthService {
               changes.gameServerLimit === undefined
                 ? existing.gameServerLimit
                 : changes.gameServerLimit,
-            databaseLimit:
-              changes.databaseLimit === undefined
-                ? existing.databaseLimit
-                : changes.databaseLimit,
+            databaseLimit,
+            databaseQuotaBytes,
             gameServerProviders:
               changes.gameServerProviders === undefined
                 ? (existing.gameServerProviders as string[])
@@ -427,6 +485,7 @@ export class AuthService {
             siteDiskQuotaBytes: null,
             gameServerLimit: null,
             databaseLimit: null,
+            databaseQuotaBytes: 0,
             gameServerProviders: [],
           };
 

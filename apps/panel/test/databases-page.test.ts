@@ -42,8 +42,9 @@ const state = vi.hoisted(() => ({
   },
   databases: [] as any[],
   created: [] as any[],
-  attachable: [] as Array<{ slug: string; name: string }>,
+  attachable: [] as any[],
   attached: [] as any[],
+  resized: [] as any[],
   revealPassword: 'revealed-secret',
 }));
 
@@ -63,6 +64,8 @@ vi.mock('../src/lib/api', () => ({
           databases: state.databases,
           limit: null,
           used: state.databases.length,
+          storageQuotaBytes: 0,
+          storageAllocatedBytes: 0,
           problem: null,
         })),
       },
@@ -109,6 +112,12 @@ vi.mock('../src/lib/api', () => ({
       },
       revealPassword: { query: vi.fn(async () => ({ password: state.revealPassword })) },
       setPassword: { mutate: vi.fn(async () => ({ name: 'x', password: 'p', generated: true })) },
+      setSizeLimit: {
+        mutate: vi.fn(async (input: any) => {
+          state.resized.push(input);
+          return { ok: true, sizeLimitBytes: input.sizeLimitBytes };
+        }),
+      },
       drop: { mutate: vi.fn(async () => ({ ok: true })) },
     },
   },
@@ -128,6 +137,8 @@ function database(over: Record<string, unknown> = {}) {
     siteSlug: null,
     siteName: null,
     ownerUsername: 'owner',
+    sizeBytes: 512 * 1024 ** 2,
+    sizeLimitBytes: 2 * 1024 ** 3,
     network: { mode: 'loopback', remoteCidrs: [] },
     createdAt: new Date(0),
     connection: {
@@ -175,6 +186,7 @@ beforeEach(() => {
   state.created = [];
   state.attachable = [];
   state.attached = [];
+  state.resized = [];
   state.engines.unfinished = [];
 });
 
@@ -206,6 +218,17 @@ describe('after making a database', () => {
     await flushPromises();
 
     expect(wrapper.text()).toContain('DATABASE_URL');
+  });
+
+  it('sends the chosen storage allowance in bytes', async () => {
+    const wrapper = await render();
+    await button(wrapper, 'Add a database')!.trigger('click');
+    await wrapper.find('#db-name').setValue('shop');
+    await wrapper.find('#db-size').setValue('2.5');
+    await button(wrapper, 'Create database')!.trigger('click');
+    await flushPromises();
+
+    expect(state.created[0].sizeLimitBytes).toBe(2.5 * 1024 ** 3);
   });
 });
 
@@ -284,6 +307,19 @@ describe('an existing database', () => {
     expect(wrapper.text()).toContain('Auth source');
     expect(wrapper.text()).toContain('authSource=u_me_shop');
     expect(wrapper.text()).toContain('MONGODB_URI');
+  });
+
+  it('shows usage and changes the storage allowance', async () => {
+    state.databases = [database()];
+    const wrapper = await render();
+
+    expect(wrapper.text()).toContain('512.0 MB used of 2.0 GB');
+    await button(wrapper, 'Storage')!.trigger('click');
+    await wrapper.find('#db-size-db-1').setValue('3');
+    await button(wrapper, 'Save allowance')!.trigger('click');
+    await flushPromises();
+
+    expect(state.resized).toEqual([{ id: 'db-1', sizeLimitBytes: 3 * 1024 ** 3 }]);
   });
 });
 

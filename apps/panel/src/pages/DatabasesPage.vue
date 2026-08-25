@@ -5,6 +5,7 @@ import {
   Database,
   ExternalLink,
   Eye,
+  HardDrive,
   KeyRound,
   Plug,
   Plus,
@@ -14,6 +15,7 @@ import {
 } from 'lucide-vue-next';
 import { roleAtLeast, type DatabaseConnection, type UserRole } from '@winpanel/shared';
 import { api, describeError } from '../lib/api';
+import { formatBytes } from '../lib/format';
 import AlertMessage from '../components/AlertMessage.vue';
 import DatabaseAccessCard from '../components/DatabaseAccessCard.vue';
 import DatabaseConnectionCard from '../components/DatabaseConnectionCard.vue';
@@ -40,12 +42,14 @@ import SearchableSelect from '../components/SearchableSelect.vue';
 type Overview = Awaited<ReturnType<typeof api.databases.listAll.query>>;
 type Engines = Awaited<ReturnType<typeof api.databases.engines.query>>;
 type Row = Overview['databases'][number];
+type AttachableSite = Awaited<ReturnType<typeof api.databases.attachableSites.query>>[number];
 
 const PAGE_SIZE = 12;
+const GB = 1024 ** 3;
 
 const overview = ref<Overview | null>(null);
 const engines = ref<Engines | null>(null);
-const attachable = ref<Array<{ slug: string; name: string }>>([]);
+const attachable = ref<AttachableSite[]>([]);
 const role = ref<UserRole | null>(null);
 const isAdmin = computed(() => role.value !== null && roleAtLeast(role.value, 'admin'));
 
@@ -62,6 +66,7 @@ const newName = ref('');
 const newSite = ref('');
 const ownPassword = ref(false);
 const newPassword = ref('');
+const newSizeGb = ref('0');
 
 // Shown once, the moment it is made, and then gone.
 const revealed = ref<{
@@ -84,6 +89,8 @@ const expanded = ref<string | null>(null);
 const expandedPassword = ref<string | null>(null);
 /** The row whose remote-access panel is open. */
 const accessOpen = ref<string | null>(null);
+const sizeOpen = ref<string | null>(null);
+const sizeLimitGb = ref('0');
 
 function toggleConnection(row: Row): void {
   if (expanded.value === row.id) {
@@ -99,6 +106,15 @@ function toggleAccess(row: Row): void {
   accessOpen.value = accessOpen.value === row.id ? null : row.id;
 }
 
+function openSize(row: Row): void {
+  if (sizeOpen.value === row.id) {
+    sizeOpen.value = null;
+    return;
+  }
+  sizeOpen.value = row.id;
+  sizeLimitGb.value = String((row.sizeLimitBytes ?? 0) / GB);
+}
+
 /**
  * The websites this database could be tied to.
  *
@@ -106,7 +122,7 @@ function toggleAccess(row: Row): void {
  * dropdown always shows where the database actually is.
  */
 function siteOptions(row: Row): Array<{ slug: string; name: string }> {
-  const options = [...attachable.value];
+  const options = attachable.value.map((site) => ({ slug: site.slug, name: site.name }));
   if (row.siteSlug && !options.some((option) => option.slug === row.siteSlug)) {
     options.unshift({ slug: row.siteSlug, name: row.siteName ?? row.siteSlug });
   }
@@ -134,6 +150,50 @@ const rows = computed(() => overview.value?.databases ?? []);
 const paged = computed(() => rows.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE));
 
 const atLimit = computed(() => overview.value !== null && overview.value.problem !== null);
+
+function storageBytes(value: string): number | null {
+  const parsed = Number(value.trim());
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  const bytes = Math.round(parsed * GB);
+  return Number.isSafeInteger(bytes) ? bytes : null;
+}
+
+const creationStorage = computed(() => {
+  if (newSite.value) {
+    const site = attachable.value.find((entry) => entry.slug === newSite.value);
+    if (site) {
+      return {
+        quotaBytes: site.storageQuotaBytes,
+        allocatedBytes: site.storageAllocatedBytes,
+      };
+    }
+  }
+  return {
+    quotaBytes: overview.value?.storageQuotaBytes ?? 0,
+    allocatedBytes: overview.value?.storageAllocatedBytes ?? 0,
+  };
+});
+
+const sizeProblem = computed(() => {
+  const bytes = storageBytes(newSizeGb.value);
+  if (bytes === null) return 'Enter zero or a positive number.';
+
+  const storage = creationStorage.value;
+  if (storage.quotaBytes === 0) return null;
+  if (bytes === 0) return 'This owner has a finite storage quota, so this database needs a size.';
+
+  const remaining = Math.max(0, storage.quotaBytes - storage.allocatedBytes);
+  return bytes > remaining
+    ? `Only ${formatBytes(remaining)} remains of this owner's database storage quota.`
+    : null;
+});
+
+function describeStorage(row: Row): string {
+  const used = row.sizeBytes == null ? 'Usage unavailable' : `${formatBytes(row.sizeBytes)} used`;
+  return !row.sizeLimitBytes
+    ? `${used}, no limit`
+    : `${used} of ${formatBytes(row.sizeLimitBytes)}`;
+}
 
 /** The same password rules as everywhere else, checked here as well as on the server. */
 function passwordProblemFor(value: string): string | null {
@@ -184,8 +244,10 @@ async function load(): Promise<void> {
 }
 
 async function create(): Promise<void> {
-  if (!newName.value.trim() || nameProblem.value || passwordProblem.value) return;
+  if (!newName.value.trim() || nameProblem.value || passwordProblem.value || sizeProblem.value) return;
   if (newEngine.value === '') return;
+  const sizeLimitBytes = storageBytes(newSizeGb.value);
+  if (sizeLimitBytes === null) return;
 
   busy.value = 'create';
   error.value = null;
@@ -197,6 +259,7 @@ async function create(): Promise<void> {
       name: newName.value.trim(),
       ...(newSite.value ? { slug: newSite.value } : {}),
       ...(ownPassword.value && newPassword.value ? { password: newPassword.value } : {}),
+      sizeLimitBytes,
     });
 
     revealed.value = {
@@ -210,7 +273,28 @@ async function create(): Promise<void> {
     adding.value = false;
     newName.value = '';
     newPassword.value = '';
+    newSizeGb.value = '0';
     ownPassword.value = false;
+    await load();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    busy.value = null;
+  }
+}
+
+async function saveSize(row: Row): Promise<void> {
+  const sizeLimitBytes = storageBytes(sizeLimitGb.value);
+  if (sizeLimitBytes === null) return;
+
+  busy.value = `size:${row.id}`;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    await api.databases.setSizeLimit.mutate({ id: row.id, sizeLimitBytes });
+    notice.value = `${row.name} now has ${sizeLimitBytes === 0 ? 'unlimited storage' : `${formatBytes(sizeLimitBytes)} of storage`}.`;
+    sizeOpen.value = null;
     await load();
   } catch (err) {
     error.value = describeError(err);
@@ -398,6 +482,19 @@ onMounted(load);
             </p>
           </div>
 
+          <div class="space-y-1">
+            <label class="label" for="db-size">Storage allowance (GB)</label>
+            <input
+              id="db-size"
+              v-model="newSizeGb"
+              class="field"
+              inputmode="decimal"
+              placeholder="0"
+            />
+            <p v-if="sizeProblem" class="mt-1 text-xs text-danger">{{ sizeProblem }}</p>
+            <p v-else class="hint">0 allows unlimited storage.</p>
+          </div>
+
           <div v-if="isAdmin && attachable.length > 0" class="space-y-1">
             <label class="label" for="db-site">For a website</label>
             <SearchableSelect
@@ -439,6 +536,7 @@ onMounted(load);
               newEngine === '' ||
               nameProblem !== null ||
               passwordProblem !== null ||
+              sizeProblem !== null ||
               busy === 'create'
             "
             @click="create"
@@ -485,8 +583,8 @@ onMounted(load);
             class="grid gap-4 p-4 sm:grid-cols-2 lg:items-center"
             :class="
               isAdmin
-                ? 'lg:grid-cols-[minmax(0,1.5fr)_minmax(8rem,0.7fr)_minmax(12rem,1.1fr)_minmax(8rem,0.8fr)]'
-                : 'lg:grid-cols-[minmax(0,1.7fr)_minmax(8rem,0.8fr)]'
+                ? 'lg:grid-cols-3 xl:grid-cols-[minmax(0,1.4fr)_minmax(7rem,0.6fr)_minmax(10rem,0.9fr)_minmax(11rem,1fr)_minmax(8rem,0.7fr)]'
+                : 'lg:grid-cols-[minmax(0,1.5fr)_minmax(7rem,0.6fr)_minmax(10rem,0.9fr)]'
             "
           >
             <div class="min-w-0">
@@ -499,6 +597,11 @@ onMounted(load);
             <div>
               <span class="label mb-1 block">Kind</span>
               <span class="text-sm text-ink-muted">{{ row.engineLabel }}</span>
+            </div>
+
+            <div>
+              <span class="label mb-1 block">Storage</span>
+              <span class="text-sm text-ink-muted">{{ describeStorage(row) }}</span>
             </div>
 
             <div v-if="isAdmin" class="min-w-0">
@@ -569,6 +672,15 @@ onMounted(load);
             <button
               type="button"
               class="btn btn-ghost btn-sm"
+              :aria-expanded="sizeOpen === row.id"
+              @click="openSize(row)"
+            >
+              <HardDrive :size="13" aria-hidden="true" /> Storage
+            </button>
+
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm"
               :disabled="busy !== null"
               @click="showPassword(row)"
             >
@@ -597,6 +709,37 @@ onMounted(load);
             </button>
           </div>
 
+          <div v-if="sizeOpen === row.id" class="border-t border-line px-4 pb-4 pt-3">
+            <div class="max-w-md space-y-3">
+              <div>
+                <label class="label" :for="`db-size-${row.id}`">Storage allowance (GB)</label>
+                <input
+                  :id="`db-size-${row.id}`"
+                  v-model="sizeLimitGb"
+                  class="field mt-1"
+                  inputmode="decimal"
+                />
+                <p class="hint">
+                  {{ row.sizeBytes == null ? 'Current usage is unavailable.' : `${formatBytes(row.sizeBytes)} currently used.` }}
+                  0 allows unlimited storage.
+                </p>
+              </div>
+              <div class="flex gap-2">
+                <button type="button" class="btn btn-ghost btn-sm" @click="sizeOpen = null">
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-primary btn-sm"
+                  :disabled="storageBytes(sizeLimitGb) === null || busy !== null"
+                  @click="saveSize(row)"
+                >
+                  {{ busy === `size:${row.id}` ? 'Saving\u2026' : 'Save allowance' }}
+                </button>
+              </div>
+            </div>
+          </div>
+
           <div v-if="expanded === row.id" class="border-t border-line px-4 pb-4 pt-3">
             <DatabaseConnectionCard
               :connection="row.connection"
@@ -621,6 +764,13 @@ onMounted(load);
 
       <p v-if="overview && overview.limit !== null" class="mt-4 text-xs text-ink-faint">
         {{ overview.used }} of {{ overview.limit }} databases used on this account.
+      </p>
+      <p
+        v-if="overview && overview.storageQuotaBytes > 0"
+        class="mt-1 text-xs text-ink-faint"
+      >
+        {{ formatBytes(overview.storageAllocatedBytes) }} of
+        {{ formatBytes(overview.storageQuotaBytes) }} database storage allocated.
       </p>
     </template>
   </div>

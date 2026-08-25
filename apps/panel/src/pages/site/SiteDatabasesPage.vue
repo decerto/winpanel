@@ -14,6 +14,7 @@ import {
 } from 'lucide-vue-next';
 import { roleAtLeast, type DatabaseConnection, type UserRole } from '@winpanel/shared';
 import { api, describeError } from '../../lib/api';
+import { formatBytes } from '../../lib/format';
 import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
 import DatabaseAccessCard from '../../components/DatabaseAccessCard.vue';
@@ -39,6 +40,8 @@ const slug = computed(() => route.params['slug'] as string);
 type Overview = Awaited<ReturnType<typeof api.databases.overview.query>>;
 type Row = Overview['databases'][number];
 
+const GB = 1024 ** 3;
+
 const overview = ref<Overview | null>(null);
 const role = ref<UserRole | null>(null);
 const isAdmin = computed(() => role.value !== null && roleAtLeast(role.value, 'admin'));
@@ -54,6 +57,7 @@ const newEngine = ref<Row['engine'] | ''>('');
 const newName = ref('');
 const ownPassword = ref(false);
 const newPassword = ref('');
+const newSizeGb = ref('0');
 
 // Shown once, then gone — the same reveal pattern as mailbox passwords.
 const revealed = ref<{
@@ -122,6 +126,30 @@ const nameProblem = computed(() => {
   return null;
 });
 
+function storageBytes(value: string): number | null {
+  const parsed = Number(value.trim());
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  const bytes = Math.round(parsed * GB);
+  return Number.isSafeInteger(bytes) ? bytes : null;
+}
+
+const sizeProblem = computed(() => {
+  const bytes = storageBytes(newSizeGb.value);
+  if (bytes === null) return 'Enter zero or a positive number.';
+
+  const quotaBytes = overview.value?.accountStorageQuotaBytes ?? 0;
+  if (quotaBytes === 0) return null;
+  if (bytes === 0) return 'This account has a finite storage quota, so this database needs a size.';
+
+  const remaining = Math.max(
+    0,
+    quotaBytes - (overview.value?.accountStorageAllocatedBytes ?? 0),
+  );
+  return bytes > remaining
+    ? `Only ${formatBytes(remaining)} remains of this account's database storage quota.`
+    : null;
+});
+
 async function load(): Promise<void> {
   error.value = null;
 
@@ -161,8 +189,10 @@ async function attachExistingDatabase(id: string): Promise<void> {
 }
 
 async function create(): Promise<void> {
-  if (!newName.value.trim() || nameProblem.value || passwordProblem.value) return;
+  if (!newName.value.trim() || nameProblem.value || passwordProblem.value || sizeProblem.value) return;
   if (newEngine.value === '') return;
+  const sizeLimitBytes = storageBytes(newSizeGb.value);
+  if (sizeLimitBytes === null) return;
 
   busy.value = 'create';
   error.value = null;
@@ -174,6 +204,7 @@ async function create(): Promise<void> {
       slug: slug.value,
       name: newName.value.trim(),
       ...(ownPassword.value && newPassword.value ? { password: newPassword.value } : {}),
+      sizeLimitBytes,
     });
 
     revealed.value = {
@@ -187,6 +218,7 @@ async function create(): Promise<void> {
     adding.value = false;
     newName.value = '';
     newPassword.value = '';
+    newSizeGb.value = '0';
     ownPassword.value = false;
     await load();
   } catch (err) {
@@ -354,6 +386,10 @@ onMounted(load);
             <template v-else>
               {{ overview.used }} {{ overview.used === 1 ? 'database' : 'databases' }}
             </template>
+            <template v-if="overview.accountStorageQuotaBytes > 0">
+              &middot; {{ formatBytes(overview.accountStorageAllocatedBytes) }} of
+              {{ formatBytes(overview.accountStorageQuotaBytes) }} storage allocated
+            </template>
           </p>
 
           <button
@@ -390,6 +426,19 @@ onMounted(load);
             <p v-else class="hint">Lowercase letters, numbers and underscores.</p>
           </div>
 
+          <div>
+            <label for="site-db-size" class="label">Storage allowance (GB)</label>
+            <input
+              id="site-db-size"
+              v-model="newSizeGb"
+              class="field"
+              inputmode="decimal"
+              placeholder="0"
+            />
+            <p v-if="sizeProblem" class="mt-1 text-xs text-danger">{{ sizeProblem }}</p>
+            <p v-else class="hint">0 allows unlimited storage.</p>
+          </div>
+
           <label class="flex items-center gap-2 text-sm text-ink-muted">
             <input v-model="ownPassword" type="checkbox" class="h-4 w-4" />
             Choose my own password
@@ -419,6 +468,7 @@ onMounted(load);
                 newEngine === '' ||
                 nameProblem !== null ||
                 passwordProblem !== null ||
+                sizeProblem !== null ||
                 busy === 'create'
               "
               @click="create"
@@ -469,6 +519,11 @@ onMounted(load);
                 <span class="block truncate font-mono text-sm text-ink">{{ row.name }}</span>
                 <span class="block text-xs text-ink-faint">
                   {{ row.engineLabel }} on {{ row.connection.host }}:{{ row.connection.port }}
+                </span>
+                <span class="mt-0.5 block text-xs text-ink-faint">
+                  {{ row.sizeBytes == null ? 'Usage unavailable' : `${formatBytes(row.sizeBytes)} used` }}
+                  &middot;
+                  {{ !row.sizeLimitBytes ? 'No storage limit' : `${formatBytes(row.sizeLimitBytes)} allowance` }}
                 </span>
               </span>
 

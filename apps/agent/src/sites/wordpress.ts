@@ -12,7 +12,7 @@ import { sites } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import { DatabaseError } from '../databases/errors.js';
 import { sitePrefix } from '../databases/names.js';
-import { provisionNamed } from '../databases/service.js';
+import { accountStorageAllowance, provisionNamed } from '../databases/service.js';
 
 /**
  * Setting up a WordPress site, start to finish.
@@ -244,6 +244,10 @@ export function createWordPressHandler(deps: WordPressDependencies) {
     // 3. Give it a database.
     ctx.log('Creating a database for WordPress…');
     ctx.progress(55);
+    const storage = accountStorageAllowance(
+      { db: deps.db, vault: deps.vault, binDir: deps.binDir },
+      site.ownerUserId,
+    );
     const database = await provisionNamed({
       ctx: { db: deps.db, vault: deps.vault, binDir: deps.binDir },
       // WordPress wants MySQL, and MariaDB is what the panel runs for it.
@@ -251,6 +255,10 @@ export function createWordPressHandler(deps: WordPressDependencies) {
       name: wordpressDatabaseName(siteId),
       siteId,
       ownerUserId: site.ownerUserId,
+      sizeLimitBytes:
+        storage.quotaBytes === 0
+          ? 0
+          : Math.max(0, storage.quotaBytes - storage.allocatedBytes),
       label: 'WordPress',
     });
 

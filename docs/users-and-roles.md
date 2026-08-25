@@ -62,9 +62,13 @@ stop being there.
 | `siteLimit` | How many websites the account may own |
 | `mailQuotaBytes` | Total mailbox storage across all of their domains |
 | `siteDiskQuotaBytes` | Disk given to each website they create |
+| `gameServerLimit` | How many game servers the account may own |
+| `databaseLimit` | How many databases the account may own |
+| `databaseQuotaBytes` | Storage that may be allocated across the account's databases; `0` is unlimited |
 
 `null` means no limit, which is what an `admin` and the owner always get. `0` is a real
-answer too — an account that may hold no websites yet.
+answer too — an account that may hold no websites yet. Database storage is the exception:
+its non-nullable `0` means unlimited.
 
 ## Passwords and second factors
 

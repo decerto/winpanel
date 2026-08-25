@@ -46,11 +46,12 @@ is. Reinstalling picks the same data back up.
 Once at least one server is installed, **Databases** appears in the sidebar, and a
 **Databases** tab appears on every website.
 
-Creating one asks for three things: which engine, a name, and — optionally — a website to
-attach it to. A database does not have to belong to a website: plenty of what people
+Creating one asks for an engine, a name, a storage allowance, and — optionally — a website
+to attach it to. A database does not have to belong to a website: plenty of what people
 self-host is an application, a bot or a mobile backend rather than a site on this server,
 and all of it still needs somewhere to keep its data. A database made for a website shows
-up on that website's tab as well as on the main page.
+up on that website's tab as well as on the main page. A storage allowance of **0** means
+unlimited.
 
 You are shown the name, username and password once, when the database is made. The
 password is then only in WinPanel's encrypted vault; you can reveal it again, or set a new
@@ -182,15 +183,28 @@ Databases are something you sell, so they are something you can limit.
   their panel until you decide otherwise.
 - **Per website** — a website can additionally be capped, so a customer with an allowance
   of ten cannot spend all ten on one site.
+- **Storage per account** — *Database storage* on the **People** page is the total that may
+  be allocated across the customer's databases. **0** means unlimited.
+- **Storage per database** — each database receives part of that account total when it is
+  created, and its allowance can be changed later from the main **Databases** page. The
+  panel refuses an unlimited database inside a finite account quota, or any allocation
+  that would take the account total over its quota. Current engine-reported usage appears
+  beside the allowance.
 
 Leave either blank for no limit. Administrators and the owner are never limited.
+
+The storage figure is an allocation enforced by the panel when databases are created,
+resized or transferred. MariaDB, PostgreSQL and MongoDB do not share a native hard-quota
+mechanism, so it is not a write-time disk boundary; usage above an allocation is reported
+and the allowance cannot be reduced below current usage.
 
 ## WordPress
 
 Nothing changes. A WordPress site still creates its own MariaDB database during setup and
-writes `wp-config.php` for it. That database now appears alongside every other one, and
-changing its password from the panel rewrites `wp-config.php` in the same breath — so the
-site does not go offline waiting for somebody to edit a file.
+writes `wp-config.php` for it. Under a finite account storage quota, that database receives
+the unallocated remainder. It appears alongside every other one, and changing its password
+from the panel rewrites `wp-config.php` in the same breath — so the site does not go offline
+waiting for somebody to edit a file.
 
 ## If something goes wrong
 

@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
   people: [] as any[],
   created: [] as any[],
   updated: [] as any[],
+  games: [] as any[],
 }));
 
 vi.mock('../src/lib/api', () => ({
@@ -39,6 +40,8 @@ vi.mock('../src/lib/api', () => ({
       remove: { mutate: vi.fn(async () => ({ ok: true })) },
     },
     auth: { me: { query: vi.fn(async () => state.me) } },
+    databases: { engines: { query: vi.fn(async () => ({ engines: [{ id: 'mariadb' }] })) } },
+    gameServers: { catalogue: { query: vi.fn(async () => state.games) } },
   },
   describeError: (error: unknown) => String(error),
 }));
@@ -54,9 +57,16 @@ const person = (over: Record<string, unknown>) => ({
   siteLimit: null,
   mailQuotaBytes: null,
   siteDiskQuotaBytes: null,
+  gameServerLimit: null,
+  databaseLimit: null,
+  databaseQuotaBytes: 0,
+  gameServerProviders: [],
   lastLoginAt: null,
   createdAt: new Date(0),
   siteCount: 0,
+  gameServerCount: 0,
+  databaseCount: 0,
+  databaseAllocatedBytes: 0,
   ...over,
 });
 
@@ -68,7 +78,7 @@ async function render() {
 
 /** The four per-row buttons, in the order they appear. */
 function rowButtons(wrapper: any, index: number) {
-  return wrapper.findAll('tbody tr')[index]!.findAll('button');
+  return wrapper.findAll('[data-person-row]')[index]!.findAll('button');
 }
 
 beforeEach(() => {
@@ -80,6 +90,7 @@ beforeEach(() => {
   ];
   state.created = [];
   state.updated = [];
+  state.games = [];
 });
 
 describe('who the People page lets you manage', () => {
@@ -202,5 +213,37 @@ describe('the limits on the People page', () => {
       siteLimit: null,
       mailQuotaBytes: 5 * 1024 ** 3,
     });
+  });
+
+  it('shows and saves the account database storage quota', async () => {
+    state.people[2] = person({
+      id: 'f',
+      username: 'freya',
+      databaseQuotaBytes: 10 * 1024 ** 3,
+      databaseAllocatedBytes: 4 * 1024 ** 3,
+    });
+    const wrapper = await render();
+    expect(wrapper.text()).toContain('4.0 GB of 10.0 GB');
+
+    await wrapper.findAll('button').find((node: any) => node.text().includes('Add someone'))!.trigger('click');
+    await wrapper.find('#person-username').setValue('storage-user');
+    await wrapper.find('#person-password').setValue('a-password-long-enough');
+    await wrapper.find('#person-database-storage').setValue('12.5');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(state.created[0].databaseQuotaBytes).toBe(12.5 * 1024 ** 3);
+  });
+
+  it('gives the selected-game picker the full dialog width', async () => {
+    state.games = [
+      { id: 'minecraft', name: 'Minecraft Java', genre: 'Sandbox', status: 'ready' },
+    ];
+    const wrapper = await render();
+    await wrapper.findAll('button').find((node: any) => node.text().includes('Add someone'))!.trigger('click');
+
+    expect(wrapper.find('[data-person-dialog]').classes()).toContain('max-w-3xl');
+    await wrapper.findAll('input[type="radio"]')[1]!.trigger('change');
+    expect(wrapper.find('[data-game-picker]').classes()).toContain('sm:col-span-2');
   });
 });

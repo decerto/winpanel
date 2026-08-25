@@ -12,12 +12,14 @@ import {
 import { adminProcedure, protectedProcedure, router, type RequestContext } from '../trpc.js';
 import { SiteService } from '../../sites/site-service.js';
 import { sites, users } from '../../db/schema.js';
-import { DatabaseError } from '../../databases/errors.js';
+import { DatabaseAllocationError, DatabaseError } from '../../databases/errors.js';
 import { sitePrefix } from '../../databases/names.js';
-import { engineAvailability } from '../../databases/registry.js';
+import { adapterFor, engineAvailability } from '../../databases/registry.js';
 import {
   accountAllowance,
+  accountStorageAllowance,
   adoptLegacyDatabases,
+  assertDatabaseStorageAllocation,
   connectionFor,
   createDatabase,
   reconcile,
@@ -31,6 +33,7 @@ import {
   listAllDatabases,
   listDatabasesForOwner,
   listDatabasesForSite,
+  setDatabaseSizeLimit,
   setDatabaseSite,
   type DatabaseSummary,
 } from '../../databases/store.js';
@@ -105,7 +108,12 @@ function mustGetDatabase(ctx: RequestContext, id: string): DatabaseSummary {
 /** Turns an engine failure into something worth reading. */
 function asTrpcError(error: unknown, fallback: string): TRPCError {
   return new TRPCError({
-    code: error instanceof DatabaseError ? 'BAD_REQUEST' : 'INTERNAL_SERVER_ERROR',
+    code:
+      error instanceof DatabaseAllocationError
+        ? 'PRECONDITION_FAILED'
+        : error instanceof DatabaseError
+          ? 'BAD_REQUEST'
+          : 'INTERNAL_SERVER_ERROR',
     message: error instanceof DatabaseError ? error.message : fallback,
     cause: error,
   });
@@ -125,6 +133,7 @@ function present(record: DatabaseSummary) {
     siteSlug: record.siteSlug,
     siteName: record.siteName,
     ownerUsername: record.ownerUsername,
+    sizeLimitBytes: record.sizeLimitBytes,
     network: record.network,
     createdAt: record.createdAt,
     connection: connectionFor(record),
@@ -154,6 +163,11 @@ function presentForConnection(record: DatabaseSummary) {
     ...result,
     connection: connectionFor(record, connectionHost(record)),
   };
+}
+
+async function presentWithSize(ctx: EngineContext, record: DatabaseSummary) {
+  const sizeBytes = await adapterFor(record.engine).sizeOf(ctx, record.name).catch(() => null);
+  return { ...presentForConnection(record), sizeBytes };
 }
 
 export const databasesRouter = router({
@@ -286,6 +300,27 @@ export const databasesRouter = router({
       }
 
       const site = mustGetSite(ctx, input.slug);
+      if (site.ownerUserId !== record.ownerUserId) {
+        const account = accountAllowance(engineContext(ctx), site.ownerUserId);
+        if (account.limit !== null && account.used + 1 > account.limit) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: account.limit === 0
+              ? 'Databases are not included on the new owner\'s account.'
+              : `The new owner can have up to ${account.limit} ${account.limit === 1 ? 'database' : 'databases'}.`,
+          });
+        }
+      }
+      try {
+        assertDatabaseStorageAllocation(
+          engineContext(ctx),
+          site.ownerUserId,
+          [record.sizeLimitBytes],
+          [record.id],
+        );
+      } catch (error) {
+        throw asTrpcError(error, 'The database ownership could not be changed.');
+      }
       setDatabaseSite(ctx.app.db, record.id, site.id, site.ownerUserId);
       return { ok: true, siteSlug: site.slug };
     }),
@@ -322,13 +357,18 @@ export const databasesRouter = router({
 
     const live = await reconcile(context, records);
     const allowance = isCustomer ? accountAllowance(context, user.id) : null;
+    const storage = isCustomer ? accountStorageAllowance(context, user.id) : null;
 
     return {
-      databases: [...live]
-        .sort((first, second) => second.createdAt.getTime() - first.createdAt.getTime())
-        .map((record) => presentForConnection(record)),
+      databases: await Promise.all(
+        [...live]
+          .sort((first, second) => second.createdAt.getTime() - first.createdAt.getTime())
+          .map((record) => presentWithSize(context, record)),
+      ),
       limit: allowance?.limit ?? null,
       used: allowance?.used ?? live.length,
+      storageQuotaBytes: storage?.quotaBytes ?? 0,
+      storageAllocatedBytes: storage?.allocatedBytes ?? 0,
       problem: allowance?.problem ?? null,
     };
   }),
@@ -340,11 +380,24 @@ export const databasesRouter = router({
   * for any site without going to that site first.
    */
   attachableSites: adminProcedure.query(({ ctx }) => {
+    const context = engineContext(ctx);
     return ctx.app.db.db
-      .select({ slug: sites.slug, displayName: sites.displayName })
+      .select({
+        slug: sites.slug,
+        displayName: sites.displayName,
+        ownerUserId: sites.ownerUserId,
+      })
       .from(sites)
       .all()
-      .map((row) => ({ slug: row.slug, name: row.displayName }));
+      .map((row) => {
+        const storage = accountStorageAllowance(context, row.ownerUserId);
+        return {
+          slug: row.slug,
+          name: row.displayName,
+          storageQuotaBytes: storage.quotaBytes,
+          storageAllocatedBytes: storage.allocatedBytes,
+        };
+      });
   }),
 
   /**
@@ -364,6 +417,7 @@ export const databasesRouter = router({
       const availability = await engineAvailability(context);
       const live = await reconcile(context, listDatabasesForSite(ctx.app.db, site.id));
       const account = accountAllowance(context, site.ownerUserId);
+      const storage = accountStorageAllowance(context, site.ownerUserId);
       const perSite = siteAllowance(context, site.id);
       const availableDatabases =
         ctx.user!.role === 'user'
@@ -380,7 +434,7 @@ export const databasesRouter = router({
           })),
         /** True when a database could be created here right now. */
         installed: availability.some((entry) => entry.ready),
-        databases: live.map((record) => presentForConnection(record)),
+        databases: await Promise.all(live.map((record) => presentWithSize(context, record))),
         /** Existing databases an administrator may move to this website. */
         availableDatabases,
         limit: perSite.limit,
@@ -388,6 +442,8 @@ export const databasesRouter = router({
         problem: perSite.problem ?? account.problem,
         accountLimit: account.limit,
         accountUsed: account.used,
+        accountStorageQuotaBytes: storage.quotaBytes,
+        accountStorageAllocatedBytes: storage.allocatedBytes,
       };
     }),
 
@@ -406,6 +462,8 @@ export const databasesRouter = router({
         /** The website this is for. Omitted for a standalone database. */
         slug: Slug.optional(),
         password: z.string().max(1024).optional(),
+        /** Storage allocated to this database. Zero means unlimited. */
+        sizeLimitBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -441,6 +499,7 @@ export const databasesRouter = router({
           site: site ? { id: site.id, ownerUserId: site.ownerUserId } : null,
           ownerUserId,
           password: input.password,
+          sizeLimitBytes: input.sizeLimitBytes,
         });
 
         return {
@@ -459,6 +518,7 @@ export const databasesRouter = router({
             username: created.username,
             siteId: site?.id ?? null,
             ownerUserId,
+            sizeLimitBytes: input.sizeLimitBytes,
             // A new database is only reachable on this machine until its
             // owner says otherwise.
             network: { ...DEFAULT_DATABASE_NETWORK_POLICY },
@@ -483,6 +543,41 @@ export const databasesRouter = router({
       }
 
       return { ok: true };
+    }),
+
+  /** Changes one database's storage allocation without changing its data. */
+  setSizeLimit: protectedProcedure
+    .input(
+      z.object({
+        id: z.string().uuid(),
+        sizeLimitBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const record = mustGetDatabase(ctx, input.id);
+      const context = engineContext(ctx);
+      const sizeBytes = await adapterFor(record.engine).sizeOf(context, record.name).catch(() => null);
+
+      if (input.sizeLimitBytes > 0 && sizeBytes !== null && sizeBytes > input.sizeLimitBytes) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'The database already uses more storage than that allowance.',
+        });
+      }
+
+      try {
+        assertDatabaseStorageAllocation(
+          context,
+          record.ownerUserId,
+          [input.sizeLimitBytes],
+          [record.id],
+        );
+      } catch (error) {
+        throw asTrpcError(error, 'The database storage allowance could not be changed.');
+      }
+
+      setDatabaseSizeLimit(ctx.app.db, record.id, input.sizeLimitBytes);
+      return { ok: true, sizeLimitBytes: input.sizeLimitBytes };
     }),
 
   /**

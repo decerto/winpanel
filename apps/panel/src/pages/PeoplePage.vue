@@ -111,6 +111,7 @@ interface FormState {
   siteDiskQuotaGb: string;
   gameServerLimit: string;
   databaseLimit: string;
+  databaseQuotaGb: string;
   gameServerProviders: string[];
 }
 
@@ -131,6 +132,7 @@ function blankForm(): FormState {
      * an administrator decides they were.
      */
     databaseLimit: '0',
+    databaseQuotaGb: '0',
     gameServerProviders: [],
   };
 }
@@ -163,6 +165,7 @@ function openEdit(person: Person): void {
       person.databaseLimit === null || person.databaseLimit === undefined
         ? ''
         : String(person.databaseLimit),
+    databaseQuotaGb: String((person.databaseQuotaBytes ?? 0) / GB),
     gameServerProviders: [...(person.gameServerProviders ?? [])],
   };
 }
@@ -188,6 +191,11 @@ function toLimit(value: string, multiplier = 1): number | null {
   return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * multiplier) : null;
 }
 
+/** Database storage uses zero, rather than null, to mean unlimited. */
+function toStorageQuota(value: string): number {
+  return toLimit(value, GB) ?? 0;
+}
+
 const canSubmit = computed(() => {
   if (form.value.editing) return true;
   return form.value.username.trim().length >= 3 && form.value.password.length >= PASSWORD_MIN_LENGTH;
@@ -204,9 +212,15 @@ async function submitForm(): Promise<void> {
           siteDiskQuotaBytes: toLimit(state.siteDiskQuotaGb, GB),
           gameServerLimit: toLimit(state.gameServerLimit),
           databaseLimit: toLimit(state.databaseLimit),
+          databaseQuotaBytes: toStorageQuota(state.databaseQuotaGb),
           gameServerProviders: state.gameServerProviders,
         }
-      : { siteLimit: null, mailQuotaBytes: null, siteDiskQuotaBytes: null };
+      : {
+          siteLimit: null,
+          mailQuotaBytes: null,
+          siteDiskQuotaBytes: null,
+          databaseQuotaBytes: 0,
+        };
 
   await run('form', async () => {
     if (state.editing) {
@@ -301,6 +315,11 @@ function describeDatabases(person: Person): string {
   return `${person.databaseCount ?? 0} of ${person.databaseLimit}`;
 }
 
+function describeDatabaseStorage(person: Person): string {
+  if (person.role !== 'user' || !person.databaseQuotaBytes) return 'No limit';
+  return `${formatBytes(person.databaseAllocatedBytes ?? 0)} of ${formatBytes(person.databaseQuotaBytes)}`;
+}
+
 function toggleGameProvider(catalogId: string): void {
   const providers = form.value.gameServerProviders;
   form.value.gameServerProviders = providers.includes(catalogId)
@@ -360,7 +379,7 @@ function selectAllGames(): void {
     <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
     <AlertMessage v-if="notice" tone="success" class="mb-4">{{ notice }}</AlertMessage>
 
-    <div class="card overflow-hidden">
+    <section class="card overflow-hidden">
       <p v-if="loading" class="px-5 py-10 text-center text-sm text-ink-muted">Loading&hellip;</p>
 
       <EmptyState
@@ -370,80 +389,39 @@ function selectAllGames(): void {
         description="Add an account for anyone who needs their own websites on this server."
       />
 
-      <table v-else class="w-full text-sm">
-        <thead>
-          <tr class="border-b border-line text-left text-xs uppercase tracking-wide text-ink-faint">
-            <th scope="col" class="px-5 py-3 font-medium">Account</th>
-            <th scope="col" class="px-5 py-3 font-medium">Role</th>
-            <th scope="col" class="hidden px-5 py-3 font-medium sm:table-cell">Websites</th>
-            <th scope="col" class="hidden px-5 py-3 font-medium lg:table-cell">Game servers</th>
-            <th
-              v-if="databasesAvailable"
-              scope="col"
-              class="hidden px-5 py-3 font-medium lg:table-cell"
-            >
-              Databases
-            </th>
-            <th scope="col" class="hidden px-5 py-3 font-medium lg:table-cell">Email</th>
-            <th scope="col" class="hidden px-5 py-3 font-medium md:table-cell">Last signed in</th>
-            <th scope="col" class="px-5 py-3 text-right font-medium">Manage</th>
-          </tr>
-        </thead>
+      <div v-else class="divide-y divide-line">
+        <article
+          v-for="person in people"
+          :key="person.id"
+          data-person-row
+          class="p-5 transition-colors hover:bg-white/[0.03]"
+        >
+          <div class="flex flex-wrap items-start justify-between gap-4">
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="font-medium text-ink">{{ person.username }}</span>
+                <span
+                  v-if="person.id === me?.id"
+                  class="rounded-full bg-brand-soft/70 px-2 py-0.5 text-[0.7rem]
+                         font-medium text-brand-bright"
+                >
+                  You
+                </span>
+                <span
+                  v-if="person.disabled"
+                  class="rounded-full bg-danger/15 px-2 py-0.5 text-[0.7rem] font-medium
+                         text-danger"
+                >
+                  Switched off
+                </span>
+                <span class="text-sm text-ink-muted">{{ ROLE_LABELS[person.role].label }}</span>
+              </div>
+              <p class="mt-1 max-w-2xl text-sm leading-5 text-ink-faint">
+                {{ ROLE_LABELS[person.role].description }}
+              </p>
+            </div>
 
-        <tbody class="divide-y divide-line">
-          <tr
-            v-for="person in people"
-            :key="person.id"
-            class="transition-colors hover:bg-white/[0.03]"
-          >
-            <td class="whitespace-nowrap px-5 py-3">
-              <span class="text-ink">{{ person.username }}</span>
-              <span
-                v-if="person.id === me?.id"
-                class="ml-2 rounded-full bg-brand-soft/70 px-2 py-0.5 text-[0.7rem]
-                       font-medium text-brand-bright"
-              >
-                You
-              </span>
-              <span
-                v-if="person.disabled"
-                class="ml-2 rounded-full bg-danger/15 px-2 py-0.5 text-[0.7rem] font-medium
-                       text-danger"
-              >
-                Switched off
-              </span>
-            </td>
-
-            <td class="px-5 py-3">
-              <span class="text-ink">{{ ROLE_LABELS[person.role].label }}</span>
-              <p class="text-xs text-ink-faint">{{ ROLE_LABELS[person.role].description }}</p>
-            </td>
-
-            <td class="hidden whitespace-nowrap px-5 py-3 text-ink-muted sm:table-cell">
-              {{ describeSites(person) }}
-            </td>
-
-            <td class="hidden whitespace-nowrap px-5 py-3 text-ink-muted lg:table-cell">
-              {{ describeGameServers(person) }}
-            </td>
-
-            <td
-              v-if="databasesAvailable"
-              class="hidden whitespace-nowrap px-5 py-3 text-ink-muted lg:table-cell"
-            >
-              {{ describeDatabases(person) }}
-            </td>
-
-            <td class="hidden whitespace-nowrap px-5 py-3 text-ink-muted lg:table-cell">
-              {{ describeMail(person) }}
-            </td>
-
-            <td class="hidden whitespace-nowrap px-5 py-3 text-ink-muted md:table-cell">
-              {{ person.lastLoginAt ? timeAgo(person.lastLoginAt) : 'Never' }}
-            </td>
-
-            <td class="whitespace-nowrap px-5 py-3 text-right">
-              <div class="flex justify-end gap-1">
+            <div class="flex flex-wrap justify-end gap-1">
                 <button
                   type="button"
                   class="btn btn-ghost btn-sm"
@@ -483,21 +461,50 @@ function selectAllGames(): void {
                 >
                   <Trash2 :size="14" aria-hidden="true" />
                 </button>
-              </div>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
+            </div>
+          </div>
+
+          <dl class="mt-4 grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3 lg:grid-cols-6">
+            <div>
+              <dt class="text-xs text-ink-faint">Websites</dt>
+              <dd class="mt-0.5 text-sm text-ink-muted">{{ describeSites(person) }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-ink-faint">Game servers</dt>
+              <dd class="mt-0.5 text-sm text-ink-muted">{{ describeGameServers(person) }}</dd>
+            </div>
+            <div v-if="databasesAvailable">
+              <dt class="text-xs text-ink-faint">Databases</dt>
+              <dd class="mt-0.5 text-sm text-ink-muted">{{ describeDatabases(person) }}</dd>
+            </div>
+            <div v-if="databasesAvailable">
+              <dt class="text-xs text-ink-faint">Database storage</dt>
+              <dd class="mt-0.5 text-sm text-ink-muted">{{ describeDatabaseStorage(person) }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-ink-faint">Email</dt>
+              <dd class="mt-0.5 text-sm text-ink-muted">{{ describeMail(person) }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-ink-faint">Last signed in</dt>
+              <dd class="mt-0.5 text-sm text-ink-muted">
+                {{ person.lastLoginAt ? timeAgo(person.lastLoginAt) : 'Never' }}
+              </dd>
+            </div>
+          </dl>
+        </article>
+      </div>
+    </section>
 
     <!-- Add or edit -->
     <div
       v-if="form.open"
-      class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+      class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/60 p-4 backdrop-blur-sm"
       @click.self="form.open = false"
     >
       <form
-        class="card w-full max-w-lg space-y-4 p-5"
+        data-person-dialog
+        class="card my-auto w-full max-w-3xl space-y-4 p-5"
         role="dialog"
         aria-modal="true"
         @submit.prevent="submitForm"
@@ -536,7 +543,7 @@ function selectAllGames(): void {
           <p class="text-xs text-ink-faint">{{ ROLE_LABELS[form.role].description }}</p>
         </div>
 
-        <div v-if="showLimits" class="grid gap-3 sm:grid-cols-4">
+        <div v-if="showLimits" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <div class="space-y-1">
             <label class="label" for="person-sites">Websites</label>
             <input
@@ -597,11 +604,26 @@ function selectAllGames(): void {
             <p class="hint">0 keeps databases out of their panel entirely.</p>
           </div>
 
-          <p class="text-xs text-ink-faint sm:col-span-3">
+          <div v-if="databasesAvailable" class="space-y-1">
+            <label class="label" for="person-database-storage">Database storage (GB)</label>
+            <input
+              id="person-database-storage"
+              v-model="form.databaseQuotaGb"
+              class="field"
+              inputmode="decimal"
+              placeholder="0"
+            />
+            <p class="hint">0 allows unlimited storage.</p>
+          </div>
+
+          <p class="text-xs text-ink-faint sm:col-span-2 lg:col-span-3">
             Leave a field empty for no limit. These limits can be changed later.
           </p>
 
-          <fieldset v-if="gameCatalogue.length > 0" class="space-y-3 sm:col-span-3">
+          <fieldset
+            v-if="gameCatalogue.length > 0"
+            class="space-y-3 sm:col-span-2 lg:col-span-3"
+          >
             <legend class="label">Game access</legend>
             <div class="grid gap-3 sm:grid-cols-2">
               <label class="game-access-card" :class="allowsAnyGame ? 'game-access-card-on' : ''">
@@ -637,7 +659,11 @@ function selectAllGames(): void {
                 </span>
               </label>
 
-              <div v-if="!allowsAnyGame" class="rounded-lg border border-line bg-black/15 p-3">
+              <div
+                v-if="!allowsAnyGame"
+                data-game-picker
+                class="rounded-lg border border-line bg-black/15 p-3 sm:col-span-2"
+              >
                 <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
                   <span class="text-xs text-ink-faint">{{ form.gameServerProviders.length }} selected</span>
                   <button type="button" class="text-xs text-brand-bright hover:underline" @click="selectAllGames">
@@ -651,7 +677,7 @@ function selectAllGames(): void {
                     placeholder="Search games"
                     aria-label="Search supported games"
                   />
-                  <div class="max-h-40 overflow-y-auto rounded-lg border border-line bg-black/10 p-2">
+                  <div class="max-h-64 overflow-y-auto rounded-lg border border-line bg-black/10 p-2">
                     <label
                       v-for="entry in filteredGameCatalogue"
                       :key="entry.id"
@@ -662,8 +688,8 @@ function selectAllGames(): void {
                         :checked="form.gameServerProviders.includes(entry.id)"
                         @change="toggleGameProvider(entry.id)"
                       />
-                      <span class="truncate">{{ entry.name }}</span>
-                      <span class="ml-auto text-xs text-ink-faint">{{ entry.genre }}</span>
+                      <span class="min-w-0 flex-1">{{ entry.name }}</span>
+                      <span class="shrink-0 text-xs text-ink-faint">{{ entry.genre }}</span>
                     </label>
                   </div>
                 </div>

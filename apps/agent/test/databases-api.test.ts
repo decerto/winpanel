@@ -26,6 +26,7 @@ import { hostedDatabases, sites, users } from '../src/db/schema.js';
 
 const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
 const PASSWORD = 'a-password-long-enough';
+const GB = 1024 ** 3;
 
 let tmpDir: string;
 let app: AppContext;
@@ -70,12 +71,20 @@ async function call(
   return { status: response.statusCode, body: unwrapped };
 }
 
-function giveDatabase(ownerUserId: string | null, name: string): string {
+function giveDatabase(ownerUserId: string | null, name: string, sizeLimitBytes = 0): string {
   const id = crypto.randomUUID();
 
   app.db.db
     .insert(hostedDatabases)
-    .values({ id, engine: 'mariadb', name, username: name, siteId: null, ownerUserId })
+    .values({
+      id,
+      engine: 'mariadb',
+      name,
+      username: name,
+      siteId: null,
+      ownerUserId,
+      sizeLimitBytes,
+    })
     .run();
 
   return id;
@@ -258,6 +267,101 @@ describe('the allowance', () => {
   });
 });
 
+describe('the storage allowance', () => {
+  it('reports what the account has allocated', async () => {
+    app.db.db
+      .update(users)
+      .set({ databaseQuotaBytes: 10 * GB })
+      .where(eq(users.id, freyaId))
+      .run();
+    app.db.db
+      .update(hostedDatabases)
+      .set({ sizeLimitBytes: 4 * GB })
+      .where(eq(hostedDatabases.id, freyaDatabaseId))
+      .run();
+
+    const theirs = await call('GET', 'databases.listAll', freyaCookie);
+    expect(theirs.body.result.data.storageQuotaBytes).toBe(10 * GB);
+    expect(theirs.body.result.data.storageAllocatedBytes).toBe(4 * GB);
+    expect(theirs.body.result.data.databases[0].sizeLimitBytes).toBe(4 * GB);
+  });
+
+  it('requires a finite database size inside a finite account quota', async () => {
+    app.db.db
+      .update(users)
+      .set({ databaseQuotaBytes: 10 * GB })
+      .where(eq(users.id, freyaId))
+      .run();
+
+    const refused = await call('POST', 'databases.create', freyaCookie, {
+      engine: 'mariadb',
+      name: 'unlimited',
+      sizeLimitBytes: 0,
+    });
+
+    expect(refused.body.error.data.code).toBe('PRECONDITION_FAILED');
+    expect(refused.body.error.message).toContain('Choose a size');
+  });
+
+  it('refuses an allocation larger than the account has left', async () => {
+    app.db.db
+      .update(users)
+      .set({ databaseQuotaBytes: 5 * GB })
+      .where(eq(users.id, freyaId))
+      .run();
+    app.db.db
+      .update(hostedDatabases)
+      .set({ sizeLimitBytes: 4 * GB })
+      .where(eq(hostedDatabases.id, freyaDatabaseId))
+      .run();
+
+    const refused = await call('POST', 'databases.create', freyaCookie, {
+      engine: 'mariadb',
+      name: 'too_large',
+      sizeLimitBytes: 2 * GB,
+    });
+
+    expect(refused.body.error.data.code).toBe('PRECONDITION_FAILED');
+    expect(refused.body.error.message).toContain('1 GB remains');
+  });
+
+  it('validates the aggregate before resizing a database', async () => {
+    app.db.db
+      .update(users)
+      .set({ databaseQuotaBytes: 10 * GB })
+      .where(eq(users.id, freyaId))
+      .run();
+    app.db.db
+      .update(hostedDatabases)
+      .set({ sizeLimitBytes: 4 * GB })
+      .where(eq(hostedDatabases.id, freyaDatabaseId))
+      .run();
+    giveDatabase(freyaId, 'u_freya_logs', 5 * GB);
+
+    const refused = await call('POST', 'databases.setSizeLimit', freyaCookie, {
+      id: freyaDatabaseId,
+      sizeLimitBytes: 6 * GB,
+    });
+    expect(refused.body.error.data.code).toBe('PRECONDITION_FAILED');
+
+    const accepted = await call('POST', 'databases.setSizeLimit', freyaCookie, {
+      id: freyaDatabaseId,
+      sizeLimitBytes: 5 * GB,
+    });
+    expect(accepted.body.result.data.sizeLimitBytes).toBe(5 * GB);
+  });
+
+  it('will not make an account quota finite while it owns an unlimited database', async () => {
+    const refused = await call('POST', 'users.update', ownerCookie, {
+      userId: freyaId,
+      databaseQuotaBytes: 10 * GB,
+    });
+
+    expect(refused.body.error.data.code).toBe('BAD_REQUEST');
+    expect(refused.body.error.message).toContain('unlimited database');
+  });
+});
+
 describe('what is offered', () => {
   it('offers nothing at all when no database server is installed', async () => {
     // Nothing is installed on a test machine, which is exactly the state a
@@ -322,6 +426,7 @@ describe('what is offered', () => {
 
   it('lets an administrator move a database and transfers its ownership', async () => {
     const siteId = giveSite(samId, 'kitora-io');
+    app.db.db.update(users).set({ databaseLimit: 1 }).where(eq(users.id, samId)).run();
 
     const moved = await call('POST', 'databases.attachSite', ownerCookie, {
       id: freyaDatabaseId,

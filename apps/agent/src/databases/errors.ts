@@ -10,3 +10,11 @@ export class DatabaseError extends Error {
     this.name = 'DatabaseError';
   }
 }
+
+/** A requested allocation would exceed the owning account's storage quota. */
+export class DatabaseAllocationError extends DatabaseError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DatabaseAllocationError';
+  }
+}

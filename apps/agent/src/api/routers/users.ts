@@ -10,7 +10,9 @@ import {
 } from '@winpanel/shared';
 import { AuthError } from '../../services/auth-service.js';
 import { isSshUrl } from '../../sites/ssh-keys.js';
-import { reassignSiteDatabases } from '../../databases/store.js';
+import { DatabaseAllocationError } from '../../databases/errors.js';
+import { assertDatabaseStorageAllocation } from '../../databases/service.js';
+import { listDatabasesForSite, reassignSiteDatabases } from '../../databases/store.js';
 import { adminProcedure, router } from '../trpc.js';
 import type { RequestContext } from '../trpc.js';
 
@@ -91,6 +93,7 @@ export const usersRouter = router({
         siteDiskQuotaBytes: input.siteDiskQuotaBytes,
         gameServerLimit: input.gameServerLimit,
         databaseLimit: input.databaseLimit,
+        databaseQuotaBytes: input.databaseQuotaBytes,
         gameServerProviders: input.gameServerProviders,
         createdBy: ctx.user?.id ?? null,
       });
@@ -191,6 +194,40 @@ export const usersRouter = router({
               `${target.username} is already at their limit of ${target.siteLimit} ` +
               `${target.siteLimit === 1 ? 'website' : 'websites'}. Raise it first.`,
           });
+        }
+
+        const siteDatabases = listDatabasesForSite(ctx.app.db, site.id);
+        const databasesToTransfer = siteDatabases.filter(
+          (database) => database.ownerUserId !== input.userId,
+        ).length;
+        if (
+          target.databaseLimit !== null &&
+          target.databaseCount + databasesToTransfer > target.databaseLimit
+        ) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message:
+              `${target.username} cannot take this website because its databases would exceed ` +
+              `their limit of ${target.databaseLimit}. Raise it first.`,
+          });
+        }
+
+        try {
+          assertDatabaseStorageAllocation(
+            { db: ctx.app.db, vault: ctx.app.vault, binDir: ctx.app.config.binDir },
+            input.userId,
+            siteDatabases.map((database) => database.sizeLimitBytes),
+            siteDatabases.map((database) => database.id),
+          );
+        } catch (error) {
+          if (error instanceof DatabaseAllocationError) {
+            throw new TRPCError({
+              code: 'PRECONDITION_FAILED',
+              message: `${target.username} cannot take this website. ${error.message}`,
+              cause: error,
+            });
+          }
+          throw error;
         }
       }
 
