@@ -100,6 +100,13 @@ It is free and self-hosted, and it runs real commercial sites. Full detail, scre
 installation instructions are in the
 [README](https://github.com/decerto/winpanel#readme).
 
+## Official partner: OnyShare
+
+We are proud to host [OnyShare](https://onyshare.com), a great, easy-to-use image and
+file-sharing service. OnyShare is an official WinPanel partner, and its
+servers are operated through WinPanel on Windows. It is a real service running on the
+platform described here, not a demo deployment.
+
 ---
 
 ## More, on the wiki

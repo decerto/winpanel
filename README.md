@@ -386,10 +386,17 @@ box, with their certificates, DNS records and deploys driven from the panel.
 | [diminished-studios.com](https://diminished-studios.com) | Node app, deployed from Git | A game studio site with accounts, Steam sign-in and leaderboards. |
 | [taskbarlegends.com](https://taskbarlegends.com) | Node app with Socket.IO | Long-lived WebSocket connections through the reverse proxy, for a game's live player counts and match traffic. |
 | [jean-kseafishing.com](https://www.jean-kseafishing.com) | Static site | The other end of the scale: plain HTML and images, uploaded through the file manager, no build step at all. |
+| [onyshare.com](https://onyshare.com) | Image and file-sharing service | Official WinPanel partner; its servers are operated through WinPanel on Windows. |
 
 Between them they cover every kind of site the panel supports, which is why the awkward
 parts - WebSockets, `www` redirects, certificate renewal, a deploy that fails to start -
 are handled rather than assumed.
+
+### Official partner: OnyShare
+
+[OnyShare](https://onyshare.com) is a great, easy-to-use image and file-sharing service.
+We host its servers through WinPanel on Windows, making it a real service running on the
+platform rather than a demo deployment.
 
 ---
 
