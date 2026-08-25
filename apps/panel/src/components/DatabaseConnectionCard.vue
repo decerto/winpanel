@@ -85,8 +85,8 @@ async function copy(what: string, value: string): Promise<void> {
 
       <p class="hint">
         <template v-if="!password">
-          Replace <span class="font-mono">PASSWORD</span> with the database's password, or press
-          Show to have it filled in.
+          <strong>Password hidden.</strong> Replace <span class="font-mono">PASSWORD</span> in the
+          string, or use <strong>Show password</strong> on the database row to reveal it here.
         </template>
         Most frameworks read this from
         <span class="font-mono">{{ ENV_NAME[connection.engine] }}</span
@@ -133,6 +133,10 @@ async function copy(what: string, value: string): Promise<void> {
           <component :is="copied === 'password' ? Check : Copy" :size="13" aria-hidden="true" />
           {{ copied === 'password' ? 'Copied' : 'Copy' }}
         </button>
+      </div>
+      <div v-else class="flex items-center gap-2 sm:col-span-2">
+        <dt class="w-20 shrink-0 text-ink-muted">Password</dt>
+        <dd class="font-semibold text-ok">Visible above</dd>
       </div>
     </dl>
 

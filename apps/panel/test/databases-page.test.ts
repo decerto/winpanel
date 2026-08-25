@@ -207,6 +207,22 @@ describe('after making a database', () => {
     expect(text).toContain('5432');
     expect(text).toContain('u_me_shop');
     expect(text).toContain('brand-new-secret');
+    expect(text).toContain('you can reveal the password again later');
+  });
+
+  it('lets the ready message be dismissed without hiding the database', async () => {
+    const wrapper = await render();
+
+    await button(wrapper, 'Add a database')!.trigger('click');
+    await wrapper.find('#db-name').setValue('shop');
+    await button(wrapper, 'Create database')!.trigger('click');
+    await flushPromises();
+
+    await wrapper.find('button[aria-label="Dismiss message"]').trigger('click');
+
+    expect(wrapper.text()).not.toContain('Database ready');
+    expect(state.created).toHaveLength(1);
+    expect(button(wrapper, 'Add a database')).toBeDefined();
   });
 
   it('says where the connection string normally goes', async () => {
@@ -242,6 +258,7 @@ describe('an existing database', () => {
 
     const text = wrapper.text();
     expect(text).toContain('postgresql://u_me_shop:PASSWORD@127.0.0.1:5432/u_me_shop');
+    expect(text).toContain('Password hidden');
     // Nothing live on screen for somebody walking past.
     expect(text).not.toContain('revealed-secret');
   });

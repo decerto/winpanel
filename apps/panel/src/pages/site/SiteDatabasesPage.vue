@@ -341,8 +341,14 @@ onMounted(load);
       <AlertMessage v-if="error" tone="danger" class="mt-4">{{ error }}</AlertMessage>
       <AlertMessage v-if="notice" tone="success" class="mt-4">{{ notice }}</AlertMessage>
 
-      <!-- A password is shown once, the moment it is made, and then gone. -->
-      <AlertMessage v-if="revealed" tone="success" class="mt-4">
+      <AlertMessage
+        v-if="revealed"
+        tone="success"
+        title="Database ready"
+        class="mt-4"
+        dismissible
+        @dismiss="revealed = null"
+      >
         <div class="space-y-3">
           <p>
             {{ revealed.name }} is ready.
@@ -351,7 +357,8 @@ onMounted(load);
                 ? 'A strong password was generated for it.'
                 : 'It uses the password you chose.'
             }}
-            Keep these somewhere safe — the password is not shown again.
+            The password is visible below now. Save these connection details somewhere secure; you
+            can reveal the password again later with <strong>Show password</strong>.
           </p>
           <DatabaseConnectionCard
             :connection="revealed.connection"

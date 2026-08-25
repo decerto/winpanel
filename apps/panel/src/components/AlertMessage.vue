@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import { CircleAlert, CircleCheck, Info, TriangleAlert } from 'lucide-vue-next';
+import { CircleAlert, CircleCheck, Info, TriangleAlert, X } from 'lucide-vue-next';
 
 /**
  * A message about something that just happened, or about to.
@@ -10,9 +10,15 @@ import { CircleAlert, CircleCheck, Info, TriangleAlert } from 'lucide-vue-next';
  */
 
 const props = withDefaults(
-  defineProps<{ tone?: 'danger' | 'warning' | 'success' | 'info'; title?: string }>(),
+  defineProps<{
+    tone?: 'danger' | 'warning' | 'success' | 'info';
+    title?: string;
+    dismissible?: boolean;
+  }>(),
   { tone: 'danger' },
 );
+
+const emit = defineEmits<{ dismiss: [] }>();
 
 const TONES = {
   danger: { icon: CircleAlert, classes: 'border-danger/35 bg-danger-soft/60 text-danger' },
@@ -28,7 +34,7 @@ const appearance = computed(() => TONES[props.tone]);
 
 <template>
   <div
-    class="flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 text-sm"
+    class="relative flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 pr-12 text-sm"
     :class="appearance.classes"
     role="status"
   >
@@ -39,5 +45,15 @@ const appearance = computed(() => TONES[props.tone]);
         <slot />
       </div>
     </div>
+    <button
+      v-if="dismissible"
+      type="button"
+      class="btn btn-ghost btn-sm absolute right-2 top-2"
+      aria-label="Dismiss message"
+      title="Dismiss"
+      @click="emit('dismiss')"
+    >
+      <X :size="14" aria-hidden="true" />
+    </button>
   </div>
 </template>

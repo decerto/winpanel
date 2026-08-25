@@ -8,6 +8,7 @@ import TotpEnrolment from '../src/components/TotpEnrolment.vue';
 import RecoveryCodes from '../src/components/RecoveryCodes.vue';
 import PaginationBar from '../src/components/PaginationBar.vue';
 import SearchableSelect from '../src/components/SearchableSelect.vue';
+import AlertMessage from '../src/components/AlertMessage.vue';
 import { siteStatus } from '../src/lib/site-status';
 import { describeUserAgent, timeAgo } from '../src/lib/format';
 
@@ -85,6 +86,18 @@ describe('SearchableSelect', () => {
     await wrapper.find('button[aria-expanded="false"]').trigger('click');
     expect(wrapper.findAll('[role="option"]')).toHaveLength(10);
     expect(wrapper.find('[role="option"][aria-selected="true"]').text()).toContain('Website 15');
+  });
+});
+
+describe('AlertMessage', () => {
+  it('can be dismissed with an accessible close button', async () => {
+    const wrapper = mount(AlertMessage, {
+      props: { tone: 'success', dismissible: true },
+      slots: { default: 'Database ready.' },
+    });
+
+    await wrapper.find('button[aria-label="Dismiss message"]').trigger('click');
+    expect(wrapper.emitted('dismiss')).toHaveLength(1);
   });
 });
 
