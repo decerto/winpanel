@@ -20,7 +20,7 @@ Website backup access follows website ownership. A customer can download backups
 
 The owner can open **Backup** in the main navigation and choose **Back up now** or enable daily, weekly and monthly schedules. These are local compressed recovery snapshots stored under the panel's backup directory.
 
-A panel snapshot includes the panel's program and data folders, configuration, hosted websites and game-server files. It is intended to recover this WinPanel installation after a damaging change or machine problem, not to replace a website's portable download.
+A panel snapshot includes every file in the panel installation folder, the complete hosted websites and game-server roots, the local database engine storage, and a consistent copy of the panel's SQLite database. Before it captures the snapshot, WinPanel stops its managed website, component and database services so those files can be recovered as a working set. The archive manifest records every website and database known to the panel, and creation fails if one of those records has no corresponding storage on disk.
 
 Panel snapshots are owner-only. The owner can download one for external safekeeping and can restore one from the Backup page. A restore replaces the panel state, websites, game servers and configuration represented by that snapshot, then restarts the panel and its supporting services. The browser connection will briefly disappear while the agent restarts.
 
@@ -30,4 +30,4 @@ Create or download a panel snapshot before a major update. Keep at least one cop
 
 Website database exports are portable files inside the website ZIP. Restoring those exports into a database server is a separate database operation; the archive does not overwrite a live database automatically.
 
-Panel snapshots preserve the local WinPanel installation and its data directory for machine recovery. They are not a replacement for a database's own production backup and retention policy.
+Panel snapshots preserve the local WinPanel installation and its local database data for machine recovery. They do not reach into externally hosted databases such as MongoDB Atlas, and they are not a replacement for a database's own production backup and retention policy.

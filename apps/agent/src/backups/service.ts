@@ -4,9 +4,9 @@ import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DatabaseHandle } from '../db/index.js';
 import { jobs, settings, sites } from '../db/schema.js';
-import { listDatabasesForSite, type DatabaseSummary } from '../databases/store.js';
+import { listAllDatabases, listDatabasesForSite, type DatabaseSummary } from '../databases/store.js';
 import { readDatabasePassword } from '../databases/secrets.js';
-import { engineBinDir } from '../databases/types.js';
+import { engineBinDir, engineDataDir } from '../databases/types.js';
 import { withMongo } from '../databases/mongodb.js';
 import { findExecutable } from '../components/archive.js';
 import { runCommand, runDetached } from '../process/run-command.js';
@@ -14,6 +14,7 @@ import type { JobContext, JobQueue } from '../jobs/queue.js';
 import {
   listPanelServices,
   sortForStartup,
+  startPanelService,
   startSupportingServices,
   stopSupportingServices,
 } from '../windows/panel-services.js';
@@ -82,6 +83,75 @@ async function exists(filePath: string): Promise<boolean> {
 
 function archiveEntry(filePath: string): { parent: string; name: string } {
   return { parent: path.dirname(filePath), name: path.basename(filePath) };
+}
+
+async function listPanelRootEntries(options: BackupServiceOptions): Promise<string[]> {
+  if (!(await exists(options.root))) throw new Error('The panel installation folder does not exist.');
+
+  const excluded = new Set(
+    [options.backupDir, options.sitesRoot, options.gameServersRoot].map((entry) => path.resolve(entry)),
+  );
+  const entries = await fs.readdir(options.root, { withFileTypes: true });
+  return entries
+    .map((entry) => path.join(options.root, entry.name))
+    .filter((entry) => !excluded.has(path.resolve(entry)));
+}
+
+function panelEntryNames(metadata: unknown): string[] {
+  const candidate = (metadata as { panelEntries?: unknown } | null)?.panelEntries;
+  if (Array.isArray(candidate)) {
+    const names = candidate.filter(
+      (entry): entry is string =>
+        typeof entry === 'string' &&
+        entry.length > 0 &&
+        entry !== '.' &&
+        entry !== '..' &&
+        path.basename(entry) === entry,
+    );
+    if (names.length === candidate.length) return names;
+  }
+
+  return ['bin', 'data', 'caddy', 'panel', 'logs'];
+}
+
+async function withSupportingServicesStopped(
+  options: BackupServiceOptions,
+  ctx: JobContext,
+  operation: () => Promise<void>,
+): Promise<void> {
+  const services = await listPanelServices();
+  const recovery = createServiceRecovery(options.db);
+  const restart = services.filter((service) => service.kind !== 'panel' && service.state !== 'stopped');
+  let operationError: unknown;
+
+  try {
+    const stopped = await stopSupportingServices(services, { unblock: recovery.unblock });
+    if (stopped.failed.length > 0) {
+      throw new Error(
+        `Could not stop ${stopped.failed[0]?.label ?? 'a panel service'} before creating the backup.`,
+      );
+    }
+    await operation();
+  } catch (error) {
+    operationError = error;
+    throw error;
+  } finally {
+    const failed: string[] = [];
+    for (const service of restart) {
+      if (
+        !(await startPanelService(service.id, { unblock: recovery.unblock }))
+      ) {
+        failed.push(service.label);
+      }
+    }
+
+    if (failed.length > 0 && operationError === undefined) {
+      throw new Error(`Could not restart ${failed.join(', ')} after creating the backup.`);
+    }
+    if (failed.length > 0) {
+      ctx.log(`Could not restart ${failed.join(', ')} after the backup operation.`, 'error');
+    }
+  }
 }
 
 async function createArchive(
@@ -354,48 +424,91 @@ async function createPanelArchive(
   const workDir = path.join(options.backupDir, '.working', ctx.jobId);
   const metadata = path.join(workDir, 'winpanel-panel-backup.json');
   const output = archivePath(options.backupDir, 'panel', ctx.jobId);
-  const roots = [
-    options.root,
-    options.sitesRoot,
-    options.gameServersRoot,
+  const siteRecords = options.db.db.select({ slug: sites.slug }).from(sites).all();
+  const sitePresence = await Promise.all(
+    siteRecords.map(async (site) => ({ site, present: await exists(path.join(options.sitesRoot, site.slug)) })),
+  );
+  const missingSites = sitePresence
+    .filter(({ present }) => !present)
+    .map(({ site }) => site.slug);
+  if (missingSites.length > 0) {
+    throw new Error(`These websites are missing from disk: ${missingSites.join(', ')}.`);
+  }
+
+  const databaseRecords = listAllDatabases(options.db);
+  const databaseRoots = [
+    ...new Set(databaseRecords.map((record) => engineDataDir(options.dataDir, record.engine))),
   ];
-  const entries: string[] = [];
+  const databaseRootPresence = await Promise.all(
+    databaseRoots.map(async (databaseRoot) => ({ databaseRoot, present: await exists(databaseRoot) })),
+  );
+  const missingDatabaseRoots = databaseRootPresence
+    .filter(({ present }) => !present)
+    .map(({ databaseRoot }) => databaseRoot);
+  if (missingDatabaseRoots.length > 0) {
+    throw new Error('A database storage folder is missing, so the panel backup was not created.');
+  }
 
   await fs.rm(workDir, { recursive: true, force: true });
   try {
     await fs.mkdir(workDir, { recursive: true });
-    await fs.writeFile(
-      metadata,
-      JSON.stringify(
-        {
-          format: 'winpanel-panel-backup',
-          version: 1,
-          createdAt: new Date().toISOString(),
-          roots: {
-            panel: options.root,
-            websites: options.sitesRoot,
-            gameServers: options.gameServersRoot,
+    await withSupportingServicesStopped(options, ctx, async () => {
+      const panelEntries = await listPanelRootEntries(options);
+      const panelDatabaseSnapshot = path.join(workDir, 'panel-database', 'panel.db');
+      await fs.mkdir(path.dirname(panelDatabaseSnapshot), { recursive: true });
+      await options.db.sqlite.backup(panelDatabaseSnapshot);
+
+      const websiteManifest = siteRecords.map((site) => ({
+        slug: site.slug,
+        path: `${path.basename(options.sitesRoot)}/${site.slug}`,
+      }));
+      const databaseManifest = databaseRecords.map((record) => ({
+        engine: record.engine,
+        name: record.name,
+        siteId: record.siteId,
+        siteSlug: record.siteSlug,
+        storage: path.relative(options.root, engineDataDir(options.dataDir, record.engine)),
+      }));
+
+      await fs.writeFile(
+        metadata,
+        JSON.stringify(
+          {
+            format: 'winpanel-panel-backup',
+            version: 2,
+            createdAt: new Date().toISOString(),
+            panelEntries: panelEntries.map((entry) => path.basename(entry)),
+            panelDatabase: 'panel-database/panel.db',
+            websites: websiteManifest,
+            databases: databaseManifest,
+            roots: {
+              panel: options.root,
+              websites: options.sitesRoot,
+              gameServers: options.gameServersRoot,
+            },
           },
-        },
-        null,
-        2,
-      ),
-      'utf8',
-    );
+          null,
+          2,
+        ),
+        'utf8',
+      );
 
-    for (const name of ['bin', 'data', 'caddy', 'panel', 'logs']) {
-      const entry = path.join(options.root, name);
-      if (await exists(entry)) entries.push(entry);
-    }
-    for (const root of roots.slice(1)) {
-      if (await exists(root)) entries.push(root);
-    }
-    entries.push(metadata);
+      const entries = [
+        ...panelEntries,
+        ...(await exists(options.sitesRoot) ? [options.sitesRoot] : []),
+        ...(await exists(options.gameServersRoot) ? [options.gameServersRoot] : []),
+        path.dirname(panelDatabaseSnapshot),
+        metadata,
+      ];
 
-    ctx.log('Compressing the panel, websites, game servers and configuration.');
-    await createArchive(output, entries, 'tar.gz');
-    ctx.progress(100);
-    ctx.log('The local panel backup is ready.');
+      ctx.log(
+        `Compressing the panel, ${websiteManifest.length} website${websiteManifest.length === 1 ? '' : 's'}, ` +
+          `${databaseManifest.length} database${databaseManifest.length === 1 ? '' : 's'} and game servers.`,
+      );
+      await createArchive(output, entries, 'tar.gz');
+      ctx.progress(100);
+      ctx.log('The local panel backup is ready.');
+    });
   } finally {
     await fs.rm(workDir, { recursive: true, force: true });
   }
@@ -409,26 +522,23 @@ function restoreScript(
   workDir: string,
   options: BackupServiceOptions,
   serviceIds: readonly string[],
+  panelEntries: readonly string[],
 ): string {
-  const restoreTargets = [
-    ...['bin', 'data', 'caddy', 'panel', 'logs'].map((name) => ({
-      source: path.join(workDir, name),
-      target: path.join(options.root, name),
-    })),
-    { source: path.join(workDir, path.basename(options.sitesRoot)), target: options.sitesRoot },
-    {
-      source: path.join(workDir, path.basename(options.gameServersRoot)),
-      target: options.gameServersRoot,
-    },
-  ];
-
-  const targetJson = JSON.stringify(restoreTargets);
   const servicesJson = JSON.stringify(serviceIds);
   return `$ErrorActionPreference = 'Stop'
 $work = ${powershellLiteral(workDir)}
+$root = ${powershellLiteral(options.root)}
+$backup = ${powershellLiteral(options.backupDir)}
+$data = ${powershellLiteral(options.dataDir)}
+$panelEntries = ConvertFrom-Json @'
+${JSON.stringify(panelEntries)}
+'@
 $agent = 'winpanel-agent'
 $targets = ConvertFrom-Json @'
-${targetJson}
+${JSON.stringify([
+  { source: path.join(workDir, path.basename(options.sitesRoot)), target: options.sitesRoot },
+  { source: path.join(workDir, path.basename(options.gameServersRoot)), target: options.gameServersRoot },
+])}
 '@
 $services = ConvertFrom-Json @'
 ${servicesJson}
@@ -445,10 +555,34 @@ try {
   } while ([DateTime]::UtcNow -lt $deadline)
   if ($state -ne '1') { throw 'The panel service did not stop before the restore deadline.' }
 
+  $backupPath = [IO.Path]::GetFullPath($backup)
+  foreach ($entry in @(Get-ChildItem -LiteralPath $root -Force)) {
+    if ([IO.Path]::GetFullPath($entry.FullName) -eq $backupPath) { continue }
+    if ($panelEntries -notcontains $entry.Name) {
+      Remove-Item -LiteralPath $entry.FullName -Recurse -Force
+    }
+  }
+
+  foreach ($name in $panelEntries) {
+    $source = Join-Path $work $name
+    if (-not (Test-Path -LiteralPath $source)) { continue }
+    $target = Join-Path $root $name
+    Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath $source -Destination $target -Recurse -Force
+  }
+
   foreach ($target in $targets) {
     if (-not (Test-Path -LiteralPath $target.source)) { continue }
     Remove-Item -LiteralPath $target.target -Recurse -Force -ErrorAction SilentlyContinue
     Copy-Item -LiteralPath $target.source -Destination $target.target -Recurse -Force
+  }
+
+  $panelDatabase = Join-Path $data 'panel.db'
+  $panelDatabaseSnapshot = Join-Path $work 'panel-database\panel.db'
+  if (Test-Path -LiteralPath $panelDatabaseSnapshot) {
+    Remove-Item -LiteralPath ($panelDatabase + '-wal') -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath ($panelDatabase + '-shm') -Force -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath $panelDatabaseSnapshot -Destination $panelDatabase -Force
   }
 
   foreach ($service in $services) { & sc.exe start $service *> $null }
@@ -502,7 +636,11 @@ async function restorePanelArchive(
         .filter((service) => service.kind !== 'panel')
         .map((service) => service.id);
       const scriptPath = path.join(workDir, 'restore.ps1');
-      await fs.writeFile(scriptPath, restoreScript(workDir, options, serviceIds), 'utf8');
+      await fs.writeFile(
+        scriptPath,
+        restoreScript(workDir, options, serviceIds, panelEntryNames(metadata)),
+        'utf8',
+      );
       ctx.progress(100);
       ctx.log('The restore is staged. The panel will restart while the saved state is applied.');
       runDetached({
@@ -513,13 +651,21 @@ async function restorePanelArchive(
       return;
     }
 
-    for (const name of ['bin', 'data', 'caddy', 'panel', 'logs']) {
+    const entries = panelEntryNames(metadata);
+    const backupRoot = path.resolve(options.backupDir);
+    for (const entry of await fs.readdir(options.root, { withFileTypes: true })) {
+      const target = path.join(options.root, entry.name);
+      if (path.resolve(target) === backupRoot || entries.includes(entry.name)) continue;
+      await fs.rm(target, { recursive: true, force: true });
+    }
+
+    for (const [index, name] of entries.entries()) {
       const source = path.join(workDir, name);
       const target = path.join(options.root, name);
       if (!(await exists(source))) continue;
       await fs.rm(target, { recursive: true, force: true });
       await fs.cp(source, target, { recursive: true, force: true });
-      ctx.progress(20 + (['bin', 'data', 'caddy', 'panel', 'logs'].indexOf(name) + 1) * 10);
+      ctx.progress(20 + ((index + 1) / Math.max(entries.length, 1)) * 60);
     }
 
     for (const [sourceRoot, targetRoot] of [
@@ -531,6 +677,15 @@ async function restorePanelArchive(
       await fs.rm(targetRoot, { recursive: true, force: true });
       await fs.cp(source, targetRoot, { recursive: true, force: true });
       void sourceRoot;
+    }
+
+    const panelDatabaseSnapshot = path.join(workDir, 'panel-database', 'panel.db');
+    if (await exists(panelDatabaseSnapshot)) {
+      const panelDatabase = path.join(options.dataDir, 'panel.db');
+      await fs.rm(`${panelDatabase}-wal`, { force: true });
+      await fs.rm(`${panelDatabase}-shm`, { force: true });
+      await fs.mkdir(path.dirname(panelDatabase), { recursive: true });
+      await fs.copyFile(panelDatabaseSnapshot, panelDatabase);
     }
 
     ctx.progress(100);
