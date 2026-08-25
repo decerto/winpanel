@@ -23,6 +23,11 @@ export const DEFAULT_DATABASE_NETWORK_POLICY: DatabaseNetworkPolicy = {
   remoteCidrs: [],
 };
 
+/** Picks the address the panel shows when somebody needs to reach this server. */
+export function firstIpv4(addresses: readonly string[]): string | null {
+  return addresses.find((address) => net.isIP(address) === 4) ?? null;
+}
+
 export function databaseFirewallRuleName(engine: DatabaseEngine): string {
   return `WinPanel - Database (${engine === 'mariadb' ? 'MariaDB' : engine === 'postgres' ? 'PostgreSQL' : 'MongoDB'})`;
 }
@@ -206,6 +211,18 @@ export function normaliseDatabaseNetworkPolicy(
     throw new Error('Add at least one IP address or network range to the whitelist.');
   }
   return { mode, remoteCidrs: cidrs };
+}
+
+/** Keeps applications on this server working through its advertised address. */
+export function includeDatabaseServerAddress(
+  policy: DatabaseNetworkPolicy,
+  serverAddress: string | null,
+): DatabaseNetworkPolicy {
+  if (policy.mode !== 'whitelist' || !serverAddress) return policy;
+  return {
+    ...policy,
+    remoteCidrs: normaliseRemoteCidrs([...policy.remoteCidrs, serverAddress]),
+  };
 }
 
 /**

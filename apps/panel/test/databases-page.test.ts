@@ -101,11 +101,11 @@ vi.mock('../src/lib/api', () => ({
             generated: true,
             connection: {
               engine: 'postgres',
-              host: '127.0.0.1',
+              host: '203.0.113.10',
               port: 5432,
               database: 'u_me_shop',
               username: 'u_me_shop',
-              uriTemplate: 'postgresql://u_me_shop:PASSWORD@127.0.0.1:5432/u_me_shop',
+              uriTemplate: 'postgresql://u_me_shop:PASSWORD@203.0.113.10:5432/u_me_shop',
             },
           };
         }),
@@ -201,9 +201,9 @@ describe('after making a database', () => {
 
     const text = wrapper.text();
     // The whole point: something that can be pasted into an application as-is.
-    expect(text).toContain('postgresql://u_me_shop:brand-new-secret@127.0.0.1:5432/u_me_shop');
+    expect(text).toContain('postgresql://u_me_shop:brand-new-secret@203.0.113.10:5432/u_me_shop');
     // And the pieces, for configuration formats that ask for them separately.
-    expect(text).toContain('127.0.0.1');
+    expect(text).toContain('203.0.113.10');
     expect(text).toContain('5432');
     expect(text).toContain('u_me_shop');
     expect(text).toContain('brand-new-secret');
@@ -261,6 +261,7 @@ describe('an existing database', () => {
   it('uses the server host when remote access is enabled', async () => {
     state.databases = [
       database({
+        network: { mode: 'whitelist', remoteCidrs: ['203.0.113.10'] },
         connection: {
           engine: 'postgres',
           host: '203.0.113.10',

@@ -433,6 +433,7 @@ onMounted(load);
         <DatabaseConnectionCard
           :connection="revealed.connection"
           :password="revealed.password"
+          :remote-access-enabled="false"
           flush
         />
       </div>
@@ -744,6 +745,7 @@ onMounted(load);
             <DatabaseConnectionCard
               :connection="row.connection"
               :password="expandedPassword"
+              :remote-access-enabled="row.network.mode !== 'loopback'"
             />
           </div>
 

@@ -14,6 +14,7 @@ import {
   databaseFirewallRemoteIp,
   databaseFirewallRuleName,
   databaseServerArgs,
+  includeDatabaseServerAddress,
   isRemoteDatabaseNetworkPolicy,
   normaliseDatabaseNetworkPolicy,
   type DatabaseNetworkPolicy,
@@ -128,6 +129,8 @@ export interface DatabaseNetworkServiceOptions {
   binDir: string;
   dataDir: string;
   logDir: string;
+  /** The server address that local applications also use when remote mode is on. */
+  panelAddress?: string | null;
 }
 
 export class DatabaseNetworkService {
@@ -135,7 +138,14 @@ export class DatabaseNetworkService {
 
   /** The listener and firewall an engine currently needs. */
   policyFor(engine: DatabaseEngine): DatabaseNetworkPolicy {
-    return engineNetworkPolicy(this.options.db, engine);
+    return includeDatabaseServerAddress(
+      engineNetworkPolicy(this.options.db, engine),
+      this.options.panelAddress ?? null,
+    );
+  }
+
+  private includePanelAddress(policy: DatabaseNetworkPolicy): DatabaseNetworkPolicy {
+    return includeDatabaseServerAddress(policy, this.options.panelAddress ?? null);
   }
 
   /**
@@ -149,7 +159,9 @@ export class DatabaseNetworkService {
     record: DatabaseSummary,
     requested: DatabaseNetworkPolicy,
   ): Promise<DatabaseNetworkPolicy> {
-    const policy = normaliseDatabaseNetworkPolicy(requested.mode, requested.remoteCidrs);
+    const policy = this.includePanelAddress(
+      normaliseDatabaseNetworkPolicy(requested.mode, requested.remoteCidrs),
+    );
     const previous = record.network;
 
     setDatabaseNetwork(this.options.db, record.id, policy);
@@ -172,7 +184,10 @@ export class DatabaseNetworkService {
    * are changed over a connection are done afterwards, once it is back up.
    */
   async syncEngine(engine: DatabaseEngine): Promise<void> {
-    const records = databasesOnEngine(this.options.db, engine);
+    const records = databasesOnEngine(this.options.db, engine).map((record) => ({
+      ...record,
+      network: this.includePanelAddress(record.network),
+    }));
     const serviceId = ENGINE_SERVICE[engine];
     const installed = await this.options.services.isInstalled(serviceId);
 

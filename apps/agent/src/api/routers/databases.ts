@@ -48,6 +48,8 @@ import { rewriteWpConfigPassword } from '../../sites/wordpress.js';
 import { type EngineContext } from '../../databases/types.js';
 import {
   DEFAULT_DATABASE_NETWORK_POLICY,
+  firstIpv4,
+  includeDatabaseServerAddress,
   normaliseDatabaseNetworkPolicy,
   unmapIpv4,
   type DatabaseNetworkMode,
@@ -154,7 +156,15 @@ function presentForAttachment(record: DatabaseSummary) {
 
 function connectionHost(record: DatabaseSummary): string {
   if (record.network.mode === 'loopback') return '127.0.0.1';
-  return localAddresses().find((address) => !address.includes(':')) ?? os.hostname();
+  return firstIpv4(localAddresses()) ?? os.hostname();
+}
+
+function remoteConnectionHost(): string {
+  return firstIpv4(localAddresses()) ?? os.hostname();
+}
+
+function policyForPanel(policy: ReturnType<typeof normaliseDatabaseNetworkPolicy>) {
+  return includeDatabaseServerAddress(policy, firstIpv4(localAddresses()));
 }
 
 function presentForConnection(record: DatabaseSummary) {
@@ -242,11 +252,12 @@ export const databasesRouter = router({
       const record = mustGetDatabase(ctx, input.id);
 
       return {
-        policy: record.network,
+        policy: policyForPanel(record.network),
         /** The address this request came from, for the one-click whitelist. */
         yourIp: unmapIpv4(ctx.ip),
         /** What to connect to once it is open. */
         addresses: localAddresses().filter((address) => !address.includes(':')),
+        panelIp: firstIpv4(localAddresses()),
         port: databaseEngineInfo(record.engine).port,
       };
     }),
@@ -264,7 +275,9 @@ export const databasesRouter = router({
 
       let policy: ReturnType<typeof normaliseDatabaseNetworkPolicy>;
       try {
-        policy = normaliseDatabaseNetworkPolicy(input.mode as DatabaseNetworkMode, input.remoteCidrs);
+        policy = policyForPanel(
+          normaliseDatabaseNetworkPolicy(input.mode as DatabaseNetworkMode, input.remoteCidrs),
+        );
       } catch (error) {
         throw new TRPCError({
           code: 'BAD_REQUEST',
@@ -523,7 +536,7 @@ export const databasesRouter = router({
             // owner says otherwise.
             network: { ...DEFAULT_DATABASE_NETWORK_POLICY },
             createdAt: new Date(),
-          }),
+          }, remoteConnectionHost()),
         };
       } catch (error) {
         throw asTrpcError(error, 'The database could not be created.');

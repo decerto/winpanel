@@ -67,6 +67,7 @@ async function makePostgresService(
   service: ServiceManager,
   applied: FirewallRule[] = [],
   removed: string[] = [],
+  panelAddress: string | null = null,
 ): Promise<DatabaseNetworkService> {
   const binDir = path.join(tmpDir, 'bin');
   const dataDir = path.join(tmpDir, 'data');
@@ -83,6 +84,7 @@ async function makePostgresService(
     binDir,
     dataDir,
     logDir: path.join(tmpDir, 'logs'),
+    panelAddress,
   });
 }
 
@@ -125,6 +127,25 @@ describe('one database opening the port', () => {
 
     expect(applied.at(-1)).toMatchObject({ port: 5432, remoteIp: '203.0.113.42' });
     expect(reconfigured.at(-1)?.args).toContain('0.0.0.0');
+  });
+
+  it('keeps the panel address reachable through a chosen-address policy', async () => {
+    const applied: FirewallRule[] = [];
+    const service = await makePostgresService(serviceDouble(), applied, [], '198.51.100.10');
+    const id = givePostgresDatabase('u_freya_shop');
+
+    await service.setForDatabase(getDatabase(db, id)!, {
+      mode: 'whitelist',
+      remoteCidrs: ['203.0.113.42'],
+    });
+
+    const hba = await fs.readFile(hbaPath(), 'utf8');
+    expect(hba).toContain('host u_freya_shop u_freya_shop 203.0.113.42/32 scram-sha-256');
+    expect(hba).toContain('host u_freya_shop u_freya_shop 198.51.100.10/32 scram-sha-256');
+    expect(applied.at(-1)).toMatchObject({
+      remoteIp: '203.0.113.42,198.51.100.10',
+    });
+    expect(getDatabase(db, id)?.network.remoteCidrs).toEqual(['203.0.113.42', '198.51.100.10']);
   });
 
   it('closes the port again once the last database goes back to loopback', async () => {

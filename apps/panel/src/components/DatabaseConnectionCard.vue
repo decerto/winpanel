@@ -23,7 +23,13 @@ const props = defineProps<{
   password?: string | null;
   /** Drops the frame, for when this already sits inside one. */
   flush?: boolean;
+  /** Whether the database is currently reachable from outside the server. */
+  remoteAccessEnabled?: boolean;
 }>();
+
+const remoteAccessEnabled = computed(
+  () => props.remoteAccessEnabled ?? props.connection.host !== '127.0.0.1',
+);
 
 const uri = computed(() =>
   props.password
@@ -130,7 +136,11 @@ async function copy(what: string, value: string): Promise<void> {
       </div>
     </dl>
 
-    <p v-if="connection.host === '127.0.0.1'" class="hint">
+    <p v-if="connection.host !== '127.0.0.1' && !remoteAccessEnabled" class="hint">
+      This uses the server&rsquo;s address so the same connection string can be used after remote
+      access is enabled. Remote access is currently off.
+    </p>
+    <p v-else-if="connection.host === '127.0.0.1'" class="hint">
       The database only answers on this machine, so use these from something running on
       this server.
     </p>

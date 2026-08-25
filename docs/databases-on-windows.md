@@ -85,12 +85,14 @@ That login can reach exactly that database and nothing else:
 
 Creating a database shows you a **connection string** with the password already in it,
 along with the host, port, database name and username separately — and, for MongoDB, the
-auth source. That is the one moment the password is on screen, so copy it then.
+auth source. The host is this server's first reachable IPv4 address, so the same string
+can be used from a developer's computer and by an application deployed back here. That is
+the one moment the password is on screen, so copy it then.
 
 ```text
-mysql://<name>:<password>@127.0.0.1:3306/<name>
-postgresql://<name>:<password>@127.0.0.1:5432/<name>
-mongodb://<name>:<password>@127.0.0.1:27017/<name>?authSource=<name>
+mysql://<name>:<password>@<server-ip>:3306/<name>
+postgresql://<name>:<password>@<server-ip>:5432/<name>
+mongodb://<name>:<password>@<server-ip>:27017/<name>?authSource=<name>
 ```
 
 Afterwards, **Connect** on any database reopens the same block with `PASSWORD` left as a
@@ -101,9 +103,10 @@ MongoDB's `authSource` is not optional. Its login lives inside its own database 
 in `admin`, and a driver that is not told so looks in `admin`, finds nothing, and reports
 the password as wrong.
 
-Because the servers are bound to loopback by default, these work from anything running on
-the same machine — a website WinPanel hosts, a service you installed yourself, a scheduled
-task. To reach one from your own computer, see [Remote connections](#remote-connections).
+Because the servers are bound to loopback by default, the database is still local-only until
+you enable remote access. A website WinPanel hosts can use `127.0.0.1` while it remains local;
+once remote access is enabled, the displayed server-address URI works both from your own
+computer and from an application running here. See [Remote connections](#remote-connections).
 
 ## Looking inside
 
@@ -137,7 +140,8 @@ Press **Remote access** next to a database on the **Databases** page and choose 
 - **This server only** — the default. Nothing off this machine can reach it.
 - **Any IP** — anyone who can reach the server may try to sign in. Only the password stands
   in the way.
-- **Chosen addresses** — only the IP addresses or CIDR ranges you list.
+- **Chosen addresses** — only the IP addresses or CIDR ranges you list, plus this server's
+  first reachable IPv4 address, which WinPanel always includes for applications running here.
 
 **Add my IP** fills in the address your browser reached the panel from, so you do not have
 to look it up. It is not offered when you are signed in on the server itself, because

@@ -40,6 +40,7 @@ const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
 
 const yourIp = computed(() => access.value?.yourIp ?? null);
+const panelIp = computed(() => access.value?.panelIp ?? null);
 
 /** Loopback would let nothing new in, so offering to add it is a trap. */
 const ownIpUsable = computed(() => {
@@ -170,6 +171,7 @@ onMounted(load);
             type="button"
             class="btn btn-ghost btn-sm shrink-0"
             :aria-label="`Remove ${source}`"
+            :disabled="source === panelIp"
             @click="removeSource(source)"
           >
             <X :size="14" aria-hidden="true" />
@@ -202,6 +204,10 @@ onMounted(load);
         </div>
 
         <p class="hint">Use an IP address or a CIDR range. At least one is needed.</p>
+        <p v-if="panelIp" class="hint">
+          The panel server address <span class="font-mono">{{ panelIp }}</span> is always included,
+          so applications running on this server can use the same connection details.
+        </p>
         <p v-if="!ownIpUsable" class="hint">
           You are signed in on the server itself, so your own address would let nothing new in.
           Add the address of the computer that needs to connect.

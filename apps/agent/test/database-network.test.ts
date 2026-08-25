@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   databaseBindAddress,
   databaseFirewallRemoteIp,
+  includeDatabaseServerAddress,
   databaseServerArgs,
   normaliseDatabaseNetworkPolicy,
   normaliseRemoteCidr,
@@ -38,6 +39,16 @@ describe('database network policy', () => {
     expect(policy.remoteCidrs).toEqual(['203.0.113.42', '203.0.113.0/24']);
     expect(databaseBindAddress(policy)).toBe('0.0.0.0');
     expect(databaseFirewallRemoteIp(policy)).toBe('203.0.113.42,203.0.113.0/24');
+  });
+
+  it('keeps the panel server address in a whitelist', () => {
+    const policy = normaliseDatabaseNetworkPolicy('whitelist', ['203.0.113.42']);
+
+    expect(includeDatabaseServerAddress(policy, '198.51.100.10')).toEqual({
+      mode: 'whitelist',
+      remoteCidrs: ['203.0.113.42', '198.51.100.10'],
+    });
+    expect(includeDatabaseServerAddress(policy, '203.0.113.42')).toEqual(policy);
   });
 
   it('canonicalises IPv4 and IPv6 network addresses', () => {

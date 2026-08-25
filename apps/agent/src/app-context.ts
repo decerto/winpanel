@@ -14,6 +14,7 @@ import { CaddyReconciler } from './caddy/reconciler.js';
 import { ServiceManager } from './windows/service-manager.js';
 import { FirewallManager } from './bootstrap/windows-setup.js';
 import { DatabaseNetworkService } from './databases/network-service.js';
+import { firstIpv4 } from './databases/network.js';
 import { createServiceRecovery } from './windows/watched-services.js';
 import { SiteService } from './sites/site-service.js';
 import { GameServerService } from './game-servers/game-server-service.js';
@@ -31,7 +32,7 @@ import {
 import { createPanelUpdateHandler } from './components/panel-update.js';
 import { createWordPressHandler } from './sites/wordpress.js';
 import { resolveToolInvocation } from './sites/tool-paths.js';
-import type { PanelTls } from './tls/panel-certificate.js';
+import { localAddresses, type PanelTls } from './tls/panel-certificate.js';
 
 /**
  * Composition root.
@@ -118,6 +119,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     binDir: config.binDir,
     dataDir: config.dataDir,
     logDir: config.logDir,
+    panelAddress: firstIpv4(localAddresses()),
   });
   const sites = new SiteService(db, vault, config.sitesRoot);
 
