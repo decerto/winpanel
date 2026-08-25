@@ -26,7 +26,15 @@ async function load(): Promise<void> {
   error.value = null;
 
   try {
-    backups.value = await api.backups.site.list.query({ slug: slug.value });
+    const [archives, active] = await Promise.all([
+      api.backups.site.list.query({ slug: slug.value }),
+      api.backups.site.active.query({ slug: slug.value }),
+    ]);
+    backups.value = archives;
+    if (active) {
+      creating.value = true;
+      job.watchJob(active.jobId);
+    }
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -64,7 +72,7 @@ watch(slug, () => void load(), { immediate: true });
   <div class="mx-auto w-full max-w-6xl">
     <PageHeader
       title="Website backup"
-      description="Create a portable ZIP containing this website's files and database exports."
+      description="Create a portable ZIP containing this website's files and database exports. The backup runs on the server, so you can leave this page while it works."
     >
       <template #actions>
         <button type="button" class="btn btn-ghost" :disabled="loading || creating" @click="load">
@@ -80,6 +88,9 @@ watch(slug, () => void load(), { immediate: true });
 
     <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
     <AlertMessage v-if="notice" tone="success" class="mb-4">{{ notice }}</AlertMessage>
+    <AlertMessage v-if="job.running.value" tone="info" class="mb-4">
+      This backup is running in the background. You can leave this page and return later to see its progress.
+    </AlertMessage>
 
     <section v-if="job.lines.value.length > 0" class="card mb-5 overflow-hidden">
       <div class="flex items-center justify-between border-b border-line px-4 py-2.5">

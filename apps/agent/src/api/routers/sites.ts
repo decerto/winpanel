@@ -1146,6 +1146,7 @@ export const sitesRouter = router({
         slug: z.string().min(1),
         /** Typing the name back is required, so this cannot be a mis-click. */
         confirmSlug: z.string().min(1),
+        password: z.string().min(1).max(1024),
         deleteFiles: z.boolean().default(false),
       }),
     )
@@ -1160,6 +1161,13 @@ export const sitesRouter = router({
       const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
       const site = service.get(input.slug);
       if (!site) return { ok: true };
+
+      if (!(await ctx.app.auth.reauthenticate(ctx.user.id, input.password))) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Your password is not correct.',
+        });
+      }
 
       const children = service.childrenFor(site.id);
       if (children.length > 0) {

@@ -115,7 +115,10 @@ describe('panel backups', () => {
       backupDir,
     };
     const jobId = crypto.randomUUID();
-    await createBackupHandler(options)({ scope: 'panel', operation: 'create' }, context(jobId));
+    await createBackupHandler(options)(
+      { scope: 'panel', operation: 'create', includeGameServers: true },
+      context(jobId),
+    );
 
     const archive = backupFilePath(backupDir, 'panel', jobId);
     const entries = await archiveEntries(archive);
@@ -144,8 +147,10 @@ describe('panel backups', () => {
       panelEntries: string[];
       websites: Array<{ slug: string }>;
       databases: Array<{ engine: string; name: string; siteSlug: string | null }>;
+      includeGameServers: boolean;
     };
     expect(metadata.version).toBe(2);
+    expect(metadata.includeGameServers).toBe(true);
     expect(metadata.panelEntries).toContain('custom-state.json');
     expect(metadata.websites.map((site) => site.slug)).toEqual(['alpha', 'beta']);
     expect(metadata.databases).toEqual([
@@ -154,6 +159,18 @@ describe('panel backups', () => {
     const snapshot = createDatabase(path.join(extracted, 'panel-database', 'panel.db'));
     expect(snapshot.db.select({ id: schema.sites.id }).from(schema.sites).all()).toHaveLength(2);
     snapshot.close();
+
+    const withoutGamesId = crypto.randomUUID();
+    await createBackupHandler(options)(
+      { scope: 'panel', operation: 'create', includeGameServers: false },
+      context(withoutGamesId),
+    );
+    const withoutGamesEntries = await archiveEntries(
+      backupFilePath(backupDir, 'panel', withoutGamesId),
+    );
+    expect(withoutGamesEntries).not.toContain('game-servers/game-alpha/save.dat');
+    expect(withoutGamesEntries).toContain('sites/alpha/index.html');
+    expect(withoutGamesEntries).toContain('data/database/database-marker.txt');
 
   });
 });

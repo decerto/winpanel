@@ -28,6 +28,26 @@ function backupJobsForSite(ctx: RequestContext, siteId: string) {
     .all();
 }
 
+function activeBackupJob(
+  rows: Array<typeof jobs.$inferSelect>,
+  scope: 'site' | 'panel',
+  siteId?: string,
+): { jobId: string } | null {
+  const job = rows.find((row) => {
+    if (row.status !== 'pending' && row.status !== 'running') return false;
+
+    const payload = BackupPayload.safeParse(row.payload);
+    return (
+      payload.success &&
+      payload.data.operation === 'create' &&
+      payload.data.scope === scope &&
+      (scope === 'site' ? payload.data.siteId === siteId : row.siteId === null)
+    );
+  });
+
+  return job ? { jobId: job.id } : null;
+}
+
 function archiveDetails(
   archives: Awaited<ReturnType<typeof listBackupArchives>>,
   rows: Array<typeof jobs.$inferSelect>,
@@ -69,6 +89,13 @@ export const backupsRouter = router({
         const site = siteForSlug(ctx, input.slug);
         const archives = await listBackupArchives(ctx.app.config.backupDir, 'site');
         return archiveDetails(archives, backupJobsForSite(ctx, site.id), 'site', site.id);
+      }),
+
+    active: protectedProcedure
+      .input(z.object({ slug: z.string().min(1) }))
+      .query(({ ctx, input }) => {
+        const site = siteForSlug(ctx, input.slug);
+        return activeBackupJob(backupJobsForSite(ctx, site.id), 'site', site.id);
       }),
 
     create: protectedProcedure
@@ -113,14 +140,30 @@ export const backupsRouter = router({
       });
     }),
 
-    create: superadminProcedure.mutation(({ ctx }) => ({
-      jobId: ctx.app.jobs.enqueue({
-        kind: 'backup',
-        title: 'Creating a panel backup',
-        payload: { scope: 'panel', operation: 'create' },
-        maxAttempts: 2,
-      }),
-    })),
+    active: superadminProcedure.query(({ ctx }) => {
+      const rows = ctx.app.db.db
+        .select()
+        .from(jobs)
+        .where(eq(jobs.kind, 'backup'))
+        .orderBy(desc(jobs.createdAt))
+        .all();
+      return activeBackupJob(rows, 'panel');
+    }),
+
+    create: superadminProcedure
+      .input(z.object({ includeGameServers: z.boolean() }).optional())
+      .mutation(({ ctx, input }) => ({
+        jobId: ctx.app.jobs.enqueue({
+          kind: 'backup',
+          title: 'Creating a panel backup',
+          payload: {
+            scope: 'panel',
+            operation: 'create',
+            includeGameServers: input?.includeGameServers ?? false,
+          },
+          maxAttempts: 2,
+        }),
+      })),
 
     restore: superadminProcedure
       .input(z.object({ backupId: z.string().uuid() }))

@@ -248,6 +248,7 @@ describe('creating a website', () => {
     const removed = await call('POST', 'sites.remove', {
       slug: parent.body.result.data.slug,
       confirmSlug: parent.body.result.data.slug,
+      password: 'a-sufficiently-long-password',
       deleteFiles: true,
     });
 
@@ -436,6 +437,7 @@ describe('deleting a website', () => {
     const wrong = await call('POST', 'sites.remove', {
       slug: 'kitora-io',
       confirmSlug: 'something-else',
+      password: 'a-sufficiently-long-password',
       deleteFiles: true,
     });
 
@@ -447,12 +449,28 @@ describe('deleting a website', () => {
     expect(list.body.result.data).toHaveLength(1);
   }, 30_000);
 
-  it('removes the website when the name matches', async () => {
+  it('requires the current password', async () => {
+    await call('POST', 'sites.create', input);
+
+    const wrong = await call('POST', 'sites.remove', {
+      slug: 'kitora-io',
+      confirmSlug: 'kitora-io',
+      password: 'not-the-password',
+      deleteFiles: true,
+    });
+
+    expect(wrong.body.error.data.code).toBe('UNAUTHORIZED');
+    expect(wrong.body.error.message).toMatch(/password/i);
+    expect((await call('GET', 'sites.list')).body.result.data).toHaveLength(1);
+  }, 30_000);
+
+  it('removes the website when the name and password match', async () => {
     await call('POST', 'sites.create', input);
 
     const removed = await call('POST', 'sites.remove', {
       slug: 'kitora-io',
       confirmSlug: 'kitora-io',
+      password: 'a-sufficiently-long-password',
       deleteFiles: true,
     });
 

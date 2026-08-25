@@ -19,6 +19,7 @@ const state = vi.hoisted(() => ({
   availableDatabases: [] as any[],
   attached: [] as any[],
   saved: [] as any[],
+  passwordChanges: [] as any[],
 }));
 
 vi.mock('vue-router', () => ({
@@ -74,7 +75,12 @@ vi.mock('../src/lib/api', () => ({
           return { ok: true, siteSlug: input.slug };
         }),
       },
-      setPassword: { mutate: vi.fn() },
+      setPassword: {
+        mutate: vi.fn(async (input: any) => {
+          state.passwordChanges.push(input);
+          return { name: 'u_me_test', password: 'new-secret', generated: true };
+        }),
+      },
       revealPassword: { query: vi.fn(async () => ({ password: 'revealed-secret' })) },
     },
   },
@@ -133,6 +139,7 @@ beforeEach(() => {
   state.availableDatabases = [];
   state.attached = [];
   state.saved = [];
+  state.passwordChanges = [];
 });
 
 describe('a website\u2019s databases', () => {
@@ -163,6 +170,34 @@ describe('a website\u2019s databases', () => {
     const wrapper = await render();
 
     expect(button(wrapper, 'Remote access on')).toBeDefined();
+  });
+
+  it('hides a revealed password again', async () => {
+    const wrapper = await render();
+
+    await button(wrapper, 'Show')!.trigger('click');
+    await flushPromises();
+    await button(wrapper, 'Hide')!.trigger('click');
+
+    expect(wrapper.text()).toContain('mongodb://u_me_test:PASSWORD@127.0.0.1:27017/u_me_test');
+    expect(wrapper.text()).toContain('Password hidden');
+  });
+
+  it('asks for confirmation before changing a database password', async () => {
+    const wrapper = await render();
+
+    await button(wrapper, 'Password')!.trigger('click');
+    await wrapper.find('form').trigger('submit');
+
+    expect(wrapper.text()).toContain('Set a new database password?');
+    expect(wrapper.text()).toContain('The current password will stop working');
+    expect(state.passwordChanges).toHaveLength(0);
+
+    await wrapper.find('form[role="dialog"]').trigger('submit');
+    await flushPromises();
+
+    expect(state.passwordChanges).toEqual([{ id: 'db-1' }]);
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
   });
 
   it('lets an administrator choose an existing database with a filter', async () => {

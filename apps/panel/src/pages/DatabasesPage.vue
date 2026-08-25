@@ -5,6 +5,7 @@ import {
   Database,
   ExternalLink,
   Eye,
+  EyeOff,
   HardDrive,
   KeyRound,
   Plug,
@@ -17,12 +18,14 @@ import { roleAtLeast, type DatabaseConnection, type UserRole } from '@winpanel/s
 import { api, describeError } from '../lib/api';
 import { formatBytes } from '../lib/format';
 import AlertMessage from '../components/AlertMessage.vue';
+import ConfirmDialog from '../components/ConfirmDialog.vue';
 import DatabaseAccessCard from '../components/DatabaseAccessCard.vue';
 import DatabaseConnectionCard from '../components/DatabaseConnectionCard.vue';
 import EmptyState from '../components/EmptyState.vue';
 import LoadingBlock from '../components/LoadingBlock.vue';
 import PageHeader from '../components/PageHeader.vue';
 import PaginationBar from '../components/PaginationBar.vue';
+import PasswordConfirmDialog from '../components/PasswordConfirmDialog.vue';
 import SearchableSelect from '../components/SearchableSelect.vue';
 
 /**
@@ -91,6 +94,11 @@ const expandedPassword = ref<string | null>(null);
 const accessOpen = ref<string | null>(null);
 const sizeOpen = ref<string | null>(null);
 const sizeLimitGb = ref('0');
+const databaseToDelete = ref<Row | null>(null);
+const deletePasswordError = ref<string | null>(null);
+const passwordReset = ref<{ row: Row; own: boolean; password: string } | null>(null);
+const passwordChangeConfirmationOpen = ref(false);
+const passwordResetError = ref<string | null>(null);
 
 function toggleConnection(row: Row): void {
   if (expanded.value === row.id) {
@@ -100,6 +108,10 @@ function toggleConnection(row: Row): void {
   }
   expanded.value = row.id;
   expandedPassword.value = null;
+}
+
+function passwordIsVisible(row: Row): boolean {
+  return expanded.value === row.id && expandedPassword.value !== null;
 }
 
 function toggleAccess(row: Row): void {
@@ -303,46 +315,109 @@ async function saveSize(row: Row): Promise<void> {
   }
 }
 
-async function drop(row: Row): Promise<void> {
-  const warning =
-    `Delete ${row.name}?\n\n` +
-    'Everything in it goes with it, and there is no undo. Anything still connecting ' +
-    'to it will stop working.';
+function requestDrop(row: Row): void {
+  databaseToDelete.value = row;
+  deletePasswordError.value = null;
+}
 
-  if (!window.confirm(warning)) return;
+function closeDrop(): void {
+  if (busy.value === databaseToDelete.value?.id) return;
+  databaseToDelete.value = null;
+  deletePasswordError.value = null;
+}
+
+async function confirmDrop(password: string): Promise<void> {
+  const row = databaseToDelete.value;
+  if (!row) return;
 
   busy.value = row.id;
   error.value = null;
   notice.value = null;
+  deletePasswordError.value = null;
 
   try {
-    await api.databases.drop.mutate({ id: row.id });
+    await api.databases.drop.mutate({ id: row.id, password });
+    databaseToDelete.value = null;
     notice.value = `${row.name} has been removed.`;
     await load();
   } catch (err) {
-    error.value = describeError(err);
+    deletePasswordError.value = describeError(err);
   } finally {
     busy.value = null;
   }
 }
 
-async function resetPassword(row: Row): Promise<void> {
-  busy.value = `password:${row.id}`;
+const resetProblem = computed(() =>
+  passwordReset.value?.own ? passwordProblemFor(passwordReset.value.password) : null,
+);
+
+const passwordResetDescription = computed(() => {
+  const form = passwordReset.value;
+  if (!form) return '';
+  const replacement = form.own ? 'The password you entered' : 'A new strong password';
+  return `${replacement} will replace the current password for ${form.row.name}. Anything using the old password will need to be updated.`;
+});
+
+function openPasswordReset(row: Row): void {
+  passwordReset.value =
+    passwordReset.value?.row.id === row.id ? null : { row, own: false, password: '' };
+  passwordChangeConfirmationOpen.value = false;
+  passwordResetError.value = null;
+}
+
+function closePasswordResetForm(): void {
+  if (busy.value !== null) return;
+  passwordReset.value = null;
+  passwordChangeConfirmationOpen.value = false;
+  passwordResetError.value = null;
+}
+
+function requestPasswordChange(): void {
+  const form = passwordReset.value;
+  if (
+    !form ||
+    resetProblem.value ||
+    (form.own && form.password.length === 0) ||
+    busy.value !== null
+  ) {
+    return;
+  }
+  passwordResetError.value = null;
+  passwordChangeConfirmationOpen.value = true;
+}
+
+function closePasswordChangeConfirmation(): void {
+  if (busy.value === `password:${passwordReset.value?.row.id}`) return;
+  passwordChangeConfirmationOpen.value = false;
+  passwordResetError.value = null;
+}
+
+async function changePassword(): Promise<void> {
+  const form = passwordReset.value;
+  if (!form || resetProblem.value || (form.own && form.password.length === 0)) return;
+
+  busy.value = `password:${form.row.id}`;
   error.value = null;
   notice.value = null;
+  passwordResetError.value = null;
 
   try {
-    const result = await api.databases.setPassword.mutate({ id: row.id });
+    const result = await api.databases.setPassword.mutate({
+      id: form.row.id,
+      ...(form.own ? { password: form.password } : {}),
+    });
     revealed.value = {
       name: result.name,
-      username: row.username,
+      username: form.row.username,
       password: result.password,
       generated: result.generated,
-      connection: row.connection,
+      connection: form.row.connection,
     };
-    if (expanded.value === row.id) expandedPassword.value = result.password;
+    if (expanded.value === form.row.id) expandedPassword.value = result.password;
+    passwordReset.value = null;
+    passwordChangeConfirmationOpen.value = false;
   } catch (err) {
-    error.value = describeError(err);
+    passwordResetError.value = describeError(err);
   } finally {
     busy.value = null;
   }
@@ -363,6 +438,14 @@ async function showPassword(row: Row): Promise<void> {
   } finally {
     busy.value = null;
   }
+}
+
+async function togglePassword(row: Row): Promise<void> {
+  if (passwordIsVisible(row)) {
+    expandedPassword.value = null;
+    return;
+  }
+  await showPassword(row);
 }
 
 /**
@@ -690,17 +773,29 @@ onMounted(load);
               type="button"
               class="btn btn-ghost btn-sm"
               :disabled="busy !== null"
-              @click="showPassword(row)"
+              :aria-pressed="passwordIsVisible(row)"
+              @click="togglePassword(row)"
             >
-              <Eye :size="13" aria-hidden="true" />
-              {{ busy === `reveal:${row.id}` ? 'Showing\u2026' : 'Show password' }}
+              <component
+                :is="passwordIsVisible(row) ? EyeOff : Eye"
+                :size="13"
+                aria-hidden="true"
+              />
+              {{
+                busy === `reveal:${row.id}`
+                  ? 'Showing\u2026'
+                  : passwordIsVisible(row)
+                    ? 'Hide password'
+                    : 'Show password'
+              }}
             </button>
 
             <button
               type="button"
               class="btn btn-ghost btn-sm"
               :disabled="busy !== null"
-              @click="resetPassword(row)"
+              :aria-expanded="passwordReset?.row.id === row.id"
+              @click="openPasswordReset(row)"
             >
               <KeyRound :size="13" aria-hidden="true" />
               {{ busy === `password:${row.id}` ? 'Changing\u2026' : 'New password' }}
@@ -710,7 +805,7 @@ onMounted(load);
               type="button"
               class="btn btn-danger btn-sm"
               :disabled="busy !== null"
-              @click="drop(row)"
+              @click="requestDrop(row)"
             >
               <Trash2 :size="13" aria-hidden="true" />
               {{ busy === row.id ? 'Removing\u2026' : 'Delete' }}
@@ -759,6 +854,66 @@ onMounted(load);
           <div v-if="accessOpen === row.id" class="border-t border-line px-4 pb-4 pt-3">
             <DatabaseAccessCard :database-id="row.id" :name="row.name" @saved="load" />
           </div>
+
+          <div v-if="passwordReset?.row.id === row.id" class="border-t border-line px-4 pb-4 pt-3">
+            <form class="max-w-2xl space-y-3" @submit.prevent="requestPasswordChange">
+              <div class="flex flex-wrap items-end gap-3">
+                <div>
+                  <label class="label" :for="`db-reset-mode-${row.id}`">
+                    New password for {{ row.name }}
+                  </label>
+                  <select
+                    :id="`db-reset-mode-${row.id}`"
+                    v-model="passwordReset.own"
+                    class="field w-48"
+                  >
+                    <option :value="false">Generate one</option>
+                    <option :value="true">Set my own</option>
+                  </select>
+                </div>
+
+                <div v-if="passwordReset.own">
+                  <label class="label" :for="`db-reset-password-${row.id}`">Chosen password</label>
+                  <input
+                    :id="`db-reset-password-${row.id}`"
+                    v-model="passwordReset.password"
+                    type="password"
+                    class="field w-56 font-mono"
+                    autocomplete="new-password"
+                    placeholder="At least 10 characters"
+                  />
+                </div>
+
+                <div class="flex gap-2">
+                  <button
+                    type="submit"
+                    class="btn btn-primary btn-sm"
+                    :disabled="
+                      busy !== null ||
+                      resetProblem !== null ||
+                      (passwordReset.own && passwordReset.password.length === 0)
+                    "
+                  >
+                    {{ busy === `password:${row.id}` ? 'Saving...' : 'Review change' }}
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-sm"
+                    :disabled="busy !== null"
+                    @click="closePasswordResetForm"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+
+              <p v-if="resetProblem" class="text-sm text-danger">{{ resetProblem }}</p>
+              <p v-else class="hint">
+                The old password stops working as soon as this is saved. Anything connecting with
+                it will need the new password.
+              </p>
+            </form>
+          </div>
         </article>
 
         <div class="px-1 pt-1">
@@ -782,5 +937,30 @@ onMounted(load);
         {{ formatBytes(overview.storageQuotaBytes) }} database storage allocated.
       </p>
     </template>
+
+    <PasswordConfirmDialog
+      :open="databaseToDelete !== null"
+      title="Delete database?"
+      :description="
+        `Everything in ${databaseToDelete?.name ?? 'this database'} will be permanently removed, and anything connecting to it will stop working.`
+      "
+      confirm-label="Delete database"
+      :busy="busy === databaseToDelete?.id"
+      :error="deletePasswordError"
+      @close="closeDrop"
+      @confirm="confirmDrop"
+    />
+
+    <ConfirmDialog
+      :open="passwordChangeConfirmationOpen"
+      title="Set a new database password?"
+      :description="passwordResetDescription"
+      confirm-label="Set new password"
+      busy-label="Setting password..."
+      :busy="busy === `password:${passwordReset?.row.id}`"
+      :error="passwordResetError"
+      @close="closePasswordChangeConfirmation"
+      @confirm="changePassword"
+    />
   </div>
 </template>

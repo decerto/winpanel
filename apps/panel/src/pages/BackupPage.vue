@@ -12,7 +12,12 @@ import PageHeader from '../components/PageHeader.vue';
 type Schedule = Awaited<ReturnType<typeof api.backups.panel.settings.query>>;
 type PanelBackup = Awaited<ReturnType<typeof api.backups.panel.list.query>>[number];
 
-const schedule = ref<Schedule>({ daily: true, weekly: false, monthly: false });
+const schedule = ref<Schedule>({
+  daily: true,
+  weekly: false,
+  monthly: false,
+  includeGameServers: false,
+});
 const backups = ref<PanelBackup[]>([]);
 const loading = ref(true);
 const saving = ref(false);
@@ -32,6 +37,12 @@ async function load(): Promise<void> {
     ]);
     schedule.value = settings;
     backups.value = archives;
+    const active = await api.backups.panel.active.query();
+    if (active) {
+      creating.value = true;
+      activeOperation.value = 'create';
+      job.watchJob(active.jobId);
+    }
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -71,7 +82,9 @@ async function createBackup(): Promise<void> {
   error.value = null;
   notice.value = null;
   try {
-    const result = await api.backups.panel.create.mutate();
+    const result = await api.backups.panel.create.mutate({
+      includeGameServers: schedule.value.includeGameServers,
+    });
     job.watchJob(result.jobId);
   } catch (err) {
     creating.value = false;
@@ -105,7 +118,7 @@ onMounted(() => void load());
   <div class="mx-auto w-full max-w-6xl">
     <PageHeader
       title="Panel backup"
-      description="Local recovery snapshots for the entire WinPanel server. Only the owner can access these."
+      description="Local recovery snapshots for the entire WinPanel server. Backups run on the server, so you can leave this page while one is being created. Only the owner can access these."
     >
       <template #actions>
         <button type="button" class="btn btn-ghost" :disabled="loading || creating || job.running.value" @click="load">
@@ -121,6 +134,9 @@ onMounted(() => void load());
 
     <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
     <AlertMessage v-if="notice" tone="success" class="mb-4">{{ notice }}</AlertMessage>
+    <AlertMessage v-if="job.running.value" tone="info" class="mb-4">
+      This backup is running in the background. You can leave this page and return later to see its progress.
+    </AlertMessage>
 
     <section v-if="job.lines.value.length > 0" class="card mb-5 overflow-hidden">
       <div class="flex items-center justify-between border-b border-line px-4 py-2.5">
@@ -207,7 +223,19 @@ onMounted(() => void load());
               <span class="capitalize">{{ period }}</span>
               <input v-model="schedule[period]" type="checkbox" />
             </label>
+            <label class="flex items-start justify-between gap-4 rounded-lg border border-line px-3 py-2.5 text-sm text-ink">
+              <span>
+                <span class="block">Include game servers</span>
+                <span class="mt-0.5 block text-xs leading-relaxed text-ink-faint">
+                  Game-server files can be hundreds of GB. Websites and databases are always included.
+                </span>
+              </span>
+              <input v-model="schedule.includeGameServers" type="checkbox" class="mt-0.5 shrink-0" />
+            </label>
           </div>
+          <p class="mt-3 text-xs leading-relaxed text-ink-faint">
+            This choice applies to <strong>Back up now</strong> and automatic snapshots. Save the schedule after changing it.
+          </p>
           <button type="button" class="btn btn-primary mt-4 w-full" :disabled="saving" @click="saveSchedule">
             <Save :size="15" aria-hidden="true" />
             {{ saving ? 'Saving...' : 'Save schedule' }}
@@ -217,7 +245,8 @@ onMounted(() => void load());
         <section class="card p-5">
           <h2 class="text-sm font-semibold text-ink">Recovery scope</h2>
           <p class="mt-1.5 text-sm leading-relaxed text-ink-muted">
-            A panel snapshot includes the panel, websites, game servers, databases and configuration. It stays on this server until you download or remove it.
+            A panel snapshot always includes the panel, websites, databases and configuration.
+            Game servers are {{ schedule.includeGameServers ? 'included' : 'left out' }} according to the option above. It stays on this server until you download or remove it.
           </p>
         </section>
       </aside>

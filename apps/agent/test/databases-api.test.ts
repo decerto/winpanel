@@ -215,9 +215,30 @@ describe('reaching somebody else\'s database', () => {
   });
 
   it('refuses to drop it', async () => {
-    expectNotFound(await call('POST', 'databases.drop', samCookie, { id: freyaDatabaseId }));
+    expectNotFound(
+      await call('POST', 'databases.drop', samCookie, {
+        id: freyaDatabaseId,
+        password: PASSWORD,
+      }),
+    );
 
     // And it is still there afterwards.
+    const still = app.db.db
+      .select()
+      .from(hostedDatabases)
+      .where(eq(hostedDatabases.id, freyaDatabaseId))
+      .all();
+    expect(still).toHaveLength(1);
+  });
+
+  it('does not drop an owned database with the wrong password', async () => {
+    const refused = await call('POST', 'databases.drop', freyaCookie, {
+      id: freyaDatabaseId,
+      password: 'not-the-password',
+    });
+
+    expect(refused.body.error.data.code).toBe('UNAUTHORIZED');
+    expect(refused.body.error.message).toMatch(/password/i);
     const still = app.db.db
       .select()
       .from(hostedDatabases)

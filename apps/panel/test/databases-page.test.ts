@@ -45,6 +45,7 @@ const state = vi.hoisted(() => ({
   attachable: [] as any[],
   attached: [] as any[],
   resized: [] as any[],
+  passwordChanges: [] as any[],
   revealPassword: 'revealed-secret',
 }));
 
@@ -111,7 +112,12 @@ vi.mock('../src/lib/api', () => ({
         }),
       },
       revealPassword: { query: vi.fn(async () => ({ password: state.revealPassword })) },
-      setPassword: { mutate: vi.fn(async () => ({ name: 'x', password: 'p', generated: true })) },
+      setPassword: {
+        mutate: vi.fn(async (input: any) => {
+          state.passwordChanges.push(input);
+          return { name: 'x', password: 'p', generated: true };
+        }),
+      },
       setSizeLimit: {
         mutate: vi.fn(async (input: any) => {
           state.resized.push(input);
@@ -187,6 +193,7 @@ beforeEach(() => {
   state.attachable = [];
   state.attached = [];
   state.resized = [];
+  state.passwordChanges = [];
   state.engines.unfinished = [];
 });
 
@@ -275,6 +282,19 @@ describe('an existing database', () => {
     );
   });
 
+  it('hides the password again without closing the connection details', async () => {
+    state.databases = [database()];
+    const wrapper = await render();
+
+    await button(wrapper, 'Show password')!.trigger('click');
+    await flushPromises();
+    await button(wrapper, 'Hide password')!.trigger('click');
+
+    expect(wrapper.text()).toContain('postgresql://u_me_shop:PASSWORD@127.0.0.1:5432/u_me_shop');
+    expect(wrapper.text()).toContain('Password hidden');
+    expect(button(wrapper, 'Connect')).toBeDefined();
+  });
+
   it('uses the server host when remote access is enabled', async () => {
     state.databases = [
       database({
@@ -338,6 +358,42 @@ describe('an existing database', () => {
     await flushPromises();
 
     expect(state.resized).toEqual([{ id: 'db-1', sizeLimitBytes: 3 * 1024 ** 3 }]);
+  });
+
+  it('asks before replacing an existing password', async () => {
+    state.databases = [database()];
+    const wrapper = await render();
+
+    await button(wrapper, 'New password')!.trigger('click');
+
+    expect(wrapper.text()).toContain('New password for u_me_shop');
+    expect(state.passwordChanges).toHaveLength(0);
+
+    await wrapper.find('form').trigger('submit');
+
+    expect(wrapper.text()).toContain('Set a new database password?');
+    expect(wrapper.text()).toContain('The current password will stop working');
+    expect(state.passwordChanges).toHaveLength(0);
+
+    await wrapper.find('form[role="dialog"]').trigger('submit');
+    await flushPromises();
+
+    expect(state.passwordChanges).toEqual([{ id: 'db-1' }]);
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+  });
+
+  it('sends a chosen password after it is confirmed', async () => {
+    state.databases = [database()];
+    const wrapper = await render();
+
+    await button(wrapper, 'New password')!.trigger('click');
+    await wrapper.find('#db-reset-mode-db-1').setValue('true');
+    await wrapper.find('#db-reset-password-db-1').setValue('chosen-password');
+    await wrapper.find('form').trigger('submit');
+    await wrapper.find('form[role="dialog"]').trigger('submit');
+    await flushPromises();
+
+    expect(state.passwordChanges).toEqual([{ id: 'db-1', password: 'chosen-password' }]);
   });
 });
 

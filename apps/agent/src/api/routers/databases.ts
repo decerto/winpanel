@@ -546,9 +546,16 @@ export const databasesRouter = router({
 
   /** Removes a database and the login that could reach it. */
   drop: protectedProcedure
-    .input(z.object({ id: z.string().min(1) }))
+    .input(z.object({ id: z.string().min(1), password: z.string().min(1).max(1024) }))
     .mutation(async ({ ctx, input }) => {
       const record = mustGetDatabase(ctx, input.id);
+
+      if (!(await ctx.app.auth.reauthenticate(ctx.user.id, input.password))) {
+        throw new TRPCError({
+          code: 'UNAUTHORIZED',
+          message: 'Your password is not correct.',
+        });
+      }
 
       try {
         await removeDatabase(engineContext(ctx), record);

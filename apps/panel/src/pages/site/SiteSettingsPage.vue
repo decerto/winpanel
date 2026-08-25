@@ -58,6 +58,7 @@ const SOURCE_LABEL: Record<string, string> = {
 };
 
 const confirmName = ref('');
+const deletePassword = ref('');
 const deleteFiles = ref(false);
 const removing = ref(false);
 
@@ -216,6 +217,7 @@ async function removeSite(): Promise<void> {
     await api.sites.remove.mutate({
       slug: slug(),
       confirmSlug: confirmName.value.trim(),
+      password: deletePassword.value,
       deleteFiles: deleteFiles.value,
     });
     await router.push('/sites');
@@ -424,6 +426,17 @@ watch(
           <input id="confirm-slug" v-model="confirmName" class="field font-mono" />
         </div>
 
+        <div class="min-w-56">
+          <label for="delete-password" class="label">Current account password</label>
+          <input
+            id="delete-password"
+            v-model="deletePassword"
+            type="password"
+            class="field"
+            autocomplete="current-password"
+          />
+        </div>
+
         <label class="mb-2.5 flex items-center gap-2 text-sm text-ink-muted">
           <input v-model="deleteFiles" type="checkbox" />
           Also delete its files from disk
@@ -432,7 +445,11 @@ watch(
         <button
           type="button"
           class="btn btn-danger mb-1"
-          :disabled="removing || confirmName.trim() !== site?.slug"
+          :disabled="
+            removing ||
+            confirmName.trim() !== site?.slug ||
+            deletePassword.length === 0
+          "
           @click="removeSite"
         >
           {{ removing ? 'Deleting\u2026' : 'Delete website' }}

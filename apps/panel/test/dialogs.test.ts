@@ -37,6 +37,8 @@ vi.mock('../src/lib/api', () => ({
 const PathPicker = (await import('../src/components/PathPicker.vue')).default;
 const ServerPathPicker = (await import('../src/components/ServerPathPicker.vue')).default;
 const FileEditorDialog = (await import('../src/components/FileEditorDialog.vue')).default;
+const PasswordConfirmDialog = (await import('../src/components/PasswordConfirmDialog.vue')).default;
+const ConfirmDialog = (await import('../src/components/ConfirmDialog.vue')).default;
 const SiteStorageDialog = (await import('../src/components/SiteStorageDialog.vue')).default;
 
 const pickers = [
@@ -56,6 +58,18 @@ const pickers = [
     name: 'FileEditorDialog',
     component: FileEditorDialog,
     props: { siteSlug: 'example', path: 'public/index.html' },
+    dismissLabel: 'Cancel',
+  },
+  {
+    name: 'PasswordConfirmDialog',
+    component: PasswordConfirmDialog,
+    props: { title: 'Delete database?', description: 'This cannot be undone.' },
+    dismissLabel: 'Cancel',
+  },
+  {
+    name: 'ConfirmDialog',
+    component: ConfirmDialog,
+    props: { title: 'Set a new password?', description: 'The old one will stop working.' },
     dismissLabel: 'Cancel',
   },
   {
@@ -119,5 +133,22 @@ describe.each(pickers)('$name', ({ component, props, dismissLabel }) => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
 
     expect(wrapper.emitted('close')).toBeUndefined();
+  });
+});
+
+describe('PasswordConfirmDialog confirmation', () => {
+  it('emits the password entered by the user', async () => {
+    const wrapper = mount(PasswordConfirmDialog, {
+      props: {
+        open: true,
+        title: 'Delete database?',
+        description: 'This cannot be undone.',
+      },
+    });
+
+    await wrapper.get('input[type="password"]').setValue('current-password');
+    await wrapper.get('form').trigger('submit');
+
+    expect(wrapper.emitted('confirm')).toEqual([['current-password']]);
   });
 });

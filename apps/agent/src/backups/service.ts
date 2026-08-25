@@ -14,7 +14,6 @@ import type { JobContext, JobQueue } from '../jobs/queue.js';
 import {
   listPanelServices,
   sortForStartup,
-  startPanelService,
   startSupportingServices,
   stopSupportingServices,
 } from '../windows/panel-services.js';
@@ -30,6 +29,7 @@ export const BackupPayload = z.object({
   backupId: z.string().uuid().optional(),
   frequency: BackupFrequency.optional(),
   periodKey: z.string().max(32).optional(),
+  includeGameServers: z.boolean().default(false),
 });
 export type BackupPayload = z.infer<typeof BackupPayload>;
 
@@ -37,10 +37,16 @@ export const BackupSchedule = z.object({
   daily: z.boolean(),
   weekly: z.boolean(),
   monthly: z.boolean(),
+  includeGameServers: z.boolean().default(false),
 });
 export type BackupSchedule = z.infer<typeof BackupSchedule>;
 
-const DEFAULT_SCHEDULE: BackupSchedule = { daily: true, weekly: false, monthly: false };
+const DEFAULT_SCHEDULE: BackupSchedule = {
+  daily: true,
+  weekly: false,
+  monthly: false,
+  includeGameServers: false,
+};
 const BACKUP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SCHEDULER_INTERVAL_MS = 15 * 60 * 1000;
 
@@ -112,46 +118,6 @@ function panelEntryNames(metadata: unknown): string[] {
   }
 
   return ['bin', 'data', 'caddy', 'panel', 'logs'];
-}
-
-async function withSupportingServicesStopped(
-  options: BackupServiceOptions,
-  ctx: JobContext,
-  operation: () => Promise<void>,
-): Promise<void> {
-  const services = await listPanelServices();
-  const recovery = createServiceRecovery(options.db);
-  const restart = services.filter((service) => service.kind !== 'panel' && service.state !== 'stopped');
-  let operationError: unknown;
-
-  try {
-    const stopped = await stopSupportingServices(services, { unblock: recovery.unblock });
-    if (stopped.failed.length > 0) {
-      throw new Error(
-        `Could not stop ${stopped.failed[0]?.label ?? 'a panel service'} before creating the backup.`,
-      );
-    }
-    await operation();
-  } catch (error) {
-    operationError = error;
-    throw error;
-  } finally {
-    const failed: string[] = [];
-    for (const service of restart) {
-      if (
-        !(await startPanelService(service.id, { unblock: recovery.unblock }))
-      ) {
-        failed.push(service.label);
-      }
-    }
-
-    if (failed.length > 0 && operationError === undefined) {
-      throw new Error(`Could not restart ${failed.join(', ')} after creating the backup.`);
-    }
-    if (failed.length > 0) {
-      ctx.log(`Could not restart ${failed.join(', ')} after the backup operation.`, 'error');
-    }
-  }
 }
 
 async function createArchive(
@@ -420,6 +386,7 @@ async function createSiteArchive(
 async function createPanelArchive(
   options: BackupServiceOptions,
   ctx: JobContext,
+  includeGameServers: boolean,
 ): Promise<void> {
   const workDir = path.join(options.backupDir, '.working', ctx.jobId);
   const metadata = path.join(workDir, 'winpanel-panel-backup.json');
@@ -452,63 +419,65 @@ async function createPanelArchive(
   await fs.rm(workDir, { recursive: true, force: true });
   try {
     await fs.mkdir(workDir, { recursive: true });
-    await withSupportingServicesStopped(options, ctx, async () => {
-      const panelEntries = await listPanelRootEntries(options);
-      const panelDatabaseSnapshot = path.join(workDir, 'panel-database', 'panel.db');
-      await fs.mkdir(path.dirname(panelDatabaseSnapshot), { recursive: true });
-      await options.db.sqlite.backup(panelDatabaseSnapshot);
+    const panelEntries = await listPanelRootEntries(options);
+    const panelDatabaseSnapshot = path.join(workDir, 'panel-database', 'panel.db');
+    await fs.mkdir(path.dirname(panelDatabaseSnapshot), { recursive: true });
+    await options.db.sqlite.backup(panelDatabaseSnapshot);
 
-      const websiteManifest = siteRecords.map((site) => ({
-        slug: site.slug,
-        path: `${path.basename(options.sitesRoot)}/${site.slug}`,
-      }));
-      const databaseManifest = databaseRecords.map((record) => ({
-        engine: record.engine,
-        name: record.name,
-        siteId: record.siteId,
-        siteSlug: record.siteSlug,
-        storage: path.relative(options.root, engineDataDir(options.dataDir, record.engine)),
-      }));
+    const websiteManifest = siteRecords.map((site) => ({
+      slug: site.slug,
+      path: `${path.basename(options.sitesRoot)}/${site.slug}`,
+    }));
+    const databaseManifest = databaseRecords.map((record) => ({
+      engine: record.engine,
+      name: record.name,
+      siteId: record.siteId,
+      siteSlug: record.siteSlug,
+      storage: path.relative(options.root, engineDataDir(options.dataDir, record.engine)),
+    }));
 
-      await fs.writeFile(
-        metadata,
-        JSON.stringify(
-          {
-            format: 'winpanel-panel-backup',
-            version: 2,
-            createdAt: new Date().toISOString(),
-            panelEntries: panelEntries.map((entry) => path.basename(entry)),
-            panelDatabase: 'panel-database/panel.db',
-            websites: websiteManifest,
-            databases: databaseManifest,
-            roots: {
-              panel: options.root,
-              websites: options.sitesRoot,
-              gameServers: options.gameServersRoot,
-            },
+    await fs.writeFile(
+      metadata,
+      JSON.stringify(
+        {
+          format: 'winpanel-panel-backup',
+          version: 2,
+          createdAt: new Date().toISOString(),
+          panelEntries: panelEntries.map((entry) => path.basename(entry)),
+          panelDatabase: 'panel-database/panel.db',
+          websites: websiteManifest,
+          databases: databaseManifest,
+          includeGameServers,
+          roots: {
+            panel: options.root,
+            websites: options.sitesRoot,
+            gameServers: options.gameServersRoot,
           },
-          null,
-          2,
-        ),
-        'utf8',
-      );
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
 
-      const entries = [
-        ...panelEntries,
-        ...(await exists(options.sitesRoot) ? [options.sitesRoot] : []),
-        ...(await exists(options.gameServersRoot) ? [options.gameServersRoot] : []),
-        path.dirname(panelDatabaseSnapshot),
-        metadata,
-      ];
+    const entries = [
+      ...panelEntries,
+      ...(await exists(options.sitesRoot) ? [options.sitesRoot] : []),
+      ...(includeGameServers && (await exists(options.gameServersRoot))
+        ? [options.gameServersRoot]
+        : []),
+      path.dirname(panelDatabaseSnapshot),
+      metadata,
+    ];
 
-      ctx.log(
-        `Compressing the panel, ${websiteManifest.length} website${websiteManifest.length === 1 ? '' : 's'}, ` +
-          `${databaseManifest.length} database${databaseManifest.length === 1 ? '' : 's'} and game servers.`,
-      );
-      await createArchive(output, entries, 'tar.gz');
-      ctx.progress(100);
-      ctx.log('The local panel backup is ready.');
-    });
+    ctx.log(
+      `Compressing the panel, ${websiteManifest.length} website${websiteManifest.length === 1 ? '' : 's'}, ` +
+        `${databaseManifest.length} database${databaseManifest.length === 1 ? '' : 's'}` +
+        `${includeGameServers ? ' and game servers' : ''}.`,
+    );
+    await createArchive(output, entries, 'tar.gz');
+    ctx.progress(100);
+    ctx.log('The local panel backup is ready.');
   } finally {
     await fs.rm(workDir, { recursive: true, force: true });
   }
@@ -711,7 +680,7 @@ export function createBackupHandler(options: BackupServiceOptions) {
     if (parsed.scope === 'site') {
       await createSiteArchive(parsed, options, ctx);
     } else {
-      await createPanelArchive(options, ctx);
+      await createPanelArchive(options, ctx, parsed.includeGameServers);
     }
   };
 }
@@ -797,7 +766,13 @@ export class BackupScheduler {
       this.jobs.enqueue({
         kind: 'backup',
         title: `${frequency[0]?.toUpperCase() ?? ''}${frequency.slice(1)} panel backup`,
-        payload: { scope: 'panel', operation: 'create', frequency, periodKey },
+        payload: {
+          scope: 'panel',
+          operation: 'create',
+          frequency,
+          periodKey,
+          includeGameServers: schedule.includeGameServers,
+        },
         maxAttempts: 2,
       });
     }
