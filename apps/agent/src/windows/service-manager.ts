@@ -83,6 +83,8 @@ export interface ServiceDefinition {
   args?: readonly string[];
   workingDirectory?: string;
   env?: Readonly<Record<string, string>>;
+  /** Manual for user-controlled services such as game servers. */
+  startMode?: 'automatic' | 'manual';
   /** Where rotating logs are written. */
   logPath: string;
   /** Account the service runs as. Omit for LocalSystem. */
@@ -179,7 +181,7 @@ export function buildServiceXml(definition: ServiceDefinition): string {
     lines.push('  </serviceaccount>');
   }
 
-  lines.push('  <startmode>Automatic</startmode>');
+  lines.push(`  <startmode>${definition.startMode === 'manual' ? 'Manual' : 'Automatic'}</startmode>`);
   lines.push('  <onfailure action="restart" delay="5 sec"/>');
   lines.push('  <onfailure action="restart" delay="15 sec"/>');
   lines.push('  <onfailure action="restart" delay="60 sec"/>');
@@ -231,9 +233,28 @@ function describeFailure(result: { stderr: string; stdout: string }): string {
   return output.length > 0 ? output : 'No output was produced.';
 }
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Gives a just-started service a moment to fall over before it is trusted. */
 function settle(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 3_000));
+  return delay(3_000);
+}
+
+async function waitUntilStopped(
+  probe: () => Promise<ServiceState>,
+  timeoutMs: number,
+): Promise<ServiceState> {
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    const state = await probe();
+    if (state === 'stopped' || state === 'not-installed') return state;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return state;
+    await delay(Math.min(500, remaining));
+  }
 }
 
 /** Lines that are part of a crash dump's furniture rather than its reason. */
@@ -376,6 +397,7 @@ export class ServiceManager {
     }
 
     await this.verifyAccount(definition);
+    await this.setStartMode(definition.id, definition.startMode ?? 'automatic');
   }
 
   /**
@@ -396,6 +418,20 @@ export class ServiceManager {
       `The "${definition.displayName}" service was registered as ${actual} rather than ` +
         `${definition.account.username}, so it would run with the wrong permissions.`,
     );
+  }
+
+  /** Keeps an existing registration in sync when its XML start mode changes. */
+  async setStartMode(id: string, mode: 'automatic' | 'manual'): Promise<void> {
+    if (process.platform !== 'win32') return;
+
+    const result = await runCommand({
+      exe: 'sc.exe',
+      args: ['config', id, 'start=', mode === 'manual' ? 'demand' : 'auto'],
+      timeoutMs: 30_000,
+    });
+    if (result.exitCode !== 0) {
+      throw new Error(`Could not set the startup mode for the "${id}" service.`);
+    }
   }
 
   /**
@@ -460,14 +496,19 @@ export class ServiceManager {
     if (current === null) return 'not-installed';
 
     const next = buildServiceXml(definition);
-    if (next === current) return 'unchanged';
+    const changed = next !== current;
 
-    await fs.mkdir(definition.logPath, { recursive: true });
-    await fs.writeFile(configPath, next, { mode: 0o600 });
+    if (changed) {
+      await fs.mkdir(definition.logPath, { recursive: true });
+      await fs.writeFile(configPath, next, { mode: 0o600 });
+    }
+    await this.setStartMode(definition.id, definition.startMode ?? 'automatic');
 
-    if ((await this.getState(definition.id)) === 'running') await this.restart(definition.id);
+    if (changed && (await this.getState(definition.id)) === 'running') {
+      await this.restart(definition.id);
+    }
 
-    return 'updated';
+    return changed ? 'updated' : 'unchanged';
   }
 
   async uninstall(id: string): Promise<void> {
@@ -634,13 +675,35 @@ export class ServiceManager {
    * appears to be using.
    */
   async stop(id: string): Promise<void> {
-    await runCommand({
-      exe: await this.requireWrapper(id),
-      args: ['stop'],
-      timeoutMs: 120_000,
-    });
+    let state = await this.getState(id);
+    if (state === 'stopped' || state === 'not-installed') {
+      await this.recovery?.unblock(id);
+      return;
+    }
 
-    await this.recovery?.unblock(id).catch(() => false);
+    const wrapper = this.wrapperPathFor(id);
+    if (await this.exists(wrapper)) {
+      await runCommand({
+        exe: wrapper,
+        args: ['stop'],
+        timeoutMs: 120_000,
+      }).catch(() => undefined);
+    }
+
+    // WinSW can return before Windows has acted, and sc.exe is the fallback
+    // when a wrapper's stop command did not reach the service.
+    await runCommand({ exe: 'sc.exe', args: ['stop', id], timeoutMs: 30_000 }).catch(() => undefined);
+    state = await waitUntilStopped(() => this.getState(id), 120_000);
+
+    const cleared = await this.recovery?.unblock(id);
+    if (state !== 'stopped' && state !== 'not-installed' && cleared) {
+      state = await waitUntilStopped(() => this.getState(id), 5_000);
+    }
+    if (state !== 'stopped' && state !== 'not-installed') {
+      throw new Error(
+        `The "${id}" service would not stop. End its process in Task Manager, then try again.`,
+      );
+    }
   }
 
   /**

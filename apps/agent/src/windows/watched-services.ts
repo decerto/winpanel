@@ -1,7 +1,8 @@
 import { inArray } from 'drizzle-orm';
 import { config } from '../config.js';
 import type { DatabaseHandle } from '../db/index.js';
-import { jobs, sites } from '../db/schema.js';
+import { gameServerPorts, jobs, sites } from '../db/schema.js';
+import type { GameServerService } from '../game-servers/game-server-service.js';
 import { AGENT_SERVICE_ID, siteServiceId, type PanelService } from './panel-services.js';
 import type { ServiceRecovery } from './service-manager.js';
 import { isPortAnswered, type PortProbe } from './service-probe.js';
@@ -37,6 +38,68 @@ const RUNTIME_IMAGES: Record<string, readonly string[]> = {
   // the site's ports — and they are what a stopped service must let go of.
   php: ['php-cgi.exe'],
 };
+
+type GameServerWatchSource = Pick<GameServerService, 'list' | 'catalogEntryFor'>;
+type GameServerWatchSourceProvider =
+  | GameServerWatchSource
+  | (() => GameServerWatchSource | undefined);
+
+function resolveGameServerSource(
+  source?: GameServerWatchSourceProvider,
+): GameServerWatchSource | undefined {
+  return typeof source === 'function' ? source() : source;
+}
+
+export function gameServerWatchedServices(
+  db: DatabaseHandle,
+  source?: GameServerWatchSourceProvider,
+): WatchedService[] {
+  const gameServers = resolveGameServerSource(source);
+  if (!gameServers) return [];
+
+  const bindings = db.db
+    .select({
+      gameServerId: gameServerPorts.gameServerId,
+      port: gameServerPorts.port,
+      protocol: gameServerPorts.protocol,
+    })
+    .from(gameServerPorts)
+    .all();
+  const byServer = new Map<string, typeof bindings>();
+
+  for (const binding of bindings) {
+    const current = byServer.get(binding.gameServerId) ?? [];
+    current.push(binding);
+    byServer.set(binding.gameServerId, current);
+  }
+
+  return gameServers.list().flatMap((server) => {
+    if (!server.serviceId) return [];
+
+    const entry = gameServers.catalogEntryFor(server.catalogId);
+    if (!entry) return [];
+
+    const executable = entry.runtime === 'java'
+      ? 'java.exe'
+      : (entry.launchExecutable ?? entry.executable).split(/[\\/]/).at(-1);
+    if (!executable) return [];
+
+    const serverBindings = byServer.get(server.id) ?? [];
+    const ports = serverBindings.map((binding) => binding.port);
+    const probePorts = serverBindings
+      .filter((binding) => binding.protocol === 'tcp')
+      .map((binding) => binding.port);
+    if (ports.length === 0) return [];
+
+    return [{
+      id: server.serviceId,
+      label: `Game server: ${server.displayName}`,
+      images: [executable],
+      ports,
+      ...(probePorts.length > 0 ? { probePorts } : {}),
+    }];
+  });
+}
 
 /**
  * The panel itself, which can be unblocked but is never watched.
@@ -143,13 +206,25 @@ export function watchdogServices(db: DatabaseHandle): WatchedService[] {
  * Used to answer "which ports does this service own", which stays true during
  * a deploy and has to: the deploy itself is one of the callers.
  */
-export function allWatchedServices(db: DatabaseHandle): WatchedService[] {
-  return [PANEL_SERVICE, ...WATCHED_SERVICES, ...siteWatchedServices(db)];
+export function allWatchedServices(
+  db: DatabaseHandle,
+  gameServerSource?: GameServerWatchSourceProvider,
+): WatchedService[] {
+  return [
+    PANEL_SERVICE,
+    ...WATCHED_SERVICES,
+    ...siteWatchedServices(db),
+    ...gameServerWatchedServices(db, gameServerSource),
+  ];
 }
 
-export function watchedServiceFor(db: DatabaseHandle, id: string): WatchedService | undefined {
+export function watchedServiceFor(
+  db: DatabaseHandle,
+  id: string,
+  gameServerSource?: GameServerWatchSourceProvider,
+): WatchedService | undefined {
   const lower = id.toLowerCase();
-  return allWatchedServices(db).find((service) => service.id.toLowerCase() === lower);
+  return allWatchedServices(db, gameServerSource).find((service) => service.id.toLowerCase() === lower);
 }
 
 /**
@@ -169,9 +244,10 @@ export async function annotateResponding(
   db: DatabaseHandle,
   listed: readonly PanelService[],
   probe: PortProbe = isPortAnswered,
+  gameServerSource?: GameServerWatchSourceProvider,
 ): Promise<PanelService[]> {
   const watched = new Map(
-    allWatchedServices(db).map((service) => [service.id.toLowerCase(), service]),
+    allWatchedServices(db, gameServerSource).map((service) => [service.id.toLowerCase(), service]),
   );
 
   return await Promise.all(
@@ -179,9 +255,10 @@ export async function annotateResponding(
       if (service.state !== 'running') return service;
 
       const known = watched.get(service.id.toLowerCase());
-      if (!known || known.ports.length === 0) return service;
+      const probePorts = known?.probePorts ?? known?.ports ?? [];
+      if (!known || probePorts.length === 0) return service;
 
-      const answered = await Promise.all(known.ports.map((port) => probe(port)));
+      const answered = await Promise.all(probePorts.map((port) => probe(port)));
       // Silent on every port is the dead-child case; anything else is fine.
       return { ...service, responding: answered.some(Boolean) };
     }),
@@ -193,11 +270,20 @@ export async function annotateResponding(
  * retried. Reports whether anything was actually cleared, because retrying a
  * start that failed for some other reason only wastes the user's time.
  */
-export async function unblockService(db: DatabaseHandle, id: string): Promise<boolean> {
-  const service = watchedServiceFor(db, id);
+export async function unblockService(
+  db: DatabaseHandle,
+  id: string,
+  gameServerSource?: GameServerWatchSourceProvider,
+): Promise<boolean> {
+  const service = watchedServiceFor(db, id, gameServerSource);
   if (!service) return false;
 
-  const { killed } = await clearStrayListeners(service.ports, service.images);
+  const { killed, remaining } = await clearStrayListeners(service.ports, service.images);
+  if (remaining.length > 0) {
+    throw new Error(
+      `Could not end ${remaining.map(describeHolder).join(', ')} while freeing ${service.label}.`,
+    );
+  }
   return killed.length > 0;
 }
 
@@ -207,8 +293,12 @@ export async function unblockService(db: DatabaseHandle, id: string): Promise<bo
  * Null when the port is free, or held only by the service's own processes,
  * which are cleared rather than described.
  */
-export async function describeBlockers(db: DatabaseHandle, id: string): Promise<string | null> {
-  const service = watchedServiceFor(db, id);
+export async function describeBlockers(
+  db: DatabaseHandle,
+  id: string,
+  gameServerSource?: GameServerWatchSourceProvider,
+): Promise<string | null> {
+  const service = watchedServiceFor(db, id, gameServerSource);
   if (!service) return null;
 
   const { foreign } = partitionHolders(await listPortHolders(service.ports), service.images);
@@ -221,9 +311,12 @@ export async function describeBlockers(db: DatabaseHandle, id: string): Promise<
  * Handed to the service manager, and to anything else that has to start or
  * stop a service without knowing what a database is.
  */
-export function createServiceRecovery(db: DatabaseHandle): ServiceRecovery {
+export function createServiceRecovery(
+  db: DatabaseHandle,
+  gameServerSource?: GameServerWatchSourceProvider,
+): ServiceRecovery {
   return {
-    unblock: (id) => unblockService(db, id),
-    describeBlockers: (id) => describeBlockers(db, id),
+    unblock: (id) => unblockService(db, id, gameServerSource),
+    describeBlockers: (id) => describeBlockers(db, id, gameServerSource),
   };
 }

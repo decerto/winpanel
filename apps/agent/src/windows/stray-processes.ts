@@ -34,20 +34,23 @@ export interface StrayProcess {
 export function parseListeningPids(
   output: string,
   ports: readonly number[],
+  protocol: 'tcp' | 'udp' = 'tcp',
 ): Array<{ port: number; pid: number }> {
   const wanted = new Set(ports);
   const found: Array<{ port: number; pid: number }> = [];
   const seen = new Set<string>();
 
   for (const line of output.split(/\r?\n/)) {
-    const match = /^\s*TCP\s+(?:\[[^\]]+\]|[\d.]+):(\d+)\s+(?:\[[^\]]+\]|[\d.]+):(\d+)\s+\S+\s+(\d+)\s*$/i.exec(
-      line,
-    );
-    if (!match?.[1] || !match[3]) continue;
-    if (match[2] !== '0') continue;
+    const match = protocol === 'udp'
+      ? /^\s*UDP\s+(?:\[[^\]]+\]|[\d.]+):(\d+)\s+\S+\s+(\d+)\s*$/i.exec(line)
+      : /^\s*TCP\s+(?:\[[^\]]+\]|[\d.]+):(\d+)\s+(?:\[[^\]]+\]|[\d.]+):(\d+)\s+\S+\s+(\d+)\s*$/i.exec(line);
+    if (!match?.[1]) continue;
+    if (protocol === 'tcp' && match[2] !== '0') continue;
 
     const port = Number.parseInt(match[1], 10);
-    const pid = Number.parseInt(match[3], 10);
+    const pidText = protocol === 'udp' ? match[2] : match[3];
+    if (!pidText) continue;
+    const pid = Number.parseInt(pidText, 10);
     if (!wanted.has(port) || pid <= 0) continue;
 
     // The same process listens on IPv4 and IPv6 for one port; report it once.
@@ -92,21 +95,32 @@ async function imageNameFor(pid: number): Promise<string | null> {
 export async function listPortHolders(ports: readonly number[]): Promise<StrayProcess[]> {
   if (process.platform !== 'win32' || ports.length === 0) return [];
 
-  const result = await runCommand({
-    exe: 'netstat.exe',
-    args: ['-ano', '-p', 'TCP'],
-    timeoutMs: 30_000,
-  });
-
-  if (result.exitCode !== 0) return [];
+  const results = await Promise.all(
+    (['tcp', 'udp'] as const).map(async (protocol) => ({
+      protocol,
+      result: await runCommand({
+        exe: 'netstat.exe',
+        args: ['-ano', '-p', protocol.toUpperCase()],
+        timeoutMs: 30_000,
+      }),
+    })),
+  );
 
   const holders: StrayProcess[] = [];
+  const seen = new Set<string>();
 
-  for (const { port, pid } of parseListeningPids(result.stdout, ports)) {
-    if (pid === process.pid) continue;
+  for (const { protocol, result } of results) {
+    if (result.exitCode !== 0) continue;
 
-    const image = await imageNameFor(pid);
-    if (image) holders.push({ pid, port, image });
+    for (const { port, pid } of parseListeningPids(result.stdout, ports, protocol)) {
+      if (pid === process.pid) continue;
+      const key = `${port}:${pid}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const image = await imageNameFor(pid);
+      if (image) holders.push({ pid, port, image });
+    }
   }
 
   return holders;
@@ -161,6 +175,8 @@ export function partitionHolders(
 export interface PortClearance {
   /** Processes that matched one of `images` and have been ended. */
   killed: StrayProcess[];
+  /** Matching listeners that remained after the kill attempt. */
+  remaining: StrayProcess[];
   /**
    * Processes still holding a port that are nothing to do with the panel.
    * Never killed: the port is ours to allocate, not ours to enforce, and
@@ -191,7 +207,8 @@ export async function clearStrayListeners(
     }
   }
 
-  return { killed, foreign };
+  const remaining = ours.length > 0 ? await findStrayListeners(ports, images) : [];
+  return { killed, foreign, remaining };
 }
 
 /** Names a process in a sentence a person can act on. */

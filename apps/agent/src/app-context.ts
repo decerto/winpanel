@@ -109,22 +109,6 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     config.accessLogDir,
     config.customCertDir,
   );
-  const services = new ServiceManager(
-    path.join(config.binDir, 'WinSW.exe'),
-    path.join(config.dataDir, 'services'),
-    createServiceRecovery(db),
-  );
-  const firewall = process.platform === 'win32' ? new FirewallManager() : undefined;
-  const databaseNetwork = new DatabaseNetworkService({
-    db,
-    vault,
-    services,
-    firewall,
-    binDir: config.binDir,
-    dataDir: config.dataDir,
-    logDir: config.logDir,
-    panelAddress: firstIpv4(localAddresses()),
-  });
   const sites = new SiteService(db, vault, config.sitesRoot);
 
   /*
@@ -161,6 +145,47 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     process.stderr.write(`Skipping game server config ${file}: ${error}\n`);
   }
   const gameServers = new GameServerService(db, config.gameServersRoot, gameCatalogue);
+  const services = new ServiceManager(
+    path.join(config.binDir, 'WinSW.exe'),
+    path.join(config.dataDir, 'services'),
+    createServiceRecovery(db, gameServers),
+  );
+  if (process.platform === 'win32') {
+    for (const server of gameServers.list()) {
+      if (!server.serviceId) continue;
+
+      const serviceState = await services.getState(server.serviceId);
+      if (serviceState !== 'not-installed') {
+        await services.setStartMode(server.serviceId, 'manual');
+      }
+      if (server.state !== 'stopped') continue;
+
+      try {
+        await services.stop(server.serviceId);
+      } catch (error) {
+        db.db
+          .update(schema.gameServers)
+          .set({ state: 'failed', updatedAt: new Date() })
+          .where(eq(schema.gameServers.id, server.id))
+          .run();
+        process.stderr.write(
+          `Could not clean up the stopped game server ${server.displayName}: ` +
+            `${error instanceof Error ? error.message : 'unknown error'}\n`,
+        );
+      }
+    }
+  }
+  const firewall = process.platform === 'win32' ? new FirewallManager() : undefined;
+  const databaseNetwork = new DatabaseNetworkService({
+    db,
+    vault,
+    services,
+    firewall,
+    binDir: config.binDir,
+    dataDir: config.dataDir,
+    logDir: config.logDir,
+    panelAddress: firstIpv4(localAddresses()),
+  });
   const traffic = new TrafficCollector({ db, accessLogDir: config.accessLogDir });
 
   if (options.demoSeed) {
@@ -270,6 +295,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
         gameServersRoot: config.gameServersRoot,
         binDir: config.binDir,
         backupDir: config.backupDir,
+        gameServers,
       }),
     );
   }

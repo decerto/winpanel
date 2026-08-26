@@ -4,6 +4,7 @@ import {
   PANEL_SERVICE_PREFIX,
   describePanelService,
   parseServiceQuery,
+  shouldListGameServerService,
   sortForShutdown,
   sortForStartup,
   type PanelService,
@@ -110,11 +111,26 @@ describe('describePanelService', () => {
     );
   });
 
+  it('recognises a game-server service separately from an unknown program', () => {
+    expect(describePanelService('winpanel-game-palworld')).toEqual({
+      label: 'Game server: palworld',
+      kind: 'game-server',
+    });
+  });
+
   it('falls back to the raw id for something it does not recognise', () => {
     expect(describePanelService('winpanel-something-new')).toEqual({
       label: 'winpanel-something-new',
       kind: 'other',
     });
+  });
+
+  it('lists only active or failed game-server intent states', () => {
+    expect(shouldListGameServerService('stopped')).toBe(false);
+    expect(shouldListGameServerService('stopping')).toBe(false);
+    expect(shouldListGameServerService('running')).toBe(true);
+    expect(shouldListGameServerService('failed')).toBe(true);
+    expect(shouldListGameServerService(undefined)).toBe(true);
   });
 });
 

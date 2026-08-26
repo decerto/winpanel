@@ -11,11 +11,13 @@ import { withMongo } from '../databases/mongodb.js';
 import { findExecutable } from '../components/archive.js';
 import { runCommand, runDetached } from '../process/run-command.js';
 import type { JobContext, JobQueue } from '../jobs/queue.js';
+import type { GameServerService } from '../game-servers/game-server-service.js';
 import {
   listPanelServices,
   sortForStartup,
   startSupportingServices,
   stopSupportingServices,
+  type PanelService,
 } from '../windows/panel-services.js';
 import { createServiceRecovery } from '../windows/watched-services.js';
 
@@ -69,6 +71,7 @@ export interface BackupServiceOptions {
   gameServersRoot: string;
   binDir: string;
   backupDir: string;
+  gameServers?: Pick<GameServerService, 'list' | 'catalogEntryFor'>;
 }
 
 function archivePath(backupDir: string, scope: 'site' | 'panel', id: string): string {
@@ -771,6 +774,22 @@ try {
 `;
 }
 
+function servicesToResumeAfterRestore(
+  services: readonly PanelService[],
+  gameServers?: Pick<GameServerService, 'list'>,
+): PanelService[] {
+  const states = new Map(
+    gameServers?.list()
+      .filter((server) => server.serviceId)
+      .map((server) => [server.serviceId!.toLowerCase(), server.state]),
+  );
+
+  return services.filter((service) => {
+    if (service.kind !== 'game-server') return true;
+    return (states.get(service.id.toLowerCase()) ?? service.state) === 'running';
+  });
+}
+
 async function restorePanelArchive(
   payload: BackupPayload,
   options: BackupServiceOptions,
@@ -782,7 +801,8 @@ async function restorePanelArchive(
 
   const workDir = path.join(options.backupDir, '.restore', ctx.jobId);
   const services = await listPanelServices();
-  const recovery = createServiceRecovery(options.db);
+  const resumableServices = servicesToResumeAfterRestore(services, options.gameServers);
+  const recovery = createServiceRecovery(options.db, options.gameServers);
   let stopped = false;
   let deferred = false;
 
@@ -805,7 +825,7 @@ async function restorePanelArchive(
     stopped = true;
 
     if (process.platform === 'win32') {
-      const serviceIds = sortForStartup(services)
+      const serviceIds = sortForStartup(resumableServices)
         .filter((service) => service.kind !== 'panel')
         .map((service) => service.id);
       const scriptPath = path.join(workDir, 'restore.ps1');
@@ -866,7 +886,7 @@ async function restorePanelArchive(
   } finally {
     if (!deferred) {
       await fs.rm(workDir, { recursive: true, force: true });
-      if (stopped) await startSupportingServices(services, { unblock: recovery.unblock });
+      if (stopped) await startSupportingServices(resumableServices, { unblock: recovery.unblock });
     }
   }
 

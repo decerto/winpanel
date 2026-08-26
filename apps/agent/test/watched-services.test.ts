@@ -1,16 +1,20 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SiteManifest } from '@winpanel/shared';
 import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
-import { jobs } from '../src/db/schema.js';
+import { gameServerPorts, gameServers as gameServerRows, jobs } from '../src/db/schema.js';
+import { GameServerService } from '../src/game-servers/game-server-service.js';
+import { GameServerCatalogue } from '../src/game-servers/catalogue-loader.js';
 import { SecretVault } from '../src/security/vault.js';
 import { SiteService } from '../src/sites/site-service.js';
 import { partitionHolders } from '../src/windows/stray-processes.js';
 import {
   annotateResponding,
   siteWatchedServices,
+  gameServerWatchedServices,
   watchdogServices,
   watchedServiceFor,
 } from '../src/windows/watched-services.js';
@@ -26,10 +30,12 @@ import type { PanelService } from '../src/windows/panel-services.js';
  */
 
 const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
+const CATALOGUE = path.join(import.meta.dirname, '..', '..', '..', 'game-servers', 'catalogue');
 
 let tmpDir: string;
 let handle: DatabaseHandle;
 let sites: SiteService;
+let gameServerService: GameServerService;
 
 beforeEach(async () => {
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'winpanel-watched-'));
@@ -40,6 +46,8 @@ beforeEach(async () => {
   await vault.initialise();
 
   sites = new SiteService(handle, vault, path.join(tmpDir, 'sites'));
+  const catalogue = await GameServerCatalogue.load(CATALOGUE, path.join(tmpDir, 'catalogue-data'));
+  gameServerService = new GameServerService(handle, path.join(tmpDir, 'game-servers'), catalogue);
 });
 
 afterEach(async () => {
@@ -97,6 +105,53 @@ describe('siteWatchedServices', () => {
     expect(watchedServiceFor(handle, 'winpanel-site-shop-example-green')?.ports).toEqual([3002]);
     expect(watchedServiceFor(handle, 'winpanel-site-nothing-blue')).toBeUndefined();
   }, 30_000);
+});
+
+describe('gameServerWatchedServices', () => {
+  it('tracks all listeners and probes only TCP ports', () => {
+    const serverId = crypto.randomUUID();
+    handle.db.insert(gameServerRows).values({
+      id: serverId,
+      slug: 'palworld',
+      displayName: 'Palworld',
+      ownerUserId: null,
+      catalogId: 'palworld-dedicated',
+      state: 'running',
+      installPath: path.join(tmpDir, 'game-servers', 'palworld', 'server'),
+      dataPath: path.join(tmpDir, 'game-servers', 'palworld', 'data'),
+      diskQuotaBytes: 50 * 1024 ** 3,
+      serviceId: 'winpanel-game-palworld',
+      eulaAccepted: true,
+    }).run();
+    handle.db.insert(gameServerPorts).values([
+      {
+        id: crypto.randomUUID(),
+        gameServerId: serverId,
+        name: 'game',
+        protocol: 'udp',
+        purpose: 'game',
+        visibility: 'public',
+        port: 8211,
+      },
+      {
+        id: crypto.randomUUID(),
+        gameServerId: serverId,
+        name: 'rcon',
+        protocol: 'tcp',
+        purpose: 'rcon',
+        visibility: 'loopback',
+        port: 25575,
+      },
+    ]).run();
+
+    expect(gameServerWatchedServices(handle, gameServerService)).toEqual([{
+      id: 'winpanel-game-palworld',
+      label: 'Game server: Palworld',
+      images: ['PalServer.exe'],
+      ports: [8211, 25575],
+      probePorts: [25575],
+    }]);
+  });
 });
 
 describe('watchdogServices', () => {

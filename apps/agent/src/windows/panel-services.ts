@@ -1,3 +1,4 @@
+import { type GameServerState } from '@winpanel/shared';
 import { CADDY_SERVICE_ID } from '../caddy/service.js';
 import { COMPONENT_CATALOGUE } from '../components/catalogue.js';
 import { runCommand, runDetached } from '../process/run-command.js';
@@ -34,7 +35,7 @@ export function siteServiceId(slug: string, colour: 'blue' | 'green'): string {
 export type PanelServiceState = 'running' | 'stopped' | 'starting' | 'stopping' | 'unknown';
 
 /** What a service is for. Also decides the order things are stopped in. */
-export type PanelServiceKind = 'site' | 'component' | 'other' | 'panel';
+export type PanelServiceKind = 'site' | 'component' | 'game-server' | 'other' | 'panel';
 
 export interface PanelService {
   id: string;
@@ -57,6 +58,7 @@ export interface PanelService {
 const STOP_ORDER: Record<PanelServiceKind, number> = {
   site: 0,
   component: 1,
+  'game-server': 1,
   other: 2,
   panel: 3,
 };
@@ -94,6 +96,11 @@ export function describePanelService(id: string): { label: string; kind: PanelSe
   );
   if (component) return { label: component.name, kind: 'component' };
 
+  const gameServer = /^winpanel-game-(.+)$/.exec(lower);
+  if (gameServer?.[1]) {
+    return { label: `Game server: ${gameServer[1]}`, kind: 'game-server' };
+  }
+
   // The trailing colour is the deployment slot. It means nothing to the person
   // reading this list, and the service id is printed underneath anyway.
   const site = /^winpanel-site-(.+)-(?:blue|green)$/.exec(lower);
@@ -102,6 +109,10 @@ export function describePanelService(id: string): { label: string; kind: PanelSe
   }
 
   return { label: id, kind: 'other' };
+}
+
+export function shouldListGameServerService(state: GameServerState | undefined): boolean {
+  return state === undefined || state === 'running' || state === 'failed';
 }
 
 /**
@@ -354,11 +365,9 @@ export async function stopSupportingServices(
 /**
  * Starts everything except the panel, which is by definition already running.
  *
- * This deliberately starts every registered service, including the inactive
- * colour of a website. That is exactly what Windows does on a restart — they
- * are all set to start automatically and each colour has its own port — so
- * this button produces the same result as rebooting, and no surprises beyond
- * it.
+ * This deliberately starts every supplied service, including the inactive
+ * colour of a website. Callers filter out manual-start services whose stopped
+ * state is user intent before handing the list here.
  */
 export async function startSupportingServices(
   services: readonly PanelService[],

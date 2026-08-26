@@ -127,7 +127,13 @@ describe('Minecraft Java installation', () => {
       return new Response(jar, { status: 200 });
     }));
 
-    const installed: Array<{ id: string; executable: string; args?: readonly string[]; workingDirectory?: string }> = [];
+    const installed: Array<{
+      id: string;
+      executable: string;
+      args?: readonly string[];
+      workingDirectory?: string;
+      startMode?: string;
+    }> = [];
     const services = {
       isInstalled: async () => false,
       install: async (definition: (typeof installed)[number]) => installed.push(definition),
@@ -153,6 +159,7 @@ describe('Minecraft Java installation', () => {
     expect(installed[0]?.executable).toBe('java.exe');
     expect(installed[0]?.args).toEqual(['-jar', path.join(server.installPath, 'server.jar'), 'nogui']);
     expect(installed[0]?.workingDirectory).toBe(server.dataPath);
+    expect(installed[0]?.startMode).toBe('manual');
   });
 
   it('passes only the catalog Steam App ID to SteamCMD', async () => {

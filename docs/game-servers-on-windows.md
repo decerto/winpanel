@@ -25,6 +25,11 @@ nothing on this page asks you to edit a file by hand before your first server is
 6. Select **Install server**. WinPanel downloads the provider files, verifies what it can, creates the data folder, registers a Windows Service, and applies the server's public firewall rules.
 7. Start the server from its detail page.
 
+Game servers use manual Windows service startup. A server you stop stays stopped across
+reboots and does not appear in the generic Settings service warnings; it remains available
+on the **Game Servers** page when you want to start it again. A server that is marked
+running but stops answering is still reported as a problem.
+
 WinPanel never downloads or redistributes game content during installation setup. SteamCMD and Minecraft downloads remain subject to Valve, Mojang/Microsoft, and each game's licence terms.
 
 ## Supported providers

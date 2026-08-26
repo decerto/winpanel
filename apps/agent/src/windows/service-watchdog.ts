@@ -51,6 +51,8 @@ export interface WatchedService {
   images: readonly string[];
   /** Ports the service binds and a stray copy would still be holding. */
   ports: readonly number[];
+  /** TCP ports that can be used to check whether the application answers. */
+  probePorts?: readonly number[];
   /** Set for a website, so callers can tell which one it belongs to. */
   siteId?: string;
 }

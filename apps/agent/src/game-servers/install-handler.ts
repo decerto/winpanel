@@ -261,6 +261,7 @@ async function registerService(
     executable,
     args,
     workingDirectory,
+    startMode: 'manual' as const,
     logPath: path.join(server.dataPath, 'logs'),
   };
   if (deps.services) {

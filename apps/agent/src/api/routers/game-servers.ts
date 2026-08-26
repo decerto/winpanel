@@ -889,6 +889,18 @@ export const gameServersRouter = router({
         }
         return { ok: true };
       } catch (error) {
+        if (input.action === 'stop') {
+          const serviceState = await ctx.app.services.getState(server.serviceId).catch(() => 'unknown' as const);
+          if (serviceState === 'stopped' || serviceState === 'not-installed') {
+            await ctx.app.db.db
+              .update(ctx.app.schema.gameServers)
+              .set({ state: 'stopped', updatedAt: new Date() })
+              .where(eq(ctx.app.schema.gameServers.id, server.id))
+              .run();
+            return { ok: true };
+          }
+        }
+
         await ctx.app.db.db
           .update(ctx.app.schema.gameServers)
           .set({ state: 'failed', updatedAt: new Date() })

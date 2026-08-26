@@ -188,6 +188,10 @@ describe('buildServiceXml', () => {
     expect(buildServiceXml(base)).toContain('<startmode>Automatic</startmode>');
   });
 
+  it('supports manual startup for user-controlled services', () => {
+    expect(buildServiceXml({ ...base, startMode: 'manual' })).toContain('<startmode>Manual</startmode>');
+  });
+
   it('rotates logs and keeps a bounded history', () => {
     const xml = buildServiceXml(base);
     expect(xml).toContain('roll-by-size-time');

@@ -3,10 +3,13 @@ import fs from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { config, paths } from '../config.js';
 import { createAppContext } from '../app-context.js';
 import { createDatabase } from '../db/index.js';
 import { buildServiceXml, ServiceManager, type ServiceRecovery } from '../windows/service-manager.js';
+import { GameServerService } from '../game-servers/game-server-service.js';
+import { GameServerCatalogue } from '../game-servers/catalogue-loader.js';
 import {
   FirewallManager,
   ensureBuildAccount,
@@ -52,10 +55,10 @@ export interface InstallResult {
  *
  * An upgrade has to stop the web server, the mail server and every website
  * before it can replace files any of them hold open. Nothing else knows they
- * were running: they are all set to start automatically, so on a reboot
- * Windows brings them back, but an in-place update never reboots. Without
- * this the panel comes back alone and every site on the server stays dark
- * until somebody notices and presses Start.
+ * were running, and an in-place update never reboots. Without this the panel
+ * comes back alone and every site on the server stays dark until somebody
+ * notices and presses Start. Game servers are manual-start services, so only
+ * ones that were running are recorded and resumed.
  */
 const SUSPENDED_SERVICES_FILE = 'services-stopped-for-update.json';
 
@@ -310,10 +313,26 @@ export async function uninstall(options: { keepSites: boolean }): Promise<string
  * doing nothing rather than failing the install.
  */
 async function openServiceRecovery(): Promise<ServiceRecovery & { close: () => void }> {
+  let db: ReturnType<typeof createDatabase> | undefined;
+
   try {
-    const db = createDatabase(paths.database());
-    return { ...createServiceRecovery(db), close: () => db.close() };
+    const database = createDatabase(paths.database());
+    db = database;
+    const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+    const packagedCatalogue = path.join(moduleDir, '..', 'game-servers', 'catalogue');
+    const repoCatalogue = path.join(moduleDir, '..', '..', '..', 'game-servers', 'catalogue');
+    const seedCatalogue = await fs.access(packagedCatalogue).then(
+      () => packagedCatalogue,
+      () => repoCatalogue,
+    );
+    const catalogue = await GameServerCatalogue.load(
+      seedCatalogue,
+      path.join(config.dataDir, 'game-servers', 'catalogue'),
+    );
+    const gameServers = new GameServerService(database, config.gameServersRoot, catalogue);
+    return { ...createServiceRecovery(database, gameServers), close: () => database.close() };
   } catch {
+    db?.close();
     return {
       unblock: async () => false,
       describeBlockers: async () => null,

@@ -63,8 +63,9 @@ people's websites.
 
 `PrepareToInstall` in `packages/installer/winpanel.iss`:
 
-1. runs the bundled agent's `stop-all`, which stops Caddy, Stalwart and every website
-   service and records what was running to `data\services-stopped-for-update.json`,
+1. runs the bundled agent's `stop-all`, which stops Caddy, Stalwart, every website
+   service and any running game server, recording what was running to
+   `data\services-stopped-for-update.json`,
 2. `net stop winpanel-agent`,
 3. replaces the program files,
 4. runs `install`, which re-registers the agent service, starts it, and resumes exactly the
@@ -81,9 +82,10 @@ the rules about what may be ended.
 A service that does not come back afterwards is named in the wizard's final page, along
 with the program holding the port it needed if something else has taken it.
 
-That file is the reason the panel does not come back alone. Everything is set to start
-automatically, so a reboot would bring it all back - but an in-place update never reboots,
-and without the record every site on the server would stay dark until somebody noticed.
+That file is the reason the panel does not come back alone. Website and component services
+start automatically, while game servers are manual-start services; the update resumes only
+the game servers that were running before it began. A reboot or in-place update never starts
+a game server that the owner deliberately stopped.
 
 The installer keeps a stable `AppId`, so Windows treats this as an upgrade. `C:\WinPanel\data`
 and `C:\Sites` are untouched, which is why sessions, secrets and site files survive.

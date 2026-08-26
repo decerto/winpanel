@@ -370,6 +370,15 @@ describe('parseListeningPids', () => {
     expect(parseListeningPids(output, [443])).toEqual([{ port: 443, pid: 11372 }]);
   });
 
+  it('reads UDP listeners for game servers', () => {
+    const output = [
+      '  UDP    0.0.0.0:8211           *:*                                    11372',
+      '  UDP    [::]:8211              *:*                                    11372',
+    ].join('\r\n');
+
+    expect(parseListeningPids(output, [8211], 'udp')).toEqual([{ port: 8211, pid: 11372 }]);
+  });
+
   it('reports a port only once when both stacks are bound', () => {
     const both = [
       '  TCP    0.0.0.0:443            0.0.0.0:0              LISTENING       11372',

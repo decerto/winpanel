@@ -3,9 +3,10 @@ import dns from 'node:dns/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { TRPCError } from '@trpc/server';
+import { eq } from 'drizzle-orm';
+import { CADDY_ADMIN_PORT, PANEL_PORT, STALWART_HTTP_PORT, type GameServerState } from '@winpanel/shared';
 import { z } from 'zod';
-import { CADDY_ADMIN_PORT, PANEL_PORT, STALWART_HTTP_PORT } from '@winpanel/shared';
-import { adminProcedure, router, superadminProcedure } from '../trpc.js';
+import { adminProcedure, router, superadminProcedure, type RequestContext } from '../trpc.js';
 import { localAddresses, resolvePanelTls } from '../../tls/panel-certificate.js';
 import {
   PanelHostnameError,
@@ -27,6 +28,7 @@ import {
   startSupportingServices,
   stopPanelService,
   stopSupportingServices,
+  shouldListGameServerService,
   type PanelService,
 } from '../../windows/panel-services.js';
 import {
@@ -46,8 +48,12 @@ import { BrowseError, browseDirectory } from '../../files/server-browse.js';
  * and naming it is the difference between a user who can fix this and one
  * who reads "check the log" and gives up.
  */
-async function explainFailedStart(db: DatabaseHandle, service: PanelService): Promise<string> {
-  const blockers = await describeBlockers(db, service.id);
+async function explainFailedStart(
+  db: DatabaseHandle,
+  service: PanelService,
+  describe: (id: string) => Promise<string | null> = (id) => describeBlockers(db, id),
+): Promise<string> {
+  const blockers = await describe(service.id);
 
   if (!blockers) {
     return `${service.label} did not stay running. Its log in the logs folder says why.`;
@@ -110,6 +116,70 @@ function siteClaiming(db: DatabaseHandle, hostname: string): string | null {
   }
 
   return null;
+}
+
+async function listServicesForGeneralControls(
+  ctx: Pick<RequestContext, 'app'>,
+): Promise<PanelService[]> {
+  const gameServerStates = new Map(
+    ctx.app.gameServers
+      .list()
+      .filter((server) => server.serviceId)
+      .map((server) => [server.serviceId!.toLowerCase(), server.state]),
+  );
+
+  return (await listPanelServices()).filter((service) => {
+    if (service.kind !== 'game-server') return true;
+    return shouldListGameServerService(gameServerStates.get(service.id.toLowerCase()));
+  });
+}
+
+function gameServerForService(ctx: Pick<RequestContext, 'app'>, serviceId: string) {
+  const lower = serviceId.toLowerCase();
+  return ctx.app.gameServers.list().find(
+    (server) => server.serviceId?.toLowerCase() === lower,
+  );
+}
+
+function setGameServerState(
+  ctx: Pick<RequestContext, 'app'>,
+  id: string,
+  state: GameServerState,
+): void {
+  ctx.app.db.db
+    .update(ctx.app.schema.gameServers)
+    .set({ state, updatedAt: new Date() })
+    .where(eq(ctx.app.schema.gameServers.id, id))
+    .run();
+}
+
+function markStoppedGameServers(
+  ctx: Pick<RequestContext, 'app'>,
+  services: readonly PanelService[],
+  failed: readonly { id: string }[],
+): void {
+  const failedIds = new Set(failed.map((service) => service.id.toLowerCase()));
+
+  for (const service of services) {
+    if (service.kind !== 'game-server' || failedIds.has(service.id.toLowerCase())) continue;
+    const gameServer = gameServerForService(ctx, service.id);
+    if (gameServer) setGameServerState(ctx, gameServer.id, 'stopped');
+  }
+}
+
+function markStartedGameServers(
+  ctx: Pick<RequestContext, 'app'>,
+  services: readonly PanelService[],
+  failed: readonly { id: string }[],
+): void {
+  const failedIds = new Set(failed.map((service) => service.id.toLowerCase()));
+
+  for (const service of services) {
+    if (service.kind !== 'game-server') continue;
+    const gameServer = gameServerForService(ctx, service.id);
+    if (!gameServer) continue;
+    setGameServerState(ctx, gameServer.id, failedIds.has(service.id.toLowerCase()) ? 'failed' : 'running');
+  }
 }
 
 export const systemRouter = router({
@@ -280,7 +350,14 @@ export const systemRouter = router({
    * `responding` flag is what lets the list say so instead of claiming health.
    */
   backgroundServices: adminProcedure.query(
-    async ({ ctx }) => await annotateResponding(ctx.app.db, await listPanelServices()),
+    async ({ ctx }) => {
+      return await annotateResponding(
+        ctx.app.db,
+        await listServicesForGeneralControls(ctx),
+        undefined,
+        ctx.app.gameServers,
+      );
+    },
   ),
 
   /**
@@ -336,8 +413,8 @@ export const systemRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
-      const services = await listPanelServices();
-      const service = services.find((candidate) => candidate.id === input.id);
+      const services = await listServicesForGeneralControls(ctx);
+      const service = services.find((candidate) => candidate.id.toLowerCase() === input.id.toLowerCase());
 
       if (!service) {
         throw new TRPCError({
@@ -355,7 +432,39 @@ export const systemRouter = router({
         });
       }
 
-      const options = { unblock: createServiceRecovery(ctx.app.db).unblock };
+      const recovery = createServiceRecovery(ctx.app.db, ctx.app.gameServers);
+      const gameServer = service.kind === 'game-server'
+        ? gameServerForService(ctx, service.id)
+        : undefined;
+
+      if (gameServer) {
+        try {
+          setGameServerState(
+            ctx,
+            gameServer.id,
+            input.action === 'stop' ? 'stopping' : 'starting',
+          );
+          if (input.action === 'start') {
+            await ctx.app.services.start(service.id);
+          } else if (input.action === 'stop') {
+            await ctx.app.services.stop(service.id);
+          } else {
+            await ctx.app.services.restart(service.id);
+          }
+          setGameServerState(ctx, gameServer.id, input.action === 'stop' ? 'stopped' : 'running');
+        } catch (error) {
+          setGameServerState(ctx, gameServer.id, 'failed');
+          throw new TRPCError({
+            code: 'INTERNAL_SERVER_ERROR',
+            message: error instanceof Error ? error.message : `${service.label} could not be controlled.`,
+            cause: error,
+          });
+        }
+
+        return { id: service.id, label: service.label };
+      }
+
+      const options = { unblock: recovery.unblock };
 
       const succeeded =
         input.action === 'start'
@@ -370,7 +479,7 @@ export const systemRouter = router({
           message:
             input.action === 'stop'
               ? `${service.label} did not stop within a minute.`
-              : await explainFailedStart(ctx.app.db, service),
+              : await explainFailedStart(ctx.app.db, service, recovery.describeBlockers),
         });
       }
 
@@ -462,15 +571,19 @@ export const systemRouter = router({
     }),
 
   /**
-   * Starts everything WinPanel runs that is not already up.
+  * Starts every eligible WinPanel service that is not already up. Deliberately
+  * stopped game servers stay on their own page instead of being started here.
    *
    * The counterpart to `shutdown`, so stopping the server from here is not a
    * one-way door that needs a command prompt to reverse.
    */
   startAll: adminProcedure.mutation(async ({ ctx }) => {
-    return await startSupportingServices(await listPanelServices(), {
-      unblock: createServiceRecovery(ctx.app.db).unblock,
+    const services = await listServicesForGeneralControls(ctx);
+    const report = await startSupportingServices(services, {
+      unblock: createServiceRecovery(ctx.app.db, ctx.app.gameServers).unblock,
     });
+    markStartedGameServers(ctx, services, report.failed);
+    return report;
   }),
 
   /**
@@ -481,8 +594,8 @@ export const systemRouter = router({
    *
    * Exists so that upgrading or removing WinPanel does not require the user to
    * find and end processes by hand. Nothing is uninstalled and no data is
-   * touched; the services are set to start automatically, so a restart of the
-   * machine brings it all back.
+  * touched; website and component services start automatically, while game
+  * servers are manual-start services and are left stopped when requested.
    */
   shutdown: superadminProcedure
     .input(z.object({ includePanel: z.boolean().default(true) }).optional())
@@ -494,9 +607,11 @@ export const systemRouter = router({
        * service manager has lost track of is exactly what makes Windows refuse
        * to replace the files afterwards.
        */
+      const recovery = createServiceRecovery(ctx.app.db, ctx.app.gameServers);
       const { changed, failed } = await stopSupportingServices(services, {
-        unblock: createServiceRecovery(ctx.app.db).unblock,
+        unblock: recovery.unblock,
       });
+      markStoppedGameServers(ctx, services, failed);
 
       // Only worth asking Windows to stop the panel if Windows is what is
       // running it. Started by hand, there is no service to stop and the
