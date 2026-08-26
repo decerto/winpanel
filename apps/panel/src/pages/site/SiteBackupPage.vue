@@ -16,6 +16,7 @@ type SiteBackup = Awaited<ReturnType<typeof api.backups.site.list.query>>[number
 const backups = ref<SiteBackup[]>([]);
 const loading = ref(true);
 const creating = ref(false);
+const includeDependencies = ref(false);
 const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
 const slug = computed(() => site.value?.slug ?? '');
@@ -57,7 +58,10 @@ async function createBackup(): Promise<void> {
   notice.value = null;
 
   try {
-    const result = await api.backups.site.create.mutate({ slug: slug.value });
+    const result = await api.backups.site.create.mutate({
+      slug: slug.value,
+      includeDependencies: includeDependencies.value,
+    });
     job.watchJob(result.jobId);
   } catch (err) {
     creating.value = false;
@@ -88,6 +92,18 @@ watch(slug, () => void load(), { immediate: true });
 
     <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
     <AlertMessage v-if="notice" tone="success" class="mb-4">{{ notice }}</AlertMessage>
+
+    <label class="card mb-4 flex items-start justify-between gap-4 px-5 py-4 text-sm text-ink">
+      <span>
+        <span class="block font-medium">Include dependencies (node_modules)</span>
+        <span class="mt-1 block text-xs leading-relaxed text-ink-faint">
+          Adds considerable time, because dependencies are usually most of the files in a website.
+          Left out, the ZIP still contains your files and database exports, and the dependencies are
+          reinstalled by a deployment.
+        </span>
+      </span>
+      <input v-model="includeDependencies" type="checkbox" class="mt-0.5 shrink-0" :disabled="creating" />
+    </label>
     <AlertMessage v-if="job.running.value" tone="info" class="mb-4">
       This backup is running in the background. You can leave this page and return later to see its progress.
     </AlertMessage>

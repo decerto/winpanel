@@ -14,7 +14,6 @@ import type { JobContext, JobQueue } from '../jobs/queue.js';
 import {
   listPanelServices,
   sortForStartup,
-  startPanelService,
   startSupportingServices,
   stopSupportingServices,
 } from '../windows/panel-services.js';
@@ -31,6 +30,7 @@ export const BackupPayload = z.object({
   frequency: BackupFrequency.optional(),
   periodKey: z.string().max(32).optional(),
   includeGameServers: z.boolean().default(false),
+  includeDependencies: z.boolean().default(false),
 });
 export type BackupPayload = z.infer<typeof BackupPayload>;
 
@@ -39,6 +39,7 @@ export const BackupSchedule = z.object({
   weekly: z.boolean(),
   monthly: z.boolean(),
   includeGameServers: z.boolean().default(false),
+  includeDependencies: z.boolean().default(false),
 });
 export type BackupSchedule = z.infer<typeof BackupSchedule>;
 
@@ -47,6 +48,7 @@ const DEFAULT_SCHEDULE: BackupSchedule = {
   weekly: false,
   monthly: false,
   includeGameServers: false,
+  includeDependencies: false,
 };
 const BACKUP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SCHEDULER_INTERVAL_MS = 15 * 60 * 1000;
@@ -93,6 +95,29 @@ function archiveEntry(filePath: string): { parent: string; name: string } {
 }
 
 const MAX_ESTIMATED_ARCHIVE_ENTRIES = 100_000;
+
+/**
+ * Build caches, which the next deploy rebuilds from scratch.
+ *
+ * These are pure cost in a snapshot: they are large, they consist of enormous
+ * numbers of small files, and they are the folders a running build is most
+ * likely to be rewriting while the backup reads them.
+ */
+const EXCLUDED_FROM_BACKUP = [
+  'node_modules/.cache',
+  'node_modules/.vite',
+  '.next/cache',
+  '.nuxt/cache',
+  '.angular/cache',
+  '.parcel-cache',
+  '.turbo',
+];
+
+/**
+ * Installed dependencies. Excluded unless asked for: they are the bulk of the
+ * files in a Node website, and a deployment reinstalls them from the lockfile.
+ */
+const DEPENDENCY_DIRECTORIES = ['node_modules'];
 
 async function estimateArchiveEntries(entries: readonly string[]): Promise<number | undefined> {
   let total = 0;
@@ -144,46 +169,16 @@ async function listPanelRootEntries(options: BackupServiceOptions): Promise<stri
     .filter((entry) => !excluded.has(path.resolve(entry)));
 }
 
-async function withSupportingServicesStopped(
-  options: BackupServiceOptions,
-  ctx: JobContext,
-  operation: () => Promise<void>,
-): Promise<void> {
-  const services = await listPanelServices();
-  const recovery = createServiceRecovery(options.db);
-  const restart = services.filter((service) => service.kind !== 'panel' && service.state !== 'stopped');
-  let operationError: unknown;
+function reportSkipped(outcome: ArchiveOutcome, ctx: JobContext): void {
+  if (outcome.skippedCount === 0) return;
 
-  try {
-    ctx.log('Preparing a consistent panel snapshot.');
-    ctx.progress(5);
-    const stopped = await stopSupportingServices(services, { unblock: recovery.unblock });
-    if (stopped.failed.length > 0) {
-      throw new Error(
-        `Could not stop ${stopped.failed[0]?.label ?? 'a panel service'} before creating the backup.`,
-      );
-    }
-    ctx.log('Capturing the panel state.');
-    ctx.progress(10);
-    await operation();
-  } catch (error) {
-    operationError = error;
-    throw error;
-  } finally {
-    const failed: string[] = [];
-    for (const service of restart) {
-      if (!(await startPanelService(service.id, { unblock: recovery.unblock }))) {
-        failed.push(service.label);
-      }
-    }
-
-    if (failed.length > 0 && operationError === undefined) {
-      throw new Error(`Could not restart ${failed.join(', ')} after creating the backup.`);
-    }
-    if (failed.length > 0) {
-      ctx.log(`Could not restart ${failed.join(', ')} after the backup operation.`, 'error');
-    }
-  }
+  const examples = outcome.skipped.join(', ');
+  ctx.log(
+    `${outcome.skippedCount} item${outcome.skippedCount === 1 ? '' : 's'} changed while the backup was ` +
+      `running and ${outcome.skippedCount === 1 ? 'was' : 'were'} left out: ${examples}` +
+      `${outcome.skippedCount > outcome.skipped.length ? ', …' : ''}. Everything else was captured.`,
+    'warn',
+  );
 }
 
 function panelEntryNames(metadata: unknown): string[] {
@@ -203,12 +198,51 @@ function panelEntryNames(metadata: unknown): string[] {
   return ['bin', 'data', 'caddy', 'panel', 'logs'];
 }
 
-async function createArchive(
+export interface ArchiveOutcome {
+  /** Examples of paths that changed underneath the archive tool. */
+  readonly skipped: readonly string[];
+  readonly skippedCount: number;
+}
+
+/**
+ * A file the archive tool stepped over, having recorded everything else.
+ *
+ * Backups run while the machine is serving, so a build, a log rotation or a
+ * package manager can remove a file between the directory being read and that
+ * file being opened. bsdtar reports it, carries on, and exits non-zero at the
+ * end via "Error exit delayed from previous errors" — the archive it produced
+ * is complete apart from that one path.
+ */
+const SKIPPED_ENTRY =
+  /^tar(?:\.exe)?:\s*(.*?):\s*(?:cannot stat|could ?n[o']?t visit directory|cannot open|cannot read)/i;
+
+/** The same thing one level up: a whole folder replaced by a deploy mid-run. */
+const SKIPPED_DIRECTORY = /^tar(?:\.exe)?:\s*could not chdir to\s*'?([^']*)'?/i;
+
+/**
+ * A failure that ended the run, leaving a truncated or absent archive.
+ *
+ * This has to be told apart from the case above by the message, because bsdtar
+ * exits 1 for both: refusing to open the output and skipping one file inside a
+ * million-file tree are the same exit code.
+ */
+const FATAL_ARCHIVE_ERROR = /failed to open|no space left|write error|cannot write|disk full/i;
+
+/** Long enough for a large installation; the previous hour was not. */
+const ARCHIVE_TIMEOUT_MS = 12 * 60 * 60 * 1000;
+
+export interface ArchiveOptions {
+  readonly onProgress?: (percent: number) => void;
+  /** Keep node_modules. Much slower, and only needed to restore without a redeploy. */
+  readonly includeDependencies?: boolean;
+}
+
+export async function createArchive(
   output: string,
   entries: readonly string[],
   format: 'zip' | 'tar.gz',
-  onProgress?: (percent: number) => void,
-): Promise<void> {
+  { onProgress, includeDependencies = false }: ArchiveOptions = {},
+): Promise<ArchiveOutcome> {
   await fs.mkdir(path.dirname(output), { recursive: true });
   const present = entries.filter((entry) => entry.length > 0);
   if (present.length === 0) throw new Error('There is no data available to back up.');
@@ -216,6 +250,9 @@ async function createArchive(
   const estimatedEntries = onProgress ? await estimateArchiveEntries(present) : undefined;
   let archivedEntries = 0;
   let lastProgress = 0;
+  let fatal = false;
+  let skippedCount = 0;
+  const skipped: string[] = [];
   const diagnostics: string[] = [];
   const reportProgress = () => {
     const percent =
@@ -236,30 +273,49 @@ async function createArchive(
       '-v',
       '-f',
       output,
+      // Only gzip takes this, and naming a module the format does not have is
+      // itself an error, so a website .zip must not be given it.
+      ...(format === 'tar.gz' ? ['--options', 'gzip:compression-level=1'] : []),
+      ...[...EXCLUDED_FROM_BACKUP, ...(includeDependencies ? [] : DEPENDENCY_DIRECTORIES)].flatMap(
+        (pattern) => ['--exclude', pattern],
+      ),
       ...present.flatMap((entry) => {
         const part = archiveEntry(entry);
         return ['-C', part.parent, part.name];
       }),
     ],
-    timeoutMs: 60 * 60 * 1000,
+    timeoutMs: ARCHIVE_TIMEOUT_MS,
     onOutput: (line, stream) => {
       const text = line.trim();
-      const isEntry = stream === 'stdout' || /^a\s+/.test(text);
-      if (isEntry) {
+      if (!text) return;
+
+      if (stream === 'stdout' || /^a\s/.test(text)) {
         archivedEntries += 1;
         reportProgress();
-      } else if (text) {
-        diagnostics.push(text);
-        if (diagnostics.length > 20) diagnostics.shift();
+        return;
       }
+
+      const skip = SKIPPED_ENTRY.exec(text) ?? SKIPPED_DIRECTORY.exec(text);
+      if (skip) {
+        skippedCount += 1;
+        if (skipped.length < 5) skipped.push(skip[1]?.trim() || text);
+        return;
+      }
+
+      if (FATAL_ARCHIVE_ERROR.test(text)) fatal = true;
+      diagnostics.push(text);
+      if (diagnostics.length > 20) diagnostics.shift();
     },
   });
 
-  if (result.exitCode !== 0) {
+  // An archive holding everything that still existed is the point of the
+  // exercise; throwing away an hour of work over one vanished file is not.
+  const usable = !result.timedOut && !fatal && archivedEntries > 0 && (await exists(output));
+  if (!usable) {
     await fs.rm(output, { force: true }).catch(() => undefined);
     const detail = diagnostics.join('\n') || result.stderr.trim() || result.stdout.trim();
     const status = result.timedOut
-      ? 'The archive tool exceeded its one-hour time limit.'
+      ? 'The archive tool ran out of time.'
       : `The archive tool exited with code ${result.exitCode}.`;
     throw new Error(
       `The ${format} archive could not be created. ${status} ${detail || 'The archive tool returned no details.'}`,
@@ -267,6 +323,7 @@ async function createArchive(
   }
 
   onProgress?.(100);
+  return { skipped, skippedCount };
 }
 
 async function extractArchive(archive: string, destination: string): Promise<void> {
@@ -498,10 +555,18 @@ async function createSiteArchive(
       'utf8',
     );
 
-    ctx.log('Compressing the website files and database exports.');
-    await createArchive(output, [siteRoot, metadata, databaseDir], 'zip', (percent) => {
-      ctx.progress(60 + percent * 0.39);
+    ctx.log(
+      payload.includeDependencies
+        ? 'Compressing the website files, dependencies and database exports. Including dependencies takes considerably longer.'
+        : 'Compressing the website files and database exports. Dependency folders are left out.',
+    );
+    const archived = await createArchive(output, [siteRoot, metadata, databaseDir], 'zip', {
+      includeDependencies: payload.includeDependencies,
+      onProgress: (percent) => {
+        ctx.progress(60 + percent * 0.39);
+      },
     });
+    reportSkipped(archived, ctx);
     ctx.log('The website archive is ready to download.');
   } finally {
     await fs.rm(workDir, { recursive: true, force: true });
@@ -512,6 +577,7 @@ async function createPanelArchive(
   options: BackupServiceOptions,
   ctx: JobContext,
   includeGameServers: boolean,
+  includeDependencies: boolean,
 ): Promise<void> {
   const workDir = path.join(options.backupDir, '.working', ctx.jobId);
   const metadata = path.join(workDir, 'winpanel-panel-backup.json');
@@ -544,68 +610,78 @@ async function createPanelArchive(
   await fs.rm(workDir, { recursive: true, force: true });
   try {
     await fs.mkdir(workDir, { recursive: true });
-    await withSupportingServicesStopped(options, ctx, async () => {
-      const panelEntries = await listPanelRootEntries(options);
-      const panelDatabaseSnapshot = path.join(workDir, 'panel-database', 'panel.db');
-      await fs.mkdir(path.dirname(panelDatabaseSnapshot), { recursive: true });
-      await options.db.sqlite.backup(panelDatabaseSnapshot);
+    ctx.log('Preparing the panel snapshot. Websites and services stay online.');
+    ctx.progress(5);
 
-      const websiteManifest = siteRecords.map((site) => ({
-        slug: site.slug,
-        path: `${path.basename(options.sitesRoot)}/${site.slug}`,
-      }));
-      const databaseManifest = databaseRecords.map((record) => ({
-        engine: record.engine,
-        name: record.name,
-        siteId: record.siteId,
-        siteSlug: record.siteSlug,
-        storage: path.relative(options.root, engineDataDir(options.dataDir, record.engine)),
-      }));
+    const panelEntries = await listPanelRootEntries(options);
+    const panelDatabaseSnapshot = path.join(workDir, 'panel-database', 'panel.db');
+    await fs.mkdir(path.dirname(panelDatabaseSnapshot), { recursive: true });
+    // SQLite's own backup API, so the copy is consistent while the panel
+    // keeps writing to the live database throughout.
+    await options.db.sqlite.backup(panelDatabaseSnapshot);
+    ctx.progress(10);
 
-      await fs.writeFile(
-        metadata,
-        JSON.stringify(
-          {
-            format: 'winpanel-panel-backup',
-            version: 2,
-            createdAt: new Date().toISOString(),
-            panelEntries: panelEntries.map((entry) => path.basename(entry)),
-            panelDatabase: 'panel-database/panel.db',
-            websites: websiteManifest,
-            databases: databaseManifest,
-            includeGameServers,
-            roots: {
-              panel: options.root,
-              websites: options.sitesRoot,
-              gameServers: options.gameServersRoot,
-            },
+    const websiteManifest = siteRecords.map((site) => ({
+      slug: site.slug,
+      path: `${path.basename(options.sitesRoot)}/${site.slug}`,
+    }));
+    const databaseManifest = databaseRecords.map((record) => ({
+      engine: record.engine,
+      name: record.name,
+      siteId: record.siteId,
+      siteSlug: record.siteSlug,
+      storage: path.relative(options.root, engineDataDir(options.dataDir, record.engine)),
+    }));
+
+    await fs.writeFile(
+      metadata,
+      JSON.stringify(
+        {
+          format: 'winpanel-panel-backup',
+          version: 2,
+          createdAt: new Date().toISOString(),
+          panelEntries: panelEntries.map((entry) => path.basename(entry)),
+          panelDatabase: 'panel-database/panel.db',
+          websites: websiteManifest,
+          databases: databaseManifest,
+          includeGameServers,
+          includeDependencies,
+          roots: {
+            panel: options.root,
+            websites: options.sitesRoot,
+            gameServers: options.gameServersRoot,
           },
-          null,
-          2,
-        ),
-        'utf8',
-      );
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
 
-      const entries = [
-        ...panelEntries,
-        ...(await exists(options.sitesRoot) ? [options.sitesRoot] : []),
-        ...(includeGameServers && (await exists(options.gameServersRoot))
-          ? [options.gameServersRoot]
-          : []),
-        path.dirname(panelDatabaseSnapshot),
-        metadata,
-      ];
+    const entries = [
+      ...panelEntries,
+      ...(await exists(options.sitesRoot) ? [options.sitesRoot] : []),
+      ...(includeGameServers && (await exists(options.gameServersRoot))
+        ? [options.gameServersRoot]
+        : []),
+      path.dirname(panelDatabaseSnapshot),
+      metadata,
+    ];
 
-      ctx.log(
-        `Compressing the panel, ${websiteManifest.length} website${websiteManifest.length === 1 ? '' : 's'}, ` +
-          `${databaseManifest.length} database${databaseManifest.length === 1 ? '' : 's'}` +
-          `${includeGameServers ? ' and game servers' : ''}.`,
-      );
-      await createArchive(output, entries, 'tar.gz', (percent) => {
+    ctx.log(
+      `Compressing the panel, ${websiteManifest.length} website${websiteManifest.length === 1 ? '' : 's'}, ` +
+        `${databaseManifest.length} database${databaseManifest.length === 1 ? '' : 's'}` +
+        `${includeGameServers ? ' and game servers' : ''}.` +
+        `${includeDependencies ? ' Dependencies are included, which takes considerably longer.' : ''}`,
+    );
+    const archived = await createArchive(output, entries, 'tar.gz', {
+      includeDependencies,
+      onProgress: (percent) => {
         ctx.progress(10 + percent * 0.9);
-      });
-      ctx.log('The local panel backup is ready.');
+      },
     });
+    reportSkipped(archived, ctx);
+    ctx.log('The local panel backup is ready.');
   } finally {
     await fs.rm(workDir, { recursive: true, force: true });
   }
@@ -808,7 +884,7 @@ export function createBackupHandler(options: BackupServiceOptions) {
     if (parsed.scope === 'site') {
       await createSiteArchive(parsed, options, ctx);
     } else {
-      await createPanelArchive(options, ctx, parsed.includeGameServers);
+      await createPanelArchive(options, ctx, parsed.includeGameServers, parsed.includeDependencies);
     }
   };
 }
@@ -900,6 +976,7 @@ export class BackupScheduler {
           frequency,
           periodKey,
           includeGameServers: schedule.includeGameServers,
+          includeDependencies: schedule.includeDependencies,
         },
         maxAttempts: 2,
       });

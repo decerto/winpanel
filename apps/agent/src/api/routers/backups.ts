@@ -99,13 +99,18 @@ export const backupsRouter = router({
       }),
 
     create: protectedProcedure
-      .input(z.object({ slug: z.string().min(1) }))
+      .input(z.object({ slug: z.string().min(1), includeDependencies: z.boolean().default(false) }))
       .mutation(({ ctx, input }) => {
         const site = siteForSlug(ctx, input.slug);
         const jobId = ctx.app.jobs.enqueue({
           kind: 'backup',
           title: `Backing up ${site.displayName}`,
-          payload: { scope: 'site', operation: 'create', siteId: site.id },
+          payload: {
+            scope: 'site',
+            operation: 'create',
+            siteId: site.id,
+            includeDependencies: input.includeDependencies,
+          },
           siteId: site.id,
         });
         return { jobId };
@@ -151,7 +156,14 @@ export const backupsRouter = router({
     }),
 
     create: superadminProcedure
-      .input(z.object({ includeGameServers: z.boolean() }).optional())
+      .input(
+        z
+          .object({
+            includeGameServers: z.boolean(),
+            includeDependencies: z.boolean().default(false),
+          })
+          .optional(),
+      )
       .mutation(({ ctx, input }) => ({
         jobId: ctx.app.jobs.enqueue({
           kind: 'backup',
@@ -160,6 +172,7 @@ export const backupsRouter = router({
             scope: 'panel',
             operation: 'create',
             includeGameServers: input?.includeGameServers ?? false,
+            includeDependencies: input?.includeDependencies ?? false,
           },
           maxAttempts: 2,
         }),

@@ -17,6 +17,7 @@ const schedule = ref<Schedule>({
   weekly: false,
   monthly: false,
   includeGameServers: false,
+  includeDependencies: false,
 });
 const backups = ref<PanelBackup[]>([]);
 const loading = ref(true);
@@ -84,6 +85,7 @@ async function createBackup(): Promise<void> {
   try {
     const result = await api.backups.panel.create.mutate({
       includeGameServers: schedule.value.includeGameServers,
+      includeDependencies: schedule.value.includeDependencies,
     });
     job.watchJob(result.jobId);
   } catch (err) {
@@ -232,6 +234,16 @@ onMounted(() => void load());
               </span>
               <input v-model="schedule.includeGameServers" type="checkbox" class="mt-0.5 shrink-0" />
             </label>
+            <label class="flex items-start justify-between gap-4 rounded-lg border border-line px-3 py-2.5 text-sm text-ink">
+              <span>
+                <span class="block">Include dependencies (node_modules)</span>
+                <span class="mt-0.5 block text-xs leading-relaxed text-ink-faint">
+                  Adds considerable time: dependencies are usually most of the files on the server.
+                  Left out, a restored website needs a redeploy to reinstall them.
+                </span>
+              </span>
+              <input v-model="schedule.includeDependencies" type="checkbox" class="mt-0.5 shrink-0" />
+            </label>
           </div>
           <p class="mt-3 text-xs leading-relaxed text-ink-faint">
             This choice applies to <strong>Back up now</strong> and automatic snapshots. Save the schedule after changing it.
@@ -246,7 +258,8 @@ onMounted(() => void load());
           <h2 class="text-sm font-semibold text-ink">Recovery scope</h2>
           <p class="mt-1.5 text-sm leading-relaxed text-ink-muted">
             A panel snapshot always includes the panel, websites, databases and configuration.
-            Game servers are {{ schedule.includeGameServers ? 'included' : 'left out' }} according to the option above. It stays on this server until you download or remove it.
+            Game servers are {{ schedule.includeGameServers ? 'included' : 'left out' }} according to the option above.
+            Dependencies are {{ schedule.includeDependencies ? 'included' : 'left out' }}. It stays on this server until you download or remove it.
           </p>
         </section>
       </aside>
