@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises';
-import { parseAccessLine } from './access-log.js';
+import { parseAccessLine, type AccessEntry } from './access-log.js';
 
 /**
  * Which requests failed, and what they asked for.
@@ -66,10 +66,57 @@ export interface FailureScanOptions {
   maxBytes?: number;
 }
 
+export type AccessLogStatus = 'all' | '2xx' | '3xx' | '4xx' | '5xx';
+
+export interface AccessLogScanOptions {
+  /** Only entries at or after this time count. */
+  since: number;
+  /** How many entries to keep in the response. */
+  limit?: number;
+  /** Restrict entries to one HTTP status class. */
+  status?: AccessLogStatus;
+  /** Plain text matched against the safe, displayed request fields. */
+  search?: string;
+  maxBytes?: number;
+}
+
+export interface AccessLogScan {
+  /** Parsed request entries, newest first. */
+  lines: AccessEntry[];
+  /** Matching entries found in the part of the files that was scanned. */
+  total: number;
+  /** The oldest parsed entry, whether or not it matched the filters. */
+  oldestAt: number | null;
+  /** False when the scan could not prove it reached the beginning of the window. */
+  complete: boolean;
+}
+
 /** Strips the query string, so `/a?x=1` and `/a?x=2` are one line on the page. */
 function pathOf(uri: string): string {
   const query = uri.indexOf('?');
   return query === -1 ? uri : uri.slice(0, query);
+}
+
+function statusClass(status: number): AccessLogStatus {
+  return `${Math.floor(status / 100)}xx` as AccessLogStatus;
+}
+
+function matchesAccessEntry(entry: AccessEntry, options: AccessLogScanOptions): boolean {
+  if (options.status && options.status !== 'all' && statusClass(entry.status) !== options.status) {
+    return false;
+  }
+
+  const needle = options.search?.trim().toLowerCase();
+  if (!needle) return true;
+
+  return [
+    String(entry.status),
+    entry.method,
+    entry.uri,
+    entry.host,
+    entry.remoteIp,
+    entry.userAgent,
+  ].some((value) => value?.toLowerCase().includes(needle));
 }
 
 interface Tail {
@@ -192,6 +239,46 @@ async function scanLogs(
   entries.sort((a, b) => b.at - a.at);
 
   return { groups, entries, total, oldestAt, reachedStart };
+}
+
+/** Reads a bounded, projected view of a website's request log. */
+export async function readAccessLog(
+  files: readonly string[],
+  options: AccessLogScanOptions,
+): Promise<AccessLogScan> {
+  const limit = options.limit ?? 500;
+  let budget = options.maxBytes ?? MAX_SCAN_BYTES;
+  const lines: AccessEntry[] = [];
+  let total = 0;
+  let oldestAt: number | null = null;
+  let reachedStart = false;
+
+  for (const filePath of [...files].reverse()) {
+    if (reachedStart || budget <= 0) break;
+
+    const tail = await readTail(filePath, budget);
+    if (!tail) continue;
+    budget -= tail.bytesRead;
+
+    // `readTail` returns chronological lines; walking backwards gives the
+    // reader the newest entries first while the scan moves toward its bound.
+    for (let index = tail.lines.length - 1; index >= 0; index -= 1) {
+      const entry = parseAccessLine(tail.lines[index] ?? '');
+      if (!entry) continue;
+
+      if (oldestAt === null || entry.at < oldestAt) oldestAt = entry.at;
+      if (entry.at < options.since) {
+        reachedStart = true;
+        break;
+      }
+
+      if (!matchesAccessEntry(entry, options)) continue;
+      total += 1;
+      if (lines.length < limit) lines.push(entry);
+    }
+  }
+
+  return { lines, total, oldestAt, complete: reachedStart };
 }
 
 function toScan(core: ScanCore, limit: number): FailureScan {

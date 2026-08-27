@@ -317,6 +317,16 @@ describe('API authorisation', () => {
     }
   });
 
+  it('keeps panel runtime logs to the owner alone', async () => {
+    const source = await fs.readFile(path.join(ROUTERS_DIR, 'logs.ts'), 'utf8');
+    const procedures = findProcedures(source);
+
+    expect(procedures.length).toBeGreaterThan(0);
+    for (const { name, procedure } of procedures) {
+      expect(procedure, `logs.ts: ${name}`).toBe('superadminProcedure');
+    }
+  });
+
   it('keeps removing the panel away from administrators', async () => {
     // "Admins are like owners but cannot delete the panel."
     const source = await fs.readFile(path.join(ROUTERS_DIR, 'system.ts'), 'utf8');

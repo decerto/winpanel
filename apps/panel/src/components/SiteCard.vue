@@ -16,6 +16,7 @@ import {
   HardDrive,
   KeyRound,
   Rocket,
+  ScrollText,
   ShieldCheck,
   SlidersHorizontal,
   Terminal,
@@ -171,6 +172,13 @@ const fileTiles = computed<Tile[]>(() => [
     to: `/sites/${props.site.slug}/traffic`,
     tint: 'text-ok',
   },
+    {
+      label: 'Logs',
+      detail: 'Requests and responses',
+      icon: ScrollText,
+      to: `/sites/${props.site.slug}/logs`,
+      tint: 'text-info',
+    },
   {
     label: 'Deployments',
     detail: 'History and logs',

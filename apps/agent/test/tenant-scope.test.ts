@@ -163,6 +163,28 @@ describe('what a customer can see', () => {
     expect(result.body.result.data.slug).toBe('freya-io');
   });
 
+  it('lets every server role read the request ledger only within its website scope', async () => {
+    const own = await call('GET', 'sites.accessLog', freyaCookie, {
+      slug: 'freya-io',
+      range: '24h',
+    });
+    expect(own.body.error).toBeUndefined();
+
+    const otherCustomer = await call('GET', 'sites.accessLog', samCookie, {
+      slug: 'freya-io',
+      range: '24h',
+    });
+    expect(otherCustomer.body.error?.data?.code).toBe('NOT_FOUND');
+
+    for (const cookie of [adminCookie, ownerCookie]) {
+      const result = await call('GET', 'sites.accessLog', cookie, {
+        slug: 'the-servers-own',
+        range: '24h',
+      });
+      expect(result.body.error).toBeUndefined();
+    }
+  });
+
   it('cannot reach a mailbox on somebody else\u2019s domain', async () => {
     // Mailboxes are named by address, so the domain has to be read out of it.
     const result = await call('GET', 'mail.mailboxes', samCookie, { domain: 'freya.io' });
@@ -178,6 +200,11 @@ describe('what a customer can see', () => {
 
   it('cannot see who has been signing in', async () => {
     const result = await call('GET', 'access.sessions', freyaCookie);
+    expect(result.body.error.data.code).toBe('FORBIDDEN');
+  });
+
+  it('cannot read the panel runtime logs', async () => {
+    const result = await call('GET', 'logs.list', freyaCookie);
     expect(result.body.error.data.code).toBe('FORBIDDEN');
   });
 
@@ -276,6 +303,11 @@ describe('what an administrator can do', () => {
     expect(result.body.error.data.code).toBe('FORBIDDEN');
   });
 
+  it('cannot read the panel runtime logs', async () => {
+    const result = await call('GET', 'logs.list', adminCookie);
+    expect(result.body.error.data.code).toBe('FORBIDDEN');
+  });
+
   it('cannot promote themselves', async () => {
     const admin = app.auth.listUsers().find((person) => person.username === 'admin')!;
     const result = await call('POST', 'users.update', adminCookie, {
@@ -311,6 +343,11 @@ describe('what an administrator can do', () => {
 describe('what only the owner can do', () => {
   it('reads the sign-in trail', async () => {
     const result = await call('GET', 'access.summary', ownerCookie);
+    expect(result.body.error).toBeUndefined();
+  });
+
+  it('reads the panel runtime logs', async () => {
+    const result = await call('GET', 'logs.list', ownerCookie);
     expect(result.body.error).toBeUndefined();
   });
 

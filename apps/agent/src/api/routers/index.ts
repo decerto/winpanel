@@ -17,6 +17,7 @@ import { componentsRouter } from './components.js';
 import { usersRouter } from './users.js';
 import { gameServersRouter } from './game-servers.js';
 import { backupsRouter } from './backups.js';
+import { logsRouter } from './logs.js';
 import type { RequestContext } from '../trpc.js';
 
 /**
@@ -142,6 +143,7 @@ export const appRouter = router({
   sites: sitesRouter,
   gameServers: gameServersRouter,
   backups: backupsRouter,
+  logs: logsRouter,
   files: filesRouter,
   dns: dnsRouter,
   ssl: sslRouter,

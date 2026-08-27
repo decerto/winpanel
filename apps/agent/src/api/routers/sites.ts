@@ -30,7 +30,7 @@ import { isPortAnswered } from '../../windows/service-probe.js';
 import { localAddresses } from '../../tls/panel-certificate.js';
 import { panelHostnameAmong } from '../../tls/panel-hostname.js';
 import { accessLogExists, logFilesFor } from '../../traffic/collector.js';
-import { scanFailures, scanRequests } from '../../traffic/failures.js';
+import { readAccessLog, scanFailures, scanRequests } from '../../traffic/failures.js';
 import {
   TRAFFIC_RANGES,
   rangeStart,
@@ -537,6 +537,37 @@ export const sitesRouter = router({
       const scan = await scanRequests(files, { since: rangeStart(input.range) });
 
       return { range: input.range, ...scan };
+    }),
+
+  /** The request-by-request view of this website's access log. */
+  accessLog: protectedProcedure
+    .input(
+      z.object({
+        slug: z.string().min(1),
+        range: z.enum(TRAFFIC_RANGES).default('7d'),
+        limit: z.number().int().min(1).max(500).default(250),
+        status: z.enum(['all', '2xx', '3xx', '4xx', '5xx']).default('all'),
+        search: z.string().max(200).optional(),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
+      const site = service.get(input.slug);
+      if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
+
+      const files = await logFilesFor(ctx.app.config.accessLogDir, site.slug);
+      const scan = await readAccessLog(files, {
+        since: rangeStart(input.range),
+        limit: input.limit,
+        status: input.status,
+        search: input.search,
+      });
+
+      return {
+        range: input.range,
+        collecting: await accessLogExists(ctx.app.config.accessLogDir, site.slug),
+        ...scan,
+      };
     }),
 
   /**

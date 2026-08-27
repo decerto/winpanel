@@ -18,6 +18,7 @@ import {
   RefreshCw,
   Rocket,
   ShieldCheck,
+  ScrollText,
   SlidersHorizontal,
 } from 'lucide-vue-next';
 import type { CheckState } from '@winpanel/shared';
@@ -120,6 +121,7 @@ const TABS = computed(() => {
      */
     { name: 'site-databases', label: 'Databases', icon: Database, show: hasDatabases.value },
     { name: 'site-traffic', label: 'Traffic', icon: Activity, show: true },
+    { name: 'site-logs', label: 'Logs', icon: ScrollText, show: true },
     { name: 'site-backup', label: 'Backup', icon: Archive, show: true },
     { name: 'site-dns', label: 'DNS', icon: Globe2, show: true },
     { name: 'site-ssl', label: 'SSL', icon: ShieldCheck, show: true },

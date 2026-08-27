@@ -136,6 +136,11 @@ export const router = createRouter({
           component: () => import('./pages/site/SiteTrafficPage.vue'),
         },
         {
+          path: 'logs',
+          name: 'site-logs',
+          component: () => import('./pages/site/SiteAccessLogPage.vue'),
+        },
+        {
           path: 'backup',
           name: 'site-backup',
           component: () => import('./pages/site/SiteBackupPage.vue'),
@@ -191,6 +196,12 @@ export const router = createRouter({
       name: 'access',
       component: () => import('./pages/AccessPage.vue'),
       meta: { title: 'Sign-in activity', minRole: 'superadmin' },
+    },
+    {
+      path: '/logs',
+      name: 'logs',
+      component: () => import('./pages/PanelLogsPage.vue'),
+      meta: { title: 'Panel logs', minRole: 'superadmin' },
     },
     {
       path: '/backups',

@@ -25,6 +25,10 @@ export interface AccessEntry {
   /** Path and query string, as it was asked for. */
   uri: string;
   host: string;
+  /** The address Caddy saw for the visitor, when it recorded one. */
+  remoteIp?: string;
+  /** Only the user-agent header is exposed; other headers may contain secrets. */
+  userAgent?: string;
 }
 
 /**
@@ -55,6 +59,22 @@ function text(value: unknown, fallback: string, max = 512): string {
   return typeof value === 'string' && value.length > 0 ? value.slice(0, max) : fallback;
 }
 
+function optionalText(value: unknown, max = 512): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value.slice(0, max) : undefined;
+}
+
+/** Reads one harmless header without handing the rest of Caddy's headers to the browser. */
+function headerValue(headers: unknown, wanted: string): string | undefined {
+  if (typeof headers !== 'object' || headers === null) return undefined;
+
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() !== wanted.toLowerCase()) continue;
+    return optionalText(Array.isArray(value) ? value[0] : value, 512);
+  }
+
+  return undefined;
+}
+
 export function parseAccessLine(line: string): AccessEntry | null {
   const trimmed = line.trim();
   if (trimmed.length === 0 || trimmed[0] !== '{') return null;
@@ -76,6 +96,9 @@ export function parseAccessLine(line: string): AccessEntry | null {
 
   const request = (record['request'] ?? {}) as Record<string, unknown>;
 
+  const remoteIp = optionalText(request['client_ip'] ?? request['remote_ip'], 128);
+  const userAgent = headerValue(request['headers'], 'user-agent');
+
   return {
     at,
     status,
@@ -86,6 +109,8 @@ export function parseAccessLine(line: string): AccessEntry | null {
     method: text(request['method'], 'GET', 16),
     uri: text(request['uri'], '/'),
     host: text(request['host'], '', 256),
+    ...(remoteIp ? { remoteIp } : {}),
+    ...(userAgent ? { userAgent } : {}),
   };
 }
 

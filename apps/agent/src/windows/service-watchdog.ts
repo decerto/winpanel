@@ -5,6 +5,7 @@ import {
   MONGODB_PORT,
   POSTGRES_PORT,
   STALWART_HTTP_PORT,
+  WEB_PORTS,
 } from '@winpanel/shared';
 import { allPortsSilent, isPortAnswered, type PortProbe } from './service-probe.js';
 import {
@@ -49,12 +50,20 @@ export interface WatchedService {
   label: string;
   /** Executable names the service may run under. */
   images: readonly string[];
-  /** Ports the service binds and a stray copy would still be holding. */
+  /** Ports the service normally binds and must answer to be considered healthy. */
   ports: readonly number[];
+  /** Extra ports an older or unrepaired copy may still hold while being cleared. */
+  recoveryPorts?: readonly number[];
   /** TCP ports that can be used to check whether the application answers. */
   probePorts?: readonly number[];
   /** Set for a website, so callers can tell which one it belongs to. */
   siteId?: string;
+}
+
+/** Ports to inspect when clearing a service's own leftover listeners. */
+export function portsForRecovery(service: WatchedService): readonly number[] {
+  if (!service.recoveryPorts) return service.ports;
+  return [...new Set([...service.ports, ...service.recoveryPorts])];
 }
 
 export const WATCHED_SERVICES: readonly WatchedService[] = [
@@ -69,6 +78,7 @@ export const WATCHED_SERVICES: readonly WatchedService[] = [
     label: 'mail server',
     images: ['stalwart.exe', 'stalwart-mail.exe'],
     ports: [STALWART_HTTP_PORT, ...MAIL_PORTS],
+    recoveryPorts: WEB_PORTS,
   },
   /*
    * The database servers. A website whose database is down is down, and the
@@ -129,6 +139,8 @@ export interface WatchdogDeps {
    * silent for a full interval — never because it was merely still coming up.
    */
   confirmDead?: (id: string, silent: boolean) => boolean;
+  /** Clears remembered silence when a service is removed or deliberately stopped. */
+  clearDead?: (id: string) => void;
   log?: (message: string, detail?: unknown) => void;
 }
 
@@ -188,10 +200,11 @@ async function reviveDeadService(
   deps: WatchdogDeps,
 ): Promise<WatchdogOutcome> {
   const probe = deps.probePort ?? isPortAnswered;
+  const probePorts = service.probePorts ?? service.ports;
 
   // A service with nothing to connect to (a static site has no process) is
   // not watched here at all — it has no ports in the list.
-  const silent = await allPortsSilent(service.ports, probe);
+  const silent = await allPortsSilent(probePorts, probe);
 
   /*
    * The confirmation is the whole safety of this. A service that is starting
@@ -207,7 +220,7 @@ async function reviveDeadService(
   if (!wasAlreadyDead) {
     deps.log?.(
       `The ${service.label} reports running but nothing answered on its ` +
-        `${service.ports.length === 1 ? 'port' : 'ports'} (${service.ports.join(', ')}). ` +
+        `${probePorts.length === 1 ? 'port' : 'ports'} (${probePorts.join(', ')}). ` +
         'Watching it; if it is still silent next sweep it will be restarted.',
       { service: service.id },
     );
@@ -221,16 +234,17 @@ async function reviveDeadService(
    * the next child the same way.
    */
   const listHolders = deps.listHolders ?? listPortHolders;
-  const { ours } = partitionHolders(await listHolders(service.ports), service.images);
+  const { ours } = partitionHolders(await listHolders(portsForRecovery(service)), service.images);
 
   deps.log?.(
-    `The ${service.label} reports running but nothing answers on its ` +
-      `${service.ports.length === 1 ? 'port' : 'ports'} (${service.ports.join(', ')}). ` +
+    `The ${service.label} reports running but nothing answered on its ` +
+      `${probePorts.length === 1 ? 'port' : 'ports'} (${probePorts.join(', ')}). ` +
       'Restarting it.',
     { service: service.id },
   );
 
-  return await clearOursAndStart(service, ours, deps);
+  const outcome = await clearOursAndStart(service, ours, deps);
+  return outcome === 'recovered' ? 'revived' : outcome;
 }
 
 export async function recoverStalledService(
@@ -238,9 +252,15 @@ export async function recoverStalledService(
   deps: WatchdogDeps,
 ): Promise<WatchdogOutcome> {
   const state = await deps.getState(service.id);
-  if (state === 'not-installed') return 'not-installed';
+  if (state === 'not-installed') {
+    deps.clearDead?.(service.id);
+    return 'not-installed';
+  }
   // `stopping` is a transition, not a stall: acting on it would race Windows.
-  if (state === 'stopping') return 'running';
+  if (state === 'stopping') {
+    deps.clearDead?.(service.id);
+    return 'running';
+  }
 
   /*
    * A running service is not assumed healthy. Its state describes the wrapper
@@ -251,11 +271,17 @@ export async function recoverStalledService(
     return await reviveDeadService(service, deps);
   }
 
+  deps.clearDead?.(service.id);
   const listHolders = deps.listHolders ?? listPortHolders;
-  const { ours, foreign } = partitionHolders(await listHolders(service.ports), service.images);
+  const { ours, foreign } = partitionHolders(
+    await listHolders(portsForRecovery(service)),
+    service.images,
+  );
+  const requiredPorts = new Set(service.ports);
+  const requiredForeign = foreign.filter((holder) => requiredPorts.has(holder.port));
 
   if (ours.length === 0) {
-    if (foreign.length === 0) return 'left-alone';
+    if (requiredForeign.length === 0) return 'left-alone';
 
     /*
      * Reported every sweep on purpose. A port collision does not heal itself,
@@ -264,10 +290,10 @@ export async function recoverStalledService(
      * panel says so.
      */
     deps.log?.(
-      `The ${service.label} is stopped and cannot start: ${foreign
+      `The ${service.label} is stopped and cannot start: ${requiredForeign
         .map(describeHolder)
         .join(', ')} is holding a port it needs. That program is not the panel's to end.`,
-      { service: service.id, holders: foreign },
+      { service: service.id, holders: requiredForeign },
     );
     return 'blocked';
   }
@@ -328,7 +354,16 @@ export class ServiceWatchdog {
         return;
       }
 
-      const deps: WatchdogDeps = { ...this.deps, confirmDead: this.#confirmDead };
+      const currentIds = new Set(services.map((service) => service.id));
+      for (const id of this.#silentLastSweep.keys()) {
+        if (!currentIds.has(id)) this.#silentLastSweep.delete(id);
+      }
+
+      const deps: WatchdogDeps = {
+        ...this.deps,
+        confirmDead: this.#confirmDead,
+        clearDead: (id) => this.#silentLastSweep.delete(id),
+      };
 
       for (const service of services) {
         try {

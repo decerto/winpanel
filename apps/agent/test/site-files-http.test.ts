@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import https from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -178,5 +179,48 @@ describe('downloading a file', () => {
       headers: { cookie },
     });
     expect(response.statusCode).toBe(400);
+  });
+
+  it('keeps serving after a large log download is aborted', async () => {
+    const logPath = path.join(siteRoot, 'logs', 'site.log');
+    await fs.mkdir(path.dirname(logPath), { recursive: true });
+    await fs.writeFile(logPath, Buffer.alloc(8 * 1024 * 1024, 120));
+
+    await server.listen({ host: '127.0.0.1', port: 0 });
+    const address = server.server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    const downloadStatus = await new Promise<number>((resolve, reject) => {
+      const request = https.get(
+        {
+          host: '127.0.0.1',
+          port,
+          rejectUnauthorized: false,
+          path: `/api/sites/${SLUG}/files/download?path=logs%2Fsite.log`,
+          headers: { cookie },
+        },
+        (response) => {
+          response.once('error', reject);
+          response.once('close', () => resolve(response.statusCode ?? 0));
+          response.once('data', () => response.destroy());
+        },
+      );
+      request.once('error', reject);
+    });
+
+    const healthStatus = await new Promise<number>((resolve, reject) => {
+      const request = https.get(
+        { host: '127.0.0.1', port, rejectUnauthorized: false, path: '/api/health' },
+        (response) => {
+          response.once('error', reject);
+          response.resume();
+          response.once('end', () => resolve(response.statusCode ?? 0));
+        },
+      );
+      request.once('error', reject);
+    });
+
+    expect(downloadStatus).toBe(200);
+    expect(healthStatus).toBe(200);
   });
 });

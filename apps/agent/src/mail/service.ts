@@ -9,7 +9,7 @@ import {
   storeMailAdminCredentials,
   type MailAdminCredentials,
 } from './credentials.js';
-import { StalwartClient } from './stalwart-client.js';
+import { MailServerError, StalwartClient } from './stalwart-client.js';
 
 /**
  * How the panel gets an administrator account on the mail server.
@@ -72,6 +72,22 @@ export interface MailEnvDependencies {
   services: ServiceManager;
 }
 
+export interface MailListenerReconcileOptions {
+  /** How long an unavailable service may take to become ready. */
+  retryForMs?: number;
+  /** Delay between attempts. */
+  retryDelayMs?: number;
+  /** Replaced in tests so the retry does not wait in real time. */
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const MAIL_LISTENER_RETRY_FOR_MS = 2 * 60_000;
+const MAIL_LISTENER_RETRY_DELAY_MS = 5_000;
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Makes the mail server's environment match the credentials the panel holds.
  *
@@ -113,21 +129,44 @@ export async function syncMailEnvironment(deps: MailEnvDependencies): Promise<Ma
  */
 export async function reconcileMailListeners(
   deps: MailEnvDependencies,
+  options: MailListenerReconcileOptions = {},
 ): Promise<{ changes: string[]; restarted: boolean }> {
   const credentials = loadMailAdminCredentials(deps.db, deps.vault);
   if (!credentials) return { changes: [], restarted: false };
 
-  const client = new StalwartClient(credentials.username, credentials.password);
-  const changes = await client.releaseWebPorts();
+  const retryForMs = options.retryForMs ?? MAIL_LISTENER_RETRY_FOR_MS;
+  const retryDelayMs = options.retryDelayMs ?? MAIL_LISTENER_RETRY_DELAY_MS;
+  const sleep = options.sleep ?? delay;
+  const deadline = Date.now() + retryForMs;
+  const changes = new Set<string>();
+  let restartRequired = false;
 
-  const submission = await client.ensureSubmissionPort();
-  if (submission) changes.push(submission);
+  for (;;) {
+    try {
+      const client = new StalwartClient(credentials.username, credentials.password);
+      const listenerChanges = await client.releaseWebPorts();
+      for (const change of listenerChanges) changes.add(change);
+      restartRequired ||= listenerChanges.length > 0;
 
-  if (changes.length === 0) return { changes, restarted: false };
+      const submission = await client.ensureSubmissionPort();
+      if (submission) {
+        changes.add(submission);
+        restartRequired = true;
+      }
 
-  await deps.services.restart(STALWART_SERVICE_ID);
+      if (!restartRequired) return { changes: [...changes], restarted: false };
 
-  return { changes, restarted: true };
+      await deps.services.restart(STALWART_SERVICE_ID);
+
+      return { changes: [...changes], restarted: true };
+    } catch (error) {
+      if (!(error instanceof MailServerError && error.unreachable)) throw error;
+
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw error;
+      await sleep(Math.min(retryDelayMs, remaining));
+    }
+  }
 }
 
 export interface MailCertificateSync {

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
 import { SecretVault } from '../src/security/vault.js';
 import { ServiceManager, buildServiceXml } from '../src/windows/service-manager.js';
@@ -12,6 +12,7 @@ import {
   STALWART_SERVICE_ID,
   ensureMailAdminCredentials,
   mailServiceEnv,
+  reconcileMailListeners,
   syncMailEnvironment,
 } from '../src/mail/service.js';
 
@@ -145,5 +146,110 @@ describe('handing it to the mail server', () => {
     await syncMailEnvironment({ db, vault, services });
 
     expect(loadMailAdminCredentials(db, vault)).toEqual(first);
+  });
+
+  it('retries listener repair while Stalwart is still starting after a reboot', async () => {
+    await pretendMailIsInstalled();
+    ensureMailAdminCredentials(db, vault);
+
+    let jmapAttempts = 0;
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      if (String(url).endsWith('/jmap') && jmapAttempts++ === 0) {
+        throw new TypeError('fetch failed');
+      }
+
+      const body = JSON.parse(init?.body as string) as {
+        methodCalls: Array<[string, Record<string, unknown>, string]>;
+      };
+      const methodResponses = body.methodCalls.map(([name, , id]) => {
+        if (name === 'x:NetworkListener/query') return [name, { ids: ['smtp', 'https'] }, id];
+        if (name === 'x:NetworkListener/get') {
+          return [
+            name,
+            {
+              list: [
+                { id: 'smtp', name: 'smtp', protocol: 'smtp', bind: { '0': '0.0.0.0:25' } },
+                { id: 'https', name: 'https', bind: { '0': '[::]:443' } },
+              ],
+            },
+            id,
+          ];
+        }
+        return [name, {}, id];
+      });
+
+      return new Response(JSON.stringify({ methodResponses }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const restart = vi.fn(async () => undefined);
+    try {
+      const result = await reconcileMailListeners(
+        { db, vault, services: { restart } as unknown as ServiceManager },
+        { retryForMs: 100, retryDelayMs: 0, sleep: async () => undefined },
+      );
+
+      expect(result.changes).toHaveLength(2);
+      expect(restart).toHaveBeenCalledOnce();
+      expect(jmapAttempts).toBeGreaterThan(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('still restarts after a listener change when a later readiness check fails', async () => {
+    await pretendMailIsInstalled();
+    ensureMailAdminCredentials(db, vault);
+
+    let listeners = [
+      { id: 'smtp', name: 'smtp', protocol: 'smtp', bind: { '0': '0.0.0.0:25' } },
+      { id: 'https', name: 'https', bind: { '0': '[::]:443' } },
+      { id: 'submission', name: 'submission', protocol: 'smtp', bind: { '0': '0.0.0.0:587' } },
+    ];
+    let requests = 0;
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      if (!String(url).endsWith('/jmap')) return new Response('{}', { status: 404 });
+
+      const body = JSON.parse(init?.body as string) as {
+        methodCalls: Array<[string, Record<string, unknown>, string]>;
+      };
+      const [name, , id] = body.methodCalls[0] ?? [];
+      requests++;
+
+      // The first listener mutation has already been accepted by this point.
+      if (requests === 4) throw new TypeError('fetch failed while checking submission');
+      if (name === 'x:NetworkListener/query') {
+        return new Response(
+          JSON.stringify({ methodResponses: [[name, { ids: listeners.map((listener) => listener.id) }, id]] }),
+          { status: 200 },
+        );
+      }
+      if (name === 'x:NetworkListener/get') {
+        return new Response(
+          JSON.stringify({ methodResponses: [[name, { list: listeners }, id]] }),
+          { status: 200 },
+        );
+      }
+      if (name === 'x:NetworkListener/set') {
+        listeners = listeners.filter((listener) => listener.id !== 'https');
+      }
+
+      return new Response(JSON.stringify({ methodResponses: [[name, {}, id]] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const restart = vi.fn(async () => undefined);
+    try {
+      const result = await reconcileMailListeners(
+        { db, vault, services: { restart } as unknown as ServiceManager },
+        { retryForMs: 100, retryDelayMs: 0, sleep: async () => undefined },
+      );
+
+      expect(result.changes).toHaveLength(1);
+      expect(restart).toHaveBeenCalledOnce();
+      expect(requests).toBe(8);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

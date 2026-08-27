@@ -119,9 +119,11 @@ async function main(): Promise<void> {
    *
    * It must not block start-up. If Caddy is not installed yet — which is the
    * normal state on a fresh machine — the panel still has to come up, because
-   * the panel is where you go to install it.
+   * the panel is where you go to install it. It is awaited further down, after
+   * everything that must not wait on it, purely so the watchdog cannot sweep
+   * while these repairs are still restarting things.
    */
-  void (async () => {
+  const startupRepairs = (async () => {
     try {
       const result = await syncCaddyEnvironment({
         db: app.db,
@@ -301,7 +303,9 @@ async function main(): Promise<void> {
     // Starting up is, for an update that worked, the moment the installer
     // finished. Nothing it needed should still be lying around.
     await cleanUpAfterUpdate(config.binDir);
-  })();
+  })().catch((error: unknown) => {
+    server.log.warn({ err: error }, 'Could not complete the panel startup repairs.');
+  });
 
   // Generated up front so a fresh install always has a way in, even if the
   // installer's own attempt to write it failed.
@@ -347,8 +351,6 @@ async function main(): Promise<void> {
     },
     () => watchdogServices(app.db),
   );
-  watchdog.start();
-  void watchdog.sweep();
 
   /*
    * Traffic is counted from the web server's logs on a timer. Reading them is
@@ -380,6 +382,14 @@ async function main(): Promise<void> {
   process.on('uncaughtException', (error) => {
     server.log.error({ err: error }, 'Uncaught exception');
   });
+
+  // The repairs restart the web and mail servers themselves, so the watchdog
+  // waits for them: two controllers starting one service at once is the race
+  // that leaves it stopped.
+  await startupRepairs;
+
+  watchdog.start();
+  void watchdog.sweep();
 }
 
 // Run only when executed directly. Importing this module — which the tests do

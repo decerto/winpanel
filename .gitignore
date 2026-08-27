@@ -32,6 +32,8 @@ data/
 
 # Logs
 logs/
+!apps/agent/src/logs/
+!apps/agent/src/logs/**
 *.log
 npm-debug.log*
 pnpm-debug.log*

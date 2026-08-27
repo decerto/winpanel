@@ -6,7 +6,7 @@ import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/
 import { sites, siteTraffic } from '../src/db/schema.js';
 import { bucketOf, parseAccessLine } from '../src/traffic/access-log.js';
 import { TrafficCollector, logFilesFor, readNewLines } from '../src/traffic/collector.js';
-import { scanFailures, scanRequests } from '../src/traffic/failures.js';
+import { readAccessLog, scanFailures, scanRequests } from '../src/traffic/failures.js';
 import { trafficAllTime, trafficSeries, trafficThisMonth } from '../src/traffic/queries.js';
 import { buildCaddyConfig, accessLoggerNameFor } from '../src/caddy/config-builder.js';
 import { SiteManifest } from '@winpanel/shared';
@@ -343,6 +343,80 @@ describe('finding out what failed', () => {
     expect(result.total).toBe(0);
     expect(result.groups).toEqual([]);
     expect(result.oldestAt).toBeNull();
+  });
+});
+
+describe('reading the request ledger', () => {
+  const HOUR = 3_600_000;
+
+  it('returns newest projected entries and honours filters', async () => {
+    await append('example', [
+      entry({
+        status: 200,
+        request: {
+          method: 'GET',
+          host: 'example.com',
+          uri: '/home',
+          client_ip: '203.0.113.8',
+          headers: {
+            'User-Agent': ['Mozilla/5.0'],
+            Authorization: ['Bearer must-not-leak'],
+          },
+        },
+      }),
+      entry({ status: 404, request: { method: 'GET', host: 'example.com', uri: '/private' } }),
+      entry({ status: 500, request: { method: 'POST', host: 'example.com', uri: '/save' } }),
+    ]);
+
+    const result = await readAccessLog(await logFilesFor(logDir, 'example'), {
+      since: AT_MS - 24 * HOUR,
+      status: '4xx',
+      search: 'private',
+      limit: 10,
+    });
+
+    expect(result.total).toBe(1);
+    expect(result.lines).toHaveLength(1);
+    expect(result.lines[0]).toMatchObject({
+      status: 404,
+      method: 'GET',
+      uri: '/private',
+      host: 'example.com',
+    });
+    expect(result.lines[0]).not.toHaveProperty('userAgent');
+
+    const all = await readAccessLog(await logFilesFor(logDir, 'example'), {
+      since: AT_MS - 24 * HOUR,
+      limit: 10,
+    });
+    expect(all.lines[0]?.status).toBe(500);
+    expect(all.lines[2]).toMatchObject({ remoteIp: '203.0.113.8', userAgent: 'Mozilla/5.0' });
+  });
+
+  it('does not cross a similar slug when reading rolled files', async () => {
+    await fs.writeFile(
+      path.join(logDir, 'example-site-2026-01-01T00-00-00.000.log'),
+      `${entry({ status: 418, request: { method: 'GET', host: 'other.example', uri: '/leak' } })}\n`,
+      'utf8',
+    );
+    await append('example', [entry({ status: 200 })]);
+
+    const files = await logFilesFor(logDir, 'example');
+    expect(files.some((file) => file.includes('example-site-'))).toBe(false);
+
+    const result = await readAccessLog(files, { since: AT_MS - 24 * HOUR, limit: 10 });
+    expect(result.lines.map((line) => line.status)).toEqual([200]);
+  });
+
+  it('reports a partial read when the log does not reach the requested window', async () => {
+    await append('example', [entry()]);
+
+    const result = await readAccessLog(await logFilesFor(logDir, 'example'), {
+      since: AT_MS - 90 * 24 * HOUR,
+    });
+
+    expect(result.complete).toBe(false);
+    expect(result.oldestAt).toBe(AT_MS);
   });
 });
 

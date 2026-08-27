@@ -70,10 +70,44 @@ describe('recoverStalledService', () => {
       confirmDead: () => true, // it was already silent last time
     };
 
-    expect(await recoverStalledService(caddy, d)).toBe('recovered');
+    expect(await recoverStalledService(caddy, d)).toBe('revived');
     expect(d.started).toEqual(['winpanel-caddy']);
     // No stray to kill — the child was already gone.
     expect(d.killed).toEqual([]);
+  });
+
+  it('does not mistake Caddy answering on 443 for a healthy Stalwart', async () => {
+    const stalwart = WATCHED_SERVICES.find((service) => service.id === 'winpanel-stalwart');
+    const d = {
+      ...deps({ states: ['running', 'running'], holders: [] }),
+      probePort: async (port: number) => port === 443,
+      confirmDead: () => true,
+    };
+
+    expect(await recoverStalledService(stalwart!, d)).toBe('revived');
+    expect(d.started).toEqual(['winpanel-stalwart']);
+  });
+
+  it('does not report Caddy as blocking an intentionally stopped repaired Stalwart', async () => {
+    const stalwart = WATCHED_SERVICES.find((service) => service.id === 'winpanel-stalwart');
+    const d = deps({
+      holders: [{ pid: 4430, port: 443, image: 'caddy.exe' }],
+    });
+
+    expect(await recoverStalledService(stalwart!, d)).toBe('left-alone');
+    expect(d.started).toEqual([]);
+  });
+
+  it('clears a Stalwart copy that still holds a transitional web port', async () => {
+    const stalwart = WATCHED_SERVICES.find((service) => service.id === 'winpanel-stalwart');
+    const d = deps({
+      states: ['stopped', 'running'],
+      holders: [{ pid: 4431, port: 443, image: 'stalwart.exe' }],
+    });
+
+    expect(await recoverStalledService(stalwart!, d)).toBe('recovered');
+    expect(d.killed).toEqual([4431]);
+    expect(d.started).toEqual(['winpanel-stalwart']);
   });
 
   it('does not restart a running service on a single silent reading', async () => {
@@ -106,7 +140,7 @@ describe('recoverStalledService', () => {
       ports: [3007],
     };
 
-    expect(await recoverStalledService(site, d)).toBe('recovered');
+    expect(await recoverStalledService(site, d)).toBe('revived');
     expect(d.killed).toEqual([6792]);
     expect(d.started).toEqual(['winpanel-site-forgeandfilter-com-blue']);
   });
@@ -291,10 +325,59 @@ describe('ServiceWatchdog', () => {
     expect(started).toEqual([]);
   });
 
+  it('forgets silence when a service is removed and later recreated with the same id', async () => {
+    const started: string[] = [];
+    const sets: WatchedService[][] = [[caddy], [], [caddy]];
+    const watchdog = new ServiceWatchdog(
+      {
+        getState: async () => 'running',
+        start: async (id) => {
+          started.push(id);
+        },
+        probePort: async () => false,
+        listHolders: async () => [],
+      },
+      () => sets.shift() ?? [],
+    );
+
+    await watchdog.sweep(); // old instance: first silent reading
+    await watchdog.sweep(); // removed: silence memory is discarded
+    await watchdog.sweep(); // recreated instance: first silent reading again
+
+    expect(started).toEqual([]);
+  });
+
+  it('logs a distinct message when a running but silent service is revived', async () => {
+    const logged: string[] = [];
+    const watchdog = new ServiceWatchdog(
+      {
+        getState: async () => 'running',
+        start: async () => undefined,
+        probePort: async () => false,
+        listHolders: async () => [],
+        log: (message) => logged.push(message),
+      },
+      [caddy],
+    );
+
+    await watchdog.sweep();
+    await watchdog.sweep();
+
+    expect(logged).toContain(
+      'The web server said it was running but was not answering, so it was restarted.',
+    );
+  });
+
   it('watches the web server on the ports a stray copy would hold', () => {
     const watched = WATCHED_SERVICES.find((service) => service.id === 'winpanel-caddy');
     expect(watched?.ports).toContain(2019);
     expect(watched?.ports).toContain(443);
+  });
+
+  it('also watches web ports Stalwart may still hold before listener repair', () => {
+    const watched = WATCHED_SERVICES.find((service) => service.id === 'winpanel-stalwart');
+    expect(watched?.recoveryPorts).toContain(443);
+    expect(watched?.ports).not.toContain(443);
   });
 
   it('re-reads the watched set each sweep, so a new website is picked up', async () => {

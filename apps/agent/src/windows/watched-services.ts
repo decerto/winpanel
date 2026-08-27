@@ -6,7 +6,11 @@ import type { GameServerService } from '../game-servers/game-server-service.js';
 import { AGENT_SERVICE_ID, siteServiceId, type PanelService } from './panel-services.js';
 import type { ServiceRecovery } from './service-manager.js';
 import { isPortAnswered, type PortProbe } from './service-probe.js';
-import { WATCHED_SERVICES, type WatchedService } from './service-watchdog.js';
+import {
+  portsForRecovery,
+  WATCHED_SERVICES,
+  type WatchedService,
+} from './service-watchdog.js';
 import {
   clearStrayListeners,
   describeHolder,
@@ -278,7 +282,7 @@ export async function unblockService(
   const service = watchedServiceFor(db, id, gameServerSource);
   if (!service) return false;
 
-  const { killed, remaining } = await clearStrayListeners(service.ports, service.images);
+  const { killed, remaining } = await clearStrayListeners(portsForRecovery(service), service.images);
   if (remaining.length > 0) {
     throw new Error(
       `Could not end ${remaining.map(describeHolder).join(', ')} while freeing ${service.label}.`,

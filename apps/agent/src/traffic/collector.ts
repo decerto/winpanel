@@ -135,10 +135,14 @@ export async function accessLogExists(dir: string, slug: string): Promise<boolea
 export async function logFilesFor(dir: string, slug: string): Promise<string[]> {
   const live = accessLogPathFor(dir, slug);
   const rolled: string[] = [];
+  const escapedSlug = slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rolledName = new RegExp(
+    `^${escapedSlug}-\\d{4}-\\d{2}-\\d{2}T[0-9A-Za-z_.-]+\\.log$`,
+  );
 
   try {
     for (const name of await fs.readdir(dir)) {
-      if (name.startsWith(`${slug}-`) && name.endsWith('.log')) {
+      if (rolledName.test(name)) {
         rolled.push(path.join(dir, name));
       }
     }
