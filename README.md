@@ -189,9 +189,21 @@ save. Config files run long, and a one-line change should not be a scrolling exe
 ### Traffic
 
 Requests, bandwidth in and out, response times and status-code mix, read from the web
-server's own access logs - per website, per hour, for up to 90 days.
+server's own access logs - per website, per hour, for up to 400 days.
 
 ![Traffic for one website](docs/screenshots/traffic.png)
+
+### Logs
+
+The **Panel logs** page groups runtime output by service and keeps the current file easy to
+find. WinSW-managed service logs roll at midnight and at 10 KiB, keeping 14 rolled files;
+WinPanel also removes rotated panel-service files older than 14 days during startup and then
+every six hours. Current output is never removed by that sweep.
+
+Caddy owns website access-log rotation and keeps those files for 14 days. The traffic totals
+stored in the panel are separate hourly summaries and are retained for up to 400 days. Website
+application output and game-server consoles remain with their own service and are not removed
+by the panel-log sweep.
 
 ---
 

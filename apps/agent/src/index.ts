@@ -7,6 +7,7 @@ import { createServer } from './server.js';
 import { CADDY_SERVICE_ID, syncCaddyEnvironment } from './caddy/service.js';
 import { reconcileMailListeners, syncMailCertificates, syncMailEnvironment } from './mail/service.js';
 import { cleanUpAfterUpdate } from './components/panel-update.js';
+import { cleanupRotatedLogFiles, PANEL_LOG_RETENTION_DAYS } from './logs/log-files.js';
 import { localAddresses } from './tls/panel-certificate.js';
 import { ServiceWatchdog } from './windows/service-watchdog.js';
 import { watchdogServices } from './windows/watched-services.js';
@@ -89,6 +90,27 @@ async function main(): Promise<void> {
 
   const app = await createAppContext();
   const server = await createServer(app);
+
+  const cleanUpRotatedLogs = async (): Promise<void> => {
+    try {
+      const result = await cleanupRotatedLogFiles(
+        config.logDir,
+        PANEL_LOG_RETENTION_DAYS,
+        [config.accessLogDir],
+      );
+      if (result.deleted > 0) {
+        server.log.info(
+          { deleted: result.deleted, bytes: result.bytes, retentionDays: PANEL_LOG_RETENTION_DAYS },
+          'Removed expired rotated panel logs.',
+        );
+      }
+    } catch (error) {
+      server.log.warn({ err: error }, 'Could not remove expired rotated panel logs.');
+    }
+  };
+
+  void cleanUpRotatedLogs();
+  setInterval(() => void cleanUpRotatedLogs(), 6 * 60 * 60 * 1000).unref();
 
   void app.databaseNetwork.reconcileInstalled().catch((error) => {
     process.stderr.write(`Could not reconcile database network access: ${String(error)}\n`);

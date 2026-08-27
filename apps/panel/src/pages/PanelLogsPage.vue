@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import {
   AlertTriangle,
   Bug,
+  ChevronDown,
   CircleAlert,
   FileText,
   Info,
@@ -39,6 +40,9 @@ const reading = ref(false);
 const error = ref<string | null>(null);
 const level = ref<LevelFilter>('all');
 const search = ref('');
+const fileSearch = ref('');
+const categoryFilter = ref('all');
+const expandedGroups = ref(new Set<string>(['Panel']));
 let refreshTimer: number | null = null;
 
 const visibleLines = computed(() => {
@@ -77,21 +81,66 @@ function serviceOf(id: string): string {
   return SERVICES[folder] ?? (folder === '' ? 'Panel' : folder);
 }
 
-/** The file list, one section per service, panel first and then alphabetical. */
-const groups = computed(() => {
+function groupLogs(fileLogs: LogInfo[]): { service: string; files: LogInfo[] }[] {
   const byService = new Map<string, LogInfo[]>();
 
-  for (const log of logs.value) {
+  for (const log of fileLogs) {
     const service = serviceOf(log.id);
     byService.set(service, [...(byService.get(service) ?? []), log]);
   }
 
   return [...byService.entries()]
-    .map(([service, files]) => ({ service, files }))
+    .map(([service, files]) => ({
+      service,
+      files: files.sort(
+        (left, right) =>
+          right.modifiedAt.getTime() - left.modifiedAt.getTime() || left.id.localeCompare(right.id),
+      ),
+    }))
     .sort((a, b) =>
       a.service === 'Panel' ? -1 : b.service === 'Panel' ? 1 : a.service.localeCompare(b.service),
     );
+}
+
+const allGroups = computed(() => groupLogs(logs.value));
+const categoryOptions = computed(() => [
+  { value: 'all', label: 'All', count: logs.value.length },
+  ...allGroups.value.map((group) => ({ value: group.service, label: group.service, count: group.files.length })),
+]);
+const filteredLogs = computed(() => {
+  const needle = fileSearch.value.trim().toLowerCase();
+  return logs.value.filter((log) => {
+    if (categoryFilter.value !== 'all' && serviceOf(log.id) !== categoryFilter.value) return false;
+    if (!needle) return true;
+    return [log.id, fileNameOf(log.id), labelFor(log.id)].some((value) => value.toLowerCase().includes(needle));
+  });
 });
+const groups = computed(() => groupLogs(filteredLogs.value));
+
+function isGroupExpanded(service: string): boolean {
+  return (
+    expandedGroups.value.has(service) ||
+    categoryFilter.value === service ||
+    fileSearch.value.trim().length > 0
+  );
+}
+
+function toggleGroup(service: string): void {
+  const next = new Set(expandedGroups.value);
+  if (next.has(service)) next.delete(service);
+  else next.add(service);
+  expandedGroups.value = next;
+}
+
+function expandGroupFor(id: string): void {
+  const next = new Set(expandedGroups.value);
+  next.add(serviceOf(id));
+  expandedGroups.value = next;
+}
+
+function clearFileSearch(): void {
+  fileSearch.value = '';
+}
 
 /** The filename on its own; the folder is already said by the section it is in. */
 function fileNameOf(id: string): string {
@@ -158,6 +207,7 @@ async function read(id: string | null = selectedId.value): Promise<void> {
 
 async function choose(id: string): Promise<void> {
   selectedId.value = id;
+  expandGroupFor(id);
   await read(id);
 }
 
@@ -172,6 +222,8 @@ async function refresh(): Promise<void> {
     if (!selectedId.value || !next.some((log) => log.id === selectedId.value)) {
       selectedId.value = next[0]?.id ?? null;
     }
+
+    if (selectedId.value) expandGroupFor(selectedId.value);
 
     await read();
   } catch (err) {
@@ -216,54 +268,120 @@ onUnmounted(() => {
       description="The panel has not written a runtime log in its logs folder yet. Start or restart a managed service, then come back here."
     />
 
-    <section v-else class="grid gap-4 lg:grid-cols-[17rem_minmax(0,1fr)]">
-      <aside class="card overflow-hidden">
+    <section v-else class="grid items-start gap-4 lg:grid-cols-[20rem_minmax(0,1fr)]">
+      <aside
+        class="card flex min-h-0 flex-col overflow-hidden lg:sticky lg:top-24 lg:h-[calc(100vh-8rem)] lg:max-h-[calc(100vh-8rem)]"
+      >
         <div class="border-b border-line px-4 py-3">
           <div class="flex items-center justify-between gap-2">
             <h2 class="text-sm font-semibold text-ink">Log files</h2>
-            <span class="font-mono text-xs text-ink-faint">{{ logs.length }}</span>
+            <span class="font-mono text-xs text-ink-faint">
+              {{ filteredLogs.length }}<span v-if="filteredLogs.length !== logs.length"> / {{ logs.length }}</span>
+            </span>
           </div>
-          <p class="mt-1 text-xs text-ink-faint">Recent output from managed services.</p>
+          <p class="mt-1 text-xs text-ink-faint">Find output by service or filename.</p>
+
+          <label class="relative mt-3 block">
+            <span class="sr-only">Filter log files</span>
+            <Search :size="14" class="pointer-events-none absolute left-2.5 top-2.5 text-ink-faint" aria-hidden="true" />
+            <input
+              v-model="fileSearch"
+              type="search"
+              class="field h-9 pl-8 pr-8 text-xs"
+              placeholder="Filter files"
+              maxlength="100"
+            />
+            <button
+              v-if="fileSearch"
+              type="button"
+              class="absolute right-2 top-1.5 rounded p-1 text-ink-faint hover:text-ink"
+              aria-label="Clear file filter"
+              @click="clearFileSearch"
+            >
+              <X :size="14" aria-hidden="true" />
+            </button>
+          </label>
         </div>
 
-        <nav class="max-h-[32rem] overflow-y-auto p-2" aria-label="Panel log files">
-          <section v-for="group in groups" :key="group.service" class="mb-3 last:mb-0">
-            <h3 class="px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-ink-faint">
-              {{ group.service }}
-            </h3>
-
+        <div class="border-b border-line px-2 py-2">
+          <div class="flex gap-1 overflow-x-auto pb-0.5" aria-label="Log categories">
             <button
-              v-for="log in group.files"
-              :key="log.id"
+              v-for="option in categoryOptions"
+              :key="option.value"
               type="button"
-              class="mb-1 flex w-full items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors last:mb-0"
+              class="flex shrink-0 items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors"
               :class="
-                selectedId === log.id
-                  ? 'border-brand/50 bg-brand-soft/60 text-ink'
-                  : 'border-transparent text-ink-muted hover:border-line hover:bg-white/[0.04] hover:text-ink'
+                categoryFilter === option.value
+                  ? 'bg-brand-soft text-brand-bright'
+                  : 'text-ink-faint hover:bg-white/[0.04] hover:text-ink'
               "
-              @click="choose(log.id)"
+              :aria-pressed="categoryFilter === option.value"
+              @click="categoryFilter = option.value"
             >
-              <component
-                :is="iconFor(log.id)"
-                :size="15"
-                class="mt-0.5 shrink-0"
-                :class="selectedId === log.id ? 'text-brand-bright' : 'text-ink-faint'"
+              {{ option.label }}
+              <span class="font-mono text-[0.65rem] opacity-70">{{ option.count }}</span>
+            </button>
+          </div>
+        </div>
+
+        <nav class="min-h-0 flex-1 overflow-y-auto p-2" aria-label="Panel log files">
+          <section v-for="group in groups" :key="group.service" class="mb-3 last:mb-0">
+            <button
+              type="button"
+              class="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-ink-faint hover:bg-white/[0.04] hover:text-ink"
+              :aria-expanded="isGroupExpanded(group.service)"
+              @click="toggleGroup(group.service)"
+            >
+              <ChevronDown
+                :size="13"
+                class="shrink-0 transition-transform"
+                :class="isGroupExpanded(group.service) ? '' : '-rotate-90'"
                 aria-hidden="true"
               />
-              <span class="min-w-0 flex-1">
-                <span class="block truncate text-xs font-medium">{{ fileNameOf(log.id) }}</span>
-                <span class="mt-1 flex items-center justify-between gap-2 text-[0.65rem] text-ink-faint">
-                  <span class="truncate">{{ labelFor(log.id) }}</span>
-                  <span class="font-mono">{{ formatBytes(log.size) }}</span>
-                </span>
-              </span>
+              <span class="min-w-0 flex-1 truncate">{{ group.service }}</span>
+              <span class="font-mono text-[0.65rem] font-normal">{{ group.files.length }}</span>
             </button>
+
+            <div v-if="isGroupExpanded(group.service)" class="mt-1">
+              <button
+                v-for="log in group.files"
+                :key="log.id"
+                type="button"
+                class="mb-1 flex w-full items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors last:mb-0"
+                :class="
+                  selectedId === log.id
+                    ? 'border-brand/50 bg-brand-soft/60 text-ink'
+                    : 'border-transparent text-ink-muted hover:border-line hover:bg-white/[0.04] hover:text-ink'
+                "
+                @click="choose(log.id)"
+              >
+                <component
+                  :is="iconFor(log.id)"
+                  :size="15"
+                  class="mt-0.5 shrink-0"
+                  :class="selectedId === log.id ? 'text-brand-bright' : 'text-ink-faint'"
+                  aria-hidden="true"
+                />
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-xs font-medium">{{ fileNameOf(log.id) }}</span>
+                  <span class="mt-1 flex items-center justify-between gap-2 text-[0.65rem] text-ink-faint">
+                    <span class="truncate">{{ labelFor(log.id) }}</span>
+                    <span class="font-mono">{{ formatBytes(log.size) }}</span>
+                  </span>
+                </span>
+              </button>
+            </div>
           </section>
+
+          <p v-if="groups.length === 0" class="px-3 py-8 text-center text-xs text-ink-muted">
+            No log files match this filter.
+          </p>
         </nav>
       </aside>
 
-      <section class="card min-w-0 overflow-hidden">
+      <section
+        class="card flex min-h-0 min-w-0 flex-col overflow-hidden lg:h-[calc(100vh-8rem)] lg:max-h-[calc(100vh-8rem)]"
+      >
         <div class="border-b border-line px-4 py-4 md:px-5">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div class="flex min-w-0 items-start gap-3">
@@ -329,8 +447,8 @@ onUnmounted(() => {
         <LoadingBlock v-if="reading && !selected" class="m-5 h-56 rounded-lg bg-sunken" />
 
         <template v-else-if="selected">
-          <div class="bg-black/30 p-2 md:p-3">
-            <div class="max-h-[42rem] overflow-auto rounded-lg border border-line bg-[#111016] p-2 font-mono text-xs leading-relaxed shadow-inner md:p-3">
+          <div class="min-h-0 flex-1 bg-black/30 p-2 md:p-3">
+            <div class="h-full min-h-[24rem] overflow-auto rounded-lg border border-line bg-[#111016] p-2 font-mono text-xs leading-relaxed shadow-inner md:p-3">
               <div
                 v-for="(line, index) in visibleLines"
                 :key="`${index}-${line.raw}`"

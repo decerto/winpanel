@@ -60,6 +60,19 @@ including the account and the vault key.
 | `WINPANEL_HTTPS` | `true` | Set `false` to serve the panel over HTTP locally |
 | `WINPANEL_LOG_LEVEL` | `info` | pino log level |
 
+## Log retention
+
+WinSW-managed services use size-and-time rotation: a 10,240-byte threshold, a midnight
+roll, and 14 retained files. The panel's cleanup job removes dated rotated files under
+`WINPANEL_LOG_DIR` after 14 days, once at startup and then every six hours. It never removes
+the current log, arbitrary `.log` files, or symlinks.
+
+Caddy owns the website access-log tree under `WINPANEL_ACCESS_LOG_DIR` and keeps its rolled
+files for 14 days; the panel cleanup job excludes that directory. Website application logs
+and game-server console logs live with their services and follow the same WinSW rotation but
+are not part of the panel cleanup sweep. Traffic is stored separately as hourly database
+summaries and is retained for up to 400 days.
+
 ## Gotchas
 
 **`pnpm -C apps/agent dev` fails on Node 24.** The watch script uses

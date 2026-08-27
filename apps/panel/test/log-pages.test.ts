@@ -290,9 +290,56 @@ describe('panel runtime logs', () => {
 
     expect(nav.text()).toContain('Panel');
     expect(nav.text()).toContain('Mail');
+    const mailGroup = nav.findAll('section').find((section) => section.find('button').text().includes('Mail'));
+    expect(mailGroup).toBeDefined();
+    await mailGroup!.find('button').trigger('click');
     // The folder is said by the section, so the button shows the file alone.
     expect(nav.text()).toContain('winpanel-stalwart.err.log');
     expect(nav.text()).not.toContain('stalwart/winpanel-stalwart.err.log');
+    wrapper.unmount();
+  });
+
+  it('filters the file browser by category and filename', async () => {
+    const wrapper = await renderPanel();
+    const nav = wrapper.find('nav');
+    const fileFilter = wrapper.find('input[placeholder="Filter files"]');
+
+    await fileFilter.setValue('stalwart');
+    expect(nav.text()).toContain('winpanel-stalwart.err.log');
+    expect(nav.text()).not.toContain('agent.err.log');
+
+    await fileFilter.setValue('');
+    const mailCategory = wrapper
+      .findAll('button[aria-pressed]')
+      .find((button) => button.text().includes('Mail'));
+    expect(mailCategory).toBeDefined();
+    await mailCategory!.trigger('click');
+
+    expect(nav.text()).toContain('winpanel-stalwart.err.log');
+    expect(nav.text()).not.toContain('agent.err.log');
+    wrapper.unmount();
+  });
+
+  it('orders files newest first and reports empty file filters', async () => {
+    state.logs = [
+      { id: 'agent.out.log', size: 128, modifiedAt: new Date('2026-08-01T00:00:00Z') },
+      { id: 'agent.err.log', size: 256, modifiedAt: new Date('2026-08-03T00:00:00Z') },
+      ...state.logs.filter((log) => log.id.startsWith('stalwart/')),
+    ];
+
+    const wrapper = await renderPanel();
+    const nav = wrapper.find('nav');
+    const fileFilter = wrapper.find('input[placeholder="Filter files"]');
+
+    await fileFilter.setValue('agent');
+    const fileButtons = nav.findAll('button').filter((button) => button.text().includes('.log'));
+    expect(fileButtons.map((button) => button.find('span.block').text())).toEqual([
+      'agent.err.log',
+      'agent.out.log',
+    ]);
+
+    await fileFilter.setValue('does-not-exist');
+    expect(nav.text()).toContain('No log files match this filter.');
     wrapper.unmount();
   });
 

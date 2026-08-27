@@ -3,6 +3,9 @@ import path from 'node:path';
 
 const MAX_READ_BYTES = 512 * 1024;
 const MAX_DIRECTORY_DEPTH = 4;
+const DAY_MS = 24 * 60 * 60 * 1000;
+export const PANEL_LOG_RETENTION_DAYS = 14;
+const ROTATED_LOG_FILE = /\.\d{8}\.#\d{4}\.(?:out|err|wrapper)\.log$/i;
 
 export interface LogFileInfo {
   id: string;
@@ -95,6 +98,58 @@ export async function listLogFiles(
   return files.sort((a, b) => a.id.localeCompare(b.id));
 }
 
+export interface LogCleanupResult {
+  deleted: number;
+  bytes: number;
+}
+
+/**
+ * Removes only closed, rotated WinSW files outside the retention window.
+ *
+ * Current service logs have no date marker and are deliberately ignored. The
+ * access-log tree is passed as an exclusion because Caddy owns its rotation
+ * and age policy.
+ */
+export async function cleanupRotatedLogFiles(
+  logDir: string,
+  retentionDays = PANEL_LOG_RETENTION_DAYS,
+  excludedDirs: readonly string[] = [],
+): Promise<LogCleanupResult> {
+  if (!Number.isFinite(retentionDays) || retentionDays <= 0) return { deleted: 0, bytes: 0 };
+
+  const root = await fs.realpath(logDir).catch(() => null);
+  if (!root) return { deleted: 0, bytes: 0 };
+
+  const cutoff = Date.now() - retentionDays * DAY_MS;
+  const listed = await listLogFiles(logDir, excludedDirs);
+  let deleted = 0;
+  let bytes = 0;
+
+  for (const info of listed) {
+    const fileName = info.id.slice(info.id.lastIndexOf('/') + 1);
+    if (!ROTATED_LOG_FILE.test(fileName) || info.modifiedAt.getTime() >= cutoff) continue;
+
+    const absolute = absoluteForId(root, info.id);
+    if (!absolute) continue;
+
+    const real = await fs.realpath(absolute).catch(() => null);
+    if (!real || idFor(root, real) !== info.id) continue;
+
+    const stats = await fs.lstat(real).catch(() => null);
+    if (!stats || stats.isSymbolicLink() || !stats.isFile() || stats.mtime.getTime() >= cutoff) continue;
+
+    try {
+      await fs.rm(real, { force: true, maxRetries: 3, retryDelay: 200 });
+      deleted += 1;
+      bytes += stats.size;
+    } catch {
+      // A service or antivirus may briefly hold a rolled file; try again next sweep.
+    }
+  }
+
+  return { deleted, bytes };
+}
+
 function timestampOf(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value > 1e11 ? value : Math.round(value * 1000);
@@ -131,8 +186,11 @@ const PLAIN_LEVEL = /(?:^|[^a-z])(fatal|error|warn(?:ing)?|debug|trace)(?![a-z])
 
 /** A leading timestamp, as most loggers and WinSW itself write one. */
 const LEADING_TIME = /^\[?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\]?/;
+const WARNING_TOKEN = /\b(?:[a-z][a-z\d]*Warning|warning)\b/i;
 
 function plainLevelOf(raw: string): string {
+  if (WARNING_TOKEN.test(raw)) return 'warn';
+
   const word = PLAIN_LEVEL.exec(raw)?.[1]?.toLowerCase();
   if (!word) return 'info';
   if (word.startsWith('warn')) return 'warn';
