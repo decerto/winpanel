@@ -185,6 +185,20 @@ describe('what a customer can see', () => {
     }
   });
 
+  it('reads its own website\u2019s application output but not another\u2019s', async () => {
+    const own = await call('GET', 'sites.runtimeLogs', freyaCookie, { slug: 'freya-io' });
+    expect(own.body.error).toBeUndefined();
+
+    const otherCustomer = await call('GET', 'sites.runtimeLogs', samCookie, { slug: 'freya-io' });
+    expect(otherCustomer.body.error?.data?.code).toBe('NOT_FOUND');
+
+    const otherFile = await call('GET', 'sites.runtimeLog', freyaCookie, {
+      slug: 'freya-io',
+      id: '../../../logs/winpanel-agent.out.log',
+    });
+    expect(otherFile.body.error?.data?.code).toBe('NOT_FOUND');
+  });
+
   it('cannot reach a mailbox on somebody else\u2019s domain', async () => {
     // Mailboxes are named by address, so the domain has to be read out of it.
     const result = await call('GET', 'mail.mailboxes', samCookie, { domain: 'freya.io' });

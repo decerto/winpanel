@@ -138,7 +138,7 @@ export const router = createRouter({
         {
           path: 'logs',
           name: 'site-logs',
-          component: () => import('./pages/site/SiteAccessLogPage.vue'),
+          component: () => import('./pages/site/SiteRuntimeLogPage.vue'),
         },
         {
           path: 'backup',

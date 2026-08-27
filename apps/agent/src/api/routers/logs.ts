@@ -1,11 +1,11 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { listPanelLogs, readPanelLog } from '../../logs/panel-logs.js';
+import { listLogFiles, readLogFile } from '../../logs/log-files.js';
 import { superadminProcedure, router } from '../trpc.js';
 
 export const logsRouter = router({
   list: superadminProcedure.query(({ ctx }) =>
-    listPanelLogs(ctx.app.config.logDir, [ctx.app.config.accessLogDir]),
+    listLogFiles(ctx.app.config.logDir, [ctx.app.config.accessLogDir]),
   ),
 
   read: superadminProcedure
@@ -16,7 +16,7 @@ export const logsRouter = router({
       }),
     )
     .query(async ({ ctx, input }) => {
-      const result = await readPanelLog(ctx.app.config.logDir, input.id, input.lines, [ctx.app.config.accessLogDir]);
+      const result = await readLogFile(ctx.app.config.logDir, input.id, input.lines, [ctx.app.config.accessLogDir]);
       if (!result) {
         throw new TRPCError({ code: 'NOT_FOUND', message: 'That panel log was not found.' });
       }

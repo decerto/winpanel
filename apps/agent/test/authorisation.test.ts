@@ -332,7 +332,7 @@ describe('API authorisation', () => {
     const source = await fs.readFile(path.join(ROUTERS_DIR, 'system.ts'), 'utf8');
     const byName = new Map(findProcedures(source).map((entry) => [entry.name, entry.procedure]));
 
-    for (const name of ['update', 'restartPanel', 'shutdown', 'setPanelHostname']) {
+    for (const name of ['update', 'releases', 'restartPanel', 'shutdown', 'setPanelHostname']) {
       expect(byName.get(name), `system.${name}`).toBe('superadminProcedure');
     }
   });

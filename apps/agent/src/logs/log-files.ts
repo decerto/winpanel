@@ -4,21 +4,21 @@ import path from 'node:path';
 const MAX_READ_BYTES = 512 * 1024;
 const MAX_DIRECTORY_DEPTH = 4;
 
-export interface PanelLogInfo {
+export interface LogFileInfo {
   id: string;
   size: number;
   modifiedAt: Date;
 }
 
-export interface PanelLogLine {
+export interface LogFileLine {
   at: number | null;
   level: string;
   message: string;
   raw: string;
 }
 
-export interface PanelLogRead extends PanelLogInfo {
-  lines: PanelLogLine[];
+export interface LogFileRead extends LogFileInfo {
+  lines: LogFileLine[];
   truncated: boolean;
 }
 
@@ -43,7 +43,7 @@ async function collectFiles(
   root: string,
   current: string,
   depth: number,
-  files: PanelLogInfo[],
+  files: LogFileInfo[],
   excludedRoots: readonly string[],
 ): Promise<void> {
   if (depth > MAX_DIRECTORY_DEPTH) return;
@@ -83,14 +83,14 @@ async function resolvedExclusions(excludedDirs: readonly string[]): Promise<stri
   );
 }
 
-export async function listPanelLogs(
+export async function listLogFiles(
   logDir: string,
   excludedDirs: readonly string[] = [],
-): Promise<PanelLogInfo[]> {
+): Promise<LogFileInfo[]> {
   const root = await fs.realpath(logDir).catch(() => null);
   if (!root) return [];
 
-  const files: PanelLogInfo[] = [];
+  const files: LogFileInfo[] = [];
   await collectFiles(root, root, 0, files, await resolvedExclusions(excludedDirs));
   return files.sort((a, b) => a.id.localeCompare(b.id));
 }
@@ -119,7 +119,28 @@ function levelOf(value: unknown): string {
   return 'debug';
 }
 
-function parseLine(raw: string): PanelLogLine {
+/**
+ * The severity of a line that is not structured JSON.
+ *
+ * Application output is whatever the framework decided to print, so there is
+ * no field to read. The word itself is the only signal there is, and picking
+ * it out is what lets the reader filter a Node stack trace out of a wall of
+ * ordinary startup chatter.
+ */
+const PLAIN_LEVEL = /(?:^|[^a-z])(fatal|error|warn(?:ing)?|debug|trace)(?![a-z])/i;
+
+/** A leading timestamp, as most loggers and WinSW itself write one. */
+const LEADING_TIME = /^\[?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\]?/;
+
+function plainLevelOf(raw: string): string {
+  const word = PLAIN_LEVEL.exec(raw)?.[1]?.toLowerCase();
+  if (!word) return 'info';
+  if (word.startsWith('warn')) return 'warn';
+  if (word === 'trace') return 'debug';
+  return word;
+}
+
+function parseLine(raw: string): LogFileLine {
   try {
     const record = JSON.parse(raw) as Record<string, unknown>;
     const message =
@@ -136,17 +157,22 @@ function parseLine(raw: string): PanelLogLine {
       raw,
     };
   } catch {
-    return { at: null, level: 'info', message: raw, raw };
+    return {
+      at: timestampOf(LEADING_TIME.exec(raw)?.[1]),
+      level: plainLevelOf(raw),
+      message: raw,
+      raw,
+    };
   }
 }
 
-export async function readPanelLog(
+export async function readLogFile(
   logDir: string,
   id: string,
   lineLimit: number,
   excludedDirs: readonly string[] = [],
-): Promise<PanelLogRead | null> {
-  const listed = await listPanelLogs(logDir, excludedDirs);
+): Promise<LogFileRead | null> {
+  const listed = await listLogFiles(logDir, excludedDirs);
   const info = listed.find((candidate) => candidate.id === id);
   if (!info) return null;
 

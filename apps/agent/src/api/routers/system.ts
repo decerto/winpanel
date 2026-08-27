@@ -38,6 +38,7 @@ import {
 } from '../../windows/watched-services.js';
 import type { DatabaseHandle } from '../../db/index.js';
 import { validateUpdateUrl } from '../../components/panel-update.js';
+import { listOfficialReleases } from '../../components/panel-releases.js';
 import { BrowseError, browseDirectory } from '../../files/server-browse.js';
 
 /**
@@ -213,6 +214,8 @@ export const systemRouter = router({
       uptimeSeconds: Math.floor(process.uptime()),
     };
   }),
+
+  releases: superadminProcedure.query(() => listOfficialReleases()),
 
   /**
    * The Node versions this machine has.

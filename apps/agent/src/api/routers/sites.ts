@@ -31,6 +31,7 @@ import { localAddresses } from '../../tls/panel-certificate.js';
 import { panelHostnameAmong } from '../../tls/panel-hostname.js';
 import { accessLogExists, logFilesFor } from '../../traffic/collector.js';
 import { readAccessLog, scanFailures, scanRequests } from '../../traffic/failures.js';
+import { listLogFiles, readLogFile } from '../../logs/log-files.js';
 import {
   TRAFFIC_RANGES,
   rangeStart,
@@ -50,6 +51,11 @@ import { FileManager } from '../../files/file-manager.js';
  * The wizard's shape is driven from here — `inspect` does the work of looking
  * at a repository so the user is asked to confirm rather than to configure.
  */
+
+/** Where a website's service writes its own output, as the deploy sets it. */
+function siteLogDir(sitesRoot: string, slug: string): string {
+  return path.join(sitesRoot, slug, 'logs');
+}
 
 const GitSourceInput = z.object({
   kind: z.literal('git'),
@@ -568,6 +574,54 @@ export const sitesRouter = router({
         collecting: await accessLogExists(ctx.app.config.accessLogDir, site.slug),
         ...scan,
       };
+    }),
+
+  /**
+   * The log files this website's own application has written.
+   *
+   * Nothing to do with visitors: this is what the site's process said on its
+   * way up and while it was running — the Node or .NET service's output and
+   * the PHP pool supervisor's, exactly as Windows captured it. It is the
+   * answer to "the site is showing an error, what does it actually say", which
+   * the request log can only ever report as a 500.
+   *
+   * Kept under the site's own directory rather than the panel's, so a website
+   * owner can be shown their own diagnostics without being given the panel's.
+   */
+  runtimeLogs: protectedProcedure
+    .input(z.object({ slug: z.string().min(1) }))
+    .query(async ({ ctx, input }) => {
+      const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
+      const site = service.get(input.slug);
+      if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
+
+      return listLogFiles(siteLogDir(ctx.app.config.sitesRoot, site.slug));
+    }),
+
+  /** The newest lines of one of this website's runtime log files. */
+  runtimeLog: protectedProcedure
+    .input(
+      z.object({
+        slug: z.string().min(1),
+        id: z.string().min(1).max(512),
+        lines: z.number().int().min(1).max(2000).default(500),
+      }),
+    )
+    .query(async ({ ctx, input }) => {
+      const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
+      const site = service.get(input.slug);
+      if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
+
+      const result = await readLogFile(
+        siteLogDir(ctx.app.config.sitesRoot, site.slug),
+        input.id,
+        input.lines,
+      );
+      if (!result) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'That log file was not found.' });
+      }
+
+      return result;
     }),
 
   /**

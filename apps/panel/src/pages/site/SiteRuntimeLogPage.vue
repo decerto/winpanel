@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, inject, onMounted, onUnmounted, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import {
   AlertTriangle,
   Bug,
@@ -7,33 +8,46 @@ import {
   FileText,
   Info,
   RefreshCw,
+  ScrollText,
   Search,
-  ServerCog,
   Terminal,
   X,
 } from 'lucide-vue-next';
-import { api, describeError } from '../lib/api';
-import { formatBytes, timeAgo } from '../lib/format';
-import AlertMessage from '../components/AlertMessage.vue';
-import EmptyState from '../components/EmptyState.vue';
-import LoadingBlock from '../components/LoadingBlock.vue';
-import PageHeader from '../components/PageHeader.vue';
+import { api, describeError } from '../../lib/api';
+import { formatBytes, timeAgo } from '../../lib/format';
+import { siteContextKey } from '../../lib/site-context';
+import AlertMessage from '../../components/AlertMessage.vue';
+import EmptyState from '../../components/EmptyState.vue';
+import LoadingBlock from '../../components/LoadingBlock.vue';
 
 /**
- * Runtime output for the panel itself.
+ * What this website's own application has been saying.
  *
- * This is intentionally separate from sign-in activity and from website
- * request logs. It is the owner's view into what the agent and its managed
- * services have been saying on disk, with the API keeping the boundary owner-only.
+ * Deliberately not the request log: that lives on Traffic, where the counts
+ * it belongs to are. This is the other half of "my site is broken" — the
+ * stack trace, the failed database connection, the port that was already in
+ * use. Read straight off the site's service output on disk.
  */
 
-type LogInfo = Awaited<ReturnType<typeof api.logs.list.query>>[number];
-type PanelLog = Awaited<ReturnType<typeof api.logs.read.query>>;
+const route = useRoute();
+const { site } = inject(siteContextKey)!;
+const slug = computed(() => route.params['slug'] as string);
+
+type LogInfo = Awaited<ReturnType<typeof api.sites.runtimeLogs.query>>[number];
+type RuntimeLog = Awaited<ReturnType<typeof api.sites.runtimeLog.query>>;
 type LevelFilter = 'all' | 'info' | 'warn' | 'error' | 'debug';
+
+const LEVELS: { value: LevelFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'info', label: 'Info' },
+  { value: 'warn', label: 'Warnings' },
+  { value: 'error', label: 'Errors' },
+  { value: 'debug', label: 'Debug' },
+];
 
 const logs = ref<LogInfo[]>([]);
 const selectedId = ref<string | null>(null);
-const selected = ref<PanelLog | null>(null);
+const selected = ref<RuntimeLog | null>(null);
 const loading = ref(true);
 const reading = ref(false);
 const error = ref<string | null>(null);
@@ -41,13 +55,17 @@ const level = ref<LevelFilter>('all');
 const search = ref('');
 let refreshTimer: number | null = null;
 
+const domainLabel = computed(() => site.value?.domains[0] ?? site.value?.displayName ?? slug.value);
+
 const visibleLines = computed(() => {
   const needle = search.value.trim().toLowerCase();
 
   return (selected.value?.lines ?? []).filter((line) => {
     const levelMatches =
       level.value === 'all' ||
-      (level.value === 'error' ? line.level === 'error' || line.level === 'fatal' : line.level === level.value);
+      (level.value === 'error'
+        ? line.level === 'error' || line.level === 'fatal'
+        : line.level === level.value);
     const searchMatches =
       !needle || line.message.toLowerCase().includes(needle) || line.raw.toLowerCase().includes(needle);
     return levelMatches && searchMatches;
@@ -58,57 +76,24 @@ const selectedInfo = computed(() => logs.value.find((log) => log.id === selected
 const hasFilters = computed(() => level.value !== 'all' || search.value.trim().length > 0);
 
 /**
- * Which service wrote a file, from the folder the agent gives it.
+ * Names the files a website's service leaves behind.
  *
- * Everything the panel runs logs into one tree, so without this the list is a
- * wall of near-identical service ids and finding out why mail stopped means
- * reading all of them.
+ * The service id is not something the owner chose, so the raw filename means
+ * little on its own; what matters is which stream it is and which half of the
+ * blue/green pair wrote it.
  */
-const SERVICES: Record<string, string> = {
-  caddy: 'Web server',
-  stalwart: 'Mail',
-  mariadb: 'MariaDB',
-  postgres: 'PostgreSQL',
-  mongodb: 'MongoDB',
-};
-
-function serviceOf(id: string): string {
-  const folder = id.includes('/') ? id.slice(0, id.indexOf('/')) : '';
-  return SERVICES[folder] ?? (folder === '' ? 'Panel' : folder);
-}
-
-/** The file list, one section per service, panel first and then alphabetical. */
-const groups = computed(() => {
-  const byService = new Map<string, LogInfo[]>();
-
-  for (const log of logs.value) {
-    const service = serviceOf(log.id);
-    byService.set(service, [...(byService.get(service) ?? []), log]);
-  }
-
-  return [...byService.entries()]
-    .map(([service, files]) => ({ service, files }))
-    .sort((a, b) =>
-      a.service === 'Panel' ? -1 : b.service === 'Panel' ? 1 : a.service.localeCompare(b.service),
-    );
-});
-
-/** The filename on its own; the folder is already said by the section it is in. */
-function fileNameOf(id: string): string {
-  return id.slice(id.lastIndexOf('/') + 1);
-}
-
 function labelFor(id: string): string {
-  if (id.endsWith('.err.log')) return 'Error output';
-  if (id.endsWith('.out.log')) return 'Standard output';
-  if (id.includes('update')) return 'Panel updates';
-  return 'Runtime log';
+  if (id === 'php-error.log') return 'PHP errors';
+
+  const stream = id.endsWith('.err.log') ? 'Error output' : id.endsWith('.out.log') ? 'Standard output' : 'Output';
+  if (/-blue\./.test(id)) return `${stream} (blue release)`;
+  if (/-green\./.test(id)) return `${stream} (green release)`;
+  return stream;
 }
 
 function iconFor(id: string) {
-  if (id.endsWith('.err.log')) return CircleAlert;
-  if (id.includes('update')) return RefreshCw;
-  return Terminal;
+  if (id === 'php-error.log') return CircleAlert;
+  return id.endsWith('.err.log') ? CircleAlert : Terminal;
 }
 
 function levelIcon(levelName: string) {
@@ -148,7 +133,7 @@ async function read(id: string | null = selectedId.value): Promise<void> {
   error.value = null;
 
   try {
-    selected.value = await api.logs.read.query({ id, lines: 500 });
+    selected.value = await api.sites.runtimeLog.query({ slug: slug.value, id, lines: 500 });
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -166,11 +151,16 @@ async function refresh(): Promise<void> {
   error.value = null;
 
   try {
-    const next = await api.logs.list.query();
+    const next = await api.sites.runtimeLogs.query({ slug: slug.value });
     logs.value = next;
 
     if (!selectedId.value || !next.some((log) => log.id === selectedId.value)) {
-      selectedId.value = next[0]?.id ?? null;
+      // Whatever recorded a failure first: it is the reason anyone opens this page.
+      selectedId.value =
+        next.find((log) => log.id === 'php-error.log')?.id ??
+        next.find((log) => log.id.endsWith('.err.log'))?.id ??
+        next[0]?.id ??
+        null;
     }
 
     await read();
@@ -181,10 +171,16 @@ async function refresh(): Promise<void> {
   }
 }
 
+watch(slug, () => {
+  selectedId.value = null;
+  selected.value = null;
+  void refresh();
+});
+
 onMounted(() => {
   void refresh();
-  // Service output changes while the owner is watching it; refresh the selected
-  // tail without making the page jump to another file.
+  // A running app keeps writing while the page is open; follow it without
+  // making the view jump to another file.
   refreshTimer = window.setInterval(() => void refresh(), 30_000);
 });
 
@@ -194,72 +190,77 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-7xl">
-    <PageHeader
-      title="Panel logs"
-      description="Runtime output from the panel and every service it runs for you — the web server, mail and the database engines. Websites log on their own Logs tab, and a game world's console stays with the game server."
-    >
-      <template #actions>
-        <button type="button" class="btn btn-ghost" :disabled="loading || reading" @click="refresh">
+  <div class="space-y-6">
+    <section class="relative overflow-hidden rounded-card border border-line bg-surface p-5 shadow-card md:p-6">
+      <div class="pointer-events-none absolute inset-y-0 right-0 w-1/2 bg-linear-to-l from-brand-soft/25 to-transparent" />
+      <div class="relative flex flex-wrap items-start justify-between gap-5">
+        <div class="min-w-0">
+          <div class="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.14em] text-brand-bright">
+            <ScrollText :size="14" aria-hidden="true" /> Application output
+          </div>
+          <h2 class="mt-2 truncate text-2xl font-semibold tracking-tight text-ink">{{ domainLabel }}</h2>
+          <p class="mt-1 max-w-2xl text-sm text-ink-muted">
+            What this website&#8217;s own process has written &#8212; startup messages, warnings and
+            crashes. Visitor requests are counted on the Traffic tab.
+          </p>
+        </div>
+
+        <button type="button" class="btn btn-ghost shrink-0" :disabled="loading || reading" @click="refresh">
           <RefreshCw :size="15" :class="loading ? 'animate-spin' : ''" aria-hidden="true" />
           Refresh
         </button>
-      </template>
-    </PageHeader>
+      </div>
+    </section>
 
-    <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
+    <AlertMessage v-if="error">{{ error }}</AlertMessage>
+
+    <LoadingBlock v-if="loading && logs.length === 0 && !error" class="h-48 rounded-card bg-sunken" />
 
     <EmptyState
-      v-if="!loading && logs.length === 0"
-      :icon="ServerCog"
-      title="No panel logs yet"
-      description="The panel has not written a runtime log in its logs folder yet. Start or restart a managed service, then come back here."
+      v-else-if="logs.length === 0"
+      :icon="ScrollText"
+      title="No application output yet"
+      description="This website has not written a runtime log. Static websites have no process to log; a Node, .NET or PHP site starts writing here the first time its service runs."
     />
 
     <section v-else class="grid gap-4 lg:grid-cols-[17rem_minmax(0,1fr)]">
       <aside class="card overflow-hidden">
         <div class="border-b border-line px-4 py-3">
           <div class="flex items-center justify-between gap-2">
-            <h2 class="text-sm font-semibold text-ink">Log files</h2>
+            <h3 class="text-sm font-semibold text-ink">Log files</h3>
             <span class="font-mono text-xs text-ink-faint">{{ logs.length }}</span>
           </div>
-          <p class="mt-1 text-xs text-ink-faint">Recent output from managed services.</p>
+          <p class="mt-1 text-xs text-ink-faint">Written by this website&#8217;s service.</p>
         </div>
 
-        <nav class="max-h-[32rem] overflow-y-auto p-2" aria-label="Panel log files">
-          <section v-for="group in groups" :key="group.service" class="mb-3 last:mb-0">
-            <h3 class="px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-ink-faint">
-              {{ group.service }}
-            </h3>
-
-            <button
-              v-for="log in group.files"
-              :key="log.id"
-              type="button"
-              class="mb-1 flex w-full items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors last:mb-0"
-              :class="
-                selectedId === log.id
-                  ? 'border-brand/50 bg-brand-soft/60 text-ink'
-                  : 'border-transparent text-ink-muted hover:border-line hover:bg-white/[0.04] hover:text-ink'
-              "
-              @click="choose(log.id)"
-            >
-              <component
-                :is="iconFor(log.id)"
-                :size="15"
-                class="mt-0.5 shrink-0"
-                :class="selectedId === log.id ? 'text-brand-bright' : 'text-ink-faint'"
-                aria-hidden="true"
-              />
-              <span class="min-w-0 flex-1">
-                <span class="block truncate text-xs font-medium">{{ fileNameOf(log.id) }}</span>
-                <span class="mt-1 flex items-center justify-between gap-2 text-[0.65rem] text-ink-faint">
-                  <span class="truncate">{{ labelFor(log.id) }}</span>
-                  <span class="font-mono">{{ formatBytes(log.size) }}</span>
-                </span>
+        <nav class="max-h-[32rem] overflow-y-auto p-2" aria-label="Website log files">
+          <button
+            v-for="log in logs"
+            :key="log.id"
+            type="button"
+            class="mb-1 flex w-full items-start gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors last:mb-0"
+            :class="
+              selectedId === log.id
+                ? 'border-brand/50 bg-brand-soft/60 text-ink'
+                : 'border-transparent text-ink-muted hover:border-line hover:bg-white/[0.04] hover:text-ink'
+            "
+            @click="choose(log.id)"
+          >
+            <component
+              :is="iconFor(log.id)"
+              :size="15"
+              class="mt-0.5 shrink-0"
+              :class="selectedId === log.id ? 'text-brand-bright' : 'text-ink-faint'"
+              aria-hidden="true"
+            />
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-xs font-medium">{{ log.id }}</span>
+              <span class="mt-1 flex items-center justify-between gap-2 text-[0.65rem] text-ink-faint">
+                <span class="truncate">{{ labelFor(log.id) }}</span>
+                <span class="font-mono">{{ formatBytes(log.size) }}</span>
               </span>
-            </button>
-          </section>
+            </span>
+          </button>
         </nav>
       </aside>
 
@@ -271,10 +272,10 @@ onUnmounted(() => {
                 <FileText :size="17" />
               </span>
               <div class="min-w-0">
-                <h2 class="truncate font-mono text-sm font-semibold text-ink">{{ selectedId }}</h2>
+                <h3 class="truncate font-mono text-sm font-semibold text-ink">{{ selectedId }}</h3>
                 <p v-if="selectedInfo" class="mt-1 text-xs text-ink-faint">
-                  {{ serviceOf(selectedInfo.id) }} · {{ labelFor(selectedInfo.id) }} ·
-                  {{ formatBytes(selectedInfo.size) }} · updated {{ timeAgo(selectedInfo.modifiedAt) }}
+                  {{ labelFor(selectedInfo.id) }} &#183; {{ formatBytes(selectedInfo.size) }} &#183;
+                  updated {{ timeAgo(selectedInfo.modifiedAt) }}
                 </p>
               </div>
             </div>
@@ -286,33 +287,22 @@ onUnmounted(() => {
           <div class="mt-4 flex flex-col gap-3 md:flex-row">
             <div class="inline-flex max-w-full overflow-x-auto rounded-lg border border-line bg-black/20 p-0.5">
               <button
-                v-for="option in [
-                  { value: 'all', label: 'All' },
-                  { value: 'info', label: 'Info' },
-                  { value: 'warn', label: 'Warnings' },
-                  { value: 'error', label: 'Errors' },
-                  { value: 'debug', label: 'Debug' },
-                ]"
+                v-for="option in LEVELS"
                 :key="option.value"
                 type="button"
                 class="shrink-0 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors"
                 :class="level === option.value ? 'bg-brand-soft text-brand-bright' : 'text-ink-faint hover:text-ink'"
                 :aria-pressed="level === option.value"
-                @click="level = option.value as LevelFilter"
+                @click="level = option.value"
               >
                 {{ option.label }}
               </button>
             </div>
 
             <label class="relative min-w-0 flex-1">
-              <span class="sr-only">Search panel logs</span>
+              <span class="sr-only">Search this log</span>
               <Search :size="15" class="pointer-events-none absolute left-3 top-2.5 text-ink-faint" aria-hidden="true" />
-              <input
-                v-model="search"
-                type="search"
-                class="field pl-9 pr-9"
-                placeholder="Search this log"
-              />
+              <input v-model="search" type="search" class="field pl-9 pr-9" placeholder="Search this log" />
               <button
                 v-if="search"
                 type="button"
@@ -345,15 +335,13 @@ onUnmounted(() => {
                   <span class="text-[0.65rem]">{{ line.level }}</span>
                 </span>
                 <span class="basis-full min-w-0 whitespace-pre-wrap break-words text-ink md:basis-auto md:flex-1">{{ line.message }}</span>
-                <details v-if="line.raw !== line.message" class="basis-full min-w-0 text-ink-faint md:basis-auto md:shrink">
-                  <summary class="cursor-pointer select-none text-[0.65rem] hover:text-brand-bright">raw</summary>
-                  <pre class="mt-2 max-w-full whitespace-pre-wrap break-all rounded border border-line bg-black/30 p-2 text-[0.65rem] text-ink-muted">{{ line.raw }}</pre>
-                </details>
               </div>
 
               <div v-if="visibleLines.length === 0" class="px-6 py-14 text-center font-sans">
                 <Search :size="20" class="mx-auto text-ink-faint" aria-hidden="true" />
-                <p class="mt-3 text-sm text-ink-muted">No lines match these filters.</p>
+                <p class="mt-3 text-sm text-ink-muted">
+                  {{ hasFilters ? 'No lines match these filters.' : 'This file is empty.' }}
+                </p>
                 <button v-if="hasFilters" type="button" class="btn btn-ghost btn-sm mt-4" @click="clearFilters">
                   Clear filters
                 </button>
@@ -365,7 +353,9 @@ onUnmounted(() => {
             <span>{{ visibleLines.length }} shown</span>
             <span v-if="selected.truncated">Recent tail only; older output is not loaded.</span>
             <span v-else>Full file loaded.</span>
-            <span v-if="selected.modifiedAt" class="ml-auto" :title="exact(selected.modifiedAt)">Updated {{ timeAgo(selected.modifiedAt) }}</span>
+            <span v-if="selected.modifiedAt" class="ml-auto" :title="exact(selected.modifiedAt)">
+              Updated {{ timeAgo(selected.modifiedAt) }}
+            </span>
           </footer>
         </template>
       </section>

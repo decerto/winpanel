@@ -39,11 +39,14 @@ const ENABLED_EXTENSIONS = [
 /**
  * Marker of the template a site's php.ini was written from. When it changes,
  * an ini we wrote is updated to match; one the user has edited is left alone.
- * v5: a longer execution limit. On Windows, max_execution_time is wall-clock
- * time — downloads and disk writes count — so 60s killed a WordPress core
- * update mid-way. 300s is the PHP default and what WordPress expects.
+ * v6: PHP's own errors go to a file the panel can show, and stop being
+ * printed into the page — a stack trace is a diagnostic, not something a
+ * visitor should be handed.
  */
-const TEMPLATE_MARKER = '; WinPanel php.ini template v5';
+const TEMPLATE_MARKER = '; WinPanel php.ini template v6';
+
+/** Where PHP writes its errors: beside the site's service output. */
+export const PHP_ERROR_LOG = 'php-error.log';
 
 /**
  * The extension directory, written into the ini as an absolute path.
@@ -54,10 +57,11 @@ const TEMPLATE_MARKER = '; WinPanel php.ini template v5';
  * line. `realpathSync` resolves junctions so the path is the true location of
  * the runtime the pool is about to run.
  */
-function buildPhpIni(phpExeDir: string): string {
+function buildPhpIni(phpExeDir: string, logDir: string): string {
   // The caller passes the folder php-cgi.exe actually sits in; the extensions
   // are in the `ext` folder beside it, wherever the zip happened to put them.
   const extensionDir = path.join(phpExeDir, 'ext').replace(/\\/g, '/');
+  const errorLog = path.join(logDir, PHP_ERROR_LOG).replace(/\\/g, '/');
 
   return [
     '; Written by WinPanel for one website. Edits are kept: once you change',
@@ -77,6 +81,10 @@ function buildPhpIni(phpExeDir: string): string {
     // page request wants is far too tight for an updater.
     'max_execution_time=300',
     'expose_php=0',
+    '',
+    'log_errors=1',
+    `error_log="${errorLog}"`,
+    'display_errors=0',
     '',
   ].join('\r\n');
 }
@@ -131,6 +139,24 @@ function priorTemplates(phpExeDir: string): string[] {
       'expose_php=0',
       '',
     ].join('\r\n'),
+    // v5 — the 300s limit, but PHP's errors still went nowhere but the page.
+    [
+      '; Written by WinPanel for one website. Edits are kept: once you change',
+      '; this file it is yours, and a deploy will not overwrite it.',
+      '; WinPanel php.ini template v5',
+      '',
+      `extension_dir="${extensionDir}"`,
+      ...extLines,
+      '',
+      'opcache.enable=1',
+      'opcache.memory_consumption=128',
+      'memory_limit=256M',
+      'upload_max_filesize=64M',
+      'post_max_size=64M',
+      'max_execution_time=300',
+      'expose_php=0',
+      '',
+    ].join('\r\n'),
   ];
 }
 
@@ -141,7 +167,8 @@ export async function writePhpIni(iniPath: string, phpExeDir: string): Promise<v
   // runtime directory.
   const resolvedDir = (await fs.realpath(phpExeDir).catch(() => phpExeDir)).replace(/\\/g, '/');
 
-  const ini = buildPhpIni(resolvedDir);
+  // The ini already sits in the site's log folder, so PHP's errors land there too.
+  const ini = buildPhpIni(resolvedDir, path.dirname(iniPath));
 
   /*
    * Only created, never silently replaced: an administrator who has tuned a

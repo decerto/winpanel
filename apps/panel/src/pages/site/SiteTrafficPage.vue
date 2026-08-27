@@ -6,6 +6,7 @@ import { api, describeError } from '../../lib/api';
 import { formatBytes, formatCount, timeAgo } from '../../lib/format';
 import AlertMessage from '../../components/AlertMessage.vue';
 import LoadingBlock from '../../components/LoadingBlock.vue';
+import RequestLedger from '../../components/RequestLedger.vue';
 
 /**
  * What this website has actually served.
@@ -85,13 +86,11 @@ const requestsError = ref<string | null>(null);
 type ClassFilter = 'all' | '2xx' | '3xx' | '4xx' | '5xx';
 type View = 'grouped' | 'latest';
 type GroupSort = 'count' | 'address' | 'answer' | 'recent';
-type LatestSort = 'recent' | 'address' | 'answer';
 
 /** Set by clicking a band in “what the server answered”, or the class chips. */
 const classFilter = ref<ClassFilter>('all');
 const view = ref<View>('grouped');
 const groupSort = ref<GroupSort>('count');
-const latestSort = ref<LatestSort>('recent');
 
 async function loadFailures(): Promise<void> {
   failuresLoading.value = true;
@@ -253,30 +252,6 @@ const visibleGroups = computed<Row[]>(() => {
   });
 });
 
-/** The individual requests behind the rows, newest first unless re-sorted. */
-interface Entry {
-  at: number;
-  status: number;
-  method: string;
-  uri: string;
-}
-
-const allRecent = computed<Entry[]>(() => [
-  ...(failures.value?.recent ?? []),
-  ...(requests.value?.recent ?? []),
-]);
-
-const visibleRecent = computed<Entry[]>(() => {
-  const rows = allRecent.value.filter((row) => inFilter(row.status));
-  const by = latestSort.value;
-
-  return [...rows].sort((a, b) => {
-    if (by === 'address') return a.uri.localeCompare(b.uri) || b.at - a.at;
-    if (by === 'answer') return a.status - b.status || b.at - a.at;
-    return b.at - a.at;
-  });
-});
-
 /** True while either scan is in flight, so the table shows one spinner. */
 const tableLoading = computed(() => failuresLoading.value || requestsLoading.value);
 
@@ -286,19 +261,12 @@ const tableError = computed(() => failuresError.value ?? requestsError.value);
 /** True once at least one scan has returned, so the table has something to render. */
 const tableReady = computed(() => failures.value !== null || requests.value !== null);
 
-const TABLE_SORTS: Record<View, { value: string; label: string }[]> = {
-  grouped: [
-    { value: 'count', label: 'Busiest' },
-    { value: 'address', label: 'Address' },
-    { value: 'answer', label: 'Answer' },
-    { value: 'recent', label: 'Most recent' },
-  ],
-  latest: [
-    { value: 'recent', label: 'Most recent' },
-    { value: 'address', label: 'Address' },
-    { value: 'answer', label: 'Answer' },
-  ],
-};
+const GROUP_SORTS: { value: GroupSort; label: string }[] = [
+  { value: 'count', label: 'Busiest' },
+  { value: 'address', label: 'Address' },
+  { value: 'answer', label: 'Answer' },
+  { value: 'recent', label: 'Most recent' },
+];
 
 const CLASS_FILTERS: { value: ClassFilter; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -581,19 +549,10 @@ function whenMonth(value: Date): string {
             </button>
           </div>
 
-          <label class="flex items-center gap-1.5 text-xs text-ink-faint">
+          <label v-if="view === 'grouped'" class="flex items-center gap-1.5 text-xs text-ink-faint">
             Sort
-            <select
-              v-if="view === 'grouped'"
-              v-model="groupSort"
-              class="field !w-auto px-2 py-1 text-xs"
-            >
-              <option v-for="option in TABLE_SORTS.grouped" :key="option.value" :value="option.value">
-                {{ option.label }}
-              </option>
-            </select>
-            <select v-else v-model="latestSort" class="field !w-auto px-2 py-1 text-xs">
-              <option v-for="option in TABLE_SORTS.latest" :key="option.value" :value="option.value">
+            <select v-model="groupSort" class="field !w-auto px-2 py-1 text-xs">
+              <option v-for="option in GROUP_SORTS" :key="option.value" :value="option.value">
                 {{ option.label }}
               </option>
             </select>
@@ -606,15 +565,15 @@ function whenMonth(value: Date): string {
       <LoadingBlock v-else-if="tableLoading && !tableReady" class="h-24 rounded-lg bg-sunken" :icon-size="16" />
 
       <template v-else>
-        <p class="mb-3 text-xs text-ink-faint">
-          Read back from the web server&#8217;s own log.
-          <template v-if="partialLog && oldestLogAt">
-            It only reaches back to {{ whenExact(oldestLogAt) }}, so older requests counted above
-            are not listed.
-          </template>
-        </p>
-
         <div v-if="view === 'grouped'" class="overflow-x-auto">
+          <p class="mb-3 text-xs text-ink-faint">
+            Read back from the web server&#8217;s own log.
+            <template v-if="partialLog && oldestLogAt">
+              It only reaches back to {{ whenExact(oldestLogAt) }}, so older requests counted above
+              are not listed.
+            </template>
+          </p>
+
           <table v-if="visibleGroups.length > 0" class="w-full text-sm">
             <thead>
               <tr class="border-b border-line text-left text-xs uppercase tracking-wide text-ink-faint">
@@ -654,41 +613,7 @@ function whenMonth(value: Date): string {
           <p v-else class="text-sm text-ink-muted">Nothing matching is still in the log.</p>
         </div>
 
-        <div v-else class="overflow-x-auto">
-          <table v-if="visibleRecent.length > 0" class="w-full text-sm">
-            <thead>
-              <tr class="border-b border-line text-left text-xs uppercase tracking-wide text-ink-faint">
-                <th class="py-1.5 pr-3 font-medium">When</th>
-                <th class="py-1.5 pr-3 font-medium">Answer</th>
-                <th class="py-1.5 font-medium">Address</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="(entry, index) in visibleRecent"
-                :key="`${entry.at}-${index}`"
-                class="border-b border-line/50 last:border-0"
-              >
-                <td
-                  class="whitespace-nowrap py-2 pr-3 text-xs text-ink-faint"
-                  :title="whenExact(entry.at)"
-                >
-                  {{ timeAgo(entry.at) }}
-                </td>
-                <td class="whitespace-nowrap py-2 pr-3">
-                  <span class="font-mono" :class="statusTint(entry.status)">{{ entry.status }}</span>
-                  <span class="ml-1.5 text-ink-muted">{{ describeStatus(entry.status) }}</span>
-                </td>
-                <td class="max-w-md py-2">
-                  <span class="mr-1.5 font-mono text-xs text-ink-faint">{{ entry.method }}</span>
-                  <span class="break-all font-mono text-xs text-ink">{{ entry.uri }}</span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-
-          <p v-else class="text-sm text-ink-muted">Nothing matching is still in the log.</p>
-        </div>
+        <RequestLedger v-else :slug="slug" :range="range" :status="classFilter" />
       </template>
     </section>
 

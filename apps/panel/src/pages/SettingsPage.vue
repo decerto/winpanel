@@ -2,8 +2,10 @@
 import { computed, onUnmounted, ref } from 'vue';
 import {
   Download,
+  ExternalLink,
   FolderSearch,
   Gamepad2,
+  Github,
   Info,
   Lock,
   Power,
@@ -32,6 +34,8 @@ type BackgroundServices = Awaited<ReturnType<typeof api.system.backgroundService
 type ShutdownResult = Awaited<ReturnType<typeof api.system.shutdown.mutate>>;
 type PanelCertificate = Awaited<ReturnType<typeof api.system.panelCertificate.query>>;
 type GameServersSettings = Awaited<ReturnType<typeof api.gameServers.settings.query>>;
+type OfficialReleases = Awaited<ReturnType<typeof api.system.releases.query>>;
+type OfficialRelease = OfficialReleases['releases'][number];
 
 const info = ref<SystemInfo | null>(null);
 
@@ -171,13 +175,18 @@ async function removePanelHostname(): Promise<void> {
  * settings. Without this, every fix meant uninstalling, which is why it is
  * here rather than in a document nobody reads at the time.
  */
-const updateSource = ref<'upload' | 'url' | 'file'>('upload');
+const updateSource = ref<'official' | 'upload' | 'url' | 'file'>('official');
 const updateUrl = ref('');
 const updateFile = ref('');
 const updateChecksum = ref('');
 const updateBusy = ref(false);
 const updateJob = useJobLog();
 const restartBusy = ref(false);
+const officialReleases = ref<OfficialRelease[]>([]);
+const officialRepositoryUrl = ref('https://github.com/decerto/winpanel/releases');
+const selectedReleaseTag = ref<string | null>(null);
+const officialReleasesBusy = ref(false);
+const officialReleasesError = ref<string | null>(null);
 /** The server file browser, so nobody has to type a Windows path from memory. */
 const browsingForInstaller = ref(false);
 
@@ -193,7 +202,63 @@ const installerFile = ref<File | null>(null);
 const uploadPercent = ref<number | null>(null);
 let upload: XMLHttpRequest | null = null;
 
+function compareReleaseVersions(left: string, right: string): number | null {
+  const parse = (value: string): [number, number, number] | null => {
+    const match = value.trim().match(/^v?(\d+)\.(\d+)\.(\d+)/i);
+    if (!match?.[1] || !match[2] || !match[3]) return null;
+    return [Number.parseInt(match[1], 10), Number.parseInt(match[2], 10), Number.parseInt(match[3], 10)];
+  };
+
+  const leftParts = parse(left);
+  const rightParts = parse(right);
+  if (!leftParts || !rightParts) return null;
+
+  const [leftMajor, leftMinor, leftPatch] = leftParts;
+  const [rightMajor, rightMinor, rightPatch] = rightParts;
+  if (leftMajor !== rightMajor) return leftMajor > rightMajor ? 1 : -1;
+  if (leftMinor !== rightMinor) return leftMinor > rightMinor ? 1 : -1;
+  if (leftPatch !== rightPatch) return leftPatch > rightPatch ? 1 : -1;
+  return 0;
+}
+
+const latestRelease = computed(
+  () => officialReleases.value.find((release) => !release.isPrerelease) ?? officialReleases.value[0] ?? null,
+);
+const selectedRelease = computed(
+  () => officialReleases.value.find((release) => release.tagName === selectedReleaseTag.value) ?? latestRelease.value,
+);
+const releaseStatus = computed<'current' | 'available' | 'ahead' | 'unknown'>(() => {
+  const currentVersion = info.value?.version;
+  const latest = latestRelease.value;
+  if (!currentVersion || !latest) return 'unknown';
+
+  const comparison = compareReleaseVersions(currentVersion, latest.tagName);
+  if (comparison === null) return 'unknown';
+  if (comparison === 0) return 'current';
+  return comparison > 0 ? 'ahead' : 'available';
+});
+
+function isLatestRelease(release: OfficialRelease): boolean {
+  return latestRelease.value?.tagName === release.tagName;
+}
+
+function isCurrentRelease(release: OfficialRelease): boolean {
+  return compareReleaseVersions(info.value?.version ?? '', release.tagName) === 0;
+}
+
+function formatReleaseDate(value: string | null): string {
+  if (!value) return 'Date unavailable';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Date unavailable';
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  }).format(date);
+}
+
 const canUpdate = computed(() => {
+  if (updateSource.value === 'official') return Boolean(selectedRelease.value?.installer);
   if (updateSource.value === 'url') return updateUrl.value.trim().length > 0;
   if (updateSource.value === 'upload') return installerFile.value !== null;
   return updateFile.value.trim().length > 0;
@@ -285,7 +350,10 @@ async function refresh(): Promise<void> {
    * is not shown a button that will only ever refuse them. The server enforces
    * it either way.
    */
-  if (me.status === 'fulfilled') isOwner.value = me.value?.role === 'superadmin';
+  if (me.status === 'fulfilled') {
+    isOwner.value = me.value?.role === 'superadmin';
+    if (isOwner.value) void refreshOfficialReleases();
+  }
   if (gameServerSettings.status === 'fulfilled') gameServers.value = gameServerSettings.value;
 
   await loadPanelCertificate({ adoptHostname: firstLoad });
@@ -293,6 +361,28 @@ async function refresh(): Promise<void> {
 
   const failure = results.find((result) => result.status === 'rejected');
   if (failure) error.value = describeError(failure.reason);
+}
+
+async function refreshOfficialReleases(): Promise<void> {
+  officialReleasesBusy.value = true;
+  officialReleasesError.value = null;
+
+  try {
+    const result = await api.system.releases.query();
+    officialRepositoryUrl.value = result.repositoryUrl;
+    officialReleases.value = result.releases;
+
+    if (!selectedReleaseTag.value || !result.releases.some((release) => release.tagName === selectedReleaseTag.value)) {
+      selectedReleaseTag.value =
+        result.releases.find((release) => !release.isPrerelease)?.tagName ??
+        result.releases[0]?.tagName ??
+        null;
+    }
+  } catch (err) {
+    officialReleasesError.value = describeError(err);
+  } finally {
+    officialReleasesBusy.value = false;
+  }
 }
 
 async function refreshGameServers(): Promise<void> {
@@ -690,6 +780,10 @@ async function restartPanel(): Promise<void> {
 }
 
 async function installUpdate(): Promise<void> {
+  const officialInstaller =
+    updateSource.value === 'official' ? selectedRelease.value?.installer : null;
+  if (updateSource.value === 'official' && !officialInstaller) return;
+
   if (
     !window.confirm(
       'Install this over the running WinPanel?\n\n' +
@@ -713,12 +807,21 @@ async function installUpdate(): Promise<void> {
         ? await sendInstaller(installerFile.value)
         : updateFile.value.trim();
 
+    const source =
+      updateSource.value === 'official'
+        ? { url: officialInstaller!.url }
+        : updateSource.value === 'url'
+          ? { url: updateUrl.value.trim() }
+          : { filePath: serverPath };
+    const checksum =
+      updateSource.value === 'official'
+        ? officialInstaller!.sha256
+        : updateChecksum.value.trim() || null;
+
     const result = await api.system.update.mutate(
       {
-        ...(updateSource.value === 'url'
-          ? { url: updateUrl.value.trim() }
-          : { filePath: serverPath }),
-        ...(updateChecksum.value.trim() ? { sha256: updateChecksum.value.trim() } : {}),
+        ...source,
+        ...(checksum ? { sha256: checksum } : {}),
       },
       { signal: deadline.signal },
     );
@@ -1240,6 +1343,15 @@ async function installUpdate(): Promise<void> {
         <button
           type="button"
           class="btn btn-ghost btn-sm"
+          :class="updateSource === 'official' ? 'text-ink' : ''"
+          :aria-pressed="updateSource === 'official'"
+          @click="updateSource = 'official'"
+        >
+          <Github :size="15" aria-hidden="true" /> Official releases
+        </button>
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
           :class="updateSource === 'upload' ? 'text-ink' : ''"
           :aria-pressed="updateSource === 'upload'"
           @click="updateSource = 'upload'"
@@ -1253,7 +1365,7 @@ async function installUpdate(): Promise<void> {
           :aria-pressed="updateSource === 'url'"
           @click="updateSource = 'url'"
         >
-          Download it
+          From a URL
         </button>
         <button
           type="button"
@@ -1262,12 +1374,136 @@ async function installUpdate(): Promise<void> {
           :aria-pressed="updateSource === 'file'"
           @click="updateSource = 'file'"
         >
-          Already on this server
+          From this server
         </button>
       </div>
 
       <form class="mt-4 space-y-3" @submit.prevent="installUpdate">
-        <div v-if="updateSource === 'upload'">
+        <div v-if="updateSource === 'official'" class="space-y-3">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0">
+              <label class="label">Official WinPanel releases</label>
+              <p class="hint">
+                Choose a published release from
+                <a
+                  :href="officialRepositoryUrl"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="text-brand-bright hover:underline"
+                  >GitHub</a
+                >. The setup file downloads directly to this server.
+              </p>
+            </div>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm shrink-0"
+              :disabled="officialReleasesBusy"
+              aria-label="Refresh official releases"
+              title="Refresh official releases"
+              @click="refreshOfficialReleases"
+            >
+              <RefreshCw :size="15" :class="officialReleasesBusy ? 'animate-spin' : ''" aria-hidden="true" />
+            </button>
+          </div>
+
+          <div
+            v-if="officialReleasesBusy && officialReleases.length === 0"
+            class="rounded-card border border-line bg-elevated/30 p-4 text-sm text-ink-muted"
+          >
+            Checking GitHub for published releases...
+          </div>
+          <AlertMessage v-else-if="officialReleasesError" tone="warning">
+            {{ officialReleasesError }}
+          </AlertMessage>
+          <div
+            v-else-if="officialReleases.length === 0"
+            class="rounded-card border border-line bg-elevated/30 p-4 text-sm text-ink-muted"
+          >
+            No published WinPanel releases were found.
+          </div>
+          <div v-else class="max-h-72 space-y-2 overflow-y-auto pr-1">
+            <button
+              v-for="release in officialReleases"
+              :key="release.tagName"
+              type="button"
+              class="flex w-full min-w-0 items-center gap-3 rounded-card border px-3 py-2 text-left transition-colors"
+              :class="
+                selectedReleaseTag === release.tagName
+                  ? 'border-brand bg-brand-soft/40'
+                  : 'border-line bg-elevated/30 hover:border-brand/60'
+              "
+              :aria-pressed="selectedReleaseTag === release.tagName"
+              @click="selectedReleaseTag = release.tagName"
+            >
+              <span class="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span class="flex flex-wrap items-center gap-2">
+                  <span class="font-mono text-sm font-semibold text-ink">{{ release.tagName }}</span>
+                  <span
+                    v-if="isLatestRelease(release)"
+                    class="rounded-full bg-brand-soft/70 px-2 py-0.5 text-[0.65rem] font-medium text-brand-bright"
+                    >Latest</span
+                  >
+                  <span
+                    v-if="isCurrentRelease(release)"
+                    class="rounded-full bg-elevated px-2 py-0.5 text-[0.65rem] font-medium text-ink-muted"
+                    >This server</span
+                  >
+                  <span
+                    v-if="release.isPrerelease"
+                    class="rounded-full bg-elevated px-2 py-0.5 text-[0.65rem] font-medium text-ink-muted"
+                    >Pre-release</span
+                  >
+                </span>
+                <span class="truncate text-sm text-ink-muted">{{ release.name }}</span>
+              </span>
+              <span class="shrink-0 text-right text-xs text-ink-faint">
+                {{ formatReleaseDate(release.publishedAt) }}
+              </span>
+            </button>
+          </div>
+
+          <AlertMessage v-if="latestRelease && releaseStatus === 'current'" tone="success">
+            This server is running the latest stable release, {{ latestRelease.tagName }}.
+          </AlertMessage>
+          <AlertMessage v-else-if="latestRelease && releaseStatus === 'available'" tone="info">
+            Update available: {{ latestRelease.tagName }} is newer than this server's
+            {{ info?.version }}.
+          </AlertMessage>
+          <AlertMessage v-else-if="latestRelease && releaseStatus === 'ahead'" tone="info">
+            This server is newer than the latest published release, {{ latestRelease.tagName }}.
+          </AlertMessage>
+
+          <div v-if="selectedRelease" class="border-t border-line pt-3">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="min-w-0">
+                <p class="text-sm font-semibold text-ink">{{ selectedRelease.name }}</p>
+                <p class="mt-1 text-xs text-ink-faint">
+                  {{ selectedRelease.tagName }} · Published {{ formatReleaseDate(selectedRelease.publishedAt) }}
+                </p>
+              </div>
+              <a
+                :href="selectedRelease.htmlUrl"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="inline-flex shrink-0 items-center gap-1 text-sm text-brand-bright hover:underline"
+              >
+                View release <ExternalLink :size="13" aria-hidden="true" />
+              </a>
+            </div>
+            <p v-if="selectedRelease.installer" class="hint mt-2">
+              <span class="font-mono">WinPanel-Setup-x64.exe</span>
+              <span v-if="selectedRelease.installer.sizeBytes">
+                · {{ describeSize(selectedRelease.installer.sizeBytes) }}
+              </span>
+              <span v-if="selectedRelease.installer.sha256"> · SHA-256 verified by GitHub</span>
+            </p>
+            <p v-else class="hint mt-2">
+              This release does not include the Windows x64 setup program.
+            </p>
+          </div>
+        </div>
+
+        <div v-else-if="updateSource === 'upload'">
           <label for="update-upload" class="label">Choose the setup file</label>
           <input
             id="update-upload"
@@ -1334,7 +1570,7 @@ async function installUpdate(): Promise<void> {
           <p class="hint">For a server with no internet access. Copy the file across first.</p>
         </div>
 
-        <div>
+        <div v-if="updateSource !== 'official'">
           <label for="update-checksum" class="label">Fingerprint (optional)</label>
           <input
             id="update-checksum"

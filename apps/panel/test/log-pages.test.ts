@@ -45,6 +45,10 @@ const state = vi.hoisted(() => ({
   panelLogResults: {} as Record<string, any>,
   logsList: vi.fn(async () => state.logs),
   logsRead: vi.fn(async ({ id }: { id: string }) => state.panelLogResults[id] ?? null),
+  siteLogs: [] as any[],
+  siteLogResults: {} as Record<string, any>,
+  siteLogsList: vi.fn(async () => state.siteLogs),
+  siteLogRead: vi.fn(async ({ id }: { id: string }) => state.siteLogResults[id] ?? null),
 }));
 
 vi.mock('vue-router', () => ({
@@ -53,13 +57,18 @@ vi.mock('vue-router', () => ({
 
 vi.mock('../src/lib/api', () => ({
   api: {
-    sites: { accessLog: { query: state.accessQuery } },
+    sites: {
+      accessLog: { query: state.accessQuery },
+      runtimeLogs: { query: state.siteLogsList },
+      runtimeLog: { query: state.siteLogRead },
+    },
     logs: { list: { query: state.logsList }, read: { query: state.logsRead } },
   },
   describeError: (error: unknown) => String(error),
 }));
 
-const SiteAccessLogPage = (await import('../src/pages/site/SiteAccessLogPage.vue')).default;
+const RequestLedger = (await import('../src/components/RequestLedger.vue')).default;
+const SiteRuntimeLogPage = (await import('../src/pages/site/SiteRuntimeLogPage.vue')).default;
 const PanelLogsPage = (await import('../src/pages/PanelLogsPage.vue')).default;
 
 function accessSite() {
@@ -70,7 +79,7 @@ function accessSite() {
   };
 }
 
-function panelLog(id: string, message: string, level = 'info') {
+function logFile(id: string, message: string, level = 'info') {
   return {
     id,
     size: 128,
@@ -80,8 +89,16 @@ function panelLog(id: string, message: string, level = 'info') {
   };
 }
 
-async function renderAccess() {
-  const wrapper = mount(SiteAccessLogPage, {
+async function renderLedger(status: 'all' | '5xx' = 'all') {
+  const wrapper = mount(RequestLedger, {
+    props: { slug: 'example', range: '7d' as const, status },
+  });
+  await flushPromises();
+  return wrapper;
+}
+
+async function renderSiteLogs() {
+  const wrapper = mount(SiteRuntimeLogPage, {
     global: {
       provide: {
         [siteContextKey as unknown as symbol]: { site: ref(accessSite()) },
@@ -131,26 +148,48 @@ beforeEach(() => {
   state.logs = [
     { id: 'agent.out.log', size: 128, modifiedAt: new Date(0) },
     { id: 'agent.err.log', size: 256, modifiedAt: new Date(0) },
+    { id: 'stalwart/winpanel-stalwart.err.log', size: 64, modifiedAt: new Date(0) },
   ];
   state.panelLogResults = {
-    'agent.out.log': panelLog('agent.out.log', 'agent started'),
-    'agent.err.log': panelLog('agent.err.log', 'database failed', 'error'),
+    'agent.out.log': logFile('agent.out.log', 'agent started'),
+    'agent.err.log': logFile('agent.err.log', 'database failed', 'error'),
+    'stalwart/winpanel-stalwart.err.log': logFile(
+      'stalwart/winpanel-stalwart.err.log',
+      'smtp listener stopped',
+      'error',
+    ),
+  };
+  state.siteLogs = [
+    { id: 'winpanel-site-example-blue.out.log', size: 128, modifiedAt: new Date(0) },
+    { id: 'winpanel-site-example-blue.err.log', size: 256, modifiedAt: new Date(0) },
+  ];
+  state.siteLogResults = {
+    'winpanel-site-example-blue.out.log': logFile(
+      'winpanel-site-example-blue.out.log',
+      'Listening on port 4100',
+    ),
+    'winpanel-site-example-blue.err.log': logFile(
+      'winpanel-site-example-blue.err.log',
+      'Error: connect ECONNREFUSED',
+      'error',
+    ),
   };
   state.accessQuery.mockClear();
   state.logsList.mockClear();
   state.logsRead.mockClear();
+  state.siteLogsList.mockClear();
+  state.siteLogRead.mockClear();
 });
 
-describe('website request logs', () => {
-  it('renders request rows and applies a response filter', async () => {
-    const wrapper = await renderAccess();
+describe('website request ledger', () => {
+  it('renders request rows and reloads when the response class changes', async () => {
+    const wrapper = await renderLedger();
 
     expect(wrapper.findAll('tbody tr')).toHaveLength(2);
     expect(wrapper.text()).toContain('/home');
     expect(wrapper.text()).toContain('203.0.113.8');
 
-    const refused = wrapper.findAll('button').find((button) => button.text() === 'Errors');
-    await refused!.trigger('click');
+    await wrapper.setProps({ status: '5xx' });
     await flushPromises();
 
     expect(state.accessQuery).toHaveBeenLastCalledWith(expect.objectContaining({ status: '5xx' }));
@@ -158,12 +197,68 @@ describe('website request logs', () => {
     wrapper.unmount();
   });
 
-  it('explains when request collection has not started', async () => {
-    state.accessResult = { ...state.accessResult, collecting: false, lines: [], total: 0 };
-    const wrapper = await renderAccess();
+  it('passes a search term to the agent', async () => {
+    const wrapper = await renderLedger();
 
-    expect(wrapper.text()).toContain('No requests recorded yet');
-    expect(wrapper.findAll('tbody tr')).toHaveLength(0);
+    await wrapper.find('input[type="search"]').setValue('/save');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(state.accessQuery).toHaveBeenLastCalledWith(expect.objectContaining({ search: '/save' }));
+    wrapper.unmount();
+  });
+});
+
+describe('website runtime logs', () => {
+  it('opens the error output first and filters its lines', async () => {
+    const wrapper = await renderSiteLogs();
+
+    expect(state.siteLogRead).toHaveBeenLastCalledWith({
+      slug: 'example',
+      id: 'winpanel-site-example-blue.err.log',
+      lines: 500,
+    });
+    expect(wrapper.text()).toContain('Error: connect ECONNREFUSED');
+
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('winpanel-site-example-blue.out.log'))!
+      .trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain('Listening on port 4100');
+
+    await wrapper.find('input[placeholder="Search this log"]').setValue('missing');
+    expect(wrapper.text()).toContain('No lines match these filters.');
+    wrapper.unmount();
+  });
+
+  it('opens the PHP error log first when the website has one', async () => {
+    state.siteLogs = [
+      { id: 'winpanel-site-example-blue.out.log', size: 128, modifiedAt: new Date(0) },
+      { id: 'php-error.log', size: 64, modifiedAt: new Date(0) },
+    ];
+    state.siteLogResults['php-error.log'] = logFile(
+      'php-error.log',
+      'PHP Fatal error: Uncaught Error: Call to undefined function',
+      'error',
+    );
+
+    const wrapper = await renderSiteLogs();
+
+    expect(state.siteLogRead).toHaveBeenLastCalledWith({
+      slug: 'example',
+      id: 'php-error.log',
+      lines: 500,
+    });
+    expect(wrapper.text()).toContain('PHP errors');
+    wrapper.unmount();
+  });
+
+  it('explains when the website has written no output', async () => {
+    state.siteLogs = [];
+    const wrapper = await renderSiteLogs();
+
+    expect(wrapper.text()).toContain('No application output yet');
     wrapper.unmount();
   });
 });
@@ -186,6 +281,18 @@ describe('panel runtime logs', () => {
     const errors = wrapper.findAll('button').find((button) => button.text() === 'Errors');
     await errors!.trigger('click');
     expect(wrapper.text()).toContain('database failed');
+    wrapper.unmount();
+  });
+
+  it('groups the files by the service that wrote them', async () => {
+    const wrapper = await renderPanel();
+    const nav = wrapper.find('nav');
+
+    expect(nav.text()).toContain('Panel');
+    expect(nav.text()).toContain('Mail');
+    // The folder is said by the section, so the button shows the file alone.
+    expect(nav.text()).toContain('winpanel-stalwart.err.log');
+    expect(nav.text()).not.toContain('stalwart/winpanel-stalwart.err.log');
     wrapper.unmount();
   });
 
