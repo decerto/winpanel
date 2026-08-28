@@ -671,6 +671,50 @@ describe('the certificate mail clients see', () => {
     expect(argsOf(seen, 'x:Certificate/set')).toBeUndefined();
   });
 
+  /*
+   * The shape the real server answers with. Every fixture here used bare
+   * strings, so the suite passed while the live install threw
+   * "name.toLowerCase is not a function" -- and the caller reported that
+   * failure as "it already has the right certificate", which is the one
+   * answer that made the fault invisible.
+   */
+  it('reads a name given as a typed value rather than a bare string', async () => {
+    const { mail, seen } = client({
+      'x:Certificate/query': { ids: ['c1'] },
+      'x:Certificate/get': {
+        list: [
+          {
+            id: 'c1',
+            subjectAlternativeNames: { '0': { '@type': 'Text', value: 'mail.example.com' } },
+            notValidAfter: '2025-06-01T00:00:00Z',
+          },
+        ],
+      },
+      'x:Certificate/set': {},
+    });
+
+    expect(await mail.installCertificate(CERTIFICATE)).toBe('updated');
+    expect(argsOf(seen, 'x:Certificate/set')?.['update']).toHaveProperty('c1');
+  });
+
+  it('reports what the mail server holds for a name given as a typed value', async () => {
+    const { mail } = client({
+      'x:Certificate/query': { ids: ['c1'] },
+      'x:Certificate/get': {
+        list: [
+          {
+            id: 'c1',
+            subjectAlternativeNames: [{ '@type': 'Text', value: 'MAIL.example.com' }],
+            notValidAfter: '2026-01-01T00:00:00Z',
+          },
+        ],
+      },
+    });
+
+    const expiry = await mail.certificateExpiry('mail.example.com');
+    expect(expiry?.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+  });
+
   // The query filter matches on text, so `mail.example.com` must not be
   // satisfied by a record that only covers `webmail.example.com`.
   it('does not take a near miss for a match', async () => {

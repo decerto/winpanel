@@ -165,6 +165,7 @@ const setupOpen = ref(false);
 const setupAddress = ref<string | null>(null);
 const loadingSetup = ref(false);
 const fixingCertificate = ref(false);
+const checkingCertificate = ref(false);
 const mailCertificate = ref<MailCertificate | null>(null);
 const copiedSettings = ref(false);
 
@@ -203,6 +204,17 @@ async function openClientSetup(address?: string): Promise<void> {
 
   setupOpen.value = true;
   await loadClientSetup();
+}
+
+/** Re-reads the state without touching anything, for when somebody wants to look again. */
+async function recheckCertificate(): Promise<void> {
+  checkingCertificate.value = true;
+
+  try {
+    await loadMailCertificate();
+  } finally {
+    checkingCertificate.value = false;
+  }
 }
 
 /**
@@ -806,34 +818,50 @@ watch(() => site.value?.slug, load, { immediate: true });
             </AlertMessage>
 
             <div class="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                class="btn btn-primary btn-sm"
-                :disabled="fixingCertificate"
-                @click="fixCertificate"
-              >
-                <ShieldCheck :size="14" aria-hidden="true" />
-                {{
-                  fixingCertificate
-                    ? mailCertificate.certificate
-                      ? 'Installing\u2026'
-                      : 'Getting a certificate\u2026'
-                    : mailCertificate.installed
-                      ? 'Check it again'
+              <template v-if="mailCertificate.installed">
+                <p class="text-sm text-emerald-300/90">
+                  Mail programs are being given this certificate. It renews on its own.
+                </p>
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-sm ml-auto"
+                  :disabled="checkingCertificate"
+                  @click="recheckCertificate"
+                >
+                  <RefreshCw
+                    :size="14"
+                    :class="checkingCertificate ? 'animate-spin' : ''"
+                    aria-hidden="true"
+                  />
+                  {{ checkingCertificate ? 'Checking\u2026' : 'Check again' }}
+                </button>
+              </template>
+              <template v-else>
+                <button
+                  type="button"
+                  class="btn btn-primary btn-sm"
+                  :disabled="fixingCertificate"
+                  @click="fixCertificate"
+                >
+                  <ShieldCheck :size="14" aria-hidden="true" />
+                  {{
+                    fixingCertificate
+                      ? mailCertificate.certificate
+                        ? 'Installing\u2026'
+                        : 'Getting a certificate\u2026'
                       : mailCertificate.certificate
                         ? 'Put it on the mail server'
                         : 'Get a certificate'
-                }}
-              </button>
-              <p class="text-xs text-ink-faint">
-                {{
-                  mailCertificate.installed
-                    ? 'Mail programs are being given this certificate.'
-                    : mailCertificate.certificate
+                  }}
+                </button>
+                <p class="text-xs text-ink-faint">
+                  {{
+                    mailCertificate.certificate
                       ? 'Copies it onto the mail ports and restarts the mail server.'
                       : 'Obtains one, then puts it on the mail ports.'
-                }}
-              </p>
+                  }}
+                </p>
+              </template>
             </div>
           </div>
         </section>

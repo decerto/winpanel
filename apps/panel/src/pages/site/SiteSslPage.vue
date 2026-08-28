@@ -62,6 +62,7 @@ const custom = computed(() => status.value?.custom ?? null);
  */
 const mailCertificate = ref<MailCertificate | null>(null);
 const fixingMailCertificate = ref(false);
+const checkingMailCertificate = ref(false);
 
 const mailDomain = computed(
   () => (site.value?.domains ?? []).find((name) => !name.toLowerCase().startsWith('www.')) ?? null,
@@ -94,6 +95,17 @@ async function fixMailCertificate(): Promise<void> {
     error.value = describeError(err);
   } finally {
     fixingMailCertificate.value = false;
+  }
+}
+
+/** Re-reads the state without changing anything. */
+async function recheckMailCertificate(): Promise<void> {
+  checkingMailCertificate.value = true;
+
+  try {
+    await loadMailCertificate();
+  } finally {
+    checkingMailCertificate.value = false;
   }
 }
 
@@ -466,22 +478,39 @@ watch(slug, load, { immediate: true });
           </dl>
 
           <div class="flex flex-wrap items-center gap-2">
+            <template v-if="mailCertificate.installed">
+              <p class="text-sm text-emerald-300/90">
+                Mail programs are being given this certificate. It renews on its own.
+              </p>
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
+                :disabled="checkingMailCertificate"
+                @click="recheckMailCertificate"
+              >
+                <RefreshCw
+                  :size="14"
+                  :class="checkingMailCertificate ? 'animate-spin' : ''"
+                  aria-hidden="true"
+                />
+                {{ checkingMailCertificate ? 'Checking\u2026' : 'Check again' }}
+              </button>
+            </template>
             <button
+              v-else
               type="button"
               class="btn btn-primary btn-sm"
               :disabled="fixingMailCertificate"
               @click="fixMailCertificate"
             >
               <ShieldCheck :size="14" aria-hidden="true" />
-            {{
-              fixingMailCertificate
-                ? 'Working\u2026'
-                : mailCertificate.installed
-                  ? 'Check it again'
+              {{
+                fixingMailCertificate
+                  ? 'Working\u2026'
                   : mailCertificate.certificate
                     ? 'Put it on the mail server'
                     : 'Get a certificate'
-            }}
+              }}
             </button>
             <RouterLink :to="`/sites/${slug}/email`" class="btn btn-ghost btn-sm">
               Open Email

@@ -98,7 +98,7 @@ interface ListenerPayload {
 
 interface CertificatePayload {
   id?: string;
-  subjectAlternativeNames?: Record<string, string> | string[];
+  subjectAlternativeNames?: Record<string, unknown> | unknown[];
   issuer?: string;
   notValidAfter?: string;
 }
@@ -128,6 +128,28 @@ function valuesOf<T>(value: Record<string, T> | T[] | undefined): T[] {
 /** The counterpart for writing one back. */
 function indexed<T>(values: readonly T[]): Record<string, T> {
   return Object.fromEntries(values.map((value, index) => [String(index), value]));
+}
+
+/**
+ * The text out of a list whose entries may be bare strings or typed values.
+ *
+ * A certificate's alternative names come back as `{"@type":"Text","value":…}`
+ * rather than as strings, which is the shape they are written in. Assuming
+ * strings threw a TypeError inside the install, and the caller reported that
+ * as "it already has the right certificate" -- so the one thing that could
+ * never work looked like the one thing that needed nothing doing.
+ *
+ * Lowercased here because every caller compares names case-insensitively.
+ */
+export function textValuesOf(value: Record<string, unknown> | unknown[] | undefined): string[] {
+  return valuesOf(value)
+    .map((entry) => {
+      if (typeof entry === 'string') return entry.toLowerCase();
+
+      const inner = (entry as { value?: unknown } | null)?.value;
+      return typeof inner === 'string' ? inner.toLowerCase() : null;
+    })
+    .filter((entry): entry is string => entry !== null);
 }
 
 /**
@@ -904,7 +926,7 @@ export class StalwartClient {
     );
 
     return existing.find((candidate) =>
-      valuesOf(candidate.subjectAlternativeNames).some((name) => name.toLowerCase() === wanted),
+      textValuesOf(candidate.subjectAlternativeNames).some((name) => name === wanted),
     );
   }
 
