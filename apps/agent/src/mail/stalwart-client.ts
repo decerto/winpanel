@@ -894,8 +894,8 @@ export class StalwartClient {
     return [...ports].sort((a, b) => a - b);
   }
 
-  /** When the certificate the mail server currently holds for a name expires. */
-  async certificateExpiry(hostname: string): Promise<Date | null> {
+  /** The record covering a hostname, so every caller matches it the same way. */
+  private async findCertificate(hostname: string): Promise<CertificatePayload | undefined> {
     const wanted = hostname.toLowerCase();
 
     const existing = await this.fetchByIds<CertificatePayload>(
@@ -903,10 +903,14 @@ export class StalwartClient {
       await this.queryIds('x:Certificate', { subjectAlternativeNames: wanted }),
     );
 
-    const match = existing.find((candidate) =>
+    return existing.find((candidate) =>
       valuesOf(candidate.subjectAlternativeNames).some((name) => name.toLowerCase() === wanted),
     );
+  }
 
+  /** When the certificate the mail server currently holds for a name expires. */
+  async certificateExpiry(hostname: string): Promise<Date | null> {
+    const match = await this.findCertificate(hostname);
     if (!match?.notValidAfter) return null;
 
     const expiry = Date.parse(match.notValidAfter);
@@ -934,14 +938,7 @@ export class StalwartClient {
   }): Promise<'created' | 'updated' | 'unchanged'> {
     const wanted = input.hostname.toLowerCase();
 
-    const existing = await this.fetchByIds<CertificatePayload>(
-      'x:Certificate',
-      await this.queryIds('x:Certificate', { subjectAlternativeNames: wanted }),
-    );
-
-    const match = existing.find((candidate) =>
-      valuesOf(candidate.subjectAlternativeNames).some((name) => name.toLowerCase() === wanted),
-    );
+    const match = await this.findCertificate(wanted);
 
     if (match?.id) {
       const installed = match.notValidAfter ? Date.parse(match.notValidAfter) : NaN;

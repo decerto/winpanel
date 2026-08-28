@@ -899,11 +899,32 @@ export const mailRouter = router({
           hostnames: [mailHostname],
         });
 
-        if (result.installed.length === 0) {
+        const refused = result.failed[0];
+        if (refused) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: `The mail server refused the certificate: ${refused.message}`,
+          });
+        }
+
+        if (result.missing.length > 0) {
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
-            message: `${mailHostname} already has the right certificate on its mail ports.`,
+            message:
+              `The web server holds no certificate for ${mailHostname}, so there is nothing ` +
+              'to install yet.',
           });
+        }
+
+        // Nothing to do is a success. Reporting it as an error told somebody
+        // who had pressed exactly the right button that they had done
+        // something wrong.
+        if (result.installed.length === 0) {
+          return {
+            ok: true,
+            mailHostname,
+            note: `${mailHostname} already has this certificate on its mail ports.`,
+          };
         }
 
         return {

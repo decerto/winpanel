@@ -432,13 +432,15 @@ watch(slug, load, { immediate: true });
             </p>
           </div>
           <StatusBadge
-            :state="mailCertificate.installed ? 'ok' : 'warning'"
+            :state="mailCertificate.installed === false ? 'warning' : mailCertificate.certificate ? 'ok' : 'warning'"
             :label="
               mailCertificate.installed
                 ? 'On the mail server'
-                : mailCertificate.certificate
-                  ? 'Issued, not installed'
-                  : 'Not yet'
+                : !mailCertificate.certificate
+                  ? 'Not yet'
+                  : mailCertificate.installed === false
+                    ? 'Issued, not installed'
+                    : 'Issued'
             "
             size="sm"
           />
