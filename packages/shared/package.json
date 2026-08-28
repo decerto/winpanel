@@ -1,6 +1,6 @@
 {
   "name": "@winpanel/shared",
-  "version": "1.12.4",
+  "version": "1.12.5",
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE.md",
   "type": "module",
