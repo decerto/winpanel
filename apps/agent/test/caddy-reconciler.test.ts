@@ -211,6 +211,36 @@ describe('turning the database into a Caddy config', () => {
 
     expect(policy.subjects).toEqual(expect.arrayContaining(['example.com', 'mail.example.com']));
   });
+
+  it('uses the website token for mail when the site lists only the www name', () => {
+    /*
+     * The whole promise of a token per website: one token covers its zone, so
+     * the person who pasted it does not then have to work out why email alone
+     * was left without a certificate.
+     */
+    const siteId = insertSite({ domains: ['www.example.com'] });
+    storeMailDomains(db, ['example.com']);
+    storeSiteCloudflareToken(db, vault, siteId, 'cf-secret-token');
+
+    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
+    const policy = config.apps.tls.automation.policies.find((p: any) => p.issuers);
+
+    expect(policy.subjects).toContain('mail.example.com');
+  });
+
+  it('never hands a name to a token from somebody else\u2019s account', () => {
+    // A token only reaches its own zones, so naming it under one that cannot
+    // see it would fail every renewal forever.
+    const mine = insertSite({ slug: 'mine', domains: ['example.com'] });
+    insertSite({ slug: 'theirs', displayName: 'Theirs', domains: ['other.example'] });
+    storeMailDomains(db, ['other.example']);
+    storeSiteCloudflareToken(db, vault, mine, 'cf-secret-token');
+
+    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
+    const policy = config.apps.tls.automation.policies.find((p: any) => p.issuers);
+
+    expect(policy.subjects).not.toContain('mail.other.example');
+  });
 });
 
 describe('applying the configuration', () => {

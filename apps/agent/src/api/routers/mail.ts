@@ -36,6 +36,7 @@ import { CloudflareClient, CloudflareError, type DnsChange } from '../../dns/clo
 import { planMailRecords, recommendedMailRecords } from '../../dns/mail-records.js';
 import { cloudflareTokenForSite } from '../../dns/token.js';
 import { syncCaddyEnvironment } from '../../caddy/service.js';
+import { readCertificateError } from '../../caddy/certificate-log.js';
 import { SiteService } from '../../sites/site-service.js';
 import { localAddresses } from '../../tls/panel-certificate.js';
 import type { AppContext } from '../../app-context.js';
@@ -126,6 +127,27 @@ function cloudflareFor(app: AppContext, slug?: string): CloudflareClient | null 
 
   const resolved = cloudflareTokenForSite(app.db, app.vault, site.id);
   return resolved ? new CloudflareClient(resolved.token) : null;
+}
+
+/**
+ * Whether a Cloudflare token can answer the DNS challenge for this domain.
+ *
+ * Only used to decide what to tell somebody when a certificate has not
+ * arrived: advising them to add a token they added days ago sends them to
+ * check the one thing that is already correct.
+ */
+function hasDnsToken(app: AppContext, domain: string): boolean {
+  const wanted = domain.toLowerCase().replace(/^www\./, '');
+
+  const site = new SiteService(app.db, app.vault, app.config.sitesRoot)
+    .list()
+    .find((entry) =>
+      (entry.domains as string[]).some(
+        (name) => name.toLowerCase().replace(/^www\./, '') === wanted,
+      ),
+    );
+
+  return site ? cloudflareTokenForSite(app.db, app.vault, site.id) !== null : false;
 }
 
 /** The IPv4 address this server answers on, or a clear reason it is unknown. */
@@ -787,22 +809,37 @@ export const mailRouter = router({
           });
         }
 
-        if (!(await waitForIssuedCertificate(caddyDir, mailHostname))) {
+        /*
+         * Shorter than the browser's own 60 second limit on purpose. Waiting
+         * the full minute meant the request was aborted at the far end, so
+         * whatever was learned here never reached the person who asked.
+         */
+        if (!(await waitForIssuedCertificate(caddyDir, mailHostname, 40_000))) {
           /*
            * Cloudflare's proxy is deliberately not mentioned here. A proxied
            * record resolves to Cloudflare rather than to this server, so the
            * address check above has already rejected that case — repeating the
            * advice sent people to look at a record that was never the problem.
            */
+          const refusal = await readCertificateError(ctx.app.config.logDir, mailHostname);
+
           throw new TRPCError({
             code: 'PRECONDITION_FAILED',
-            message:
-              `The web server is asking for a certificate for ${mailHostname} but has not got ` +
-              `one yet. ${mailHostname} points at this server, so what is left is the route in: ` +
-              'the certificate authority connects back on port 80, which has to be open to the ' +
-              'internet and reach this machine. Adding a Cloudflare token on the DNS tab avoids ' +
-              'that connection entirely. Otherwise this usually just needs another minute \u2014 ' +
-              'try again shortly.',
+            message: refusal
+              ? `The web server tried to get a certificate for ${mailHostname} and was ` +
+                `refused: ${refusal}`
+              : hasDnsToken(ctx.app, input.domain)
+                ? `The web server is still working on a certificate for ${mailHostname}. It ` +
+                  `is answering the challenge through the Cloudflare token for ${input.domain} ` +
+                  'rather than over port 80, and that check can take several minutes the first ' +
+                  'time. Nothing else needs setting up \u2014 leave it running and try again ' +
+                  'shortly.'
+                : `The web server is asking for a certificate for ${mailHostname} but has not ` +
+                  `got one yet. ${mailHostname} points at this server, so what is left is the ` +
+                  'route in: the certificate authority connects back on port 80, which has to ' +
+                  'be open to the internet and reach this machine. Adding a Cloudflare token ' +
+                  'on the DNS tab avoids that connection entirely. Otherwise this usually just ' +
+                  'needs another minute \u2014 try again shortly.',
           });
         }
       }

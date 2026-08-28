@@ -3,7 +3,6 @@ import {
   PANEL_PORT,
   PHP_POOL_SIZE,
   STALWART_HTTP_PORT,
-  mailHostnameFor,
   type SiteManifest,
 } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
@@ -99,6 +98,47 @@ export function siteInputsFrom(db: DatabaseHandle, sitesRoot: string): CaddySite
     });
 }
 
+/** A `www.` prefix is a name inside a zone, never a zone of its own. */
+function zoneOf(domain: string): string {
+  return domain.toLowerCase().replace(/^www\./, '');
+}
+
+/**
+ * The token that can answer a DNS challenge for one name.
+ *
+ * A Cloudflare token is scoped to a zone, so it can answer for every name in
+ * it — which is the whole promise of putting one token on a website: the
+ * names that belong to no website's domain list, `mail.<domain>` and the
+ * panel's own hostname, still have to be issued by somebody. Without this
+ * they fall through to the policy with no issuers, and that cannot work
+ * behind Cloudflare's proxy or on a machine port 80 does not reach.
+ *
+ * Longest match wins, so a delegated subdomain zone beats its parent.
+ */
+export function groupCovering<T extends { domains: readonly string[] }>(
+  groups: readonly T[],
+  hostname: string,
+): T | null {
+  const name = hostname.toLowerCase();
+
+  let best: T | null = null;
+  let bestLength = -1;
+
+  for (const group of groups) {
+    for (const domain of group.domains) {
+      const zone = zoneOf(domain);
+      if (name !== zone && !name.endsWith(`.${zone}`)) continue;
+
+      if (zone.length > bestLength) {
+        best = group;
+        bestLength = zone.length;
+      }
+    }
+  }
+
+  return best;
+}
+
 export class CaddyReconciler {
   constructor(
     private readonly db: DatabaseHandle,
@@ -168,28 +208,17 @@ export class CaddyReconciler {
      */
     const panelHostname = readPanelHostname(this.db);
 
-    // The only token that can obtain a certificate for a mail hostname is
-    // whichever one covers the domain it sits under.
-    for (const group of dnsChallenges) {
-      const owned = mailNames.filter((mailHostname) =>
-        group.domains.some((domain) => mailHostname === mailHostnameFor(domain)),
-      );
-      if (owned.length > 0) group.domains = [...group.domains, ...owned];
-    }
-
     /*
-     * Same for the panel: the challenge has to be answered by the token whose
-     * account holds the zone the name sits in. Without this the panel's name
-     * falls through to the no-issuer policy, which cannot work behind
-     * Cloudflare's proxy.
+     * Matched against the website domains alone: a name added here must not
+     * become a match target for the next one.
      */
-    if (panelHostname) {
-      const group = dnsChallenges.find((entry) =>
-        entry.domains.some(
-          (domain) => panelHostname === domain || panelHostname.endsWith(`.${domain}`),
-        ),
-      );
-      if (group) group.domains = [...group.domains, panelHostname];
+    const tokenScopes = dnsChallenges.map((group) => ({ group, domains: [...group.domains] }));
+
+    for (const hostname of [...mailNames, ...(panelHostname ? [panelHostname] : [])]) {
+      const match = groupCovering(tokenScopes, hostname);
+      if (!match || match.group.domains.includes(hostname)) continue;
+
+      match.group.domains = [...match.group.domains, hostname];
     }
 
     return buildCaddyConfig({
