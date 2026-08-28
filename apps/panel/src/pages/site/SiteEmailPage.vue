@@ -45,6 +45,7 @@ type Mailbox = Awaited<ReturnType<typeof api.mail.mailboxes.query>>[number];
 type Readiness = Awaited<ReturnType<typeof api.mail.readiness.query>>;
 type MailDns = Awaited<ReturnType<typeof api.mail.dnsStatus.query>>;
 type ClientSetup = Awaited<ReturnType<typeof api.mail.clientSettings.query>>;
+type MailCertificate = Awaited<ReturnType<typeof api.mail.certificate.query>>;
 
 const status = ref<ServerStatus | null>(null);
 const mailboxes = ref<Mailbox[]>([]);
@@ -164,6 +165,7 @@ const setupOpen = ref(false);
 const setupAddress = ref<string | null>(null);
 const loadingSetup = ref(false);
 const fixingCertificate = ref(false);
+const mailCertificate = ref<MailCertificate | null>(null);
 const copiedSettings = ref(false);
 
 const incomingPorts = computed(() =>
@@ -217,7 +219,8 @@ async function fixCertificate(): Promise<void> {
   try {
     const result = await api.mail.installCertificate.mutate({ domain: domain.value });
     notice.value = result.note;
-    await loadClientSetup();
+    await loadMailCertificate();
+    if (setupOpen.value) await loadClientSetup();
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -281,6 +284,17 @@ async function loadMailDns(): Promise<void> {
   }
 }
 
+/** Cheap enough to run unprompted: it only reads what is already on disk. */
+async function loadMailCertificate(): Promise<void> {
+  if (!domain.value || !status.value?.connected) return;
+
+  try {
+    mailCertificate.value = await api.mail.certificate.query({ domain: domain.value });
+  } catch {
+    mailCertificate.value = null;
+  }
+}
+
 /**
  * Publishes the records that bring this domain's email here.
  *
@@ -327,6 +341,7 @@ async function load(): Promise<void> {
     status.value = await api.mail.available.query();
     await loadMailboxes();
     void loadMailDns();
+    void loadMailCertificate();
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -536,6 +551,7 @@ watch(domain, () => {
   clientSetup.value = null;
   void loadMailboxes();
   void loadMailDns();
+  void loadMailCertificate();
 });
 watch(() => site.value?.slug, load, { immediate: true });
 </script>
@@ -715,6 +731,109 @@ watch(() => site.value?.slug, load, { immediate: true });
               Show the exact settings
             </button>
           </p>
+        </section>
+
+        <!--
+          The email certificate.
+          ----------------------
+          Its own box, above the instructions, because it is a thing to act on
+          rather than a thing to read. It used to be an alert inside the
+          Outlook settings, which are collapsed by default: the only people
+          who found it were the ones who already suspected the certificate.
+        -->
+        <section v-if="mailCertificate?.handlesMail" class="card overflow-hidden">
+          <div class="flex flex-wrap items-center gap-3 border-b border-line px-5 py-3">
+            <h3 class="flex items-center gap-2 text-sm font-semibold text-ink">
+              <ShieldCheck :size="15" class="text-ink-faint" aria-hidden="true" />
+              Email certificate
+            </h3>
+            <StatusBadge
+              :state="mailCertificate.installed ? 'ok' : 'warning'"
+              :label="
+                mailCertificate.installed
+                  ? 'On the mail server'
+                  : mailCertificate.certificate
+                    ? 'Issued, not installed'
+                    : 'Not yet'
+              "
+              class="ml-auto"
+            />
+          </div>
+
+          <div class="space-y-3 px-5 py-4">
+            <p class="text-sm text-ink-muted">
+              Mail programs check the certificate on
+              <span class="font-mono text-ink">{{ mailCertificate.mailHostname }}</span
+              >. Without a publicly trusted one, Outlook refuses the account and says only
+              that something went wrong &mdash; webmail keeps working, so it is easy to miss.
+            </p>
+
+            <dl
+              v-if="mailCertificate.certificate"
+              class="grid gap-3 sm:grid-cols-2"
+            >
+              <div class="rounded-lg border border-line bg-black/20 px-3 py-2">
+                <dt class="text-xs text-ink-faint">Issued by</dt>
+                <dd class="text-sm text-ink">{{ mailCertificate.certificate.issuer }}</dd>
+              </div>
+              <div class="rounded-lg border border-line bg-black/20 px-3 py-2">
+                <dt class="text-xs text-ink-faint">Expires</dt>
+                <dd class="text-sm text-ink">
+                  {{ new Date(mailCertificate.certificate.expiresAt).toLocaleDateString() }}
+                </dd>
+              </div>
+            </dl>
+
+            <AlertMessage
+              v-else-if="!mailCertificate.hasDnsToken"
+              tone="warning"
+              title="No Cloudflare token for this website"
+            >
+              <p>
+                A token lets the certificate be issued over DNS, which works even when port 80
+                is not reachable from the internet. Without one the certificate authority has
+                to connect back to this server instead.
+              </p>
+              <RouterLink
+                v-if="site?.slug"
+                :to="`/sites/${site.slug}/dns`"
+                class="btn btn-ghost btn-sm mt-3"
+              >
+                Open DNS
+              </RouterLink>
+            </AlertMessage>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                class="btn btn-primary btn-sm"
+                :disabled="fixingCertificate"
+                @click="fixCertificate"
+              >
+                <ShieldCheck :size="14" aria-hidden="true" />
+                {{
+                  fixingCertificate
+                    ? mailCertificate.certificate
+                      ? 'Installing\u2026'
+                      : 'Getting a certificate\u2026'
+                    : mailCertificate.installed
+                      ? 'Check it again'
+                      : mailCertificate.certificate
+                        ? 'Put it on the mail server'
+                        : 'Get a certificate'
+                }}
+              </button>
+              <p class="text-xs text-ink-faint">
+                {{
+                  mailCertificate.installed
+                    ? 'Mail programs are being given this certificate.'
+                    : mailCertificate.certificate
+                      ? 'Copies it onto the mail ports and restarts the mail server.'
+                      : 'Obtains one, then puts it on the mail ports.'
+                }}
+              </p>
+            </div>
+          </div>
         </section>
 
         <!--

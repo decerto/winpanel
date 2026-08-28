@@ -894,6 +894,25 @@ export class StalwartClient {
     return [...ports].sort((a, b) => a - b);
   }
 
+  /** When the certificate the mail server currently holds for a name expires. */
+  async certificateExpiry(hostname: string): Promise<Date | null> {
+    const wanted = hostname.toLowerCase();
+
+    const existing = await this.fetchByIds<CertificatePayload>(
+      'x:Certificate',
+      await this.queryIds('x:Certificate', { subjectAlternativeNames: wanted }),
+    );
+
+    const match = existing.find((candidate) =>
+      valuesOf(candidate.subjectAlternativeNames).some((name) => name.toLowerCase() === wanted),
+    );
+
+    if (!match?.notValidAfter) return null;
+
+    const expiry = Date.parse(match.notValidAfter);
+    return Number.isNaN(expiry) ? null : new Date(expiry);
+  }
+
   /**
    * Puts a certificate the world already trusts on the mail ports.
    *

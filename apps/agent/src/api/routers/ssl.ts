@@ -4,7 +4,9 @@ import {
   CloudflareMinTlsVersion,
   CloudflareSslAutomaticMode,
   CloudflareSslMode,
+  mailHostnameFor,
 } from '@winpanel/shared';
+import { readMailDomains } from '../../mail/domains.js';
 import { protectedProcedure, router } from '../trpc.js';
 import { CloudflareClient, CloudflareError, type ZoneSslSettings } from '../../dns/cloudflare.js';
 import { cloudflareTokenForSite, type TokenSource } from '../../dns/token.js';
@@ -103,6 +105,26 @@ export const sslRouter = router({
         new Date(),
         custom?.certificate,
       );
+
+      /*
+       * Email's certificate belongs in this table too. It is a different
+       * certificate for a name that is not in the site's domain list, so
+       * without it somebody checking whether mail is secured has to take the
+       * Email tab's word for it.
+       */
+      const mailNames = readMailDomains(ctx.app.db)
+        .filter((mailDomain) =>
+          domains.some(
+            (domain) => domain.toLowerCase().replace(/^www\./, '') === mailDomain,
+          ),
+        )
+        .map((mailDomain) => mailHostnameFor(mailDomain));
+
+      const mailCertificates =
+        mailNames.length > 0
+          ? await certificatesForDomains(ctx.app.config.caddyDir, mailNames, new Date())
+          : [];
+
       const webServerRunning = await ctx.app.caddy.isRunning();
 
       let settings: ZoneSslSettings | null = null;
@@ -125,7 +147,10 @@ export const sslRouter = router({
 
       return {
         domains,
-        certificates,
+        certificates: [
+          ...certificates.map((entry) => ({ ...entry, purpose: 'website' as const })),
+          ...mailCertificates.map((entry) => ({ ...entry, purpose: 'email' as const })),
+        ],
         webServerRunning,
         /*
          * The certificate itself is deliberately not sent. The page only has

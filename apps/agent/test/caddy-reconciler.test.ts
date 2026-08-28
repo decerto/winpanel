@@ -241,6 +241,22 @@ describe('turning the database into a Caddy config', () => {
 
     expect(policy.subjects).not.toContain('mail.other.example');
   });
+
+  it('still obtains a real certificate for mail when a wildcard is loaded', () => {
+    /*
+     * A Cloudflare Origin certificate is issued for `*.<domain>`, so uploading
+     * one on the SSL tab covers `mail.<domain>` as well -- and Caddy skips
+     * automatic management for any name a loaded certificate matches. Email
+     * then keeps its self-signed certificate for good, which no mail client
+     * accepts, while the SSL tab looks entirely healthy.
+     */
+    insertSite();
+    storeMailDomains(db, ['example.com']);
+
+    const config = new CaddyReconciler(db, new CaddyClient(), sitesRoot(), vault).buildConfig() as any;
+
+    expect(config.apps.tls.certificates.automate).toContain('mail.example.com');
+  });
 });
 
 describe('applying the configuration', () => {

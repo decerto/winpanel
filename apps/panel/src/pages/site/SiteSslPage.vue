@@ -30,6 +30,7 @@ const { site } = inject(siteContextKey)!;
 const route = useRoute();
 
 type Status = Awaited<ReturnType<typeof api.ssl.status.query>>;
+type MailCertificate = Awaited<ReturnType<typeof api.mail.certificate.query>>;
 type SslMode = NonNullable<NonNullable<Status['cloudflare']['settings']>['sslMode']>;
 type TlsVersion = NonNullable<NonNullable<Status['cloudflare']['settings']>['minTlsVersion']>;
 
@@ -51,6 +52,50 @@ const uploadKey = ref('');
 const uploadBusy = ref(false);
 
 const custom = computed(() => status.value?.custom ?? null);
+
+/**
+ * Email's certificate, shown here as well as on the Email tab.
+ *
+ * Same certificate, same button. Somebody looking at a page called SSL for a
+ * missing certificate should not have to know that email keeps its own on a
+ * different tab.
+ */
+const mailCertificate = ref<MailCertificate | null>(null);
+const fixingMailCertificate = ref(false);
+
+const mailDomain = computed(
+  () => (site.value?.domains ?? []).find((name) => !name.toLowerCase().startsWith('www.')) ?? null,
+);
+
+async function loadMailCertificate(): Promise<void> {
+  mailCertificate.value = null;
+  if (!mailDomain.value) return;
+
+  try {
+    mailCertificate.value = await api.mail.certificate.query({ domain: mailDomain.value });
+  } catch {
+    // Mail is optional, and a server without it must not show an error here.
+    mailCertificate.value = null;
+  }
+}
+
+async function fixMailCertificate(): Promise<void> {
+  if (!mailDomain.value) return;
+
+  fixingMailCertificate.value = true;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    const result = await api.mail.installCertificate.mutate({ domain: mailDomain.value });
+    notice.value = result.note;
+    await loadMailCertificate();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    fixingMailCertificate.value = false;
+  }
+}
 
 const settings = computed(() => status.value?.cloudflare.settings ?? null);
 const blocked = computed(() => status.value?.cloudflare.blocked ?? null);
@@ -138,7 +183,9 @@ const weakMode = computed(() => {
 });
 
 const missingCertificate = computed(() =>
-  (status.value?.certificates ?? []).some((entry) => entry.state !== 'valid'),
+  (status.value?.certificates ?? []).some(
+    (entry) => entry.purpose !== 'email' && entry.state !== 'valid',
+  ),
 );
 
 function formatExpiry(value: Date | null): string {
@@ -193,6 +240,7 @@ async function load(): Promise<void> {
 
   try {
     status.value = await api.ssl.status.query({ slug: slug.value });
+    void loadMailCertificate();
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -335,6 +383,12 @@ watch(slug, load, { immediate: true });
             <tr v-for="entry in status?.certificates ?? []" :key="entry.domain">
               <td class="px-5 py-2.5 font-mono text-ink">
                 {{ entry.domain }}
+                <span
+                  v-if="entry.purpose === 'email'"
+                  class="ml-1 rounded bg-brand-soft/50 px-1.5 py-0.5 font-sans text-xs text-brand-bright"
+                >
+                  email
+                </span>
                 <span v-if="entry.wildcard" class="ml-1 text-xs text-ink-faint">via wildcard</span>
               </td>
               <td class="px-5 py-2.5">
@@ -360,6 +414,78 @@ watch(slug, load, { immediate: true });
             </tr>
           </tbody>
         </table>
+      </section>
+
+      <!--
+        Email's certificate. The same one the Email tab manages, surfaced here
+        because this is the page somebody opens when a certificate is missing.
+      -->
+      <section v-if="mailCertificate?.handlesMail" class="card overflow-hidden">
+        <div
+          class="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3"
+        >
+          <div class="min-w-0">
+            <h3 class="text-sm font-semibold text-ink">Certificate for email</h3>
+            <p class="mt-0.5 text-xs text-ink-faint">
+              Served on the mail ports for
+              <span class="font-mono">{{ mailCertificate.mailHostname }}</span>
+            </p>
+          </div>
+          <StatusBadge
+            :state="mailCertificate.installed ? 'ok' : 'warning'"
+            :label="
+              mailCertificate.installed
+                ? 'On the mail server'
+                : mailCertificate.certificate
+                  ? 'Issued, not installed'
+                  : 'Not yet'
+            "
+            size="sm"
+          />
+        </div>
+
+        <div class="space-y-3 px-5 py-4">
+          <p class="text-sm text-ink-muted">
+            Separate from the website's certificate above. Without a publicly trusted one,
+            mail programs refuse the account even though webmail keeps working.
+          </p>
+
+          <dl v-if="mailCertificate.certificate" class="grid gap-3 sm:grid-cols-2">
+            <div class="rounded-lg border border-line bg-black/20 px-3 py-2">
+              <dt class="text-xs text-ink-faint">Issued by</dt>
+              <dd class="text-sm text-ink">{{ mailCertificate.certificate.issuer }}</dd>
+            </div>
+            <div class="rounded-lg border border-line bg-black/20 px-3 py-2">
+              <dt class="text-xs text-ink-faint">Expires</dt>
+              <dd class="text-sm text-ink">
+                {{ new Date(mailCertificate.certificate.expiresAt).toLocaleDateString() }}
+              </dd>
+            </div>
+          </dl>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              class="btn btn-primary btn-sm"
+              :disabled="fixingMailCertificate"
+              @click="fixMailCertificate"
+            >
+              <ShieldCheck :size="14" aria-hidden="true" />
+            {{
+              fixingMailCertificate
+                ? 'Working\u2026'
+                : mailCertificate.installed
+                  ? 'Check it again'
+                  : mailCertificate.certificate
+                    ? 'Put it on the mail server'
+                    : 'Get a certificate'
+            }}
+            </button>
+            <RouterLink :to="`/sites/${slug}/email`" class="btn btn-ghost btn-sm">
+              Open Email
+            </RouterLink>
+          </div>
+        </div>
       </section>
 
       <!-- A certificate the user obtained themselves, in place of ours. -->

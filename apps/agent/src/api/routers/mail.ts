@@ -25,7 +25,7 @@ import {
 } from '../../mail/readiness.js';
 import { MailServerError, StalwartClient, probeMailServer } from '../../mail/stalwart-client.js';
 import { findIssuedCertificate, waitForIssuedCertificate } from '../../tls/issued-certificates.js';
-import { storeMailDomains } from '../../mail/domains.js';
+import { readMailDomains, storeMailDomains } from '../../mail/domains.js';
 import { syncMailCertificates, syncMailEnvironment } from '../../mail/service.js';
 import {
   forgetMailAdminCredentials,
@@ -737,6 +737,52 @@ export const mailRouter = router({
         },
         ports,
         note: 'Use the mailbox password, and the full email address as the username.',
+      };
+    }),
+
+  /**
+   * What certificate email is being served with, read off disk.
+   *
+   * Deliberately cheap — no port probes, no mail server round trip — because
+   * it is the one thing on the page that has to be visible without asking for
+   * it. The control used to live inside the Outlook instructions, which meant
+   * the certificate could only be fixed by somebody who already suspected the
+   * certificate.
+   */
+  certificate: protectedProcedure
+    .input(z.object({ domain: Hostname }))
+    .query(async ({ ctx, input }) => {
+      const mailHostname = mailHostnameFor(input.domain);
+      const issued = await findIssuedCertificate(ctx.app.config.caddyDir, mailHostname);
+
+      /*
+       * Null means the mail server could not be asked, which is a third
+       * answer: "issued" and "actually on the mail ports" are different
+       * things, and only the second is what a mail client sees.
+       */
+      let installed: boolean | null = null;
+      try {
+        const onServer = await clientFor(ctx.app).certificateExpiry(mailHostname);
+        installed =
+          onServer !== null &&
+          issued !== null &&
+          Math.abs(onServer.getTime() - issued.expiresAt.getTime()) < 60_000;
+      } catch {
+        installed = null;
+      }
+
+      return {
+        mailHostname,
+        installed,
+        handlesMail: readMailDomains(ctx.app.db).includes(input.domain.toLowerCase()),
+        hasDnsToken: hasDnsToken(ctx.app, input.domain),
+        certificate: issued
+          ? {
+              issuer: issued.issuer,
+              subject: issued.subject,
+              expiresAt: issued.expiresAt.toISOString(),
+            }
+          : null,
       };
     }),
 

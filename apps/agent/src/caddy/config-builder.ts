@@ -683,13 +683,36 @@ export function buildCaddyConfig(input: CaddyConfigInput): Record<string, unknow
 
   const tls: Record<string, unknown> = {};
 
-  if (manual.length > 0) {
+  /*
+   * Names that must have a publicly-trusted certificate of their own, even
+   * when a loaded certificate already matches them.
+   *
+   * Caddy skips automatic management for any name one of its loaded
+   * certificates covers. A Cloudflare Origin certificate is issued for
+   * `*.<domain>`, so uploading one on the SSL tab silently covers
+   * `mail.<domain>` too -- and mail then keeps the self-signed certificate
+   * forever, because nothing ever asks a certificate authority for a real one.
+   * Only Cloudflare's edge trusts an Origin certificate, so it is worthless to
+   * a mail client and to anyone reaching the panel directly. Listing these
+   * here manages them regardless of what is loaded.
+   */
+  const alwaysManaged = [
+    ...(input.mailHost?.hostnames ?? []),
+    ...(input.panelHost ? [input.panelHost.hostname] : []),
+  ].filter((name) => allDomains.has(name));
+
+  if (manual.length > 0 || alwaysManaged.length > 0) {
     tls['certificates'] = {
-      load_files: manual.map((entry) => ({
-        certificate: entry.certificateFile,
-        key: entry.keyFile,
-        format: 'pem',
-      })),
+      ...(manual.length > 0
+        ? {
+            load_files: manual.map((entry) => ({
+              certificate: entry.certificateFile,
+              key: entry.keyFile,
+              format: 'pem',
+            })),
+          }
+        : {}),
+      ...(alwaysManaged.length > 0 ? { automate: alwaysManaged } : {}),
     };
   }
 
