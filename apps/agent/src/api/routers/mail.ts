@@ -35,6 +35,7 @@ import {
 import { CloudflareClient, CloudflareError, type DnsChange } from '../../dns/cloudflare.js';
 import { planMailRecords, recommendedMailRecords } from '../../dns/mail-records.js';
 import { cloudflareTokenForSite } from '../../dns/token.js';
+import { syncCaddyEnvironment } from '../../caddy/service.js';
 import { SiteService } from '../../sites/site-service.js';
 import { localAddresses } from '../../tls/panel-certificate.js';
 import type { AppContext } from '../../app-context.js';
@@ -770,6 +771,13 @@ export const mailRouter = router({
               'nothing to put a certificate on. Create a mailbox for it first.',
           });
         }
+
+        await syncCaddyEnvironment({
+          db: ctx.app.db,
+          vault: ctx.app.vault,
+          services: ctx.app.services,
+          caddyDir,
+        });
 
         const failure = await ctx.app.routing.tryApply();
         if (failure) {
