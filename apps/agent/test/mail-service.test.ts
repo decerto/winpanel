@@ -12,6 +12,8 @@ import {
   STALWART_SERVICE_ID,
   ensureMailAdminCredentials,
   mailServiceEnv,
+  readInstalledMailCertificate,
+  recordInstalledMailCertificate,
   reconcileMailListeners,
   syncMailEnvironment,
 } from '../src/mail/service.js';
@@ -54,6 +56,40 @@ afterEach(async () => {
   vault.lock();
   db.close();
   await fs.rm(tmpDir, { recursive: true, force: true });
+});
+
+/**
+ * Whether the certificate reached the mail ports is recorded rather than
+ * searched for. Asking the mail server means trusting its own search to find a
+ * record by name, and "found nothing" reads exactly like "there is nothing" --
+ * which showed a certificate as missing on a server that already had it.
+ */
+describe('what the panel put on the mail ports', () => {
+  it('remembers the certificate it installed, by expiry', () => {
+    const expires = new Date('2026-11-26T10:00:00.000Z');
+    recordInstalledMailCertificate(db, 'mail.example.com', expires);
+
+    expect(readInstalledMailCertificate(db, 'mail.example.com')).toBe(expires.toISOString());
+  });
+
+  it('knows nothing about a hostname it has never installed one for', () => {
+    expect(readInstalledMailCertificate(db, 'mail.example.com')).toBeNull();
+  });
+
+  it('matches the hostname regardless of case', () => {
+    const expires = new Date('2026-11-26T10:00:00.000Z');
+    recordInstalledMailCertificate(db, 'MAIL.example.com', expires);
+
+    expect(readInstalledMailCertificate(db, 'mail.example.com')).toBe(expires.toISOString());
+  });
+
+  it('moves to the new expiry when the certificate is renewed', () => {
+    recordInstalledMailCertificate(db, 'mail.example.com', new Date('2026-11-26T10:00:00.000Z'));
+    const renewed = new Date('2027-02-01T10:00:00.000Z');
+    recordInstalledMailCertificate(db, 'mail.example.com', renewed);
+
+    expect(readInstalledMailCertificate(db, 'mail.example.com')).toBe(renewed.toISOString());
+  });
 });
 
 /** Stands in for a mail server that has already been installed. */

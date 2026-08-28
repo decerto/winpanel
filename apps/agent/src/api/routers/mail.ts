@@ -26,7 +26,7 @@ import {
 import { MailServerError, StalwartClient, probeMailServer } from '../../mail/stalwart-client.js';
 import { findIssuedCertificate, waitForIssuedCertificate } from '../../tls/issued-certificates.js';
 import { readMailDomains, storeMailDomains } from '../../mail/domains.js';
-import { syncMailCertificates, syncMailEnvironment } from '../../mail/service.js';
+import { syncMailCertificates, syncMailEnvironment, readInstalledMailCertificate } from '../../mail/service.js';
 import {
   forgetMailAdminCredentials,
   loadMailAdminCredentials,
@@ -756,19 +756,29 @@ export const mailRouter = router({
       const issued = await findIssuedCertificate(ctx.app.config.caddyDir, mailHostname);
 
       /*
-       * Null means the mail server could not be asked, which is a third
-       * answer: "issued" and "actually on the mail ports" are different
-       * things, and only the second is what a mail client sees.
+       * Two sources, because neither alone is reliable. The record of what the
+       * panel put there cannot be searched for and lost; the mail server's own
+       * answer catches a certificate removed behind the panel's back. Null is
+       * still a third answer: not knowing is not the same as knowing it is
+       * absent, and only one of those is worth telling somebody to act on.
        */
       let installed: boolean | null = null;
-      try {
-        const onServer = await clientFor(ctx.app).certificateExpiry(mailHostname);
-        installed =
-          onServer !== null &&
-          issued !== null &&
-          Math.abs(onServer.getTime() - issued.expiresAt.getTime()) < 60_000;
-      } catch {
-        installed = null;
+
+      if (issued) {
+        const recorded = readInstalledMailCertificate(ctx.app.db, mailHostname);
+        if (recorded === issued.expiresAt.toISOString()) installed = true;
+      }
+
+      if (installed === null) {
+        try {
+          const onServer = await clientFor(ctx.app).certificateExpiry(mailHostname);
+          installed =
+            onServer !== null &&
+            issued !== null &&
+            Math.abs(onServer.getTime() - issued.expiresAt.getTime()) < 60_000;
+        } catch {
+          installed = null;
+        }
       }
 
       return {

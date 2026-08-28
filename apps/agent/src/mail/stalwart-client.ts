@@ -920,14 +920,29 @@ export class StalwartClient {
   private async findCertificate(hostname: string): Promise<CertificatePayload | undefined> {
     const wanted = hostname.toLowerCase();
 
-    const existing = await this.fetchByIds<CertificatePayload>(
+    const covers = (candidate: CertificatePayload): boolean =>
+      textValuesOf(candidate.subjectAlternativeNames).some((name) => name === wanted);
+
+    const filtered = await this.fetchByIds<CertificatePayload>(
       'x:Certificate',
       await this.queryIds('x:Certificate', { subjectAlternativeNames: wanted }),
     );
 
-    return existing.find((candidate) =>
-      textValuesOf(candidate.subjectAlternativeNames).some((name) => name === wanted),
-    );
+    const match = filtered.find(covers);
+    if (match) return match;
+
+    /*
+     * The server-side filter is not proof of absence. When it matches nothing
+     * the caller would install a second certificate for a name that already
+     * has one, every time it ran, so the whole list is read before concluding
+     * there is nothing there.
+     */
+    return (
+      await this.fetchByIds<CertificatePayload>(
+        'x:Certificate',
+        await this.queryIds('x:Certificate'),
+      )
+    ).find(covers);
   }
 
   /** When the certificate the mail server currently holds for a name expires. */

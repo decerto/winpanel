@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
+import { eq } from 'drizzle-orm';
 import type { DatabaseHandle } from '../db/index.js';
+import { settings } from '../db/schema.js';
 import type { SecretVault } from '../security/vault.js';
 import type { ServiceManager } from '../windows/service-manager.js';
 import { findIssuedCertificate } from '../tls/issued-certificates.js';
@@ -179,6 +181,47 @@ export interface MailCertificateSync {
   restarted: boolean;
 }
 
+const installedCertificateKey = (hostname: string) =>
+  `mail.installedCertificate:${hostname.toLowerCase()}`;
+
+/**
+ * The certificate the panel last got onto the mail ports, by expiry.
+ *
+ * Kept because asking the mail server what it holds means trusting its own
+ * search to find a record by name, and a search that answers "nothing" is
+ * indistinguishable from a certificate that is genuinely absent. This is
+ * written only after the server has accepted one.
+ */
+export function readInstalledMailCertificate(
+  db: DatabaseHandle,
+  hostname: string,
+): string | null {
+  const row = db.db
+    .select()
+    .from(settings)
+    .where(eq(settings.key, installedCertificateKey(hostname)))
+    .get();
+
+  return typeof row?.value === 'string' ? row.value : null;
+}
+
+export function recordInstalledMailCertificate(
+  db: DatabaseHandle,
+  hostname: string,
+  expiresAt: Date,
+): void {
+  const value = expiresAt.toISOString();
+
+  db.db
+    .insert(settings)
+    .values({ key: installedCertificateKey(hostname), value })
+    .onConflictDoUpdate({
+      target: settings.key,
+      set: { value, updatedAt: new Date() },
+    })
+    .run();
+}
+
 /**
  * Gives the mail server the certificates the web server already holds.
  *
@@ -243,6 +286,7 @@ export async function syncMailCertificates(deps: {
       });
 
       if (result !== 'unchanged') installed.push(hostname);
+      recordInstalledMailCertificate(deps.db, hostname, issued.expiresAt);
     } catch (error) {
       failed.push({ hostname, message: error instanceof Error ? error.message : String(error) });
     }
