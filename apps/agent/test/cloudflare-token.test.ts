@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
-import { sites } from '../src/db/schema.js';
+import { sites, users } from '../src/db/schema.js';
 import { SecretVault } from '../src/security/vault.js';
 import { ServiceManager, buildServiceXml } from '../src/windows/service-manager.js';
 import { CaddyReconciler } from '../src/caddy/reconciler.js';
@@ -66,7 +66,10 @@ afterEach(async () => {
 });
 
 /** A website with one domain, which is all any of this cares about. */
-function createSite(domain: string): string {
+function createSite(
+  domain: string,
+  options: { ownerUserId?: string | null; parentSiteId?: string | null } = {},
+): string {
   const id = crypto.randomUUID();
 
   db.db
@@ -74,6 +77,8 @@ function createSite(domain: string): string {
     .values({
       id,
       slug: domain.replace(/\./g, '-'),
+      ownerUserId: options.ownerUserId ?? null,
+      parentSiteId: options.parentSiteId ?? null,
       displayName: domain,
       runtime: 'node',
       domains: [domain],
@@ -85,6 +90,13 @@ function createSite(domain: string): string {
     .run();
 
   return id;
+}
+
+function createUser(id: string): void {
+  db.db
+    .insert(users)
+    .values({ id, username: id, passwordHash: 'test-hash', role: 'user' })
+    .run();
 }
 
 /** Stands in for a Caddy service that has already been installed. */
@@ -125,6 +137,38 @@ describe('a token per website', () => {
 
     storeSiteCloudflareToken(db, vault, id, 'site-token');
     expect(cloudflareTokenForSite(db, vault, id)).toEqual({ token: 'site-token', source: 'site' });
+  });
+
+  it('uses the direct parent token and ignores a legacy child token', () => {
+    const parent = createSite('example.com');
+    const child = createSite('blog.example.com', {
+      parentSiteId: parent,
+    });
+    storeSiteCloudflareToken(db, vault, parent, 'parent-token');
+    storeSiteCloudflareToken(db, vault, child, 'legacy-child-token');
+
+    expect(cloudflareTokenForSite(db, vault, child)).toEqual({
+      token: 'parent-token',
+      source: 'parent',
+    });
+  });
+
+  it('does not inherit across owners or through another subdomain', () => {
+    createUser('owner-a');
+    createUser('owner-b');
+    const parent = createSite('example.com', { ownerUserId: 'owner-a' });
+    const otherOwner = createSite('other.example.com', {
+      ownerUserId: 'owner-b',
+      parentSiteId: parent,
+    });
+    const child = createSite('blog.example.com', {
+      ownerUserId: 'owner-a',
+      parentSiteId: otherOwner,
+    });
+    storeSiteCloudflareToken(db, vault, parent, 'parent-token');
+
+    expect(cloudflareTokenForSite(db, vault, otherOwner)).toBeNull();
+    expect(cloudflareTokenForSite(db, vault, child)).toBeNull();
   });
 
   it('reports nothing once the token is removed', () => {
@@ -205,6 +249,28 @@ describe('a token per website', () => {
       'example.com',
       'other.example',
     ]);
+  });
+
+  it('puts a subdomain in the parent token certificate policy', () => {
+    const parent = createSite('example.com');
+    createSite('blog.example.com', {
+      parentSiteId: parent,
+    });
+    storeSiteCloudflareToken(db, vault, parent, 'parent-token');
+
+    const config = new CaddyReconciler(
+      db,
+      new CaddyClient(),
+      path.join(tmpDir, 'sites'),
+      vault,
+    ).buildConfig() as {
+      apps: { tls: { automation: { policies: { subjects: string[]; issuers?: unknown[] }[] } } };
+    };
+
+    const policy = config.apps.tls.automation.policies.find((entry) =>
+      entry.subjects.includes('blog.example.com'),
+    );
+    expect(policy?.subjects).toContain('blog.example.com');
   });
 });
 

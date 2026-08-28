@@ -13,6 +13,10 @@ import {
   waitUntilGone,
   type ServiceState,
 } from '../src/windows/service-manager.js';
+import {
+  isServiceWrapperImage,
+  parseServicePid,
+} from '../src/windows/stray-processes.js';
 
 describe('describeCrashLog', () => {
   it('picks the reason out of a Node crash rather than the version banner', () => {
@@ -336,6 +340,29 @@ describe('readServiceState', () => {
   });
 });
 
+describe('parseServicePid', () => {
+  it('reads the process id from sc queryex output', () => {
+    expect(
+      parseServicePid(
+        'SERVICE_NAME: winpanel-caddy\r\n        STATE              : 4  RUNNING\r\n        PID                : 4321',
+      ),
+    ).toBe(4321);
+  });
+
+  it('does not treat a stopped service pid as a live process', () => {
+    expect(parseServicePid('        PID                : 0')).toBeNull();
+    expect(parseServicePid('The specified service does not exist.')).toBeNull();
+  });
+});
+
+describe('isServiceWrapperImage', () => {
+  it('accepts only the wrapper named for the service', () => {
+    expect(isServiceWrapperImage('winpanel-caddy', 'winpanel-caddy.exe')).toBe(true);
+    expect(isServiceWrapperImage('winpanel-caddy', 'caddy.exe')).toBe(false);
+    expect(isServiceWrapperImage('winpanel-caddy', 'other-service.exe')).toBe(false);
+  });
+});
+
 describe('waitUntilGone', () => {
   it('gives a deleted service time to disappear', async () => {
     // sc delete only marks the service; Windows reports it as stopped until
@@ -402,6 +429,33 @@ describe('ServiceManager layout', () => {
       '<id>winpanel-agent</id>',
     );
     await expect(fs.access(path.join(configDir, 'winpanel-agent.exe'))).resolves.toBeUndefined();
+  });
+
+  it('restores the previous environment when restarting the new one fails', async () => {
+    const configPath = path.join(root, 'services', 'winpanel-caddy.xml');
+    const previous = buildServiceXml({
+      id: 'winpanel-caddy',
+      displayName: 'WinPanel Web server',
+      description: 'Serves your websites',
+      executable: 'C:\\WinPanel\\bin\\caddy.exe',
+      logPath: path.join(root, 'logs'),
+      env: { OLD_TOKEN: 'old-token' },
+    });
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.writeFile(configPath, previous);
+
+    const manager = new ServiceManager(path.join(root, 'WinSW.exe'), path.join(root, 'services'));
+    manager.getState = async () => 'running';
+    let restarts = 0;
+    manager.restart = async () => {
+      restarts += 1;
+      if (restarts === 1) throw new Error('Cloudflare DNS provider failed');
+    };
+
+    await expect(manager.setEnvironment('winpanel-caddy', { NEW_TOKEN: 'new-token' }))
+      .rejects.toThrow('Cloudflare DNS provider failed');
+    expect(await fs.readFile(configPath, 'utf8')).toBe(previous);
+    expect(restarts).toBe(2);
   });
 });
 

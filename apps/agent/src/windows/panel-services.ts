@@ -2,6 +2,7 @@ import { type GameServerState } from '@winpanel/shared';
 import { CADDY_SERVICE_ID } from '../caddy/service.js';
 import { COMPONENT_CATALOGUE } from '../components/catalogue.js';
 import { runCommand, runDetached } from '../process/run-command.js';
+import { killServiceProcess } from './stray-processes.js';
 
 /**
  * Everything WinPanel leaves running on the machine.
@@ -226,9 +227,18 @@ export async function stopPanelService(id: string, options: StopOptions = {}): P
     await delay(500);
   }
 
-  // Wedged in `stopping`. Ending the process is what an operator would do by
-  // hand, and it is the only thing that releases the service.
-  if (!(await options.unblock?.(id))) return false;
+  // Wedged in `stopping`. Ending the WinSW process tree is what an operator
+  // would do by hand, and it also catches a child that is not listening yet.
+  const forced = await killServiceProcess(id).catch(() => false);
+  const cleared = await options.unblock?.(id);
+  if (!forced && !cleared) return false;
+
+  const recoveryDeadline = Date.now() + 5_000;
+  while (Date.now() < recoveryDeadline) {
+    const state = await panelServiceState(id);
+    if (state === 'stopped' || state === 'not-installed') return true;
+    await delay(500);
+  }
 
   const state = await panelServiceState(id);
   return state === 'stopped' || state === 'not-installed';

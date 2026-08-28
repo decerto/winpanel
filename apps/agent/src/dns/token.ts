@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import type { DatabaseHandle } from '../db/index.js';
-import { secrets } from '../db/schema.js';
+import { secrets, sites } from '../db/schema.js';
 import { readSecret, writeSecret } from '../security/secret-store.js';
 import type { SecretVault } from '../security/vault.js';
 
@@ -10,9 +10,10 @@ import type { SecretVault } from '../security/vault.js';
  *
  * Each website holds its own token, because one server can host domains
  * belonging to different people, and a Cloudflare token only ever reaches the
- * zones of the account that issued it. There is deliberately no shared token:
- * one machine-wide token can manage exactly one account's domains and silently
- * fails for every other, while looking like it ought to work.
+ * zones of the account that issued it. A subdomain is the one deliberate
+ * exception: it inherits the token of its direct parent website, which is the
+ * same account and the same Cloudflare zone by construction. There is no
+ * machine-wide fallback that could silently cross customer boundaries.
  *
  * Shared rather than private to the DNS router because three separate things
  * need these and they must agree: the router that manages them, the Caddy
@@ -44,19 +45,40 @@ export function clearSiteCloudflareToken(db: DatabaseHandle, siteId: string): vo
   db.db.delete(secrets).where(eq(secrets.key, siteCloudflareTokenKey(siteId))).run();
 }
 
-export type TokenSource = 'site';
+export type TokenSource = 'site' | 'parent';
 
 export interface ResolvedToken {
   token: string;
   source: TokenSource;
 }
 
-/** The token a website should be managed with. There is no shared fallback. */
+/** The token a website should be managed with, including a parent's token for subdomains. */
 export function cloudflareTokenForSite(
   db: DatabaseHandle,
   vault: SecretVault,
   siteId: string,
 ): ResolvedToken | null {
+  const site = db.db
+    .select({ parentSiteId: sites.parentSiteId, ownerUserId: sites.ownerUserId })
+    .from(sites)
+    .where(eq(sites.id, siteId))
+    .get();
+
+  if (site?.parentSiteId) {
+    const parent = db.db
+      .select({ parentSiteId: sites.parentSiteId, ownerUserId: sites.ownerUserId })
+      .from(sites)
+      .where(eq(sites.id, site.parentSiteId))
+      .get();
+
+    if (!parent || parent.parentSiteId !== null || parent.ownerUserId !== site.ownerUserId) {
+      return null;
+    }
+
+    const inherited = loadSiteCloudflareToken(db, vault, site.parentSiteId);
+    return inherited ? { token: inherited, source: 'parent' } : null;
+  }
+
   const own = loadSiteCloudflareToken(db, vault, siteId);
   return own ? { token: own, source: 'site' } : null;
 }

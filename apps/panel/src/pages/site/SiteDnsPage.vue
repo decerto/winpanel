@@ -15,8 +15,8 @@ import LoadingBlock from '../../components/LoadingBlock.vue';
  *
  * The token lives here rather than in server settings because a token only
  * reaches the zones of the Cloudflare account that issued it, and one server
- * routinely hosts domains belonging to different people. Each website that
- * needs one pastes its own.
+ * routinely hosts domains belonging to different people. Main websites paste
+ * their own token; subdomains use the validated token of their parent.
  *
  * The common case is not "edit a record" but "make this domain reach this
  * server", so that is offered as one action. The record table is underneath
@@ -63,6 +63,8 @@ const planning = ref(false);
 const planError = ref<string | null>(null);
 
 const primaryDomain = computed(() => site.value?.domains[0] ?? '');
+const isSubdomain = computed(() => site.value?.isSubdomain === true);
+const parentSlug = computed(() => site.value?.parentSlug ?? null);
 
 /** The Cloudflare zone this site's domain belongs to, if the account has it. */
 const zone = computed(() => {
@@ -291,8 +293,23 @@ onUnmounted(() => clearTimeout(planTimer));
             <CloudCog :size="19" />
           </span>
           <div class="min-w-0 flex-1">
-            <h3 class="text-base font-semibold text-ink">Connect Cloudflare for this website</h3>
-            <p class="mt-1 text-sm text-ink-muted">
+            <h3 class="text-base font-semibold text-ink">
+              {{ isSubdomain ? 'Connect Cloudflare on the parent website' : 'Connect Cloudflare for this website' }}
+            </h3>
+            <p v-if="isSubdomain" class="mt-1 text-sm text-ink-muted">
+              This subdomain uses the Cloudflare token already connected to its parent website.
+              Connect Cloudflare there first; this page will then manage only
+              <span class="font-mono text-ink">{{ primaryDomain || 'this subdomain' }}</span>
+              without changing the parent website or its files.
+              <RouterLink
+                v-if="parentSlug"
+                :to="`/sites/${parentSlug}/dns`"
+                class="ml-1 text-brand-bright hover:underline"
+              >
+                Open the parent DNS tab
+              </RouterLink>
+            </p>
+            <p v-else class="mt-1 text-sm text-ink-muted">
               DNS and HTTPS certificates for
               <span class="font-mono text-ink">{{ primaryDomain || 'this website' }}</span>
               are managed through the Cloudflare account the domain lives in. A token only
@@ -302,7 +319,7 @@ onUnmounted(() => clearTimeout(planTimer));
           </div>
         </div>
 
-        <HowTo title="Creating the token in Cloudflare" class="mt-5">
+        <HowTo v-if="!isSubdomain" title="Creating the token in Cloudflare" class="mt-5">
           <li>
             Open
             <a
@@ -349,7 +366,7 @@ onUnmounted(() => clearTimeout(planTimer));
           </li>
         </HowTo>
 
-        <form class="mt-4 space-y-3" @submit.prevent="connectToken">
+        <form v-if="!isSubdomain" class="mt-4 space-y-3" @submit.prevent="connectToken">
           <div>
             <label for="cf-site-token" class="label">API token</label>
             <input
@@ -380,9 +397,7 @@ onUnmounted(() => clearTimeout(planTimer));
             {{
               connection.source === 'site'
                 ? 'Using this website\u2019s own Cloudflare token'
-                : isAdmin
-                  ? 'Using the shared Cloudflare token from Settings'
-                  : 'Using the server\u2019s Cloudflare token'
+                : 'Using this website\u2019s parent Cloudflare token'
             }}
           </span>
           <span class="min-w-0 flex-1 truncate text-xs text-ink-faint">
@@ -397,12 +412,19 @@ onUnmounted(() => clearTimeout(planTimer));
           >
             Remove this token
           </button>
-          <RouterLink v-else-if="isAdmin" to="/settings" class="btn btn-ghost btn-sm">Manage in Settings</RouterLink>
         </section>
 
         <section class="card p-5">
-          <h3 class="text-sm font-semibold text-ink">Point this domain at the server</h3>
-          <p class="mt-1 text-sm text-ink-muted">
+          <h3 class="text-sm font-semibold text-ink">
+            {{ isSubdomain ? 'Point this subdomain at the server' : 'Point this domain at the server' }}
+          </h3>
+          <p v-if="isSubdomain" class="mt-1 text-sm text-ink-muted">
+            Creates or updates only the A record for
+            <span class="font-mono text-ink">{{ primaryDomain || 'this subdomain' }}</span>.
+            It does not create <span class="font-mono text-ink">www</span>, change the parent
+            website&rsquo;s records, or touch any site files.
+          </p>
+          <p v-else class="mt-1 text-sm text-ink-muted">
             Creates or updates the records that make
             <span class="font-mono text-ink">{{ primaryDomain || 'your domain' }}</span>
             and its <span class="font-mono text-ink">www</span> reach this machine. Safe to run
@@ -444,7 +466,7 @@ onUnmounted(() => clearTimeout(planTimer));
               </button>
             </div>
 
-            <label class="flex items-start gap-2 text-sm text-ink-muted">
+            <label v-if="!isSubdomain" class="flex items-start gap-2 text-sm text-ink-muted">
               <input v-model="repointStale" type="checkbox" class="mt-0.5" />
               <span>
                 Also move other names that still point at the old server

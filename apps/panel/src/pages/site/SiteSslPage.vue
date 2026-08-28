@@ -44,6 +44,8 @@ const notice = ref<string | null>(null);
 
 const token = ref('');
 const tokenBusy = ref(false);
+const isSubdomain = computed(() => site.value?.isSubdomain === true);
+const parentSlug = computed(() => site.value?.parentSlug ?? null);
 
 /** The bring-your-own-certificate form, closed until somebody asks for it. */
 const showUpload = ref(false);
@@ -678,19 +680,49 @@ watch(slug, load, { immediate: true });
             <h3 class="text-base font-semibold text-ink">
               {{
                 blocked === 'no-token'
-                  ? 'Connect Cloudflare to manage its SSL settings'
-                  : 'This token cannot change SSL settings'
+                  ? isSubdomain
+                    ? 'Connect Cloudflare on the parent website'
+                    : 'Connect Cloudflare to manage its SSL settings'
+                  : isSubdomain
+                    ? 'The parent token cannot change SSL settings'
+                    : 'This token cannot change SSL settings'
               }}
             </h3>
             <p class="mt-1 text-sm text-ink-muted">
               <template v-if="blocked === 'no-token'">
-                The certificate on this server is handled already. Cloudflare&rsquo;s own settings
-                &mdash; the encryption mode, forcing HTTPS &mdash; need a token for the account
-                the domain lives in: the same token the
-                <RouterLink :to="`/sites/${slug}/dns`" class="text-brand-bright hover:underline">
-                  DNS tab</RouterLink
+                <template v-if="isSubdomain">
+                  This subdomain uses the Cloudflare token connected to its parent website.
+                  Connect it there first; then its SSL settings will be available here.
+                  <RouterLink
+                    v-if="parentSlug"
+                    :to="`/sites/${parentSlug}/dns`"
+                    class="ml-1 text-brand-bright hover:underline"
+                  >
+                    Open the parent DNS tab
+                  </RouterLink>
+                </template>
+                <template v-else>
+                  The certificate on this server is handled already. Cloudflare&rsquo;s own settings
+                  &mdash; the encryption mode, forcing HTTPS &mdash; need a token for the account
+                  the domain lives in: the same token the
+                  <RouterLink :to="`/sites/${slug}/dns`" class="text-brand-bright hover:underline">
+                    DNS tab</RouterLink
+                  >
+                  uses.
+                </template>
+              </template>
+              <template v-else-if="isSubdomain">
+                The Cloudflare token connected to the parent website manages DNS perfectly well,
+                but it was not given permission to read or change SSL settings. Add the row below
+                to that token in Cloudflare; an existing token can be edited without changing its
+                value.
+                <RouterLink
+                  v-if="parentSlug"
+                  :to="`/sites/${parentSlug}/dns`"
+                  class="ml-1 text-brand-bright hover:underline"
                 >
-                uses.
+                  Open the parent DNS tab
+                </RouterLink>
               </template>
               <template v-else>
                 This website&rsquo;s Cloudflare token manages DNS perfectly well, but it was not
@@ -702,7 +734,11 @@ watch(slug, load, { immediate: true });
           </div>
         </div>
 
-        <HowTo title="Giving the token permission" class="mt-5">
+        <HowTo
+          v-if="!isSubdomain || blocked === 'no-permission'"
+          title="Giving the token permission"
+          class="mt-5"
+        >
           <li>
             Open
             <a
@@ -715,7 +751,8 @@ watch(slug, load, { immediate: true });
             </a>
             in the account that holds
             <strong>{{ status?.domains[0] ?? 'this domain' }}</strong
-            >, and edit the token for it &mdash; or create a new one.
+            >, and edit the token for {{ isSubdomain ? 'the parent website' : 'this website' }}
+            &mdash; or create a new one there.
           </li>
           <li>
             Under Permissions add this row, using all three dropdowns:
@@ -731,7 +768,7 @@ watch(slug, load, { immediate: true });
           </li>
         </HowTo>
 
-        <form class="mt-4 space-y-3" @submit.prevent="connectToken">
+        <form v-if="!isSubdomain" class="mt-4 space-y-3" @submit.prevent="connectToken">
           <div>
             <label for="ssl-token" class="label">API token</label>
             <input
@@ -772,6 +809,16 @@ watch(slug, load, { immediate: true });
               Domain <span class="font-mono">{{ status?.cloudflare.zone?.name }}</span>
             </span>
           </div>
+          <p v-if="status?.cloudflare.source === 'parent'" class="mt-2 text-xs text-ink-muted">
+            Using the Cloudflare token connected to the parent website.
+            <RouterLink
+              v-if="parentSlug"
+              :to="`/sites/${parentSlug}/dns`"
+              class="ml-1 text-brand-bright hover:underline"
+            >
+              Manage it on the parent DNS tab
+            </RouterLink>
+          </p>
 
           <AlertMessage v-if="weakMode" tone="warning" class="mt-3">
             Traffic between Cloudflare and this server is not fully protected. This server holds

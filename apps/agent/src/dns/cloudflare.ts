@@ -534,35 +534,40 @@ export function recommendedWebsiteRecords(input: {
   domain: string;
   serverIpv4: string;
   proxied: boolean;
+  includeWww?: boolean;
+  includeCaa?: boolean;
 }): Array<Omit<DnsRecord, 'id'>> {
-  const records: Array<Omit<DnsRecord, 'id'>> = [
-    {
-      zoneId: input.zoneId,
-      type: 'A',
-      name: input.domain,
-      content: input.serverIpv4,
-      ttl: 1,
-      proxied: input.proxied,
-    },
-    {
+  const records: Array<Omit<DnsRecord, 'id'>> = [{
+    zoneId: input.zoneId,
+    type: 'A',
+    name: input.domain,
+    content: input.serverIpv4,
+    ttl: 1,
+    proxied: input.proxied,
+  }];
+
+  if (input.includeWww !== false) {
+    records.push({
       zoneId: input.zoneId,
       type: 'CNAME',
       name: `www.${input.domain}`,
       content: input.domain,
       ttl: 1,
       proxied: input.proxied,
-    },
-  ];
+    });
+  }
 
   // Restricts which authorities may issue certificates for this domain.
-  records.push({
-    zoneId: input.zoneId,
-    type: 'CAA',
-    name: input.domain,
-    content: '0 issue "letsencrypt.org"',
-    ttl: 1,
-    proxied: false,
-  });
+  if (input.includeCaa !== false) {
+    records.push({
+      zoneId: input.zoneId,
+      type: 'CAA',
+      name: input.domain,
+      content: '0 issue "letsencrypt.org"',
+      ttl: 1,
+      proxied: false,
+    });
+  }
 
   return records;
 }
@@ -646,11 +651,15 @@ export function planWebsiteRecords(input: {
   serverIpv4: string;
   proxied: boolean;
   existing: ReadonlyArray<DnsRecord>;
+  /** Main websites get www and CAA records; subdomains only need their A record. */
+  includeWww?: boolean;
+  includeCaa?: boolean;
   /** Also repoint other names that still resolve to the previous server. */
   repointStale?: boolean;
 }): DnsChange[] {
   const domain = normaliseName(input.domain);
-  const managed = new Set([domain, `www.${domain}`]);
+  const managed = new Set([domain]);
+  if (input.includeWww !== false) managed.add(`www.${domain}`);
   const changes: DnsChange[] = [];
   const handled = new Set<string>();
 
@@ -668,14 +677,16 @@ export function planWebsiteRecords(input: {
       .map((record) => record.content),
   );
 
-  const [apex, www] = recommendedWebsiteRecords({
+  const desiredRecords = recommendedWebsiteRecords({
     zoneId: input.zoneId,
     domain,
     serverIpv4: input.serverIpv4,
     proxied: input.proxied,
+    includeWww: input.includeWww,
+    includeCaa: input.includeCaa,
   });
 
-  for (const desired of [apex!, www!]) {
+  for (const desired of desiredRecords.filter((record) => record.type !== 'CAA')) {
     const name = normaliseName(desired.name);
     let kept = false;
 
@@ -738,23 +749,19 @@ export function planWebsiteRecords(input: {
    * allowed, otherwise renewals would start failing the moment somebody else's
    * CAA record was overwritten.
    */
-  const caa = recommendedWebsiteRecords({
-    zoneId: input.zoneId,
-    domain,
-    serverIpv4: input.serverIpv4,
-    proxied: false,
-  })[2]!;
+  const caa = desiredRecords.find((record) => record.type === 'CAA');
+  if (caa) {
+    const hasLetsEncrypt = at(domain).some(
+      (record) => record.type === 'CAA' && /issue\s+"?letsencrypt\.org/i.test(record.content),
+    );
 
-  const hasLetsEncrypt = at(domain).some(
-    (record) => record.type === 'CAA' && /issue\s+"?letsencrypt\.org/i.test(record.content),
-  );
-
-  if (!hasLetsEncrypt) {
-    changes.push({
-      action: 'create',
-      reason: 'Added: allows this server to renew the HTTPS certificate.',
-      record: { ...caa, id: null },
-    });
+    if (!hasLetsEncrypt) {
+      changes.push({
+        action: 'create',
+        reason: 'Added: allows this server to renew the HTTPS certificate.',
+        record: { ...caa, id: null },
+      });
+    }
   }
 
   if (input.repointStale !== false) {

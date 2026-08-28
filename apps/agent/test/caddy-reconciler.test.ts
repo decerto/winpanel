@@ -294,6 +294,18 @@ describe('applying the configuration', () => {
     }
   });
 
+  it('keeps the useful tail of a long web server error', async () => {
+    const original = globalThis.fetch;
+    const detail = `${'x'.repeat(700)} address in use`;
+    globalThis.fetch = (async () => new Response(detail, { status: 400 })) as typeof fetch;
+
+    try {
+      await expect(new CaddyClient().load({})).rejects.toMatchObject({ detail });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
   it('names an origin the admin API accepts', async () => {
     // Node attaches an empty Origin to every write, and Caddy refuses those.
     const original = globalThis.fetch;

@@ -1,14 +1,77 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+const runCommandMock = vi.hoisted(() => vi.fn());
+vi.mock('../src/process/run-command.js', () => ({ runCommand: runCommandMock }));
+
 import {
   AGENT_SERVICE_ID,
   PANEL_SERVICE_PREFIX,
   describePanelService,
   parseServiceQuery,
   shouldListGameServerService,
+  startPanelService,
+  stopPanelService,
   sortForShutdown,
   sortForStartup,
   type PanelService,
 } from '../src/windows/panel-services.js';
+
+describe.runIf(process.platform === 'win32')('panel service recovery', () => {
+  it('forces a stuck service down through its verified wrapper PID', async () => {
+    runCommandMock.mockImplementation(async ({ exe, args }: { exe: string; args: readonly string[] }) => {
+      if (exe === 'sc.exe' && args[0] === 'stop') {
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      if (exe === 'sc.exe' && args[0] === 'queryex') {
+        return { exitCode: 0, stdout: 'PID : 4321', stderr: '' };
+      }
+      if (exe === 'tasklist.exe') {
+        return { exitCode: 0, stdout: '"winpanel-caddy.exe","4321"', stderr: '' };
+      }
+      if (exe === 'taskkill.exe') {
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      if (exe === 'sc.exe' && args[0] === 'query') {
+        return { exitCode: 0, stdout: 'STATE : 1  STOPPED', stderr: '' };
+      }
+      throw new Error(`Unexpected command: ${exe} ${args.join(' ')}`);
+    });
+
+    await expect(
+      stopPanelService('winpanel-caddy', { timeoutMs: 0, unblock: async () => false }),
+    ).resolves.toBe(true);
+
+    expect(runCommandMock).toHaveBeenCalledWith(expect.objectContaining({
+      exe: 'taskkill.exe',
+      args: ['/PID', '4321', '/T', '/F'],
+    }));
+  });
+
+  it('retries a failed start only when the service reports that it cleared something', async () => {
+    let starts = 0;
+    let unblocks = 0;
+    runCommandMock.mockImplementation(async ({ exe, args }: { exe: string; args: readonly string[] }) => {
+      if (exe === 'sc.exe' && args[0] === 'start') {
+        starts++;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      }
+      throw new Error(`Unexpected command: ${exe} ${args.join(' ')}`);
+    });
+
+    await expect(
+      startPanelService('winpanel-caddy', {
+        timeoutMs: 0,
+        unblock: async () => {
+          unblocks++;
+          return true;
+        },
+      }),
+    ).resolves.toBe(false);
+
+    expect(starts).toBe(2);
+    expect(unblocks).toBe(1);
+  });
+});
 
 /**
  * These are the parts that decide what an uninstall has to stop. Getting the

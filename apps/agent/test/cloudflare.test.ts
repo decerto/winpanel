@@ -618,6 +618,27 @@ describe('planWebsiteRecords', () => {
     expect(find(changes, 'A', 'mail.example.com')).toHaveLength(0);
   });
 
+  it('can limit a subdomain setup to its own A record', () => {
+    const changes = planWebsiteRecords({
+      ...base,
+      includeWww: false,
+      includeCaa: false,
+      repointStale: false,
+      existing: [
+        record({ id: 'apex', type: 'A', name: 'example.com', content: '192.0.2.20' }),
+        record({ id: 'www', type: 'A', name: 'www.example.com', content: '192.0.2.21' }),
+        record({ id: 'caa', type: 'CAA', name: 'example.com', content: '0 issue "letsencrypt.org"' }),
+        record({ id: 'mail', type: 'A', name: 'mail.example.com', content: '192.0.2.20' }),
+      ],
+    });
+
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({
+      action: 'update',
+      record: { type: 'A', name: 'example.com', content: '203.0.113.10' },
+    });
+  });
+
   it('never touches a name pointing at an unrelated address', () => {
     const changes = planWebsiteRecords({
       ...base,

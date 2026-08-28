@@ -94,7 +94,9 @@ export class CaddyClient {
       if (response.status === 412) throw new CaddyConflictError();
 
       if (!response.ok) {
-        const detail = text.slice(0, 500);
+        // Keep enough of a long validation error to retain its actionable tail,
+        // while still bounding what an unhealthy local service can return.
+        const detail = text.slice(0, 8_192);
         throw new CaddyError(
           // Caddy says exactly which part of the configuration it disliked,
           // and without it the message is a dead end for everyone.

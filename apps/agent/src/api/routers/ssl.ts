@@ -31,11 +31,12 @@ import type { AppContext } from '../../app-context.js';
  * screens is how people end up with a padlock in the browser and an
  * unencrypted hop behind it, so both live here together.
  *
- * The token is the same per-website Cloudflare token the DNS tab uses. A
- * second one would be a second thing to create, rotate and lose for no gain:
- * one token, one account, one domain. It does need one extra permission,
- * which is asked for only when it turns out to be missing, because a token
- * made before this tab existed manages DNS perfectly well without it.
+ * The token is the same resolved Cloudflare token the DNS tab uses, either
+ * the website's own token or the validated parent token for a subdomain. A
+ * second one would be a second thing to create, rotate and lose for no gain.
+ * It does need one extra permission, which is asked for only when it turns
+ * out to be missing, because a token made before this tab existed manages DNS
+ * perfectly well without it.
  */
 
 function siteFor(app: AppContext, slug: string) {

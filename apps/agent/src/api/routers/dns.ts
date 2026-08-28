@@ -7,6 +7,7 @@ import type { RequestContext } from '../trpc.js';
 import {
   CloudflareClient,
   CloudflareError,
+  normaliseName,
   planWebsiteRecords,
   wwwDomainToAdd,
   type DnsChange,
@@ -14,6 +15,7 @@ import {
 import {
   clearSiteCloudflareToken,
   cloudflareTokenForSite,
+  loadSiteCloudflareToken,
   storeSiteCloudflareToken,
   type TokenSource,
 } from '../../dns/token.js';
@@ -58,13 +60,67 @@ function clientFor(app: AppContext, slug?: string): CloudflareClient {
   const resolved = resolveToken(app, slug);
 
   if (!resolved) {
+    const site = slug ? siteFor(app, slug) : null;
     throw new TRPCError({
       code: 'PRECONDITION_FAILED',
-      message: 'This website has no Cloudflare token yet. Add one on its DNS tab.',
+      message: site?.parentSiteId != null
+        ? 'This subdomain uses its parent website\'s Cloudflare token. Connect Cloudflare on the parent website first.'
+        : site
+          ? 'This website has no Cloudflare token yet. Add one on its DNS tab.'
+          : 'Choose a website before using Cloudflare DNS.',
     });
   }
 
   return new CloudflareClient(resolved.token);
+}
+
+function hostnameMatchesDomain(hostname: string, domain: string): boolean {
+  const name = normaliseName(hostname);
+  const root = normaliseName(domain);
+  return name === root || name.endsWith(`.${root}`);
+}
+
+function zonesForSite(
+  site: { domains: unknown },
+  zones: readonly { id: string; name: string }[],
+): Array<{ id: string; name: string }> {
+  const allowed = new Set(
+    (site.domains as string[])
+      .map((domain) =>
+        zones
+          .filter((zone) => hostnameMatchesDomain(domain, zone.name))
+          .sort((left, right) => normaliseName(right.name).length - normaliseName(left.name).length)[0]
+          ?.id,
+      )
+      .filter((id): id is string => id !== undefined),
+  );
+
+  return zones.filter((zone) => allowed.has(zone.id));
+}
+
+/** Checks that a raw record request stays in the site's longest-matching zone. */
+async function siteForZone(
+  app: AppContext,
+  client: CloudflareClient,
+  slug: string | undefined,
+  zoneId: string,
+) {
+  if (!slug) return null;
+
+  const site = siteFor(app, slug);
+  const zones = zonesForSite(site, await client.listZones());
+  if (!zones.some((zone) => zone.id === zoneId)) {
+    throw new TRPCError({
+      code: 'NOT_FOUND',
+      message: 'That Cloudflare zone is not used by this website.',
+    });
+  }
+
+  return site;
+}
+
+function recordBelongsToSite(site: { domains: unknown }, name: string): boolean {
+  return (site.domains as string[]).some((domain) => hostnameMatchesDomain(name, domain));
 }
 
 function toTrpcError(error: unknown): never {
@@ -72,6 +128,10 @@ function toTrpcError(error: unknown): never {
     throw new TRPCError({ code: 'BAD_REQUEST', message: error.message, cause: error });
   }
   throw error;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /** Every DNS operation may be scoped to one website, and usually is. */
@@ -93,9 +153,21 @@ const PointDomain = SiteScope.extend({
  * the preview is a description of a different operation.
  */
 async function planFor(
+  app: AppContext,
   client: CloudflareClient,
   input: z.infer<typeof PointDomain>,
 ): Promise<{ zone: { id: string; name: string }; changes: DnsChange[] }> {
+  const site = input.slug ? siteFor(app, input.slug) : null;
+  const isSubdomain = site?.parentSiteId != null;
+  const domain = normaliseName(input.domain);
+
+  if (site && !(site.domains as string[]).some((owned) => normaliseName(owned) === domain)) {
+    throw new TRPCError({
+      code: 'BAD_REQUEST',
+      message: 'Point only a domain configured for this website. Add it on the Settings tab first.',
+    });
+  }
+
   const zone = await client.findZoneForHostname(input.domain);
 
   if (!zone) {
@@ -112,7 +184,9 @@ async function planFor(
     domain: input.domain,
     serverIpv4: input.serverIpv4,
     proxied: input.proxied,
-    repointStale: input.repointStale,
+    includeWww: !isSubdomain,
+    includeCaa: !isSubdomain,
+    repointStale: isSubdomain ? false : input.repointStale,
     existing: await client.listRecords(zone.id),
   });
 
@@ -137,7 +211,7 @@ async function adoptWwwDomain(
 
   const service = new SiteService(app.db, app.vault, app.config.sitesRoot);
   const site = service.get(slug);
-  if (!site) return null;
+  if (!site || site.parentSiteId !== null) return null;
 
   const www = wwwDomainToAdd({
     domain,
@@ -192,19 +266,46 @@ async function applyTokens(app: AppContext): Promise<string | null> {
     return 'Certificates will start being issued once the web server is installed.';
   }
 
+  if (routingError && (await app.caddy.isRunning())) {
+    throw new Error(`The web server did not accept the change: ${routingError.message}`);
+  }
+
   return routingError ? `The web server did not accept the change: ${routingError.message}` : null;
 }
 
-/**
- * Refuses a request that would fall back to the server's own Cloudflare
- * account.
- *
- * Several of these endpoints take the website as optional, and answer for the
- * shared token when it is left out. That shared token belongs to whoever runs
- * the server: without this, a customer could list every zone in it. Site-scoped
- * requests are already checked centrally, so all that is needed here is to
- * insist a customer names a website at all.
- */
+/** Restores the stored token and the Caddy projection after a failed change. */
+async function restoreToken(
+  app: AppContext,
+  siteId: string,
+  previous: string | null,
+): Promise<string | null> {
+  try {
+    if (previous) {
+      storeSiteCloudflareToken(app.db, app.vault, siteId, previous);
+    } else {
+      clearSiteCloudflareToken(app.db, siteId);
+    }
+  } catch (error) {
+    return `The previous token could not be restored: ${errorMessage(error)}`;
+  }
+
+  try {
+    return await applyTokens(app);
+  } catch (error) {
+    return `The previous web server configuration could not be restored: ${errorMessage(error)}`;
+  }
+}
+
+function rethrowWithRestoreFailure(error: unknown, restoreFailure: string | null): never {
+  if (!restoreFailure) throw error;
+
+  throw new Error(
+    `The Cloudflare change failed: ${errorMessage(error)}. ${restoreFailure}`,
+    { cause: error },
+  );
+}
+
+/** Requires customer DNS requests to name the website they are acting on. */
 function requireOwnSite(ctx: RequestContext, slug: string | undefined): void {
   if (ctx.user?.role === 'user' && !slug) {
     throw new TRPCError({
@@ -250,16 +351,32 @@ export const dnsRouter = router({
    * still looking at the field they pasted it into.
    */
   connect: protectedProcedure
-    .input(z.object({ token: z.string().min(10).max(512), slug: z.string().min(1) }))
+    .input(z.object({ token: z.string().trim().min(10).max(512), slug: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      const result = await new CloudflareClient(input.token).verifyToken();
+      const site = siteFor(ctx.app, input.slug);
+      if (site.parentSiteId !== null) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Subdomains use their parent website\'s Cloudflare token. Connect it on the parent website first.',
+        });
+      }
+
+      const token = input.token.trim();
+      const result = await new CloudflareClient(token).verifyToken();
       if (!result.valid) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: result.message });
       }
 
-      storeSiteCloudflareToken(ctx.app.db, ctx.app.vault, siteFor(ctx.app, input.slug).id, input.token);
+      const previous = loadSiteCloudflareToken(ctx.app.db, ctx.app.vault, site.id);
+      storeSiteCloudflareToken(ctx.app.db, ctx.app.vault, site.id, token);
 
-      const warning = await applyTokens(ctx.app);
+      let warning: string | null;
+      try {
+        warning = await applyTokens(ctx.app);
+      } catch (error) {
+        const restoreFailure = await restoreToken(ctx.app, site.id, previous);
+        rethrowWithRestoreFailure(error, restoreFailure);
+      }
 
       return {
         ok: true,
@@ -272,11 +389,25 @@ export const dnsRouter = router({
   disconnect: protectedProcedure
     .input(z.object({ slug: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
-      clearSiteCloudflareToken(ctx.app.db, siteFor(ctx.app, input.slug).id);
+      const site = siteFor(ctx.app, input.slug);
+      if (site.parentSiteId !== null) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'Subdomains use their parent website\'s Cloudflare token. Manage it on the parent website.',
+        });
+      }
+
+      const previous = loadSiteCloudflareToken(ctx.app.db, ctx.app.vault, site.id);
+      clearSiteCloudflareToken(ctx.app.db, site.id);
 
       // Take it back out of the web server too. Leaving a revoked token in a
       // service configuration is both useless and a secret kept for no reason.
-      await applyTokens(ctx.app);
+      try {
+        await applyTokens(ctx.app);
+      } catch (error) {
+        const restoreFailure = await restoreToken(ctx.app, site.id, previous);
+        rethrowWithRestoreFailure(error, restoreFailure);
+      }
 
       return { ok: true };
     }),
@@ -285,7 +416,9 @@ export const dnsRouter = router({
     requireOwnSite(ctx, input?.slug);
 
     try {
-      return await clientFor(ctx.app, input?.slug).listZones();
+      const client = clientFor(ctx.app, input?.slug);
+      const zones = await client.listZones();
+      return input?.slug ? zonesForSite(siteFor(ctx.app, input.slug), zones) : zones;
     } catch (error) {
       toTrpcError(error);
     }
@@ -295,7 +428,10 @@ export const dnsRouter = router({
     .input(SiteScope.extend({ zoneId: z.string().min(1) }))
     .query(async ({ ctx, input }) => {
       try {
-        return await clientFor(ctx.app, input.slug).listRecords(input.zoneId);
+        const client = clientFor(ctx.app, input.slug);
+        const site = await siteForZone(ctx.app, client, input.slug, input.zoneId);
+        const records = await client.listRecords(input.zoneId);
+        return site ? records.filter((record) => recordBelongsToSite(site, record.name)) : records;
       } catch (error) {
         toTrpcError(error);
       }
@@ -317,7 +453,15 @@ export const dnsRouter = router({
       try {
         // The client re-validates before writing; this is the same rule, not
         // a different one.
-        return await clientFor(ctx.app, input.slug).upsertRecord(input);
+        const client = clientFor(ctx.app, input.slug);
+        const site = await siteForZone(ctx.app, client, input.slug, input.zoneId);
+        if (site && !recordBelongsToSite(site, input.name)) {
+          throw new TRPCError({
+            code: 'BAD_REQUEST',
+            message: 'That record name is outside this website\'s configured domains.',
+          });
+        }
+        return await client.upsertRecord(input);
       } catch (error) {
         toTrpcError(error);
       }
@@ -327,7 +471,15 @@ export const dnsRouter = router({
     .input(SiteScope.extend({ zoneId: z.string().min(1), recordId: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
       try {
-        await clientFor(ctx.app, input.slug).deleteRecord(input.zoneId, input.recordId);
+        const client = clientFor(ctx.app, input.slug);
+        const site = await siteForZone(ctx.app, client, input.slug, input.zoneId);
+        const record = (await client.listRecords(input.zoneId)).find(
+          (candidate) => candidate.id === input.recordId,
+        );
+        if (!record || (site && !recordBelongsToSite(site, record.name))) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'That DNS record was not found.' });
+        }
+        await client.deleteRecord(input.zoneId, input.recordId);
         return { ok: true };
       } catch (error) {
         toTrpcError(error);
@@ -345,7 +497,7 @@ export const dnsRouter = router({
     .input(PointDomain)
     .query(async ({ ctx, input }) => {
       try {
-        const { zone, changes } = await planFor(clientFor(ctx.app, input.slug), input);
+        const { zone, changes } = await planFor(ctx.app, clientFor(ctx.app, input.slug), input);
         return {
           zone: zone.name,
           changes,
@@ -367,14 +519,15 @@ export const dnsRouter = router({
     .input(PointDomain)
     .mutation(async ({ ctx, input }) => {
       try {
+        const site = input.slug ? siteFor(ctx.app, input.slug) : null;
         const client = clientFor(ctx.app, input.slug);
-        const { zone, changes } = await planFor(client, input);
+        const { zone, changes } = await planFor(ctx.app, client, input);
 
         await client.applyPlan(changes);
 
         // Anything less than strict leaves the leg between Cloudflare and this
         // server unverified, which undoes much of the point of a certificate.
-        if (input.proxied) {
+        if (input.proxied && (site === null || site.parentSiteId === null)) {
           await client.setStrictSsl(zone.id).catch(() => undefined);
         }
 

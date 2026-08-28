@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { runCommand } from '../process/run-command.js';
+import { killServiceProcess } from './stray-processes.js';
 
 /**
  * Windows service management via WinSW.
@@ -287,7 +288,7 @@ export function describeCrashLog(text: string): string | null {
   const named = lines.find((line) => /^[\w.$]*(Error|Exception)\b/.test(line));
   const chosen = named ?? lines.at(-1);
 
-  return chosen ? chosen.slice(0, 300) : null;
+  return chosen ?? null;
 }
 
 /**
@@ -469,11 +470,29 @@ export class ServiceManager {
     const next = replaceEnvironmentInXml(current, env);
     if (next === current) return 'unchanged';
 
+    const wasRunning = (await this.getState(id)) === 'running';
     await fs.writeFile(configPath, next, { mode: 0o600 });
 
     // Only if it is up: starting a service the user has deliberately stopped
     // would be an odd thing for a settings change to do.
-    if ((await this.getState(id)) === 'running') await this.restart(id);
+    if (wasRunning) {
+      try {
+        await this.restart(id);
+      } catch (error) {
+        try {
+          await fs.writeFile(configPath, current, { mode: 0o600 });
+          await this.restart(id);
+        } catch (restoreError) {
+          const original = error instanceof Error ? error.message : String(error);
+          const restored = restoreError instanceof Error ? restoreError.message : String(restoreError);
+          throw new Error(
+            `The "${id}" service rejected its new configuration (${original}), and restoring ` +
+              `the previous configuration also failed (${restored}).`,
+          );
+        }
+        throw error;
+      }
+    }
 
     return 'updated';
   }
@@ -695,8 +714,11 @@ export class ServiceManager {
     await runCommand({ exe: 'sc.exe', args: ['stop', id], timeoutMs: 30_000 }).catch(() => undefined);
     state = await waitUntilStopped(() => this.getState(id), 120_000);
 
+    const forced = state !== 'stopped' && state !== 'not-installed'
+      ? await killServiceProcess(id).catch(() => false)
+      : false;
     const cleared = await this.recovery?.unblock(id);
-    if (state !== 'stopped' && state !== 'not-installed' && cleared) {
+    if (state !== 'stopped' && state !== 'not-installed' && (forced || cleared)) {
       state = await waitUntilStopped(() => this.getState(id), 5_000);
     }
     if (state !== 'stopped' && state !== 'not-installed') {

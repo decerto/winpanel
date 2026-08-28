@@ -74,6 +74,39 @@ export function parseTasklistImage(output: string): string | null {
   return match?.[1] ?? null;
 }
 
+/** Reads the WinSW process id from `sc.exe queryex` output. */
+export function parseServicePid(output: string): number | null {
+  const raw = /^\s*PID\s*:\s*(\d+)/m.exec(output)?.[1];
+  if (!raw) return null;
+
+  const pid = Number.parseInt(raw, 10);
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+export function isServiceWrapperImage(id: string, image: string): boolean {
+  return image.trim().toLowerCase() === `${id.trim().toLowerCase()}.exe`;
+}
+
+/** Ends a stuck WinSW wrapper and its supervised process tree. */
+export async function killServiceProcess(id: string): Promise<boolean> {
+  if (process.platform !== 'win32') return false;
+
+  const result = await runCommand({
+    exe: 'sc.exe',
+    args: ['queryex', id],
+    timeoutMs: 15_000,
+  });
+  if (result.exitCode !== 0) return false;
+
+  const pid = parseServicePid(result.stdout);
+  if (!pid || pid === process.pid) return false;
+
+  const image = await imageNameFor(pid).catch(() => null);
+  if (!image || !isServiceWrapperImage(id, image)) return false;
+
+  return await killProcessTree(pid);
+}
+
 async function imageNameFor(pid: number): Promise<string | null> {
   const result = await runCommand({
     exe: 'tasklist.exe',
