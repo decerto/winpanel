@@ -230,6 +230,56 @@ describe('panel backups', () => {
     ).rejects.toThrow(/could not be created/);
     await expect(fs.access(output)).rejects.toThrow();
   });
+
+  it('replaces the previous snapshot of the same schedule and keeps the others', async () => {
+    const root = path.join(tmpDir, 'panel');
+    const backupDir = path.join(root, 'backups');
+    await fs.mkdir(path.join(root, 'bin'), { recursive: true });
+    await fs.writeFile(path.join(root, 'bin', 'panel-marker.txt'), 'panel');
+
+    const options: BackupServiceOptions = {
+      db: handle,
+      vault,
+      root,
+      dataDir: path.join(root, 'data'),
+      sitesRoot: path.join(tmpDir, 'sites'),
+      gameServersRoot: path.join(tmpDir, 'game-servers'),
+      binDir: path.join(root, 'bin'),
+      backupDir,
+    };
+    const handler = createBackupHandler(options);
+
+    const run = async (frequency: string | undefined, periodKey: string | undefined) => {
+      const jobId = crypto.randomUUID();
+      handle.db
+        .insert(schema.jobs)
+        .values({
+          id: jobId,
+          kind: 'backup',
+          title: 'Panel backup',
+          status: 'succeeded',
+          payload: { scope: 'panel', operation: 'create', frequency, periodKey },
+        })
+        .run();
+      await handler(
+        { scope: 'panel', operation: 'create', frequency, periodKey },
+        context(jobId),
+      );
+      return jobId;
+    };
+
+    const manual = await run(undefined, undefined);
+    const firstDaily = await run('daily', '2026-08-26');
+    const weekly = await run('weekly', '2026-08-24');
+    const secondDaily = await run('daily', '2026-08-27');
+
+    await expect(
+      fs.access(backupFilePath(backupDir, 'panel', firstDaily)),
+    ).rejects.toThrow();
+    for (const kept of [manual, weekly, secondDaily]) {
+      await expect(fs.access(backupFilePath(backupDir, 'panel', kept))).resolves.toBeUndefined();
+    }
+  });
 });
 
 describe('website backups', () => {

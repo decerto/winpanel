@@ -53,7 +53,18 @@ const DEFAULT_SCHEDULE: BackupSchedule = {
   includeDependencies: false,
 };
 const BACKUP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const SCHEDULER_INTERVAL_MS = 15 * 60 * 1000;
+export const SCHEDULER_INTERVAL_MS = 15 * 60 * 1000;
+
+/**
+ * Attempts a period gets before the scheduler stops retrying it.
+ *
+ * A snapshot that fails because a disk filled up or a website folder was
+ * renamed used to consume the whole day: the period was marked as handled the
+ * moment a job existed, whatever became of it. Retrying a few times spaced by
+ * the check interval covers the transient causes without looping forever on a
+ * permanent one.
+ */
+export const SCHEDULE_ATTEMPT_LIMIT = 3;
 
 export interface BackupArchive {
   id: string;
@@ -903,8 +914,24 @@ export function createBackupHandler(options: BackupServiceOptions) {
 
     if (parsed.scope === 'site') {
       await createSiteArchive(parsed, options, ctx);
-    } else {
-      await createPanelArchive(options, ctx, parsed.includeGameServers, parsed.includeDependencies);
+      return;
+    }
+
+    await createPanelArchive(options, ctx, parsed.includeGameServers, parsed.includeDependencies);
+
+    if (parsed.frequency) {
+      const removed = await pruneFrequencyBackups(
+        options.db,
+        options.backupDir,
+        parsed.frequency,
+        ctx.jobId,
+      );
+      if (removed > 0) {
+        ctx.log(
+          `Removed ${removed} superseded ${parsed.frequency} snapshot${removed === 1 ? '' : 's'}. ` +
+            `Each schedule keeps only its most recent snapshot.`,
+        );
+      }
     }
   };
 }
@@ -938,26 +965,188 @@ export function writeBackupSchedule(db: DatabaseHandle, schedule: BackupSchedule
     .run();
 }
 
-function scheduledBackupExists(
-  db: DatabaseHandle,
-  frequency: BackupFrequency,
-  periodKey: string,
-): boolean {
+/** The moment the next period begins, which is when the scheduler acts again. */
+export function startOfNextPeriod(from: Date, frequency: BackupFrequency): Date {
+  const year = from.getFullYear();
+  const month = from.getMonth();
+  const date = from.getDate();
+
+  if (frequency === 'monthly') return new Date(year, month + 1, 1, 0, 0, 0, 0);
+  if (frequency === 'daily') return new Date(year, month, date + 1, 0, 0, 0, 0);
+
+  // Weeks begin on Monday, matching the key `localPeriodKey` builds.
+  return new Date(year, month, date + (8 - (from.getDay() || 7)), 0, 0, 0, 0);
+}
+
+interface ScheduledAttempt {
+  readonly jobId: string;
+  readonly status: string;
+  readonly periodKey: string | null;
+  readonly createdAt: Date;
+  readonly finishedAt: Date | null;
+  readonly errorMessage: string | null;
+}
+
+/** Every automatic panel snapshot of one frequency, newest first. */
+function scheduledAttempts(db: DatabaseHandle, frequency: BackupFrequency): ScheduledAttempt[] {
   return db.db
-    .select({ id: jobs.id, status: jobs.status, payload: jobs.payload })
+    .select()
     .from(jobs)
     .where(eq(jobs.kind, 'backup'))
     .all()
-    .some((job) => {
+    .flatMap((job) => {
       const payload = BackupPayload.safeParse(job.payload);
-      return (
-        payload.success &&
-        payload.data.scope === 'panel' &&
-        payload.data.operation === 'create' &&
-        payload.data.frequency === frequency &&
-        payload.data.periodKey === periodKey
-      );
-    });
+      if (
+        !payload.success ||
+        payload.data.scope !== 'panel' ||
+        payload.data.operation !== 'create' ||
+        payload.data.frequency !== frequency
+      ) {
+        return [];
+      }
+
+      return [
+        {
+          jobId: job.id,
+          status: job.status,
+          periodKey: payload.data.periodKey ?? null,
+          createdAt: job.createdAt,
+          finishedAt: job.finishedAt,
+          errorMessage: job.errorMessage,
+        },
+      ];
+    })
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+}
+
+/**
+ * True when this period needs nothing further from the scheduler.
+ *
+ * A failed attempt no longer settles the period. Treating one as "done" is why
+ * a schedule could go days without producing anything while looking enabled:
+ * the first failure of the day quietly stood in for the snapshot.
+ */
+function periodIsSettled(attempts: readonly ScheduledAttempt[], periodKey: string): boolean {
+  const forPeriod = attempts.filter((attempt) => attempt.periodKey === periodKey);
+  return (
+    forPeriod.some((attempt) => attempt.status !== 'failed') ||
+    forPeriod.length >= SCHEDULE_ATTEMPT_LIMIT
+  );
+}
+
+export interface BackupScheduleSlot {
+  readonly frequency: BackupFrequency;
+  readonly enabled: boolean;
+  /** The day, week or month the scheduler is currently working on. */
+  readonly periodKey: string;
+  /** Enabled, and this period has no snapshot yet, so the next check starts one. */
+  readonly dueNow: boolean;
+  /** When the next automatic snapshot is expected. Null when switched off. */
+  readonly nextRunAt: Date | null;
+  readonly attemptsThisPeriod: number;
+  readonly attemptLimit: number;
+  /** Every attempt this period failed, and no more will be made until the next. */
+  readonly givenUpThisPeriod: boolean;
+  readonly lastRun: {
+    readonly jobId: string;
+    readonly status: string;
+    readonly at: Date;
+    readonly error: string | null;
+  } | null;
+  readonly lastSuccessAt: Date | null;
+  /** The snapshot this slot holds, which the next successful run replaces. */
+  readonly currentBackupId: string | null;
+}
+
+export interface BackupScheduleReport {
+  readonly schedule: BackupSchedule;
+  readonly slots: readonly BackupScheduleSlot[];
+  /** How often the scheduler looks for work, so the panel can say so. */
+  readonly checkIntervalMs: number;
+}
+
+/**
+ * What the scheduler is about to do, and what came of the last time it ran.
+ *
+ * Derived from the job history rather than a separate bookkeeping table, so it
+ * cannot drift away from the snapshots that actually exist.
+ */
+export function describeBackupSchedule(db: DatabaseHandle, now = new Date()): BackupScheduleReport {
+  const schedule = readBackupSchedule(db);
+
+  const slots = BackupFrequency.options.map((frequency): BackupScheduleSlot => {
+    const attempts = scheduledAttempts(db, frequency);
+    const periodKey = localPeriodKey(now, frequency);
+    const thisPeriod = attempts.filter((attempt) => attempt.periodKey === periodKey);
+    const settled = periodIsSettled(attempts, periodKey);
+    const enabled = schedule[frequency];
+    const succeeded = attempts.find((attempt) => attempt.status === 'succeeded');
+    const last = attempts[0];
+
+    return {
+      frequency,
+      enabled,
+      periodKey,
+      dueNow: enabled && !settled,
+      nextRunAt: !enabled ? null : settled ? startOfNextPeriod(now, frequency) : now,
+      attemptsThisPeriod: thisPeriod.length,
+      attemptLimit: SCHEDULE_ATTEMPT_LIMIT,
+      givenUpThisPeriod:
+        enabled &&
+        thisPeriod.length >= SCHEDULE_ATTEMPT_LIMIT &&
+        thisPeriod.every((attempt) => attempt.status === 'failed'),
+      lastRun: last
+        ? {
+            jobId: last.jobId,
+            status: last.status,
+            at: last.finishedAt ?? last.createdAt,
+            error: last.errorMessage,
+          }
+        : null,
+      lastSuccessAt: succeeded ? (succeeded.finishedAt ?? succeeded.createdAt) : null,
+      currentBackupId: succeeded?.jobId ?? null,
+    };
+  });
+
+  return { schedule, slots, checkIntervalMs: SCHEDULER_INTERVAL_MS };
+}
+
+/** Removes one archive. Returns false when it had already gone. */
+export async function deleteBackupArchive(
+  backupDir: string,
+  scope: 'site' | 'panel',
+  id: string,
+): Promise<boolean> {
+  const file = archivePath(backupDir, scope, id);
+  if (!(await exists(file))) return false;
+  await fs.rm(file, { force: true });
+  return true;
+}
+
+/**
+ * Keeps one snapshot per frequency.
+ *
+ * Each schedule owns a slot: today's daily snapshot replaces yesterday's, this
+ * week's replaces last week's. Without it a machine taking nightly snapshots of
+ * itself eventually fills its own disk, which is a worse place to be than
+ * having no snapshot at all. The job rows stay, so the run is still in the
+ * activity history; only the archive on disk goes.
+ */
+export async function pruneFrequencyBackups(
+  db: DatabaseHandle,
+  backupDir: string,
+  frequency: BackupFrequency,
+  keepJobId: string,
+): Promise<number> {
+  let removed = 0;
+
+  for (const attempt of scheduledAttempts(db, frequency)) {
+    if (attempt.jobId === keepJobId) continue;
+    if (attempt.status === 'pending' || attempt.status === 'running') continue;
+    if (await deleteBackupArchive(backupDir, 'panel', attempt.jobId)) removed += 1;
+  }
+
+  return removed;
 }
 
 export class BackupScheduler {
@@ -985,7 +1174,7 @@ export class BackupScheduler {
     for (const frequency of BackupFrequency.options) {
       if (!schedule[frequency]) continue;
       const periodKey = localPeriodKey(now, frequency);
-      if (scheduledBackupExists(this.db, frequency, periodKey)) continue;
+      if (periodIsSettled(scheduledAttempts(this.db, frequency), periodKey)) continue;
 
       this.jobs.enqueue({
         kind: 'backup',
@@ -998,7 +1187,9 @@ export class BackupScheduler {
           includeGameServers: schedule.includeGameServers,
           includeDependencies: schedule.includeDependencies,
         },
-        maxAttempts: 2,
+        // Retries belong to the scheduler, which spaces them out by its check
+        // interval instead of restarting a multi-hour archive immediately.
+        maxAttempts: 1,
       });
     }
   }

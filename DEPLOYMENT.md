@@ -378,8 +378,10 @@ WinPanel doesn't yet back itself up. Until it does, copy these somewhere off the
 Being straight about what isn't here. None of these are bugs - they're things that were
 left out, and you should know before you put a server behind this.
 
-- **Backups aren't built in.** There is no scheduled backup, no snapshot, no restore
-  button. Copy the paths listed above yourself, on a schedule you control.
+- **Backups never leave the machine.** There are scheduled panel snapshots and a restore
+  button, but every archive is written to a folder on the same server. Nothing uploads to
+  S3, B2 or anywhere else, so a snapshot cannot survive the disk it is stored on. Download
+  them, or copy the paths listed above, on a schedule you control.
 - **Monitoring stops at the Health page.** The panel will show you a failing service or a
   full disk when you look at it. Nothing pages you, emails you or exports metrics, so at
   three in the morning the panel is not what tells you.

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue';
-import { Archive, Database, Download, RefreshCw } from 'lucide-vue-next';
+import { Archive, Database, Download, RefreshCw, Trash2 } from 'lucide-vue-next';
 import { siteContextKey } from '../../lib/site-context';
 import { api, describeError } from '../../lib/api';
 import { backupDownloadUrl } from '../../lib/file-transfer';
@@ -16,6 +16,7 @@ type SiteBackup = Awaited<ReturnType<typeof api.backups.site.list.query>>[number
 const backups = ref<SiteBackup[]>([]);
 const loading = ref(true);
 const creating = ref(false);
+const removing = ref<string | null>(null);
 const includeDependencies = ref(false);
 const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
@@ -66,6 +67,26 @@ async function createBackup(): Promise<void> {
   } catch (err) {
     creating.value = false;
     error.value = describeError(err);
+  }
+}
+
+async function deleteBackup(backup: SiteBackup): Promise<void> {
+  const confirmed = window.confirm(
+    `Delete the backup from ${new Date(backup.createdAt).toLocaleString()}? It cannot be recovered once the file is gone.`,
+  );
+  if (!confirmed) return;
+
+  removing.value = backup.id;
+  error.value = null;
+  notice.value = null;
+  try {
+    await api.backups.site.remove.mutate({ slug: slug.value, backupId: backup.id });
+    backups.value = backups.value.filter((entry) => entry.id !== backup.id);
+    notice.value = 'That backup was deleted.';
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    removing.value = null;
   }
 }
 
@@ -159,6 +180,16 @@ watch(slug, () => void load(), { immediate: true });
               <Download :size="14" aria-hidden="true" />
               Download ZIP
             </a>
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm text-danger"
+              :disabled="removing !== null"
+              :aria-label="`Delete the backup from ${new Date(backup.createdAt).toLocaleString()}`"
+              @click="deleteBackup(backup)"
+            >
+              <Trash2 :size="14" aria-hidden="true" />
+              {{ removing === backup.id ? 'Deleting...' : 'Delete' }}
+            </button>
           </div>
         </div>
       </section>
