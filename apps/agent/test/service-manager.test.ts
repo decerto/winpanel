@@ -523,4 +523,21 @@ describe.runIf(process.platform === 'win32')('ServiceManager recovery', () => {
     // Once on the way down, once when it would not come back up.
     expect(cleared).toEqual([SERVICE_ID, SERVICE_ID]);
   }, 30_000);
+
+  it('asks another panel service to give up the port before reporting a blocker', async () => {
+    const askedToYield: string[] = [];
+
+    const manager = new ServiceManager(path.join(root, 'WinSW.exe'), configDir, {
+      unblock: async () => false,
+      describeBlockers: async () => 'stalwart.exe (process 3984) on port 443',
+      makeRoom: async (id) => {
+        askedToYield.push(id);
+        return true;
+      },
+    });
+
+    await expect(manager.start(SERVICE_ID)).rejects.toThrow(/stalwart\.exe/);
+
+    expect(askedToYield).toEqual([SERVICE_ID]);
+  }, 30_000);
 });

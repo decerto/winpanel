@@ -241,11 +241,11 @@ See [Game servers on Windows](docs/game-servers-on-windows.md) for the schema an
 
 ## DNS control
 
-DNS is managed through Cloudflare, per website. A token is held **per site**, falling back
-to a shared one, because a Cloudflare token only reaches the zones of the account that
-issued it - and one server routinely hosts domains belonging to different people. Tokens
-are encrypted in the vault and never leave the server; the browser only ever sees zone and
-record data.
+DNS is managed through Cloudflare, per website. Each root website holds its own token,
+because a Cloudflare token only reaches the zones of the account that issued it - and one
+server routinely hosts domains belonging to different people. Subdomains inherit their
+parent website's token. Tokens are encrypted in the vault and never leave the server; the
+browser only ever sees zone and record data.
 
 ![DNS records and the point-domain-here plan](docs/screenshots/dns.png)
 

@@ -20,7 +20,11 @@ import {
   setUpPostgres,
 } from '../databases/setup.js';
 import { buildStalwartBootstrap } from '../mail/stalwart-config.js';
-import { ensureMailAdminCredentials, mailServiceEnv } from '../mail/service.js';
+import {
+  ensureMailAdminCredentials,
+  mailServiceEnv,
+  prepareStalwartForWebServer,
+} from '../mail/service.js';
 import { storeMailDomains } from '../mail/domains.js';
 import { caddyServiceEnv, cloudflareTokenEnvironment } from '../caddy/service.js';
 import { downloadVerified } from './download.js';
@@ -153,7 +157,6 @@ function executableNames(component: ComponentDefinition): string[] {
     composer: ['composer.phar'],
     adminer: ['adminer.php'],
   };
-
   return alternates[component.id] ?? [`${component.id}.exe`];
 }
 
@@ -757,6 +760,23 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
         ? { account: { username: POSTGRES_SERVICE_ACCOUNT, password: '' } }
         : {}),
     });
+
+    if (component.id === 'caddy') {
+      try {
+        const repaired = await prepareStalwartForWebServer(
+          { db: deps.db, vault: deps.vault, services: deps.services },
+          { retryForMs: 15_000 },
+        );
+        for (const change of repaired?.changes ?? []) ctx.log(change, 'warn');
+      } catch (error) {
+        ctx.log(
+          `Could not repair the mail server before starting the web server: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          'warn',
+        );
+      }
+    }
 
     ctx.progress(90);
     ctx.log('Starting it\u2026');

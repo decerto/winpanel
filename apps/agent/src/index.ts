@@ -5,7 +5,11 @@ import { createAppContext } from './app-context.js';
 import { config, paths } from './config.js';
 import { createServer } from './server.js';
 import { CADDY_SERVICE_ID, syncCaddyEnvironment } from './caddy/service.js';
-import { reconcileMailListeners, syncMailCertificates, syncMailEnvironment } from './mail/service.js';
+import {
+  prepareStalwartForWebServer,
+  syncMailCertificates,
+  syncMailEnvironment,
+} from './mail/service.js';
 import { cleanUpAfterUpdate } from './components/panel-update.js';
 import { cleanupRotatedLogFiles, PANEL_LOG_RETENTION_DAYS } from './logs/log-files.js';
 import { localAddresses } from './tls/panel-certificate.js';
@@ -13,6 +17,7 @@ import { ServiceWatchdog } from './windows/service-watchdog.js';
 import { watchdogServices } from './windows/watched-services.js';
 import { registerSiteChecks } from './api/routers/checks.js';
 import { findStrayListeners, killProcessTree } from './windows/stray-processes.js';
+import { clearLegacyCloudflareToken } from './dns/token.js';
 
 /**
  * Agent entry point. Runs as a Windows Service under WinSW in production.
@@ -188,15 +193,16 @@ async function main(): Promise<void> {
      * pass puts it back on the submission port if it is not on one.
      */
     try {
-      const listeners = await reconcileMailListeners({
+      const mailDependencies = {
         db: app.db,
         vault: app.vault,
         services: app.services,
-      });
+      };
+      const listeners = await prepareStalwartForWebServer(mailDependencies);
 
-      for (const change of listeners.changes) server.log.warn(change);
+      for (const change of listeners?.changes ?? []) server.log.warn(change);
 
-      if (listeners.restarted && (await app.services.getState(CADDY_SERVICE_ID)) === 'stopped') {
+      if (listeners?.restarted && (await app.services.getState(CADDY_SERVICE_ID)) === 'stopped') {
         await app.services.start(CADDY_SERVICE_ID);
         server.log.info('Started the web server now that its ports are free.');
       }
@@ -302,6 +308,30 @@ async function main(): Promise<void> {
       server.log.warn({ err: error }, 'Could not apply the website configuration.');
     } else {
       server.log.info('Website configuration applied.');
+
+      if (
+        app.legacyCloudflareTokenMigration.status === 'staged' ||
+        app.legacyCloudflareTokenMigration.status === 'ambiguous'
+      ) {
+        if (clearLegacyCloudflareToken(app.db)) {
+          try {
+            const result = await syncCaddyEnvironment({
+              db: app.db,
+              vault: app.vault,
+              services: app.services,
+              caddyDir: config.caddyDir,
+            });
+            if (result === 'updated') {
+              server.log.info('Removed the legacy Cloudflare environment from the web server.');
+            }
+          } catch (cleanupError) {
+            server.log.warn(
+              { err: cleanupError },
+              'Could not remove the legacy Cloudflare environment from the web server.',
+            );
+          }
+        }
+      }
     }
 
     /*

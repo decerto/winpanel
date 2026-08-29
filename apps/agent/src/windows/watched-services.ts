@@ -318,9 +318,11 @@ export async function describeBlockers(
 export function createServiceRecovery(
   db: DatabaseHandle,
   gameServerSource?: GameServerWatchSourceProvider,
+  makeRoom?: (id: string, failure: string) => Promise<boolean>,
 ): ServiceRecovery {
   return {
     unblock: (id) => unblockService(db, id, gameServerSource),
     describeBlockers: (id) => describeBlockers(db, id, gameServerSource),
+    ...(makeRoom ? { makeRoom } : {}),
   };
 }

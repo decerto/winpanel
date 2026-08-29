@@ -8,10 +8,12 @@ import { ServiceManager, buildServiceXml } from '../src/windows/service-manager.
 import { loadMailAdminCredentials } from '../src/mail/credentials.js';
 import {
   PANEL_MAIL_ADMIN,
+  prepareStalwartForWebServer,
   RECOVERY_ADMIN_ENV_VAR,
   STALWART_SERVICE_ID,
   ensureMailAdminCredentials,
   mailServiceEnv,
+  repairStalwartWebPortConflict,
   readInstalledMailCertificate,
   recordInstalledMailCertificate,
   reconcileMailListeners,
@@ -284,6 +286,185 @@ describe('handing it to the mail server', () => {
       expect(result.changes).toHaveLength(1);
       expect(restart).toHaveBeenCalledOnce();
       expect(requests).toBe(8);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('repairs a saved web listener before Caddy can release its port', async () => {
+    await pretendMailIsInstalled();
+    ensureMailAdminCredentials(db, vault);
+
+    const listeners = [
+      { id: 'https', name: 'https', bind: { '0': '[::]:443' } },
+      { id: 'submission', name: 'submission', protocol: 'smtp', bind: { '0': '0.0.0.0:587' } },
+    ];
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string) as {
+        methodCalls: Array<[string, Record<string, unknown>, string]>;
+      };
+      const [name, , id] = body.methodCalls[0] ?? [];
+      if (!String(url).endsWith('/jmap') || !name || !id) return new Response('{}', { status: 404 });
+
+      const result = name.endsWith('/query')
+        ? { ids: listeners.map((listener) => listener.id) }
+        : { list: listeners };
+      return new Response(JSON.stringify({ methodResponses: [[name, result, id]] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const restart = vi.fn(async () => undefined);
+    const stop = vi.fn(async () => undefined);
+    const setEnvironment = vi.fn(async () => 'unchanged' as const);
+    const getState = vi.fn(async () => 'running' as const);
+    try {
+      const result = await prepareStalwartForWebServer(
+        {
+          db,
+          vault,
+          services: { getState, setEnvironment, restart, stop } as unknown as ServiceManager,
+        },
+        { listHolders: async () => [], retryForMs: 0 },
+      );
+
+      expect(result?.changes).toHaveLength(1);
+      expect(result?.changes[0]).toContain('443');
+      expect(result?.restarted).toBe(true);
+      expect(restart).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('provisions an older panel-managed mail service before repairing its port', async () => {
+    await pretendMailIsInstalled();
+
+    const listeners = [
+      { id: 'https', name: 'https', bind: { '0': '[::]:443' } },
+      { id: 'submission', name: 'submission', protocol: 'smtp', bind: { '0': '0.0.0.0:587' } },
+    ];
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string) as {
+        methodCalls: Array<[string, Record<string, unknown>, string]>;
+      };
+      const [name, , id] = body.methodCalls[0] ?? [];
+      if (!String(url).endsWith('/jmap') || !name || !id) return new Response('{}', { status: 404 });
+
+      const result = name.endsWith('/query')
+        ? { ids: listeners.map((listener) => listener.id) }
+        : { list: listeners };
+      return new Response(JSON.stringify({ methodResponses: [[name, result, id]] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const getState = vi.fn(async () => 'stopped' as const);
+    const setEnvironment = vi.fn(async () => 'updated' as const);
+    const start = vi.fn(async () => undefined);
+    const stop = vi.fn(async () => undefined);
+    const restart = vi.fn(async () => undefined);
+    try {
+      const result = await prepareStalwartForWebServer(
+        {
+          db,
+          vault,
+          services: { getState, setEnvironment, start, stop, restart } as unknown as ServiceManager,
+        },
+        {
+          // The port is only released once the repaired listener has restarted.
+          listHolders: async () =>
+            restart.mock.calls.length > 0 ? [] : [{ pid: 7540, port: 443, image: 'stalwart.exe' }],
+          retryForMs: 0,
+          settleForMs: 0,
+        },
+      );
+
+      expect(result?.changes).toHaveLength(1);
+      expect(start).toHaveBeenCalledOnce();
+      expect(restart).toHaveBeenCalledOnce();
+      expect(stop).not.toHaveBeenCalled();
+      expect(loadMailAdminCredentials(db, vault)).not.toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('stops the mail server when its settings cannot be reached to free the web port', async () => {
+    await pretendMailIsInstalled();
+    ensureMailAdminCredentials(db, vault);
+
+    // The credential the panel holds is not the one this installation accepts.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('unauthorized', { status: 401 })),
+    );
+
+    const getState = vi.fn(async () => 'running' as const);
+    const setEnvironment = vi.fn(async () => 'unchanged' as const);
+    const start = vi.fn(async () => undefined);
+    const stop = vi.fn(async () => undefined);
+    const restart = vi.fn(async () => undefined);
+    try {
+      const result = await prepareStalwartForWebServer(
+        {
+          db,
+          vault,
+          services: { getState, setEnvironment, start, stop, restart } as unknown as ServiceManager,
+        },
+        {
+          listHolders: async () => [{ pid: 4964, port: 443, image: 'stalwart.exe' }],
+          retryForMs: 0,
+          settleForMs: 0,
+        },
+      );
+
+      expect(stop).toHaveBeenCalledWith('winpanel-stalwart');
+      expect(result?.changes.at(-1)).toContain('443');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('starts and restarts Stalwart to clear a stale web-port conflict', async () => {
+    await pretendMailIsInstalled();
+    ensureMailAdminCredentials(db, vault);
+
+    const listeners = [
+      { id: 'smtp', name: 'smtp', protocol: 'smtp', bind: { '0': '0.0.0.0:25' } },
+      { id: 'submission', name: 'submission', protocol: 'smtp', bind: { '0': '0.0.0.0:587' } },
+    ];
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string) as {
+        methodCalls: Array<[string, Record<string, unknown>, string]>;
+      };
+      const [name, , id] = body.methodCalls[0] ?? [];
+      if (!String(url).endsWith('/jmap') || !name || !id) return new Response('{}', { status: 404 });
+
+      const result = name.endsWith('/query')
+        ? { ids: listeners.map((listener) => listener.id) }
+        : { list: listeners };
+      return new Response(JSON.stringify({ methodResponses: [[name, result, id]] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const start = vi.fn(async () => undefined);
+    const restart = vi.fn(async () => undefined);
+    const getState = vi.fn(async () => 'stopped' as const);
+    try {
+      const result = await repairStalwartWebPortConflict(
+        {
+          db,
+          vault,
+          services: { getState, start, restart } as unknown as ServiceManager,
+        },
+        {
+          listHolders: async () => [{ pid: 6168, port: 443, image: 'stalwart.exe' }],
+          retryForMs: 0,
+        },
+      );
+
+      expect(result).toEqual({ changes: [], restarted: true });
+      expect(start).toHaveBeenCalledOnce();
+      expect(restart).toHaveBeenCalledOnce();
     } finally {
       vi.unstubAllGlobals();
     }

@@ -1,5 +1,11 @@
 import type { DatabaseHandle } from '../db/index.js';
-import { cloudflareTokenGroups } from '../dns/token.js';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {
+  cloudflareTokenGroups,
+  LEGACY_CLOUDFLARE_TOKEN_ENV_VAR,
+  loadLegacyCloudflareToken,
+} from '../dns/token.js';
 import { sites } from '../db/schema.js';
 import type { SecretVault } from '../security/vault.js';
 import type { ServiceManager } from '../windows/service-manager.js';
@@ -60,7 +66,14 @@ export function cloudflareTokenEnvironment(
     rows.map((row) => ({ id: row.id, domains: row.domains as string[] })),
   );
 
-  return Object.fromEntries(groups.map((group) => [group.envVar, group.token]));
+  const environment = Object.fromEntries(groups.map((group) => [group.envVar, group.token]));
+  const legacy = loadLegacyCloudflareToken(db, vault);
+
+  // Older autosaved Caddy configs still refer to this name. Keep it alive
+  // until the current config has been loaded and the migration is finalised.
+  if (legacy) environment[LEGACY_CLOUDFLARE_TOKEN_ENV_VAR] = legacy;
+
+  return environment;
 }
 
 /**
@@ -74,4 +87,45 @@ export async function syncCaddyEnvironment(deps: CaddyEnvDependencies): Promise<
     CADDY_SERVICE_ID,
     caddyServiceEnv(deps.caddyDir, cloudflareTokenEnvironment(deps.db, deps.vault)),
   );
+}
+
+/** Caddy saves the running config here, and boots from it because of `--resume`. */
+export function caddyAutosavePath(caddyDir: string): string {
+  return path.join(caddyDir, 'caddy', 'autosave.json');
+}
+
+/** Caddy's own words for "I could not load the config I was given". */
+const UNLOADABLE_CONFIG = /loading initial config|loading new config/i;
+
+/**
+ * Moves aside a saved configuration Caddy refuses to boot from.
+ *
+ * Caddy is run with `--resume`, so it starts from the config it last saved,
+ * and that config names each Cloudflare token by a variable derived from the
+ * token itself. Change the token, migrate it to a website, or remove it, and
+ * the name it was saved under stops resolving: `{env...}` becomes empty, the
+ * ACME issuer rejects the empty token, and Caddy exits before it listens.
+ *
+ * Nothing can repair that from the outside. The panel configures Caddy through
+ * its admin API, which does not exist until Caddy starts, so a saved config it
+ * cannot load leaves the web server down for good — and every website with it,
+ * while the mail server quietly takes the ports Caddy never bound. The file is
+ * kept rather than deleted so it can still be looked at afterwards.
+ */
+export async function quarantineUnloadableCaddyConfig(
+  caddyDir: string,
+  failure: string,
+): Promise<string | null> {
+  if (!UNLOADABLE_CONFIG.test(failure)) return null;
+
+  const autosave = caddyAutosavePath(caddyDir);
+  const quarantined = `${autosave}.unloadable-${Date.now()}`;
+
+  try {
+    await fs.rename(autosave, quarantined);
+    return quarantined;
+  } catch {
+    // Nothing saved yet, so the config it could not load came from elsewhere.
+    return null;
+  }
 }

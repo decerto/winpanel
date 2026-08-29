@@ -16,6 +16,8 @@ import { FirewallManager } from './bootstrap/windows-setup.js';
 import { DatabaseNetworkService } from './databases/network-service.js';
 import { firstIpv4 } from './databases/network.js';
 import { createServiceRecovery } from './windows/watched-services.js';
+import { CADDY_SERVICE_ID, quarantineUnloadableCaddyConfig } from './caddy/service.js';
+import { prepareStalwartForWebServer } from './mail/service.js';
 import { SiteService } from './sites/site-service.js';
 import { GameServerService } from './game-servers/game-server-service.js';
 import { createInstallGameServerHandler } from './game-servers/install-handler.js';
@@ -35,6 +37,10 @@ import { createWordPressHandler } from './sites/wordpress.js';
 import { resolveToolInvocation } from './sites/tool-paths.js';
 import { localAddresses, type PanelTls } from './tls/panel-certificate.js';
 import { BackupScheduler, createBackupHandler } from './backups/service.js';
+import {
+  migrateLegacyCloudflareToken,
+  type LegacyCloudflareTokenMigration,
+} from './dns/token.js';
 
 /**
  * Composition root.
@@ -60,6 +66,7 @@ export interface AppContext {
   gameServers: GameServerService;
   /** Counts the web server's access logs into per-website traffic figures. */
   traffic: TrafficCollector;
+  legacyCloudflareTokenMigration: LegacyCloudflareTokenMigration;
   /**
    * Re-reads the panel's own certificate and swaps it into the live listener.
    *
@@ -92,6 +99,19 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
 
   const vault = new SecretVault(options.vaultKeyPath ?? paths.vaultKey());
   await vault.initialise();
+
+  const legacyCloudflareTokenMigration = migrateLegacyCloudflareToken(db, vault);
+  if (legacyCloudflareTokenMigration.status === 'staged') {
+    process.stderr.write('Migrated the existing Cloudflare credential to a website.\n');
+  } else if (legacyCloudflareTokenMigration.status === 'ambiguous') {
+    process.stderr.write(
+      'The existing Cloudflare credential could not be assigned automatically; reconnect it on each website.\n',
+    );
+  } else if (legacyCloudflareTokenMigration.status === 'unreadable') {
+    process.stderr.write(
+      'The existing Cloudflare credential could not be read; reconnect it on the website DNS tab.\n',
+    );
+  }
 
   const auth = new AuthService(db, vault, options.setupTokenPath ?? paths.setupToken());
 
@@ -145,10 +165,25 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     process.stderr.write(`Skipping game server config ${file}: ${error}\n`);
   }
   const gameServers = new GameServerService(db, config.gameServersRoot, gameCatalogue);
-  const services = new ServiceManager(
+  const services: ServiceManager = new ServiceManager(
     path.join(config.binDir, 'WinSW.exe'),
     path.join(config.dataDir, 'services'),
-    createServiceRecovery(db, gameServers),
+    createServiceRecovery(db, gameServers, async (id, failure) => {
+      if (id.toLowerCase() !== CADDY_SERVICE_ID) return false;
+
+      const quarantined = await quarantineUnloadableCaddyConfig(config.caddyDir, failure);
+      if (quarantined) {
+        process.stderr.write(
+          `The web server could not load its saved configuration, so it was moved to ${quarantined} ` +
+            'and the current one will be applied instead.\n',
+        );
+        // Caddy starts with nothing configured; this waits for its admin API.
+        void routing.applyWhenReady();
+      }
+
+      const freed = await prepareStalwartForWebServer({ db, vault, services });
+      return quarantined !== null || freed !== null;
+    }),
   );
   if (process.platform === 'win32') {
     for (const server of gameServers.list()) {
@@ -315,6 +350,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     sites,
     gameServers,
     traffic,
+    legacyCloudflareTokenMigration,
     shutdown: async () => {
       backupScheduler.stop();
       await jobs.stop();

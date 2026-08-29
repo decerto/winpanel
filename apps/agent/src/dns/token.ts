@@ -22,7 +22,22 @@ import type { SecretVault } from '../security/vault.js';
  * those three disagree, the symptom is certificates that silently never issue.
  */
 
+/** Keys and environment names kept only while an older install is upgraded. */
+export const LEGACY_CLOUDFLARE_TOKEN_KEY = 'cloudflare.token';
+export const LEGACY_CLOUDFLARE_TOKEN_ENV_VAR = 'CF_API_TOKEN';
+
 export const siteCloudflareTokenKey = (siteId: string) => `site.cloudflareToken:${siteId}`;
+
+function hasSecret(db: DatabaseHandle, key: string): boolean {
+  return db.db.select({ key: secrets.key }).from(secrets).where(eq(secrets.key, key)).get() !== undefined;
+}
+
+export function loadLegacyCloudflareToken(
+  db: DatabaseHandle,
+  vault: SecretVault,
+): string | null {
+  return readSecret(db, vault, LEGACY_CLOUDFLARE_TOKEN_KEY);
+}
 
 export function loadSiteCloudflareToken(
   db: DatabaseHandle,
@@ -43,6 +58,64 @@ export function storeSiteCloudflareToken(
 
 export function clearSiteCloudflareToken(db: DatabaseHandle, siteId: string): void {
   db.db.delete(secrets).where(eq(secrets.key, siteCloudflareTokenKey(siteId))).run();
+}
+
+export type LegacyCloudflareTokenMigrationStatus =
+  | 'none'
+  | 'staged'
+  | 'ambiguous'
+  | 'unreadable';
+
+export interface LegacyCloudflareTokenMigration {
+  status: LegacyCloudflareTokenMigrationStatus;
+  siteId?: string;
+}
+
+/** Copies the old global credential only when one root website is unambiguous. */
+export function migrateLegacyCloudflareToken(
+  db: DatabaseHandle,
+  vault: SecretVault,
+): LegacyCloudflareTokenMigration {
+  if (!hasSecret(db, LEGACY_CLOUDFLARE_TOKEN_KEY)) return { status: 'none' };
+
+  const legacy = loadLegacyCloudflareToken(db, vault);
+  if (!legacy) return { status: 'unreadable' };
+
+  const rootSites = db.db
+    .select({ id: sites.id, parentSiteId: sites.parentSiteId })
+    .from(sites)
+    .all()
+    .filter((site) => site.parentSiteId === null);
+
+  const staged = rootSites.filter(
+    (site) =>
+      hasSecret(db, siteCloudflareTokenKey(site.id)) &&
+      loadSiteCloudflareToken(db, vault, site.id) === legacy,
+  );
+  if (staged.length === 1) {
+    const stagedSite = staged[0];
+    if (stagedSite) return { status: 'staged', siteId: stagedSite.id };
+  }
+
+  if (rootSites.length !== 1) return { status: 'ambiguous' };
+
+  const target = rootSites[0];
+  if (!target) return { status: 'ambiguous' };
+  if (hasSecret(db, siteCloudflareTokenKey(target.id))) return { status: 'ambiguous' };
+
+  const siteId = target.id;
+  db.sqlite.transaction(() => {
+    writeSecret(db, vault, siteCloudflareTokenKey(siteId), legacy);
+  })();
+
+  return { status: 'staged', siteId };
+}
+
+/** Removes the old key after the current Caddy configuration is loaded. */
+export function clearLegacyCloudflareToken(db: DatabaseHandle): boolean {
+  return (
+    db.db.delete(secrets).where(eq(secrets.key, LEGACY_CLOUDFLARE_TOKEN_KEY)).run().changes > 0
+  );
 }
 
 export type TokenSource = 'site' | 'parent';

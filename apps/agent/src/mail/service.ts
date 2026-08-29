@@ -1,9 +1,11 @@
 import crypto from 'node:crypto';
 import { eq } from 'drizzle-orm';
+import { WEB_PORTS } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
 import { settings } from '../db/schema.js';
 import type { SecretVault } from '../security/vault.js';
 import type { ServiceManager } from '../windows/service-manager.js';
+import { findStrayListeners, type StrayProcess } from '../windows/stray-processes.js';
 import { findIssuedCertificate } from '../tls/issued-certificates.js';
 import { mailHostnames, storeMailDomains } from './domains.js';
 import {
@@ -81,6 +83,10 @@ export interface MailListenerReconcileOptions {
   retryDelayMs?: number;
   /** Replaced in tests so the retry does not wait in real time. */
   sleep?: (ms: number) => Promise<void>;
+  /** Start a stopped mail service while repairing an observed stale listener. */
+  startIfStopped?: boolean;
+  /** Restart after a live conflict even when the stored listener config is clean. */
+  restartIfUnchanged?: boolean;
 }
 
 const MAIL_LISTENER_RETRY_FOR_MS = 2 * 60_000;
@@ -143,6 +149,12 @@ export async function reconcileMailListeners(
   const changes = new Set<string>();
   let restartRequired = false;
 
+  if (options.startIfStopped) {
+    const state = await deps.services.getState(STALWART_SERVICE_ID);
+    if (state === 'not-installed') return { changes: [], restarted: false };
+    if (state === 'stopped') await deps.services.start(STALWART_SERVICE_ID);
+  }
+
   for (;;) {
     try {
       const client = new StalwartClient(credentials.username, credentials.password);
@@ -156,7 +168,12 @@ export async function reconcileMailListeners(
         restartRequired = true;
       }
 
-      if (!restartRequired) return { changes: [...changes], restarted: false };
+      if (!restartRequired) {
+        if (!options.restartIfUnchanged) return { changes: [...changes], restarted: false };
+
+        await deps.services.restart(STALWART_SERVICE_ID);
+        return { changes: [...changes], restarted: true };
+      }
 
       await deps.services.restart(STALWART_SERVICE_ID);
 
@@ -169,6 +186,119 @@ export async function reconcileMailListeners(
       await sleep(Math.min(retryDelayMs, remaining));
     }
   }
+}
+
+const STALWART_IMAGES = ['stalwart.exe', 'stalwart-mail.exe'] as const;
+
+export interface StalwartWebPortRepairOptions {
+  /** Replaced in tests; production reads the current Windows listeners. */
+  listHolders?: () => Promise<readonly StrayProcess[]>;
+  retryForMs?: number;
+  retryDelayMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  /** How long the web ports may take to fall quiet after a restart. */
+  settleForMs?: number;
+}
+
+const WEB_PORT_SETTLE_MS = 10_000;
+
+/** A restart does not free a socket instantly, so the check has to wait for it. */
+async function webPortHoldersAfterSettling(
+  listHolders: () => Promise<readonly StrayProcess[]>,
+  settleForMs: number,
+  sleep: (ms: number) => Promise<void>,
+): Promise<readonly StrayProcess[]> {
+  const deadline = Date.now() + settleForMs;
+
+  for (;;) {
+    const holders = await listHolders();
+    const remaining = deadline - Date.now();
+    if (holders.length === 0 || remaining <= 0) return holders;
+    await sleep(Math.min(1_000, remaining));
+  }
+}
+
+/** Repairs a Stalwart process that is actively blocking the web server edge. */
+export async function repairStalwartWebPortConflict(
+  deps: MailEnvDependencies,
+  options: StalwartWebPortRepairOptions = {},
+): Promise<{ changes: string[]; restarted: boolean } | null> {
+  const listHolders = options.listHolders ?? (() => findStrayListeners(WEB_PORTS, STALWART_IMAGES));
+  if ((await listHolders()).length === 0) return null;
+
+  return await reconcileMailListeners(deps, {
+    retryForMs: options.retryForMs,
+    retryDelayMs: options.retryDelayMs,
+    sleep: options.sleep,
+    startIfStopped: true,
+    restartIfUnchanged: true,
+  });
+}
+
+/**
+ * Clears ports 80 and 443 of the mail server before Caddy is started.
+ *
+ * Editing the listener settings is the repair that keeps mail running, and it
+ * is tried first. It cannot be relied on alone: it needs the settings API,
+ * which needs a credential the panel may not hold on an installation that
+ * predates it, and a restart with the listener still saved simply hands the
+ * port to a new process id — which is what an operator sees as the same
+ * failure, forever, with a different number in it.
+ *
+ * So when the port is still held afterwards, the mail service is stopped.
+ * That is the panel's own service rather than a stranger's program, stopping
+ * it is reversible from the Services page, and the alternative is every
+ * website on the machine staying dark to keep mail on a port that is not its.
+ */
+export async function prepareStalwartForWebServer(
+  deps: MailEnvDependencies,
+  options: StalwartWebPortRepairOptions = {},
+): Promise<{ changes: string[]; restarted: boolean } | null> {
+  const state = await deps.services.getState(STALWART_SERVICE_ID);
+  if (state === 'not-installed') return null;
+
+  if ((await syncMailEnvironment(deps)) === 'not-installed') return null;
+
+  const listHolders = options.listHolders ?? (() => findStrayListeners(WEB_PORTS, STALWART_IMAGES));
+  const sleep = options.sleep ?? delay;
+  const changes: string[] = [];
+  let restarted = false;
+
+  try {
+    const conflict = await repairStalwartWebPortConflict(deps, { ...options, listHolders });
+    if (conflict) {
+      changes.push(...conflict.changes);
+      restarted = conflict.restarted;
+    } else if (state === 'running' || state === 'starting') {
+      const reconciled = await reconcileMailListeners(deps, {
+        retryForMs: options.retryForMs,
+        retryDelayMs: options.retryDelayMs,
+        sleep: options.sleep,
+      });
+      changes.push(...reconciled.changes);
+      restarted ||= reconciled.restarted;
+    }
+  } catch {
+    // Unreachable, or the credential is refused. The port still has to be free.
+  }
+
+  const holders = await webPortHoldersAfterSettling(
+    listHolders,
+    options.settleForMs ?? WEB_PORT_SETTLE_MS,
+    sleep,
+  );
+
+  if (holders.length === 0) {
+    return changes.length > 0 || restarted ? { changes, restarted } : null;
+  }
+
+  await deps.services.stop(STALWART_SERVICE_ID);
+  const ports = [...new Set(holders.map((holder) => holder.port))].join(' and ');
+  changes.push(
+    `Stopped the mail server, which was still holding port ${ports} that the web server needs.`,
+  );
+
+  return { changes, restarted };
 }
 
 export interface MailCertificateSync {

@@ -141,15 +141,21 @@ Create a token at
 - **Permissions:** `Zone → Zone → Read` **and** `Zone → DNS → Edit`
 - **Zone Resources:** include the domains you want WinPanel to manage
 
-Paste it into **Settings → Cloudflare** in the panel. It's checked immediately, so a wrong
-or wrongly-scoped token fails while you're still looking at the field.
+Paste it into the website's **DNS** tab in the panel. Each root website needs its own token;
+subdomains use the token of their parent website. It's checked immediately, so a wrong or
+wrongly-scoped token fails while you're still looking at the field.
 
 Both permissions are required: DNS edit alone isn't enough, because certificate issuance
 needs to read the zone first.
 
 Saving the token also hands it to the web server and reloads its configuration, so
 certificates begin issuing straight away. If you connect Cloudflare before installing the
-web server, the panel says so and applies the token when you install it.
+web server, the panel applies the token when you install it.
+
+When upgrading an older install that used one machine-wide Cloudflare token, WinPanel
+migrates it automatically only when there is exactly one root website. With multiple root
+websites, reconnect Cloudflare separately on each root website so one account's token is
+never assigned to another customer's domain.
 
 ---
 

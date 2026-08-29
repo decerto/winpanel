@@ -9,20 +9,26 @@ A Cloudflare API token reaches the zones of the account that issued it, and noth
 One server routinely hosts domains belonging to different people, so a single
 machine-wide token would work for exactly one account and fail silently for every other.
 
-So tokens are held **per website**, falling back to a shared one:
+So tokens are held **per root website**, with no shared fallback. A subdomain inherits the
+token of its direct parent:
 
 | Scope | Stored by | Used when |
 | --- | --- | --- |
-| Site token | `storeSiteCloudflareToken` | A request names a `slug` and that site has one |
-| Shared token | `storeCloudflareToken` | A request names no site, or the site has no token |
+| Site token | `storeSiteCloudflareToken` | A root website has connected Cloudflare |
+| Parent token | `site.cloudflareToken:<parentId>` | A subdomain needs its parent's account |
 
 `cloudflareTokenForSite` resolves the pair. Both are encrypted by `SecretVault` and never
 leave the server - the API returns zones, records and status, never the token.
 
-`requireOwnSite` in the DNS router refuses to let a `user` account fall back to the shared
-token: several endpoints take the site as optional and answer for the shared token when it
-is left out, which would otherwise let a customer list every zone in the server owner's
-Cloudflare account.
+`requireOwnSite` in the DNS router requires a `user` account to name one of its websites.
+The router also limits zone and record operations to that website's configured domains.
+
+Older installs stored one encrypted value under `cloudflare.token`. On startup, the agent
+decrypts it with that legacy key as associated data and stages it under the only root site
+when there is exactly one. Multiple root sites, an existing site token, or unreadable
+ciphertext are left for an administrator to resolve by reconnecting each root site. The
+legacy value is retained only until the current Caddy configuration has loaded, allowing an
+autosaved configuration that still refers to `CF_API_TOKEN` to start during the upgrade.
 
 ## Pointing a domain at the server
 
@@ -64,7 +70,8 @@ without opening port 80 or waiting on HTTP propagation.
 applied. The order matters: the generated config refers to each token by environment
 variable, so the variable has to exist before a config mentioning it is loaded. Reversed,
 Caddy resolves the token to an empty string and fails every certificate request with an
-authentication error that points at Cloudflare rather than at us.
+authentication error that points at Cloudflare rather than at us. During an upgrade, the
+legacy `CF_API_TOKEN` name is kept until the new configuration has loaded, then removed.
 
 If the web server is not installed yet, `applyTokens` deliberately returns
 "Certificates will start being issued once the web server is installed" rather than the
@@ -106,7 +113,7 @@ full-page browser warning.
 | Procedure | Notes |
 | --- | --- |
 | `dns.status` | Whether Cloudflare can be used, and with whose token |
-| `dns.connect` / `dns.disconnect` | Store or clear a token, site-scoped or shared |
+| `dns.connect` / `dns.disconnect` | Store or clear a root website's token |
 | `dns.zones` / `dns.records` | Read-only views |
 | `dns.upsertRecord` / `dns.deleteRecord` | Direct record editing |
 | `dns.previewPointDomain` | The plan, with no side effects |

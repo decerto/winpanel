@@ -2,25 +2,33 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
-import { sites, users } from '../src/db/schema.js';
+import { secrets, sites, users } from '../src/db/schema.js';
 import { SecretVault } from '../src/security/vault.js';
 import { ServiceManager, buildServiceXml } from '../src/windows/service-manager.js';
 import { CaddyReconciler } from '../src/caddy/reconciler.js';
 import { CaddyClient } from '../src/caddy/client.js';
 import {
   CADDY_SERVICE_ID,
+  caddyAutosavePath,
   caddyServiceEnv,
   cloudflareTokenEnvironment,
+  quarantineUnloadableCaddyConfig,
   syncCaddyEnvironment,
 } from '../src/caddy/service.js';
 import {
   clearSiteCloudflareToken,
+  clearLegacyCloudflareToken,
+  LEGACY_CLOUDFLARE_TOKEN_ENV_VAR,
+  LEGACY_CLOUDFLARE_TOKEN_KEY,
   cloudflareTokenEnvVar,
   cloudflareTokenForSite,
   cloudflareTokenGroups,
+  loadLegacyCloudflareToken,
   loadSiteCloudflareToken,
+  migrateLegacyCloudflareToken,
   storeSiteCloudflareToken,
 } from '../src/dns/token.js';
 
@@ -99,6 +107,13 @@ function createUser(id: string): void {
     .run();
 }
 
+function storeLegacyCloudflareToken(token: string, associatedData = LEGACY_CLOUDFLARE_TOKEN_KEY): void {
+  db.db
+    .insert(secrets)
+    .values({ key: LEGACY_CLOUDFLARE_TOKEN_KEY, ciphertext: vault.encrypt(token, associatedData) })
+    .run();
+}
+
 /** Stands in for a Caddy service that has already been installed. */
 async function pretendCaddyIsInstalled(env: Record<string, string> = {}): Promise<string> {  await fs.mkdir(configDir(), { recursive: true });
   const configPath = path.join(configDir(), `${CADDY_SERVICE_ID}.xml`);
@@ -120,6 +135,57 @@ async function pretendCaddyIsInstalled(env: Record<string, string> = {}): Promis
 }
 
 describe('a token per website', () => {
+  it('stages the legacy token on the only unconfigured root website', () => {
+    const id = createSite('example.com');
+    storeLegacyCloudflareToken('legacy-token-value');
+
+    expect(migrateLegacyCloudflareToken(db, vault)).toEqual({ status: 'staged', siteId: id });
+    expect(loadSiteCloudflareToken(db, vault, id)).toBe('legacy-token-value');
+    expect(loadLegacyCloudflareToken(db, vault)).toBe('legacy-token-value');
+
+    expect(cloudflareTokenEnvironment(db, vault)).toEqual({
+      [cloudflareTokenEnvVar('legacy-token-value')]: 'legacy-token-value',
+      [LEGACY_CLOUDFLARE_TOKEN_ENV_VAR]: 'legacy-token-value',
+    });
+
+    expect(clearLegacyCloudflareToken(db)).toBe(true);
+    expect(loadLegacyCloudflareToken(db, vault)).toBeNull();
+  });
+
+  it('leaves the legacy token untouched when more than one root website is eligible', () => {
+    const first = createSite('example.com');
+    const second = createSite('other.example');
+    storeLegacyCloudflareToken('legacy-token-value');
+
+    expect(migrateLegacyCloudflareToken(db, vault)).toEqual({ status: 'ambiguous' });
+    expect(loadSiteCloudflareToken(db, vault, first)).toBeNull();
+    expect(loadSiteCloudflareToken(db, vault, second)).toBeNull();
+    expect(loadLegacyCloudflareToken(db, vault)).toBe('legacy-token-value');
+  });
+
+  it('does not assign the legacy token across a mixed root-site state', () => {
+    const configured = createSite('example.com');
+    const unconfigured = createSite('other.example');
+    storeSiteCloudflareToken(db, vault, configured, 'different-token-value');
+    storeLegacyCloudflareToken('legacy-token-value');
+
+    expect(migrateLegacyCloudflareToken(db, vault)).toEqual({ status: 'ambiguous' });
+    expect(loadSiteCloudflareToken(db, vault, unconfigured)).toBeNull();
+    expect(loadLegacyCloudflareToken(db, vault)).toBe('legacy-token-value');
+  });
+
+  it('does not migrate a legacy row whose vault authentication fails', () => {
+    const id = createSite('example.com');
+    storeLegacyCloudflareToken('legacy-token-value', 'wrong-associated-data');
+
+    expect(migrateLegacyCloudflareToken(db, vault)).toEqual({ status: 'unreadable' });
+    expect(loadSiteCloudflareToken(db, vault, id)).toBeNull();
+    expect(loadLegacyCloudflareToken(db, vault)).toBeNull();
+    expect(
+      db.db.select().from(secrets).where(eq(secrets.key, LEGACY_CLOUDFLARE_TOKEN_KEY)).get(),
+    ).toBeDefined();
+  });
+
   it('round-trips through the vault and never stores it in the clear', () => {
     const id = createSite('example.com');
     storeSiteCloudflareToken(db, vault, id, 'cf-secret-token');
@@ -372,5 +438,50 @@ describe('syncing the token into the service', () => {
     expect(await syncCaddyEnvironment({ db, vault, services, caddyDir: caddyDir() })).toBe(
       'unchanged',
     );
+  });
+});
+
+/**
+ * The token's variable name is derived from the token, so changing one renames
+ * it — and Caddy boots from the config it last saved, which still asks for the
+ * old name. That config cannot be replaced through the admin API, because the
+ * admin API only exists once Caddy has started.
+ */
+describe('a saved configuration the web server cannot load', () => {
+  const unloadable =
+    'Error: loading initial config: loading new config: loading http app module: ' +
+    "provision http: getting tls app: loading tls app module: provision tls: " +
+    "loading module 'acme': provision tls.issuance.acme: loading DNS provider module: " +
+    "loading module 'cloudflare': provision dns.providers.cloudflare: API token '' appears invalid";
+
+  it('is moved aside so the web server can start again', async () => {
+    const autosave = caddyAutosavePath(caddyDir());
+    await fs.mkdir(path.dirname(autosave), { recursive: true });
+    await fs.writeFile(autosave, '{"apps":{}}', 'utf8');
+
+    const quarantined = await quarantineUnloadableCaddyConfig(caddyDir(), unloadable);
+
+    expect(quarantined).not.toBeNull();
+    await expect(fs.access(autosave)).rejects.toThrow();
+    // Kept rather than deleted, so it can still be looked at afterwards.
+    expect(await fs.readFile(quarantined!, 'utf8')).toBe('{"apps":{}}');
+  });
+
+  it('is left alone when the web server failed for some other reason', async () => {
+    const autosave = caddyAutosavePath(caddyDir());
+    await fs.mkdir(path.dirname(autosave), { recursive: true });
+    await fs.writeFile(autosave, '{"apps":{}}', 'utf8');
+
+    const quarantined = await quarantineUnloadableCaddyConfig(
+      caddyDir(),
+      'Only one usage of each socket address is normally permitted',
+    );
+
+    expect(quarantined).toBeNull();
+    expect(await fs.readFile(autosave, 'utf8')).toBe('{"apps":{}}');
+  });
+
+  it('reports nothing when there is no saved configuration to move', async () => {
+    expect(await quarantineUnloadableCaddyConfig(caddyDir(), unloadable)).toBeNull();
   });
 });

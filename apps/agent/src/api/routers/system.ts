@@ -40,6 +40,8 @@ import type { DatabaseHandle } from '../../db/index.js';
 import { validateUpdateUrl } from '../../components/panel-update.js';
 import { listOfficialReleases } from '../../components/panel-releases.js';
 import { BrowseError, browseDirectory } from '../../files/server-browse.js';
+import { CADDY_SERVICE_ID } from '../../caddy/service.js';
+import { prepareStalwartForWebServer } from '../../mail/service.js';
 
 /**
  * Why a service would not stay up, in terms of what to do about it.
@@ -84,6 +86,14 @@ function readVersion(): string {
 }
 
 const version = readVersion();
+
+/** Gives Stalwart a chance to release 80/443 before Caddy is started. */
+async function repairMailPortConflict(ctx: RequestContext): Promise<void> {
+  await prepareStalwartForWebServer(
+    { db: ctx.app.db, vault: ctx.app.vault, services: ctx.app.services },
+    { retryForMs: 15_000 },
+  ).catch(() => null);
+}
 
 /**
  * Whether the panel's name actually resolves to this machine.
@@ -469,6 +479,10 @@ export const systemRouter = router({
 
       const options = { unblock: recovery.unblock };
 
+      if (service.id.toLowerCase() === CADDY_SERVICE_ID && input.action !== 'stop') {
+        await repairMailPortConflict(ctx);
+      }
+
       const succeeded =
         input.action === 'start'
           ? await startPanelService(service.id, options)
@@ -582,6 +596,9 @@ export const systemRouter = router({
    */
   startAll: adminProcedure.mutation(async ({ ctx }) => {
     const services = await listServicesForGeneralControls(ctx);
+    if (services.some((service) => service.id.toLowerCase() === CADDY_SERVICE_ID)) {
+      await repairMailPortConflict(ctx);
+    }
     const report = await startSupportingServices(services, {
       unblock: createServiceRecovery(ctx.app.db, ctx.app.gameServers).unblock,
     });

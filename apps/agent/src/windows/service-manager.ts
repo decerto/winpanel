@@ -307,6 +307,12 @@ export interface ServiceRecovery {
   unblock: (id: string) => Promise<boolean>;
   /** Names whatever else is on those ports, for an error a user can act on. */
   describeBlockers: (id: string) => Promise<string | null>;
+  /**
+   * Frees a port held by a *different* service the panel manages, or clears
+   * whatever else stops this one starting, given the reason it failed with.
+   * Reports whether anything was changed and a retry is worth making.
+   */
+  makeRoom?: (id: string, failure: string) => Promise<boolean>;
 }
 
 export class ServiceManager {
@@ -607,6 +613,15 @@ export class ServiceManager {
     if (!failure) return;
 
     if (await this.recovery?.unblock(id).catch(() => false)) {
+      failure = await this.startOnce(id);
+      if (!failure) return;
+    }
+
+    // A port held by another service the panel manages, or a saved config this
+    // one cannot boot from: neither is this service's orphan, so unblock cannot
+    // touch it, and neither is a stranger's program, so refusing to act only
+    // leaves the user with an instruction they cannot follow.
+    if (await this.recovery?.makeRoom?.(id, failure).catch(() => false)) {
       failure = await this.startOnce(id);
       if (!failure) return;
     }
