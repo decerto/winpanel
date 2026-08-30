@@ -4,6 +4,7 @@ import { MapPin, Plus, X } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
 import AlertMessage from './AlertMessage.vue';
 import LoadingBlock from './LoadingBlock.vue';
+import Tooltip from './Tooltip.vue';
 
 /**
  * Who may reach one database from off the machine.
@@ -167,15 +168,17 @@ onMounted(load);
           class="flex items-center justify-between gap-2 rounded-md border border-line px-3 py-2"
         >
           <code class="min-w-0 truncate text-xs text-ink">{{ source }}</code>
-          <button
-            type="button"
-            class="btn btn-ghost btn-sm shrink-0"
-            :aria-label="`Remove ${source}`"
-            :disabled="source === panelIp"
-            @click="removeSource(source)"
-          >
-            <X :size="14" aria-hidden="true" />
-          </button>
+          <Tooltip :text="`Remove ${source}`">
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm shrink-0"
+              :aria-label="`Remove ${source}`"
+              :disabled="source === panelIp"
+              @click="removeSource(source)"
+            >
+              <X :size="14" aria-hidden="true" />
+            </button>
+          </Tooltip>
         </div>
 
         <div class="flex flex-wrap gap-2">

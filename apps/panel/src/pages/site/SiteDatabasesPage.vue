@@ -6,6 +6,7 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  HardDrive,
   KeyRound,
   Plug,
   Plus,
@@ -76,6 +77,8 @@ const expanded = ref<string | null>(null);
 const expandedPassword = ref<string | null>(null);
 /** The database whose remote-access panel is open. */
 const accessOpen = ref<string | null>(null);
+const sizeOpen = ref<string | null>(null);
+const sizeLimitGb = ref('0');
 const databaseToAttach = ref('');
 const databaseToDelete = ref<Row | null>(null);
 const deletePasswordError = ref<string | null>(null);
@@ -96,6 +99,15 @@ function passwordIsVisible(row: Row): boolean {
 
 function toggleAccess(row: Row): void {
   accessOpen.value = accessOpen.value === row.id ? null : row.id;
+}
+
+function openSize(row: Row): void {
+  if (sizeOpen.value === row.id) {
+    sizeOpen.value = null;
+    return;
+  }
+  sizeOpen.value = row.id;
+  sizeLimitGb.value = String((row.sizeLimitBytes ?? 0) / GB);
 }
 
 const usable = computed(() => overview.value?.engines.filter((engine) => engine.ready) ?? []);
@@ -146,8 +158,9 @@ const sizeProblem = computed(() => {
   const bytes = storageBytes(newSizeGb.value);
   if (bytes === null) return 'Enter zero or a positive number.';
 
-  const quotaBytes = overview.value?.accountStorageQuotaBytes ?? 0;
-  if (quotaBytes === 0) return null;
+  const quotaBytes = overview.value?.accountStorageQuotaBytes ?? null;
+  if (quotaBytes === null) return null;
+  if (quotaBytes === 0) return 'This account has no database storage quota.';
   if (bytes === 0) return 'This account has a finite storage quota, so this database needs a size.';
 
   const remaining = Math.max(
@@ -189,6 +202,27 @@ async function attachExistingDatabase(id: string): Promise<void> {
     await api.databases.attachSite.mutate({ id, slug: slug.value });
     databaseToAttach.value = '';
     notice.value = `${database.name} is now used by this website.`;
+    await load();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    busy.value = null;
+  }
+}
+
+async function saveSize(row: Row): Promise<void> {
+  const sizeLimitBytes = storageBytes(sizeLimitGb.value);
+  if (sizeLimitBytes === null) return;
+
+  busy.value = `size:${row.id}`;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    await api.databases.setSizeLimit.mutate({ id: row.id, sizeLimitBytes });
+    notice.value =
+      `${row.name} now has ${sizeLimitBytes === 0 ? 'unlimited storage' : `${formatBytes(sizeLimitBytes)} of storage`}.`;
+    sizeOpen.value = null;
     await load();
   } catch (err) {
     error.value = describeError(err);
@@ -452,9 +486,15 @@ onMounted(load);
             <template v-else>
               {{ overview.used }} {{ overview.used === 1 ? 'database' : 'databases' }}
             </template>
-            <template v-if="overview.accountStorageQuotaBytes > 0">
-              &middot; {{ formatBytes(overview.accountStorageAllocatedBytes) }} of
-              {{ formatBytes(overview.accountStorageQuotaBytes) }} storage allocated
+            <template v-if="overview.accountStorageQuotaBytes !== null">
+              &middot;
+              <template v-if="overview.accountStorageQuotaBytes === 0">
+                No database storage included
+              </template>
+              <template v-else>
+                {{ formatBytes(overview.accountStorageAllocatedBytes) }} of
+                {{ formatBytes(overview.accountStorageQuotaBytes) }} storage allocated
+              </template>
             </template>
           </p>
 
@@ -502,7 +542,7 @@ onMounted(load);
               placeholder="0"
             />
             <p v-if="sizeProblem" class="mt-1 text-xs text-danger">{{ sizeProblem }}</p>
-            <p v-else class="hint">0 allows unlimited storage.</p>
+            <p v-else class="hint">0 means unlimited for this database. An account with a finite quota needs a positive allowance.</p>
           </div>
 
           <label class="flex items-center gap-2 text-sm text-ink-muted">
@@ -630,6 +670,15 @@ onMounted(load);
               <button
                 type="button"
                 class="btn btn-ghost btn-sm"
+                :aria-expanded="sizeOpen === row.id"
+                @click="openSize(row)"
+              >
+                <HardDrive :size="13" aria-hidden="true" /> Storage
+              </button>
+
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
                 :disabled="busy !== null"
                 :aria-expanded="passwordReset?.row.id === row.id"
                 @click="openPasswordReset(row)"
@@ -674,6 +723,42 @@ onMounted(load);
               :password="expandedPassword"
               :remote-access-enabled="row.network.mode !== 'loopback'"
             />
+
+            <div
+              v-if="sizeOpen === row.id"
+              class="mt-3 rounded-lg border border-line bg-black/20 p-4"
+            >
+              <div class="max-w-md space-y-3">
+                <div>
+                  <label class="label" :for="`site-db-size-${row.id}`">
+                    Storage allowance (GB)
+                  </label>
+                  <input
+                    :id="`site-db-size-${row.id}`"
+                    v-model="sizeLimitGb"
+                    class="field mt-1"
+                    inputmode="decimal"
+                  />
+                  <p class="hint">
+                    {{ row.sizeBytes == null ? 'Current usage is unavailable.' : `${formatBytes(row.sizeBytes)} currently used.` }}
+                    0 means unlimited for this database.
+                  </p>
+                </div>
+                <div class="flex gap-2">
+                  <button type="button" class="btn btn-ghost btn-sm" @click="sizeOpen = null">
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-primary btn-sm"
+                    :disabled="storageBytes(sizeLimitGb) === null || busy !== null"
+                    @click="saveSize(row)"
+                  >
+                    {{ busy === `size:${row.id}` ? 'Saving...' : 'Save allowance' }}
+                  </button>
+                </div>
+              </div>
+            </div>
 
             <DatabaseAccessCard
               v-if="accessOpen === row.id"

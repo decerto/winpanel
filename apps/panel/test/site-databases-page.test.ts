@@ -19,6 +19,7 @@ const state = vi.hoisted(() => ({
   availableDatabases: [] as any[],
   attached: [] as any[],
   saved: [] as any[],
+  resized: [] as any[],
   passwordChanges: [] as any[],
 }));
 
@@ -51,6 +52,8 @@ vi.mock('../src/lib/api', () => ({
           limit: null,
           used: state.databases.length,
           problem: null,
+          accountStorageQuotaBytes: 0,
+          accountStorageAllocatedBytes: 0,
         })),
       },
       networkAccess: {
@@ -73,6 +76,12 @@ vi.mock('../src/lib/api', () => ({
         mutate: vi.fn(async (input: any) => {
           state.attached.push(input);
           return { ok: true, siteSlug: input.slug };
+        }),
+      },
+      setSizeLimit: {
+        mutate: vi.fn(async (input: any) => {
+          state.resized.push(input);
+          return { ok: true, sizeLimitBytes: input.sizeLimitBytes };
         }),
       },
       setPassword: {
@@ -102,6 +111,8 @@ function database(over: Record<string, unknown> = {}) {
     ownerUsername: 'me',
     network: { mode: 'loopback', remoteCidrs: [] },
     createdAt: new Date(0),
+    sizeBytes: 512 * 1024 ** 2,
+    sizeLimitBytes: 0,
     connection: {
       engine: 'mongodb',
       host: '127.0.0.1',
@@ -139,6 +150,7 @@ beforeEach(() => {
   state.availableDatabases = [];
   state.attached = [];
   state.saved = [];
+  state.resized = [];
   state.passwordChanges = [];
 });
 
@@ -170,6 +182,18 @@ describe('a website\u2019s databases', () => {
     const wrapper = await render();
 
     expect(button(wrapper, 'Remote access on')).toBeDefined();
+  });
+
+  it('lets an administrator set an allowance on an unlimited database', async () => {
+    state.me = { id: 'admin', role: 'admin' };
+    const wrapper = await render();
+
+    await button(wrapper, 'Storage')!.trigger('click');
+    await wrapper.find('#site-db-size-db-1').setValue('4');
+    await button(wrapper, 'Save allowance')!.trigger('click');
+    await flushPromises();
+
+    expect(state.resized).toEqual([{ id: 'db-1', sizeLimitBytes: 4 * 1024 ** 3 }]);
   });
 
   it('hides a revealed password again', async () => {

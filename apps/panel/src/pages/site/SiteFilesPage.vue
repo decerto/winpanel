@@ -28,6 +28,7 @@ import EmptyState from '../../components/EmptyState.vue';
 import FileEditorDialog from '../../components/FileEditorDialog.vue';
 import LoadingBlock from '../../components/LoadingBlock.vue';
 import SiteStorageDialog from '../../components/SiteStorageDialog.vue';
+import Tooltip from '../../components/Tooltip.vue';
 
 /**
  * File manager for a website.
@@ -416,15 +417,17 @@ watch(
       @drop.prevent="onDrop"
     >
       <div class="flex flex-wrap items-center gap-3 border-b border-line px-4 py-3">
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm"
-          :disabled="currentPath === ''"
-          aria-label="Go up one folder"
-          @click="goUp"
-        >
-          <CornerLeftUp :size="14" aria-hidden="true" />
-        </button>
+        <Tooltip text="Go up one folder">
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            :disabled="currentPath === ''"
+            aria-label="Go up one folder"
+            @click="goUp"
+          >
+            <CornerLeftUp :size="14" aria-hidden="true" />
+          </button>
+        </Tooltip>
 
         <nav class="flex min-w-0 flex-1 items-center gap-1 text-sm" aria-label="Folder path">
           <button type="button" class="text-brand-bright hover:underline" @click="goTo('')">
@@ -442,9 +445,11 @@ watch(
           </template>
         </nav>
 
-        <button type="button" class="btn btn-ghost btn-sm" aria-label="Refresh" @click="load">
-          <RefreshCw :size="14" aria-hidden="true" />
-        </button>
+        <Tooltip text="Refresh">
+          <button type="button" class="btn btn-ghost btn-sm" aria-label="Refresh" @click="load">
+            <RefreshCw :size="14" aria-hidden="true" />
+          </button>
+        </Tooltip>
       </div>
 
       <!-- Actions on the folder itself, then actions on what is ticked. -->
@@ -661,32 +666,36 @@ watch(
             </span>
 
             <div class="flex w-[86px] shrink-0 justify-end gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100">
-              <button
-                v-if="entry.kind === 'file'"
-                type="button"
-                class="rounded-md p-1.5 text-ink-faint transition hover:bg-elevated hover:text-ink"
-                :aria-label="`Edit ${entry.name}`"
-                @click="editing = entry.path"
-              >
-                <Pencil :size="14" />
-              </button>
-              <button
-                v-if="entry.kind === 'file'"
-                type="button"
-                class="rounded-md p-1.5 text-ink-faint transition hover:bg-elevated hover:text-ink"
-                :aria-label="`Download ${entry.name}`"
-                @click="download(entry)"
-              >
-                <Download :size="14" />
-              </button>
-              <button
-                type="button"
-                class="rounded-md p-1.5 text-ink-faint transition hover:bg-danger-soft hover:text-danger"
-                :aria-label="`Delete ${entry.name}`"
-                @click="remove([entry])"
-              >
-                <Trash2 :size="14" />
-              </button>
+              <Tooltip v-if="entry.kind === 'file'" :text="`Edit ${entry.name}`">
+                <button
+                  type="button"
+                  class="rounded-md p-1.5 text-ink-faint transition hover:bg-elevated hover:text-ink"
+                  :aria-label="`Edit ${entry.name}`"
+                  @click="editing = entry.path"
+                >
+                  <Pencil :size="14" aria-hidden="true" />
+                </button>
+              </Tooltip>
+              <Tooltip v-if="entry.kind === 'file'" :text="`Download ${entry.name}`">
+                <button
+                  type="button"
+                  class="rounded-md p-1.5 text-ink-faint transition hover:bg-elevated hover:text-ink"
+                  :aria-label="`Download ${entry.name}`"
+                  @click="download(entry)"
+                >
+                  <Download :size="14" aria-hidden="true" />
+                </button>
+              </Tooltip>
+              <Tooltip :text="`Delete ${entry.name}`">
+                <button
+                  type="button"
+                  class="rounded-md p-1.5 text-ink-faint transition hover:bg-danger-soft hover:text-danger"
+                  :aria-label="`Delete ${entry.name}`"
+                  @click="remove([entry])"
+                >
+                  <Trash2 :size="14" aria-hidden="true" />
+                </button>
+              </Tooltip>
             </div>
           </template>
         </li>

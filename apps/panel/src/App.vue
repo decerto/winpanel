@@ -23,6 +23,7 @@ import { computed, ref, watch } from 'vue';
 import { roleAtLeast, type UserRole } from '@winpanel/shared';
 import { api } from './lib/api';
 import ServerReadyBanner from './components/ServerReadyBanner.vue';
+import Tooltip from './components/Tooltip.vue';
 
 /**
  * Application shell: persistent sidebar, top bar, content area.
@@ -231,14 +232,16 @@ function isCurrent(to: string): boolean {
         </span>
         <span class="text-[0.95rem] font-semibold tracking-tight">WinPanel</span>
 
-        <button
-          type="button"
-          class="ml-auto text-ink-muted hover:text-ink md:hidden"
-          aria-label="Close menu"
-          @click="drawerOpen = false"
-        >
-          <X :size="18" />
-        </button>
+        <Tooltip text="Close menu">
+          <button
+            type="button"
+            class="ml-auto text-ink-muted hover:text-ink md:hidden"
+            aria-label="Close menu"
+            @click="drawerOpen = false"
+          >
+            <X :size="18" aria-hidden="true" />
+          </button>
+        </Tooltip>
       </div>
 
       <nav class="flex-1 overflow-y-auto px-3 py-2" aria-label="Main">
@@ -279,14 +282,16 @@ function isCurrent(to: string): boolean {
           <span class="min-w-0 flex-1 truncate text-sm text-ink-muted">
             {{ username || 'Signed in' }}
           </span>
-          <button
-            type="button"
-            class="shrink-0 rounded-md p-1.5 text-ink-faint hover:bg-white/5 hover:text-danger"
-            aria-label="Sign out"
-            @click="signOut"
-          >
-            <LogOut :size="15" />
-          </button>
+          <Tooltip text="Sign out">
+            <button
+              type="button"
+              class="shrink-0 rounded-md p-1.5 text-ink-faint hover:bg-white/5 hover:text-danger"
+              aria-label="Sign out"
+              @click="signOut"
+            >
+              <LogOut :size="15" aria-hidden="true" />
+            </button>
+          </Tooltip>
         </div>
       </div>
     </aside>
@@ -296,14 +301,16 @@ function isCurrent(to: string): boolean {
         class="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-line
                bg-canvas/70 px-4 backdrop-blur-xl md:px-8"
       >
-        <button
-          type="button"
-          class="rounded-md p-2 text-ink-muted hover:bg-white/5 hover:text-ink md:hidden"
-          aria-label="Open menu"
-          @click="drawerOpen = true"
-        >
-          <Menu :size="18" />
-        </button>
+        <Tooltip text="Open menu">
+          <button
+            type="button"
+            class="rounded-md p-2 text-ink-muted hover:bg-white/5 hover:text-ink md:hidden"
+            aria-label="Open menu"
+            @click="drawerOpen = true"
+          >
+            <Menu :size="18" aria-hidden="true" />
+          </button>
+        </Tooltip>
 
         <nav class="flex min-w-0 items-center gap-1.5 text-sm" aria-label="Breadcrumb">
           <template v-for="(crumb, index) in crumbs" :key="crumb.label">

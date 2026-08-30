@@ -127,6 +127,20 @@
       "when": 1787660000000,
       "tag": "0017_add_subdomains",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1787750000000,
+      "tag": "0018_add_mailbox_limit",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1787751000000,
+      "tag": "0019_normalize_database_quota",
+      "breakpoints": true
     }
   ]
 }

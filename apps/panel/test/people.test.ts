@@ -56,11 +56,12 @@ const person = (over: Record<string, unknown>) => ({
   totpEnrolled: false,
   siteLimit: null,
   subdomainLimit: null,
+  mailboxLimit: null,
   mailQuotaBytes: null,
   siteDiskQuotaBytes: null,
   gameServerLimit: null,
   databaseLimit: null,
-  databaseQuotaBytes: 0,
+  databaseQuotaBytes: null,
   gameServerProviders: [],
   lastLoginAt: null,
   createdAt: new Date(0),
@@ -234,15 +235,13 @@ describe('the limits on the People page', () => {
     });
   });
 
-  it('reads a blank limit as no limit rather than as none', async () => {
-    // An empty box says "unlimited" to a person far more naturally than a
-    // zero does, and zero has to stay available to mean "none yet".
+  it('requires an explicit no-limit choice instead of treating a blank as unlimited', async () => {
     const wrapper = await render();
     await wrapper.findAll('button').find((b: any) => b.text().includes('Add someone'))!.trigger('click');
 
     await wrapper.find('#person-username').setValue('freya2');
     await wrapper.find('#person-password').setValue('a-password-long-enough');
-    await wrapper.find('#person-sites').setValue('');
+    await wrapper.findAll('input[name="site-limit-mode"]')[1]!.trigger('change');
     await wrapper.find('#person-mail').setValue('5');
 
     await wrapper.find('form').trigger('submit');
@@ -253,6 +252,73 @@ describe('the limits on the People page', () => {
       siteLimit: null,
       mailQuotaBytes: 5 * 1024 ** 3,
     });
+  });
+
+  it('sends zero game servers as no access', async () => {
+    const wrapper = await render();
+    await wrapper.findAll('button').find((b: any) => b.text().includes('Add someone'))!.trigger('click');
+
+    await wrapper.find('#person-username').setValue('no-games');
+    await wrapper.find('#person-password').setValue('a-password-long-enough');
+    await wrapper.find('#person-game-servers').setValue('0');
+
+    expect(wrapper.text()).toContain('No game servers can be created.');
+    expect(wrapper.find('[data-game-access]').exists()).toBe(false);
+
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(state.created[0]).toMatchObject({ role: 'user', gameServerLimit: 0 });
+  });
+
+  it('sends no limit as unlimited game servers', async () => {
+    const wrapper = await render();
+    await wrapper.findAll('button').find((b: any) => b.text().includes('Add someone'))!.trigger('click');
+
+    await wrapper.find('#person-username').setValue('all-games');
+    await wrapper.find('#person-password').setValue('a-password-long-enough');
+    await wrapper.findAll('input[name="game-server-limit-mode"]')[1]!.trigger('change');
+
+    expect(wrapper.find('#person-game-servers').exists()).toBe(false);
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(state.created[0]).toMatchObject({ role: 'user', gameServerLimit: null });
+  });
+
+  it('shows and sends the mailbox allowance separately from email storage', async () => {
+    state.people[2] = person({
+      id: 'f',
+      username: 'freya',
+      mailboxLimit: 3,
+    });
+    const wrapper = await render();
+    expect(wrapper.text()).toContain('3 allowed');
+
+    await wrapper.findAll('button').find((b: any) => b.text().includes('Add someone'))!.trigger('click');
+    await wrapper.find('#person-username').setValue('mail-user');
+    await wrapper.find('#person-password').setValue('a-password-long-enough');
+    await wrapper.find('#person-mailboxes').setValue('8');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(state.created[0]).toMatchObject({ role: 'user', mailboxLimit: 8 });
+  });
+
+  it('does not submit malformed limits', async () => {
+    const wrapper = await render();
+    await wrapper.findAll('button').find((b: any) => b.text().includes('Add someone'))!.trigger('click');
+
+    await wrapper.find('#person-username').setValue('bad-limit');
+    await wrapper.find('#person-password').setValue('a-password-long-enough');
+    await wrapper.find('#person-sites').setValue('not-a-number');
+
+    expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeDefined();
+    expect(wrapper.text()).toContain('Websites: enter a whole number');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(state.created).toHaveLength(0);
   });
 
   it('shows and saves the account database storage quota', async () => {
@@ -268,11 +334,38 @@ describe('the limits on the People page', () => {
     await wrapper.findAll('button').find((node: any) => node.text().includes('Add someone'))!.trigger('click');
     await wrapper.find('#person-username').setValue('storage-user');
     await wrapper.find('#person-password').setValue('a-password-long-enough');
+    await wrapper.find('input[name="database-quota-mode"]').trigger('change');
     await wrapper.find('#person-database-storage').setValue('12.5');
     await wrapper.find('form').trigger('submit');
     await flushPromises();
 
     expect(state.created[0].databaseQuotaBytes).toBe(12.5 * 1024 ** 3);
+  });
+
+  it('sends zero database storage as no storage', async () => {
+    const wrapper = await render();
+    await wrapper.findAll('button').find((node: any) => node.text().includes('Add someone'))!.trigger('click');
+    await wrapper.find('#person-username').setValue('no-database-storage');
+    await wrapper.find('#person-password').setValue('a-password-long-enough');
+    await wrapper.find('input[name="database-quota-mode"]').trigger('change');
+    await wrapper.find('#person-database-storage').setValue('0');
+
+    expect(wrapper.find('button[type="submit"]').attributes('disabled')).toBeUndefined();
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(state.created[0].databaseQuotaBytes).toBe(0);
+  });
+
+  it('sends No limit database storage as null', async () => {
+    const wrapper = await render();
+    await wrapper.findAll('button').find((node: any) => node.text().includes('Add someone'))!.trigger('click');
+    await wrapper.find('#person-username').setValue('unlimited-database-storage');
+    await wrapper.find('#person-password').setValue('a-password-long-enough');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(state.created[0].databaseQuotaBytes).toBeNull();
   });
 
   it('gives the selected-game picker the full dialog width', async () => {
@@ -283,7 +376,7 @@ describe('the limits on the People page', () => {
     await wrapper.findAll('button').find((node: any) => node.text().includes('Add someone'))!.trigger('click');
 
     expect(wrapper.find('[data-person-dialog]').classes()).toContain('max-w-3xl');
-    await wrapper.findAll('input[type="radio"]')[1]!.trigger('change');
+    await wrapper.find('[data-game-access-mode="selected"]').trigger('change');
     expect(wrapper.find('[data-game-picker]').classes()).toContain('sm:col-span-2');
   });
 });

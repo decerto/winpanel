@@ -51,7 +51,8 @@ to attach it to. A database does not have to belong to a website: plenty of what
 self-host is an application, a bot or a mobile backend rather than a site on this server,
 and all of it still needs somewhere to keep its data. A database made for a website shows
 up on that website's tab as well as on the main page. A storage allowance of **0** means
-unlimited.
+unlimited for that individual database. It is separate from the account's aggregate
+database quota described below.
 
 You are shown the name, username and password once, when the database is made. The
 password is then only in WinPanel's encrypted vault; you can reveal it again, or set a new
@@ -187,14 +188,17 @@ Databases are something you sell, so they are something you can limit.
 - **Per website** - a website can additionally be capped, so a customer with an allowance
   of ten cannot spend all ten on one site.
 - **Storage per account** - *Database storage* on the **People** page is the total that may
-  be allocated across the customer's databases. **0** means unlimited.
+  be allocated across the customer's databases. **No limit** means unlimited; **0** means
+  no database storage may be allocated.
 - **Storage per database** - each database receives part of that account total when it is
   created, and its allowance can be changed later from the main **Databases** page. The
   panel refuses an unlimited database inside a finite account quota, or any allocation
-  that would take the account total over its quota. Current engine-reported usage appears
+  that would take the account total over its quota. **0** means unlimited for an individual
+  database when the account itself is unlimited. Current engine-reported usage appears
   beside the allowance.
 
-Leave either blank for no limit. Administrators and the owner are never limited.
+Choose **No limit** for an unlimited account quota. Administrators and the owner are never
+limited.
 
 The storage figure is an allocation enforced by the panel when databases are created,
 resized or transferred. MariaDB, PostgreSQL and MongoDB do not share a native hard-quota

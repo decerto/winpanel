@@ -11,6 +11,7 @@ import {
   WrapText,
   X,
 } from 'lucide-vue-next';
+import Tooltip from './Tooltip.vue';
 
 /**
  * A text editor with the two things a config file actually needs.
@@ -339,39 +340,49 @@ defineExpose({ focus: () => textarea.value?.focus(), openFind });
             aria-label="Find"
             @keydown="onFindKeydown"
           />
-          <button
-            type="button"
-            class="btn btn-ghost btn-sm !px-2"
-            :class="caseSensitive ? 'text-brand-bright' : 'text-ink-faint'"
-            :aria-pressed="caseSensitive"
-            title="Match case"
-            @click="caseSensitive = !caseSensitive"
-          >
-            <CaseSensitive :size="15" aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            class="btn btn-ghost btn-sm !px-2"
-            :class="useRegex ? 'text-brand-bright' : 'text-ink-faint'"
-            :aria-pressed="useRegex"
-            title="Use a regular expression"
-            @click="useRegex = !useRegex"
-          >
-            <Regex :size="15" aria-hidden="true" />
-          </button>
+          <Tooltip text="Match case">
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm !px-2"
+              :class="caseSensitive ? 'text-brand-bright' : 'text-ink-faint'"
+              :aria-pressed="caseSensitive"
+              aria-label="Match case"
+              @click="caseSensitive = !caseSensitive"
+            >
+              <CaseSensitive :size="15" aria-hidden="true" />
+            </button>
+          </Tooltip>
+          <Tooltip text="Use a regular expression">
+            <button
+              type="button"
+              class="btn btn-ghost btn-sm !px-2"
+              :class="useRegex ? 'text-brand-bright' : 'text-ink-faint'"
+              :aria-pressed="useRegex"
+              aria-label="Use a regular expression"
+              @click="useRegex = !useRegex"
+            >
+              <Regex :size="15" aria-hidden="true" />
+            </button>
+          </Tooltip>
         </div>
         <span class="min-w-24 text-right font-mono text-xs text-ink-faint">
           {{ matches.length === 0 ? (query ? 'No matches' : '') : `${activeMatch + 1} of ${matches.length}` }}
         </span>
-        <button type="button" class="btn btn-ghost btn-sm !px-2" :disabled="matches.length === 0" title="Previous match" @click="step(-1)">
-          <ArrowUp :size="15" aria-hidden="true" />
-        </button>
-        <button type="button" class="btn btn-ghost btn-sm !px-2" :disabled="matches.length === 0" title="Next match" @click="step(1)">
-          <ArrowDown :size="15" aria-hidden="true" />
-        </button>
-        <button type="button" class="btn btn-ghost btn-sm !px-2" aria-label="Close find" @click="closeFind">
-          <X :size="15" aria-hidden="true" />
-        </button>
+        <Tooltip text="Previous match">
+          <button type="button" class="btn btn-ghost btn-sm !px-2" :disabled="matches.length === 0" aria-label="Previous match" @click="step(-1)">
+            <ArrowUp :size="15" aria-hidden="true" />
+          </button>
+        </Tooltip>
+        <Tooltip text="Next match">
+          <button type="button" class="btn btn-ghost btn-sm !px-2" :disabled="matches.length === 0" aria-label="Next match" @click="step(1)">
+            <ArrowDown :size="15" aria-hidden="true" />
+          </button>
+        </Tooltip>
+        <Tooltip text="Close find">
+          <button type="button" class="btn btn-ghost btn-sm !px-2" aria-label="Close find" @click="closeFind">
+            <X :size="15" aria-hidden="true" />
+          </button>
+        </Tooltip>
       </div>
 
       <div v-if="replacing" class="mt-2 flex flex-wrap items-center gap-2">

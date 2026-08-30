@@ -108,6 +108,8 @@ export const AccountLimits = z.object({
   siteLimit: z.number().int().min(0).max(1000).nullable().default(null),
   /** How many independently deployable subdomains this account may own. */
   subdomainLimit: z.number().int().min(0).max(1000).nullable().default(null),
+  /** How many mailboxes this account may hold across all of its domains. */
+  mailboxLimit: z.number().int().min(0).max(10000).nullable().default(null),
   /** Total mailbox storage across their domains, in bytes. Null for no limit. */
   mailQuotaBytes: z.number().int().min(0).nullable().default(null),
   /** Disk given to each website they create. */
@@ -119,8 +121,8 @@ export const AccountLimits = z.object({
    * feature out of their panel until somebody decides otherwise.
    */
   databaseLimit: z.number().int().min(0).max(1000).nullable().default(null),
-  /** Total storage allocated across this account's databases. Zero means unlimited. */
-  databaseQuotaBytes: z.number().int().min(0).default(0),
+  /** Total storage allocated across this account's databases. Null means unlimited; zero means none. */
+  databaseQuotaBytes: z.number().int().min(0).nullable().default(null),
   ...GameServerAccountPolicy.shape,
 });
 export type AccountLimits = z.infer<typeof AccountLimits>;

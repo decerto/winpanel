@@ -381,7 +381,7 @@ export const databasesRouter = router({
       ),
       limit: allowance?.limit ?? null,
       used: allowance?.used ?? live.length,
-      storageQuotaBytes: storage?.quotaBytes ?? 0,
+      storageQuotaBytes: storage?.quotaBytes ?? null,
       storageAllocatedBytes: storage?.allocatedBytes ?? 0,
       problem: allowance?.problem ?? null,
     };
@@ -476,7 +476,7 @@ export const databasesRouter = router({
         /** The website this is for. Omitted for a standalone database. */
         slug: Slug.optional(),
         password: z.string().max(1024).optional(),
-        /** Storage allocated to this database. Zero means unlimited. */
+        /** Storage allocated to this database. Zero means unlimited for this database. */
         sizeLimitBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).default(0),
       }),
     )

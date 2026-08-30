@@ -61,15 +61,17 @@ stop being there.
 | --- | --- |
 | `siteLimit` | How many websites the account may own |
 | `subdomainLimit` | How many independently deployable subdomain websites the account may own |
+| `mailboxLimit` | How many mailboxes the account may hold across all of its domains |
 | `mailQuotaBytes` | Total mailbox storage across all of their domains |
 | `siteDiskQuotaBytes` | Disk given to each website they create |
 | `gameServerLimit` | How many game servers the account may own |
 | `databaseLimit` | How many databases the account may own |
-| `databaseQuotaBytes` | Storage that may be allocated across the account's databases; `0` is unlimited |
+| `databaseQuotaBytes` | Storage that may be allocated across the account's databases; `null` is unlimited and `0` means no storage |
 
 `null` means no limit, which is what an `admin` and the owner always get. `0` is a real
-answer too - an account that may hold no websites yet. Database storage is the exception:
-its non-nullable `0` means unlimited.
+answer too - it means no websites, mailboxes, game servers or databases can be added, and
+zero storage means no storage may be allocated. The People page makes those choices
+explicit instead of treating a blank field as unlimited.
 
 A subdomain is a full website rather than an alias: it has its own files, runtime, ports,
 deployments and settings, and can be created from Git just like a main website. It belongs

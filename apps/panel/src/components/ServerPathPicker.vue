@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { ChevronRight, CornerLeftUp, File, Folder, HardDrive, X } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
+import Tooltip from './Tooltip.vue';
 
 /**
  * Picks a file or folder from the server's own disk.
@@ -150,9 +151,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', closeOnEscape));
           <h2 class="text-base font-semibold text-ink">{{ title }}</h2>
           <p class="mt-1 text-sm text-ink-muted">Browsing this server&#8217;s own disks.</p>
         </div>
-        <button type="button" class="btn btn-ghost btn-sm" aria-label="Close" @click="emit('close')">
-          <X :size="15" aria-hidden="true" />
-        </button>
+        <Tooltip text="Close">
+          <button type="button" class="btn btn-ghost btn-sm" aria-label="Close" @click="emit('close')">
+            <X :size="15" aria-hidden="true" />
+          </button>
+        </Tooltip>
       </div>
 
       <div class="mt-4 flex flex-wrap items-center gap-1 text-xs text-ink-faint">

@@ -433,6 +433,69 @@ describe('mailboxes', () => {
   });
 });
 
+describe('inbound IP blocks', () => {
+  it('lists the address, reason and expiry returned by the mail server', async () => {
+    const { mail, seen } = client({
+      'x:BlockedIp/query': { ids: ['b1'] },
+      'x:BlockedIp/get': {
+        list: [
+          {
+            id: 'b1',
+            address: '192.0.2.0/24',
+            reason: 'manual',
+            createdAt: '2026-01-01T00:00:00Z',
+            expiresAt: null,
+          },
+        ],
+      },
+    });
+
+    expect(await mail.listBlockedIps()).toEqual([
+      {
+        id: 'b1',
+        address: '192.0.2.0/24',
+        reason: 'manual',
+        createdAt: '2026-01-01T00:00:00Z',
+        expiresAt: null,
+      },
+    ]);
+    expect(argsOf(seen, 'x:BlockedIp/query')?.['limit']).toBe(500);
+  });
+
+  it('creates a permanent manual block without sending the server-set timestamp', async () => {
+    const { mail, seen } = client({
+      'x:BlockedIp/set': { created: { new1: { id: 'b2' } } },
+    });
+
+    await expect(mail.createBlockedIp('203.0.113.7')).resolves.toBe('b2');
+    expect(argsOf(seen, 'x:BlockedIp/set')?.['create']).toEqual({
+      new1: { address: '203.0.113.7', reason: 'manual' },
+    });
+  });
+
+  it('passes an optional expiry through as a server date', async () => {
+    const { mail, seen } = client({
+      'x:BlockedIp/set': { created: { new1: { id: 'b3' } } },
+    });
+
+    await mail.createBlockedIp('2001:db8::/32', '2026-02-01T00:00:00Z');
+    expect(argsOf(seen, 'x:BlockedIp/set')?.['create']).toEqual({
+      new1: {
+        address: '2001:db8::/32',
+        reason: 'manual',
+        expiresAt: '2026-02-01T00:00:00Z',
+      },
+    });
+  });
+
+  it('destroys a block by the ID returned by Stalwart', async () => {
+    const { mail, seen } = client({ 'x:BlockedIp/set': { destroyed: ['b1'] } });
+
+    await mail.deleteBlockedIp('b1');
+    expect(argsOf(seen, 'x:BlockedIp/set')?.['destroy']).toEqual(['b1']);
+  });
+});
+
 describe('the web server\u2019s ports', () => {
   const LISTENERS = {
     'x:NetworkListener/query': { ids: ['l1', 'l2', 'l3'] },

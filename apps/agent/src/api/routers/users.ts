@@ -90,6 +90,7 @@ export const usersRouter = router({
         role: input.role,
         siteLimit: input.siteLimit,
         subdomainLimit: input.subdomainLimit,
+        mailboxLimit: input.mailboxLimit,
         mailQuotaBytes: input.mailQuotaBytes,
         siteDiskQuotaBytes: input.siteDiskQuotaBytes,
         gameServerLimit: input.gameServerLimit,

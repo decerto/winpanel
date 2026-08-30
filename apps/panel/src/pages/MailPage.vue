@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { RouterLink } from 'vue-router';
-import { AtSign, ChevronRight, Globe, Inbox, Search, Server } from 'lucide-vue-next';
+import { AtSign, Ban, ChevronRight, Globe, Inbox, Search, Server, X } from 'lucide-vue-next';
 import { mailHostnameFor, roleAtLeast } from '@winpanel/shared';
 import { api, describeError } from '../lib/api';
 import { formatBytes } from '../lib/format';
@@ -10,6 +10,7 @@ import AlertMessage from '../components/AlertMessage.vue';
 import EmptyState from '../components/EmptyState.vue';
 import LoadingBlock from '../components/LoadingBlock.vue';
 import PaginationBar from '../components/PaginationBar.vue';
+import Tooltip from '../components/Tooltip.vue';
 
 /**
  * Email across the websites visible to this account.
@@ -26,6 +27,7 @@ import PaginationBar from '../components/PaginationBar.vue';
  */
 
 type MailStatus = Pick<Awaited<ReturnType<typeof api.mail.serverStatus.query>>, 'connected' | 'message'>;
+type BlockedIp = Awaited<ReturnType<typeof api.mail.blockedIps.query>>[number];
 
 interface DomainRow {
   slug: string;
@@ -41,11 +43,23 @@ interface DomainRow {
 const PAGE_SIZE = 12;
 
 const status = ref<MailStatus | null>(null);
+const isAdministrator = ref(false);
+const blockedIps = ref<BlockedIp[]>([]);
+const blockedIpsLoading = ref(false);
+const blockedIpBusy = ref(false);
+const blockedIpAddress = ref('');
+const blockedIpError = ref<string | null>(null);
 const rows = ref<DomainRow[]>([]);
 const loading = ref(true);
 const error = ref<string | null>(null);
 const query = ref('');
 const page = ref(1);
+
+function blockedIpExpiry(value: string | null): string {
+  if (!value) return 'Permanent';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Unknown' : date.toLocaleString();
+}
 
 const matching = computed(() => {
   const needle = query.value.trim().toLowerCase();
@@ -89,16 +103,67 @@ async function loadCountsForPage(): Promise<void> {
   );
 }
 
+async function loadBlockedIps(): Promise<void> {
+  if (!isAdministrator.value || !status.value?.connected) return;
+  blockedIpsLoading.value = true;
+  blockedIpError.value = null;
+
+  try {
+    blockedIps.value = await api.mail.blockedIps.query();
+  } catch (err) {
+    blockedIpError.value = describeError(err);
+  } finally {
+    blockedIpsLoading.value = false;
+  }
+}
+
+async function blockIp(): Promise<void> {
+  const address = blockedIpAddress.value.trim();
+  if (!address || blockedIpBusy.value) return;
+
+  blockedIpBusy.value = true;
+  blockedIpError.value = null;
+
+  try {
+    await api.mail.blockIp.mutate({ address });
+    blockedIpAddress.value = '';
+    await loadBlockedIps();
+  } catch (err) {
+    blockedIpError.value = describeError(err);
+  } finally {
+    blockedIpBusy.value = false;
+  }
+}
+
+async function unblockIp(entry: BlockedIp): Promise<void> {
+  if (blockedIpBusy.value) return;
+  if (!window.confirm(`Allow connections from ${entry.address} again?`)) return;
+
+  blockedIpBusy.value = true;
+  blockedIpError.value = null;
+
+  try {
+    await api.mail.unblockIp.mutate({ id: entry.id });
+    await loadBlockedIps();
+  } catch (err) {
+    blockedIpError.value = describeError(err);
+  } finally {
+    blockedIpBusy.value = false;
+  }
+}
+
 async function load(): Promise<void> {
   loading.value = true;
   error.value = null;
 
   try {
     const [me, sites] = await Promise.all([api.auth.me.query(), api.sites.list.query()]);
-    status.value =
-      me && roleAtLeast(me.role, 'admin')
-        ? await api.mail.serverStatus.query()
-        : await api.mail.available.query();
+    isAdministrator.value = me !== null && roleAtLeast(me.role, 'admin');
+    status.value = isAdministrator.value
+      ? await api.mail.serverStatus.query()
+      : await api.mail.available.query();
+    blockedIps.value = [];
+    await loadBlockedIps();
 
     // One row per site, on its primary domain. `www.` is skipped: nobody
     // wants a mailbox at www.example.com.
@@ -195,6 +260,85 @@ void load();
         </dl>
 
         <RouterLink v-else to="/settings" class="btn btn-primary">Connect it</RouterLink>
+      </section>
+
+      <section
+        v-if="isAdministrator"
+        class="card mb-5 overflow-hidden"
+        aria-labelledby="inbound-access-heading"
+      >
+        <div class="flex flex-wrap items-start justify-between gap-4 border-b border-line px-5 py-4">
+          <div>
+            <h2 id="inbound-access-heading" class="text-base font-semibold text-ink">
+              Inbound access
+            </h2>
+            <p class="mt-1 max-w-2xl text-sm text-ink-muted">
+              Block an IP address or network before it reaches the mail server.
+            </p>
+          </div>
+          <span class="text-xs text-ink-faint">
+            {{ blockedIps.length }} {{ blockedIps.length === 1 ? 'address' : 'addresses' }} blocked
+          </span>
+        </div>
+
+        <div class="p-5">
+          <AlertMessage v-if="blockedIpError" class="mb-4">{{ blockedIpError }}</AlertMessage>
+
+          <form class="flex flex-col gap-2 sm:flex-row" @submit.prevent="blockIp">
+            <label for="blocked-ip-address" class="sr-only">IP address or network</label>
+            <input
+              id="blocked-ip-address"
+              v-model="blockedIpAddress"
+              class="field min-w-0 flex-1 font-mono"
+              placeholder="203.0.113.0/24 or 203.0.113.7"
+              inputmode="text"
+              autocomplete="off"
+              required
+            />
+            <button
+              type="submit"
+              class="btn btn-primary shrink-0"
+              :disabled="blockedIpBusy || !status?.connected || blockedIpAddress.trim().length === 0"
+            >
+              <Ban :size="14" aria-hidden="true" />
+              {{ blockedIpBusy ? 'Saving...' : 'Block address' }}
+            </button>
+          </form>
+          <p class="hint mt-2">Use an IPv4 or IPv6 address, or a CIDR network.</p>
+
+          <LoadingBlock v-if="blockedIpsLoading" class="mt-4 h-20 rounded-card bg-surface" />
+          <p v-else-if="!status?.connected" class="mt-4 text-sm text-ink-faint">
+            Connect the mail server before changing inbound access.
+          </p>
+          <p v-else-if="blockedIps.length === 0" class="mt-4 text-sm text-ink-faint">
+            No inbound addresses are blocked.
+          </p>
+          <ul v-else class="mt-4 divide-y divide-line rounded-lg border border-line">
+            <li
+              v-for="entry in blockedIps"
+              :key="entry.id"
+              class="flex items-center gap-4 px-4 py-3"
+            >
+              <div class="min-w-0 flex-1">
+                <p class="truncate font-mono text-sm text-ink">{{ entry.address }}</p>
+                <p class="mt-1 text-xs text-ink-faint">
+                  {{ entry.reason }} &middot; {{ blockedIpExpiry(entry.expiresAt) }}
+                </p>
+              </div>
+              <Tooltip :text="`Allow connections from ${entry.address}`">
+                <button
+                  type="button"
+                  class="shrink-0 rounded-md p-1.5 text-ink-faint transition-colors hover:text-ok"
+                  :disabled="blockedIpBusy"
+                  :aria-label="`Allow connections from ${entry.address}`"
+                  @click="unblockIp(entry)"
+                >
+                  <X :size="15" aria-hidden="true" />
+                </button>
+              </Tooltip>
+            </li>
+          </ul>
+        </div>
       </section>
 
       <EmptyState

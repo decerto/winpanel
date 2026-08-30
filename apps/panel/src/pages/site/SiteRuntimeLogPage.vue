@@ -19,6 +19,7 @@ import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
 import EmptyState from '../../components/EmptyState.vue';
 import LoadingBlock from '../../components/LoadingBlock.vue';
+import Tooltip from '../../components/Tooltip.vue';
 
 /**
  * What this website's own application has been saying.
@@ -303,15 +304,16 @@ onUnmounted(() => {
               <span class="sr-only">Search this log</span>
               <Search :size="15" class="pointer-events-none absolute left-3 top-2.5 text-ink-faint" aria-hidden="true" />
               <input v-model="search" type="search" class="field pl-9 pr-9" placeholder="Search this log" />
-              <button
-                v-if="search"
-                type="button"
-                class="absolute right-2 top-1.5 rounded p-1 text-ink-faint hover:text-ink"
-                aria-label="Clear log search"
-                @click="search = ''"
-              >
-                <X :size="15" aria-hidden="true" />
-              </button>
+              <Tooltip v-if="search" text="Clear log search">
+                <button
+                  type="button"
+                  class="absolute right-2 top-1.5 rounded p-1 text-ink-faint hover:text-ink"
+                  aria-label="Clear log search"
+                  @click="search = ''"
+                >
+                  <X :size="15" aria-hidden="true" />
+                </button>
+              </Tooltip>
             </label>
           </div>
         </div>

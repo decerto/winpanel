@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { ChevronLeft, ChevronRight } from 'lucide-vue-next';
+import Tooltip from './Tooltip.vue';
 
 /**
  * Paging for anything that can grow without limit.
@@ -61,15 +62,17 @@ function go(page: number): void {
     </p>
 
     <div class="flex items-center gap-1">
-      <button
-        type="button"
-        class="btn btn-ghost btn-sm"
-        :disabled="page <= 1"
-        aria-label="Previous page"
-        @click="go(page - 1)"
-      >
-        <ChevronLeft :size="15" />
-      </button>
+      <Tooltip text="Previous page">
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
+          :disabled="page <= 1"
+          aria-label="Previous page"
+          @click="go(page - 1)"
+        >
+          <ChevronLeft :size="15" aria-hidden="true" />
+        </button>
+      </Tooltip>
 
       <template v-for="(entry, index) in pages" :key="`${entry}-${index}`">
         <span v-if="entry === 'gap'" class="px-1 text-xs text-ink-faint" aria-hidden="true">
@@ -88,15 +91,17 @@ function go(page: number): void {
         </button>
       </template>
 
-      <button
-        type="button"
-        class="btn btn-ghost btn-sm"
-        :disabled="page >= pageCount"
-        aria-label="Next page"
-        @click="go(page + 1)"
-      >
-        <ChevronRight :size="15" />
-      </button>
+      <Tooltip text="Next page">
+        <button
+          type="button"
+          class="btn btn-ghost btn-sm"
+          :disabled="page >= pageCount"
+          aria-label="Next page"
+          @click="go(page + 1)"
+        >
+          <ChevronRight :size="15" aria-hidden="true" />
+        </button>
+      </Tooltip>
     </div>
   </nav>
 </template>

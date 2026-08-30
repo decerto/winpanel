@@ -65,7 +65,7 @@ vi.mock('../src/lib/api', () => ({
           databases: state.databases,
           limit: null,
           used: state.databases.length,
-          storageQuotaBytes: 0,
+          storageQuotaBytes: null,
           storageAllocatedBytes: 0,
           problem: null,
         })),

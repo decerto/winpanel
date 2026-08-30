@@ -9,6 +9,7 @@ import AlertMessage from '../../components/AlertMessage.vue';
 import EmptyState from '../../components/EmptyState.vue';
 import HowTo from '../../components/HowTo.vue';
 import LoadingBlock from '../../components/LoadingBlock.vue';
+import Tooltip from '../../components/Tooltip.vue';
 
 /**
  * DNS for this website, through Cloudflare.
@@ -576,15 +577,16 @@ onUnmounted(() => clearTimeout(planTimer));
                   {{ record.proxied ? 'Proxied' : 'Direct' }}
                 </td>
                 <td class="px-5 py-2.5 text-right">
-                  <button
-                    v-if="record.id"
-                    type="button"
-                    class="rounded-md p-1.5 text-ink-faint hover:bg-danger-soft hover:text-danger"
-                    :aria-label="`Delete ${record.name}`"
-                    @click="removeRecord(record.id, record.name)"
-                  >
-                    <Trash2 :size="14" />
-                  </button>
+                  <Tooltip v-if="record.id" :text="`Delete ${record.name}`">
+                    <button
+                      type="button"
+                      class="rounded-md p-1.5 text-ink-faint hover:bg-danger-soft hover:text-danger"
+                      :aria-label="`Delete ${record.name}`"
+                      @click="removeRecord(record.id, record.name)"
+                    >
+                      <Trash2 :size="14" aria-hidden="true" />
+                    </button>
+                  </Tooltip>
                 </td>
               </tr>
             </tbody>

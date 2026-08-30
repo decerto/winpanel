@@ -21,6 +21,7 @@ import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
 import HowTo from '../../components/HowTo.vue';
 import LoadingBlock from '../../components/LoadingBlock.vue';
+import Tooltip from '../../components/Tooltip.vue';
 
 /**
  * The repository behind this website.
@@ -289,14 +290,16 @@ watch(slug, load, { immediate: true });
                 readonly
                 aria-label="Repository address"
               />
-              <button
-                type="button"
-                class="btn btn-ghost shrink-0"
-                :aria-label="copied ? 'Copied' : 'Copy address'"
-                @click="copyUrl"
-              >
-                <component :is="copied ? Check : Copy" :size="15" aria-hidden="true" />
-              </button>
+              <Tooltip :text="copied ? 'Copied' : 'Copy address'">
+                <button
+                  type="button"
+                  class="btn btn-ghost shrink-0"
+                  :aria-label="copied ? 'Copied' : 'Copy address'"
+                  @click="copyUrl"
+                >
+                  <component :is="copied ? Check : Copy" :size="15" aria-hidden="true" />
+                </button>
+              </Tooltip>
             </div>
           </div>
 

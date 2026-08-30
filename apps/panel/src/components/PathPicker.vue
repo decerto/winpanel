@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { ChevronRight, CornerLeftUp, File, Folder, X } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
+import Tooltip from './Tooltip.vue';
 
 /**
  * Picks a folder or a file out of what is actually on the server.
@@ -197,14 +198,16 @@ onBeforeUnmount(() => window.removeEventListener('keydown', closeOnEscape));
             Browsing this website&#8217;s files on the server.
           </p>
         </div>
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm"
-          aria-label="Close"
-          @click="emit('close')"
-        >
-          <X :size="15" aria-hidden="true" />
-        </button>
+        <Tooltip text="Close">
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            aria-label="Close"
+            @click="emit('close')"
+          >
+            <X :size="15" aria-hidden="true" />
+          </button>
+        </Tooltip>
       </div>
 
       <!-- Where we are. The first crumb is the folder everything is measured from. -->

@@ -5,6 +5,7 @@ import { api, describeError } from '../lib/api';
 import { formatBytes, timeAgo } from '../lib/format';
 import AlertMessage from './AlertMessage.vue';
 import LoadingBlock from './LoadingBlock.vue';
+import Tooltip from './Tooltip.vue';
 
 /**
  * Every request a website answered, one line each.
@@ -108,15 +109,16 @@ function agent(value: string | undefined): string {
           placeholder="Search route, host, visitor, or browser"
           maxlength="200"
         />
-        <button
-          v-if="searchInput"
-          type="button"
-          class="absolute right-2 top-1.5 rounded p-1 text-ink-faint hover:text-ink"
-          aria-label="Clear search"
-          @click="clearSearch"
-        >
-          <X :size="15" aria-hidden="true" />
-        </button>
+        <Tooltip v-if="searchInput" text="Clear search">
+          <button
+            type="button"
+            class="absolute right-2 top-1.5 rounded p-1 text-ink-faint hover:text-ink"
+            aria-label="Clear search"
+            @click="clearSearch"
+          >
+            <X :size="15" aria-hidden="true" />
+          </button>
+        </Tooltip>
       </label>
       <button type="submit" class="btn btn-ghost shrink-0">Search</button>
     </form>

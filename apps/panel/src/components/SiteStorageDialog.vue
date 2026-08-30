@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, watch } from 'vue';
 import { X } from 'lucide-vue-next';
 import { SHARED_DIR, SHARED_URL_PREFIX } from '@winpanel/shared';
 import HowTo from './HowTo.vue';
+import Tooltip from './Tooltip.vue';
 
 /**
  * What each folder in a website is for, and which of them survive a deploy.
@@ -68,9 +69,11 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
           </p>
         </div>
 
-        <button type="button" class="btn btn-ghost btn-sm" aria-label="Close" @click="emit('close')">
-          <X :size="14" aria-hidden="true" />
-        </button>
+        <Tooltip text="Close">
+          <button type="button" class="btn btn-ghost btn-sm" aria-label="Close" @click="emit('close')">
+            <X :size="14" aria-hidden="true" />
+          </button>
+        </Tooltip>
       </div>
 
       <div class="mt-4 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1 text-sm">

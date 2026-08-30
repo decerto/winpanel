@@ -256,7 +256,7 @@ export function createWordPressHandler(deps: WordPressDependencies) {
       siteId,
       ownerUserId: site.ownerUserId,
       sizeLimitBytes:
-        storage.quotaBytes === 0
+        storage.quotaBytes === null
           ? 0
           : Math.max(0, storage.quotaBytes - storage.allocatedBytes),
       label: 'WordPress',

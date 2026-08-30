@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { KeyRound, X } from 'lucide-vue-next';
+import Tooltip from './Tooltip.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -80,15 +81,17 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
             {{ description }}
           </p>
         </div>
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm"
-          aria-label="Close"
-          :disabled="busy"
-          @click="close"
-        >
-          <X :size="15" aria-hidden="true" />
-        </button>
+        <Tooltip text="Close">
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            aria-label="Close"
+            :disabled="busy"
+            @click="close"
+          >
+            <X :size="15" aria-hidden="true" />
+          </button>
+        </Tooltip>
       </div>
 
       <p class="mt-4 rounded-lg border border-warning/30 bg-warning-soft/40 px-3 py-2.5 text-sm text-ink-muted">

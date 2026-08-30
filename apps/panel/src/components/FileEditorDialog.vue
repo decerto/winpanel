@@ -4,6 +4,7 @@ import { Maximize2, Minimize2, RotateCcw, Save, X } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
 import CodeEditor from './CodeEditor.vue';
 import LoadingBlock from './LoadingBlock.vue';
+import Tooltip from './Tooltip.vue';
 
 /**
  * The panel's editor, for whichever file someone opened.
@@ -162,18 +163,22 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown));
           <h2 class="truncate text-base font-semibold text-ink">{{ filename }}</h2>
           <p class="mt-1 truncate font-mono text-xs text-ink-faint">{{ path }}</p>
         </div>
-        <button
-          type="button"
-          class="btn btn-ghost btn-sm"
-          :aria-pressed="maximised"
-          :title="maximised ? 'Leave full screen' : 'Full screen'"
-          @click="maximised = !maximised"
-        >
-          <component :is="maximised ? Minimize2 : Maximize2" :size="15" aria-hidden="true" />
-        </button>
-        <button type="button" class="btn btn-ghost btn-sm" aria-label="Close" @click="requestClose">
-          <X :size="15" aria-hidden="true" />
-        </button>
+        <Tooltip :text="maximised ? 'Leave full screen' : 'Full screen'">
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            :aria-pressed="maximised"
+            :aria-label="maximised ? 'Leave full screen' : 'Full screen'"
+            @click="maximised = !maximised"
+          >
+            <component :is="maximised ? Minimize2 : Maximize2" :size="15" aria-hidden="true" />
+          </button>
+        </Tooltip>
+        <Tooltip text="Close">
+          <button type="button" class="btn btn-ghost btn-sm" aria-label="Close" @click="requestClose">
+            <X :size="15" aria-hidden="true" />
+          </button>
+        </Tooltip>
       </div>
 
       <p v-if="error" class="mt-3 text-sm text-danger">{{ error }}</p>

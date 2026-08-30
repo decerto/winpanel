@@ -58,7 +58,7 @@ describe('CodeEditor', () => {
     await wrapper.get('input[aria-label="Find"]').setValue('alpha');
     expect(wrapper.text()).toContain('1 of 2');
 
-    await wrapper.get('button[title="Match case"]').trigger('click');
+    await wrapper.get('button[aria-label="Match case"]').trigger('click');
     expect(wrapper.text()).toContain('1 of 1');
   });
 
@@ -69,7 +69,7 @@ describe('CodeEditor', () => {
     await wrapper.get('input[aria-label="Find"]').setValue('a.c');
     expect(wrapper.text()).toContain('1 of 1');
 
-    await wrapper.get('button[title="Use a regular expression"]').trigger('click');
+    await wrapper.get('button[aria-label="Use a regular expression"]').trigger('click');
     expect(wrapper.text()).toContain('1 of 2');
   });
 
@@ -97,7 +97,7 @@ describe('CodeEditor', () => {
     const wrapper = editor('abc');
 
     await wrapper.findAll('button').find((button) => button.text().includes('Find'))?.trigger('click');
-    await wrapper.get('button[title="Use a regular expression"]').trigger('click');
+    await wrapper.get('button[aria-label="Use a regular expression"]').trigger('click');
     await wrapper.get('input[aria-label="Find"]').setValue('x*');
 
     expect(wrapper.text()).toContain('No matches');

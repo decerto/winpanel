@@ -8,6 +8,7 @@ import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
 import LoadingBlock from '../../components/LoadingBlock.vue';
 import SearchableSelect, { type SearchableOption } from '../../components/SearchableSelect.vue';
+import Tooltip from '../../components/Tooltip.vue';
 
 /**
  * Settings for one website: what it runs on, its secrets, and the way out.
@@ -326,14 +327,16 @@ watch(
           >
             {{ row.revealed ? 'Hide' : 'Show' }}
           </button>
-          <button
-            type="button"
-            class="shrink-0 rounded-md p-2 text-ink-faint hover:bg-danger-soft hover:text-danger"
-            :aria-label="`Remove ${row.key || 'this setting'}`"
-            @click="rows.splice(index, 1)"
-          >
-            <Trash2 :size="15" />
-          </button>
+          <Tooltip :text="`Remove ${row.key || 'this setting'}`">
+            <button
+              type="button"
+              class="shrink-0 rounded-md p-2 text-ink-faint hover:bg-danger-soft hover:text-danger"
+              :aria-label="`Remove ${row.key || 'this setting'}`"
+              @click="rows.splice(index, 1)"
+            >
+              <Trash2 :size="15" aria-hidden="true" />
+            </button>
+          </Tooltip>
         </div>
 
         <div class="flex items-center gap-2 pt-2">

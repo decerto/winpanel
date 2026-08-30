@@ -1,12 +1,14 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { Secret, TOTP } from 'otpauth';
 import superjson from 'superjson';
 import { createAppContext, type AppContext } from '../src/app-context.js';
 import { createServer } from '../src/server.js';
+import { WebmailClient } from '../src/mail/webmail-client.js';
+import { webmailSessions } from '../src/mail/webmail-sessions.js';
 
 /**
  * End-to-end exercise of the Phase 1 stack: server, tRPC, sessions, auth
@@ -878,6 +880,120 @@ describe('email', () => {
   it('needs a session like everything else', async () => {
     const { body } = await call('GET', 'mail.serverStatus');
     expect(body.error.message).toMatch(/sign in/i);
+  });
+
+  it('rejects malformed IP and CIDR addresses before contacting the mail server', async () => {
+    for (const address of [
+      '999.999.999.999',
+      '2001:db8::1/129',
+      '192.0.2.0/24/extra',
+      'not-an-ip',
+    ]) {
+      const { body, status } = await call('POST', 'mail.blockIp', { address }, cookie);
+
+      expect(status, address).toBe(400);
+      expect(body.error, address).toBeDefined();
+    }
+  });
+
+  it('keeps inbound IP controls away from customer accounts', async () => {
+    await app.auth.createUser({
+      username: 'customer',
+      password: PASSWORD,
+      role: 'user',
+    });
+
+    const login = await call('POST', 'auth.login', {
+      username: 'customer',
+      password: PASSWORD,
+    });
+    const session = login.cookies.find((entry) => entry.name === 'winpanel_session');
+    expect(session).toBeDefined();
+    const customerCookie = `winpanel_session=${session.value}`;
+
+    const list = await call('GET', 'mail.blockedIps', undefined, customerCookie);
+    expect(list.status).toBe(403);
+    expect(list.body.error.message).toMatch(/administrator/i);
+
+    const block = await call(
+      'POST',
+      'mail.blockIp',
+      { address: '192.0.2.1' },
+      customerCookie,
+    );
+    expect(block.status).toBe(403);
+
+    const unblock = await call(
+      'POST',
+      'mail.unblockIp',
+      { id: 'blocked-id' },
+      customerCookie,
+    );
+    expect(unblock.status).toBe(403);
+  });
+});
+
+describe('webmail sender blocks', () => {
+  let cookie: string;
+
+  beforeEach(async () => {
+    cookie = await completeSetup();
+  });
+
+  it('keeps sender operations scoped to the mailbox sitting', async () => {
+    const sitting = webmailSessions.open({ address: 'person@example.com', password: 'secret' });
+    const list = vi
+      .spyOn(WebmailClient.prototype, 'blockedSenders')
+      .mockResolvedValue(['blocked@example.com']);
+    const change = vi.spyOn(WebmailClient.prototype, 'setSenderBlocked').mockResolvedValue();
+
+    try {
+      const input = encodeURIComponent(JSON.stringify(superjson.serialize({ token: sitting.token })));
+      const listed = await call('GET', `webmail.blockedSenders?input=${input}`, undefined, cookie);
+      const blocked = await call(
+        'POST',
+        'webmail.blockSender',
+        { token: sitting.token, sender: ' Spam@Example.com ' },
+        cookie,
+      );
+      const unblocked = await call(
+        'POST',
+        'webmail.unblockSender',
+        { token: sitting.token, sender: 'Spam@Example.com' },
+        cookie,
+      );
+
+      expect(listed.body.result.data).toEqual(['blocked@example.com']);
+      expect(blocked.body.result.data).toEqual({ ok: true, sender: 'spam@example.com' });
+      expect(unblocked.body.result.data).toEqual({ ok: true, sender: 'spam@example.com' });
+      expect(change).toHaveBeenNthCalledWith(1, 'spam@example.com', true);
+      expect(change).toHaveBeenNthCalledWith(2, 'spam@example.com', false);
+    } finally {
+      list.mockRestore();
+      change.mockRestore();
+      webmailSessions.close(sitting.token);
+    }
+  });
+
+  it('rejects a malformed sender before contacting the mailbox', async () => {
+    const change = vi.spyOn(WebmailClient.prototype, 'setSenderBlocked').mockResolvedValue();
+    const sitting = webmailSessions.open({ address: 'person@example.com', password: 'secret' });
+
+    try {
+      const response = await call(
+        'POST',
+        'webmail.blockSender',
+        { token: sitting.token, sender: 'not-an-email' },
+        cookie,
+      );
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBeDefined();
+      expect(change).not.toHaveBeenCalled();
+    } finally {
+      change.mockRestore();
+      webmailSessions.close(sitting.token);
+    }
   });
 });
 

@@ -15,6 +15,9 @@ and these object types: `x:Domain`, `x:Account`, `x:NetworkListener`, `x:Certifi
 The client lives in `apps/agent/src/mail/`. There is no config-file editing path; if
 something cannot be expressed over JMAP, it is not supported.
 
+Mailbox Webmail uses the same loopback JMAP endpoint with the mail, submission, and Sieve
+capabilities, authenticated as the mailbox rather than as the mail administrator.
+
 ## Mailboxes
 
 Mailboxes belong to the website that owns the domain, so `mail.mailboxes` is site-scoped
@@ -23,16 +26,29 @@ own domains' mailboxes and nothing else.
 
 | Procedure | Role |
 | --- | --- |
-| `mail.domains`, `mail.serverStatus`, `mail.provisionServer`, `mail.connectServer` | `admin` |
+| `mail.domains`, `mail.serverStatus`, `mail.provisionServer`, `mail.connectServer`, `mail.blockedIps`, `mail.blockIp`, `mail.unblockIp` | `admin` |
 | `mail.mailboxes`, `mail.createMailbox`, `mail.setMailboxQuota`, `mail.setMailboxDisplayName`, `mail.setMailboxAliases`, `mail.setMailboxPassword`, `mail.deleteMailbox`, `mail.addDomain` | site-scoped |
 | `mail.testOutbound`, `mail.installCertificate`, `mail.recordUnblockRequested` | `admin` |
+| `webmail.signIn`, `webmail.folders`, `webmail.messages`, `webmail.message`, `webmail.send`, `webmail.blockedSenders`, `webmail.blockSender`, `webmail.unblockSender` | protected by a mailbox session |
 
 Each mailbox carries a quota (`null` meaning no limit), aliases, a display name (the mail
 server's `description` field, shown as the sender's name on outgoing mail) and a password.
 Both `mail.createMailbox` and `mail.setMailboxPassword` take an optional `password`: supply
 one to choose it, or omit it and the panel generates one. Either way it is returned once and
 never stored here. A customer account additionally has a total mail allowance across all of
-their domains - see [users-and-roles.md](users-and-roles.md).
+their domains - see [users-and-roles.md](users-and-roles.md). Opening Webmail still asks for
+that mailbox password: an administrator can reset a mailbox password, but cannot silently read
+the mailbox. Webmail keeps the password only in an in-memory session, and a newly generated or
+chosen password is shown once before it can only be replaced.
+
+### Sender blocks
+
+Webmail can block an exact sender address from the open-message toolbar or its **Blocked
+senders** list. The block belongs to that mailbox, not to the whole server or panel account.
+New messages from a blocked address are moved to the mailbox's `Junk` folder by a managed Sieve
+condition, so they remain recoverable. Adding or removing a block preserves the mailbox owner's
+existing active Sieve rules; the panel only updates the conditions it owns. Sender addresses
+are normalised to lowercase and are always scoped through the mailbox session.
 
 ### Aliases
 
@@ -50,6 +66,14 @@ separate mailboxes.
 On the wire an alias is `{ name, domainId, enabled }` in the account's index-keyed
 `aliases` map; the read path composes `emails` as the primary address followed by the
 aliases, which is why `mail.mailboxes` returns `aliases: emails.slice(1)`.
+
+### Inbound access blocks
+
+Administrators can block an exact IPv4 or IPv6 address, or a CIDR network, from the Email page.
+These blocks are machine-wide: they stop inbound connections before Stalwart handles mail for
+any domain on the server. Customers cannot view or change them. The panel keeps and sends the
+opaque Stalwart rule ID when removing a block, rather than guessing from the address; the list
+also shows the rule's reason and expiry when Stalwart provides them.
 
 ## Client ports
 

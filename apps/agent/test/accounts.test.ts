@@ -7,7 +7,7 @@ import { sites } from '../src/db/schema.js';
 import { SecretVault } from '../src/security/vault.js';
 import { AuthService, AuthError } from '../src/services/auth-service.js';
 import { domainCovers, scopeOf } from '../src/api/trpc.js';
-import { allocatedMailBytes } from '../src/api/routers/mail.js';
+import { allocatedMailBytes, countMailboxes } from '../src/api/routers/mail.js';
 
 /**
  * The three-role model: who exists, what they are allowed to hold, and how a
@@ -308,5 +308,16 @@ describe('how much of a mail allowance is already taken', () => {
 
   it('falls back to the mailbox name when it has no address', () => {
     expect(allocatedMailBytes([{ name: 'a@freya.io', emails: [], quota: 5 }], ALLOWANCE, 'a@freya.io')).toBe(0);
+  });
+
+  it('counts individual mailboxes but not non-mailbox principals', () => {
+    expect(
+      countMailboxes([
+        { type: 'individual' },
+        { type: 'individual' },
+        { type: 'group' },
+        { type: 'domain' },
+      ]),
+    ).toBe(2);
   });
 });

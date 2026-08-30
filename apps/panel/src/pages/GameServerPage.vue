@@ -27,6 +27,7 @@ import GameWorkshopPanel from '../components/GameWorkshopPanel.vue';
 import LoadingBlock from '../components/LoadingBlock.vue';
 import PageHeader from '../components/PageHeader.vue';
 import StatusBadge from '../components/StatusBadge.vue';
+import Tooltip from '../components/Tooltip.vue';
 import { LOG_LEVEL_CLASS, useJobLog } from '../lib/job-log';
 
 /**
@@ -678,9 +679,11 @@ onUnmounted(() => {
             >
               Download
             </a>
-            <button type="button" class="btn btn-ghost btn-sm text-danger" :disabled="busy" :aria-label="`Delete ${entry.name}`" @click="removeEntry(entry)">
-              <Trash2 :size="14" aria-hidden="true" />
-            </button>
+            <Tooltip :text="`Delete ${entry.name}`">
+              <button type="button" class="btn btn-ghost btn-sm text-danger" :disabled="busy" :aria-label="`Delete ${entry.name}`" @click="removeEntry(entry)">
+                <Trash2 :size="14" aria-hidden="true" />
+              </button>
+            </Tooltip>
           </li>
         </ul>
       </section>

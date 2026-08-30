@@ -23,6 +23,7 @@ import { formatBytes } from '../lib/format';
 import AlertMessage from '../components/AlertMessage.vue';
 import EmptyState from '../components/EmptyState.vue';
 import LoadingBlock from '../components/LoadingBlock.vue';
+import Tooltip from '../components/Tooltip.vue';
 import { LOG_LEVEL_CLASS, useJobLog } from '../lib/job-log';
 
 /**
@@ -431,22 +432,24 @@ onBeforeUnmount(() => {
               :key="item.publishedFileId"
               class="card card-interactive flex flex-col overflow-hidden"
             >
-              <a
-                :href="steamPage(item.publishedFileId)"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="flex aspect-video items-center justify-center overflow-hidden bg-sunken"
-                :title="`Open ${item.title} on Steam`"
-              >
-                <img
-                  v-if="item.hasPreview"
-                  :src="previewUrl(item.publishedFileId)"
-                  alt=""
-                  class="size-full object-cover"
-                  loading="lazy"
-                />
-                <Package v-else :size="28" class="text-ink-faint" aria-hidden="true" />
-              </a>
+              <Tooltip :text="`Open ${item.title} on Steam`">
+                <a
+                  :href="steamPage(item.publishedFileId)"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="flex aspect-video items-center justify-center overflow-hidden bg-sunken"
+                  :aria-label="`Open ${item.title} on Steam`"
+                >
+                  <img
+                    v-if="item.hasPreview"
+                    :src="previewUrl(item.publishedFileId)"
+                    alt=""
+                    class="size-full object-cover"
+                    loading="lazy"
+                  />
+                  <Package v-else :size="28" class="text-ink-faint" aria-hidden="true" />
+                </a>
+              </Tooltip>
 
               <div class="flex min-w-0 flex-1 flex-col gap-2 p-4">
                 <h3 class="line-clamp-2 text-sm font-semibold text-ink">{{ item.title }}</h3>
@@ -617,15 +620,17 @@ onBeforeUnmount(() => {
                 <RefreshCw :size="14" aria-hidden="true" />
                 {{ item.state === 'failed' ? 'Retry' : 'Update' }}
               </button>
-              <button
-                type="button"
-                class="btn btn-ghost btn-sm text-danger"
-                :disabled="busy || job.running.value"
-                :aria-label="`Remove ${item.title}`"
-                @click="remove(item)"
-              >
-                <Trash2 :size="14" aria-hidden="true" />
-              </button>
+              <Tooltip :text="`Remove ${item.title}`">
+                <button
+                  type="button"
+                  class="btn btn-ghost btn-sm text-danger"
+                  :disabled="busy || job.running.value"
+                  :aria-label="`Remove ${item.title}`"
+                  @click="remove(item)"
+                >
+                  <Trash2 :size="14" aria-hidden="true" />
+                </button>
+              </Tooltip>
             </div>
           </li>
         </ul>

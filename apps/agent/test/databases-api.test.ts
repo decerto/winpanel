@@ -289,6 +289,22 @@ describe('the allowance', () => {
 });
 
 describe('the storage allowance', () => {
+  it('uses null for unlimited account storage and zero to block it', async () => {
+    const initial = await call('GET', 'databases.listAll', freyaCookie);
+    expect(initial.body.result.data.storageQuotaBytes).toBeNull();
+
+    app.db.db.update(users).set({ databaseQuotaBytes: 0 }).where(eq(users.id, freyaId)).run();
+
+    const refused = await call('POST', 'databases.create', freyaCookie, {
+      engine: 'mariadb',
+      name: 'blocked_storage',
+      sizeLimitBytes: 1 * GB,
+    });
+
+    expect(refused.body.error.data.code).toBe('PRECONDITION_FAILED');
+    expect(refused.body.error.message).toContain('0 GB remains');
+  });
+
   it('reports what the account has allocated', async () => {
     app.db.db
       .update(users)
@@ -370,6 +386,20 @@ describe('the storage allowance', () => {
       sizeLimitBytes: 5 * GB,
     });
     expect(accepted.body.result.data.sizeLimitBytes).toBe(5 * GB);
+  });
+
+  it('lets an administrator make an unlimited database finite before setting the account quota', async () => {
+    const resized = await call('POST', 'databases.setSizeLimit', ownerCookie, {
+      id: freyaDatabaseId,
+      sizeLimitBytes: 5 * GB,
+    });
+    expect(resized.body.result.data.sizeLimitBytes).toBe(5 * GB);
+
+    const quota = await call('POST', 'users.update', ownerCookie, {
+      userId: freyaId,
+      databaseQuotaBytes: 10 * GB,
+    });
+    expect(quota.body.result.data.databaseQuotaBytes).toBe(10 * GB);
   });
 
   it('will not make an account quota finite while it owns an unlimited database', async () => {

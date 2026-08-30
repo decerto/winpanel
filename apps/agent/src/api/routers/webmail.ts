@@ -25,6 +25,9 @@ import { webmailSessions } from '../../mail/webmail-sessions.js';
  */
 
 const Token = z.object({ token: z.string().min(1).max(200) });
+const SenderInput = Token.extend({
+  sender: z.string().trim().email().max(254).transform((value) => value.toLowerCase()),
+});
 
 const Address = z.object({
   name: z.string().max(200).nullable().default(null),
@@ -273,4 +276,30 @@ export const webmailRouter = router({
         toTrpcError(error);
       }
     }),
+
+  blockedSenders: protectedProcedure.input(Token).query(async ({ input }) => {
+    try {
+      return await clientFor(input.token).blockedSenders();
+    } catch (error) {
+      toTrpcError(error);
+    }
+  }),
+
+  blockSender: protectedProcedure.input(SenderInput).mutation(async ({ input }) => {
+    try {
+      await clientFor(input.token).setSenderBlocked(input.sender, true);
+      return { ok: true, sender: input.sender };
+    } catch (error) {
+      toTrpcError(error);
+    }
+  }),
+
+  unblockSender: protectedProcedure.input(SenderInput).mutation(async ({ input }) => {
+    try {
+      await clientFor(input.token).setSenderBlocked(input.sender, false);
+      return { ok: true, sender: input.sender };
+    } catch (error) {
+      toTrpcError(error);
+    }
+  }),
 });

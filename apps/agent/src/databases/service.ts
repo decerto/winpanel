@@ -54,7 +54,7 @@ export interface CreateDatabaseOptions {
   ownerUserId: string | null;
   /** Their own password, or nothing to have one generated. */
   password?: string | undefined;
-  /** Storage allocated to this database. Zero means unlimited. */
+  /** Storage allocated to this database. Zero means unlimited for this database. */
   sizeLimitBytes: number;
 }
 
@@ -332,8 +332,8 @@ export interface Allowance {
 }
 
 export interface StorageAllowance {
-  /** Zero means unlimited. */
-  quotaBytes: number;
+  /** Null means unlimited; zero means no database storage. */
+  quotaBytes: number | null;
   allocatedBytes: number;
 }
 
@@ -342,7 +342,7 @@ export function accountStorageAllowance(
   ownerUserId: string | null,
   excludingIds: readonly string[] = [],
 ): StorageAllowance {
-  if (!ownerUserId) return { quotaBytes: 0, allocatedBytes: 0 };
+  if (!ownerUserId) return { quotaBytes: null, allocatedBytes: 0 };
 
   const owner = ctx.db.db
     .select({ quotaBytes: users.databaseQuotaBytes })
@@ -351,15 +351,14 @@ export function accountStorageAllowance(
     .get();
 
   return {
-    quotaBytes: owner?.quotaBytes ?? 0,
+    quotaBytes: owner?.quotaBytes ?? null,
     allocatedBytes: allocatedDatabaseBytesForOwner(ctx.db, ownerUserId, excludingIds),
   };
 }
 
 /**
  * Refuses database allocations that do not fit their owner's account quota.
- * A zero database limit is unlimited and therefore cannot fit inside a finite
- * account quota.
+ * An unlimited database allocation cannot fit inside a finite account quota.
  */
 export function assertDatabaseStorageAllocation(
   ctx: EngineContext,
@@ -368,7 +367,7 @@ export function assertDatabaseStorageAllocation(
   excludingIds: readonly string[] = [],
 ): void {
   const allowance = accountStorageAllowance(ctx, ownerUserId, excludingIds);
-  if (allowance.quotaBytes === 0) return;
+  if (allowance.quotaBytes === null) return;
 
   if (sizeLimits.some((limit) => limit === 0)) {
     throw new DatabaseAllocationError(

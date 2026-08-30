@@ -107,6 +107,9 @@ const UNSCOPED_FOR_CUSTOMERS = new Set([
   'destroy',
   'attachment',
   'send',
+  'blockedSenders',
+  'blockSender',
+  'unblockSender',
   // Reads a mailbox address back as IMAP/SMTP settings. No lookup involved.
   'clientSettings',
   // One boolean — "can you manage your mailboxes" — with none of the mail

@@ -25,6 +25,7 @@ import { api, describeError } from '../lib/api';
 import { formatBytes, formatCount } from '../lib/format';
 import { RUNTIME_LABEL, siteStatus } from '../lib/site-status';
 import LoadingBlock from './LoadingBlock.vue';
+import Tooltip from './Tooltip.vue';
 
 /**
  * One website, as a full-width card.
@@ -367,14 +368,16 @@ const contentPath = computed(() => (isGit.value ? 'release' : 'public'));
         {{ usedBytes === null ? '\u2014' : formatBytes(usedBytes) }}
       </span>
 
-      <RouterLink
-        :to="`/sites/${site.slug}/settings`"
-        class="shrink-0 rounded-md p-1.5 text-ink-faint transition-colors hover:bg-brand-soft/50
-               hover:text-brand-bright"
-        :aria-label="`Settings for ${site.displayName}`"
-      >
-        <SlidersHorizontal :size="15" />
-      </RouterLink>
+      <Tooltip :text="`Settings for ${site.displayName}`">
+        <RouterLink
+          :to="`/sites/${site.slug}/settings`"
+          class="shrink-0 rounded-md p-1.5 text-ink-faint transition-colors hover:bg-brand-soft/50
+                 hover:text-brand-bright"
+          :aria-label="`Settings for ${site.displayName}`"
+        >
+          <SlidersHorizontal :size="15" aria-hidden="true" />
+        </RouterLink>
+      </Tooltip>
     </header>
 
     <div class="grid gap-5 p-5 lg:grid-cols-[minmax(0,15rem)_1fr]">

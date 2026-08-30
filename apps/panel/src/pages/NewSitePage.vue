@@ -33,6 +33,7 @@ import {
 } from '../lib/repo-url';
 import AlertMessage from '../components/AlertMessage.vue';
 import HowTo from '../components/HowTo.vue';
+import Tooltip from '../components/Tooltip.vue';
 
 /**
  * Add a website.
@@ -1232,14 +1233,16 @@ const backFromDomain = computed<Step>(() => (isGit.value ? 'confirm' : 'kind'));
                    placeholder="NAME" />
             <input v-model="row.value" type="password" class="field font-mono" aria-label="Value"
                    placeholder="value" />
-            <button
-              type="button"
-              class="shrink-0 rounded-md p-2 text-ink-faint hover:bg-danger-soft hover:text-danger"
-              :aria-label="`Remove ${row.key || 'this setting'}`"
-              @click="envRows.splice(index, 1)"
-            >
-              <Trash2 :size="15" />
-            </button>
+            <Tooltip :text="`Remove ${row.key || 'this setting'}`">
+              <button
+                type="button"
+                class="shrink-0 rounded-md p-2 text-ink-faint hover:bg-danger-soft hover:text-danger"
+                :aria-label="`Remove ${row.key || 'this setting'}`"
+                @click="envRows.splice(index, 1)"
+              >
+                <Trash2 :size="15" aria-hidden="true" />
+              </button>
+            </Tooltip>
           </div>
 
           <button

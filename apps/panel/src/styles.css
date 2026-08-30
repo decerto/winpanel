@@ -225,6 +225,65 @@
     background-color: oklch(33% 0.1 20 / 0.75);
   }
 
+  .tooltip-trigger {
+    display: inline-flex;
+  }
+
+  .tooltip-bubble {
+    position: fixed;
+    z-index: 100;
+    max-width: min(20rem, calc(100vw - 1.25rem));
+    border: 1px solid oklch(79% 0.15 300 / 0.38);
+    border-radius: 0.45rem;
+    background: linear-gradient(180deg, var(--color-elevated), var(--color-surface));
+    padding: 0.4rem 0.6rem;
+    color: var(--color-ink);
+    box-shadow: var(--shadow-pop), 0 0 0 1px oklch(100% 0 0 / 0.04) inset;
+    font-size: 0.7rem;
+    font-weight: 500;
+    line-height: 1.15rem;
+    text-align: center;
+    pointer-events: none;
+    transform: translateY(0);
+    animation: tooltip-in 120ms ease-out both;
+  }
+
+  .tooltip-bubble::after {
+    position: absolute;
+    width: 0.45rem;
+    height: 0.45rem;
+    border-right: 1px solid oklch(79% 0.15 300 / 0.38);
+    border-bottom: 1px solid oklch(79% 0.15 300 / 0.38);
+    background: var(--color-elevated);
+    content: '';
+    transform: rotate(45deg);
+  }
+
+  .tooltip-bubble[data-placement='top']::after {
+    bottom: -0.27rem;
+    left: calc(50% - 0.225rem);
+    border-top: 0;
+    border-left: 0;
+  }
+
+  .tooltip-bubble[data-placement='bottom']::after {
+    top: -0.27rem;
+    left: calc(50% - 0.225rem);
+    border-right: 0;
+    border-bottom: 0;
+  }
+
+  @keyframes tooltip-in {
+    from {
+      opacity: 0;
+      transform: translateY(0.2rem);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
   .field {
     width: 100%;
     border-radius: 0.5rem;

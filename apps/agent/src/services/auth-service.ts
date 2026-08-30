@@ -84,11 +84,12 @@ export interface ManagedUser {
   totpEnrolled: boolean;
   siteLimit: number | null;
   subdomainLimit: number | null;
+  mailboxLimit: number | null;
   mailQuotaBytes: number | null;
   siteDiskQuotaBytes: number | null;
   gameServerLimit: number | null;
   databaseLimit: number | null;
-  databaseQuotaBytes: number;
+  databaseQuotaBytes: number | null;
   gameServerProviders: string[];
   lastLoginAt: Date | null;
   createdAt: Date;
@@ -155,6 +156,7 @@ function toManagedUser(
     totpEnrolled: row.totpEnrolled,
     siteLimit: row.siteLimit,
     subdomainLimit: row.subdomainLimit,
+    mailboxLimit: row.mailboxLimit,
     mailQuotaBytes: row.mailQuotaBytes,
     siteDiskQuotaBytes: row.siteDiskQuotaBytes,
     gameServerLimit: row.gameServerLimit,
@@ -367,11 +369,12 @@ export class AuthService {
     role: UserRole;
     siteLimit?: number | null;
     subdomainLimit?: number | null;
+    mailboxLimit?: number | null;
     mailQuotaBytes?: number | null;
     siteDiskQuotaBytes?: number | null;
     gameServerLimit?: number | null;
     databaseLimit?: number | null;
-    databaseQuotaBytes?: number;
+    databaseQuotaBytes?: number | null;
     gameServerProviders?: string[];
     createdBy?: string | null;
   }): Promise<ManagedUser> {
@@ -394,11 +397,12 @@ export class AuthService {
         // capped at two websites would be an admin in name only.
         siteLimit: input.role === 'user' ? (input.siteLimit ?? null) : null,
         subdomainLimit: input.role === 'user' ? (input.subdomainLimit ?? null) : null,
+        mailboxLimit: input.role === 'user' ? (input.mailboxLimit ?? null) : null,
         mailQuotaBytes: input.role === 'user' ? (input.mailQuotaBytes ?? null) : null,
         siteDiskQuotaBytes: input.role === 'user' ? (input.siteDiskQuotaBytes ?? null) : null,
         gameServerLimit: input.role === 'user' ? (input.gameServerLimit ?? null) : null,
         databaseLimit: input.role === 'user' ? (input.databaseLimit ?? null) : null,
-        databaseQuotaBytes: input.role === 'user' ? (input.databaseQuotaBytes ?? 0) : 0,
+        databaseQuotaBytes: input.role === 'user' ? (input.databaseQuotaBytes ?? null) : null,
         gameServerProviders:
           input.role === 'user' ? (input.gameServerProviders ?? []) : [],
         createdBy: input.createdBy ?? null,
@@ -425,11 +429,12 @@ export class AuthService {
       disabled?: boolean;
       siteLimit?: number | null;
       subdomainLimit?: number | null;
+      mailboxLimit?: number | null;
       mailQuotaBytes?: number | null;
       siteDiskQuotaBytes?: number | null;
       gameServerLimit?: number | null;
       databaseLimit?: number | null;
-      databaseQuotaBytes?: number;
+      databaseQuotaBytes?: number | null;
       gameServerProviders?: string[];
     },
   ): ManagedUser {
@@ -440,8 +445,10 @@ export class AuthService {
 
     const databaseQuotaBytes =
       role === 'user'
-        ? (changes.databaseQuotaBytes ?? existing.databaseQuotaBytes)
-        : 0;
+        ? changes.databaseQuotaBytes === undefined
+          ? existing.databaseQuotaBytes
+          : changes.databaseQuotaBytes
+        : null;
     const databaseSizeLimits = this.databaseSizeLimitsFor(userId);
     const databaseAllocatedBytes = databaseSizeLimits.reduce(
       (total, sizeLimitBytes) => total + sizeLimitBytes,
@@ -458,13 +465,13 @@ export class AuthService {
         'invalid-input',
       );
     }
-    if (databaseQuotaBytes > 0 && databaseSizeLimits.some((limit) => limit === 0)) {
+    if (databaseQuotaBytes !== null && databaseSizeLimits.some((limit) => limit === 0)) {
       throw new AuthError(
         'This account owns an unlimited database. Set an allowance on every database first.',
         'invalid-input',
       );
     }
-    if (databaseQuotaBytes > 0 && databaseAllocatedBytes > databaseQuotaBytes) {
+    if (databaseQuotaBytes !== null && databaseAllocatedBytes > databaseQuotaBytes) {
       throw new AuthError(
         `This account already has ${databaseAllocatedBytes} bytes allocated to databases. ` +
           'Raise the storage quota or reduce those database allowances first.',
@@ -510,7 +517,7 @@ export class AuthService {
             siteDiskQuotaBytes: null,
             gameServerLimit: null,
             databaseLimit: null,
-            databaseQuotaBytes: 0,
+            databaseQuotaBytes: null,
             gameServerProviders: [],
           };
 

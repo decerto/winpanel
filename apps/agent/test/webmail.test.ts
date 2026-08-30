@@ -1,6 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import { sanitiseHtml } from '../src/api/routers/webmail.js';
+import { WebmailClient } from '../src/mail/webmail-client.js';
 import { WebmailSessions } from '../src/mail/webmail-sessions.js';
+
+function webmailClient(
+  handler: (request: { url: string; init: RequestInit | undefined }) => Response | Promise<Response>,
+) {
+  return new WebmailClient(
+    'person@example.com',
+    'secret',
+    (async (url: string, init?: RequestInit) => handler({ url, init })) as typeof fetch,
+    'http://mail.test',
+  );
+}
 
 /**
  * Webmail shows attacker-supplied HTML inside the panel that administers the
@@ -70,5 +82,123 @@ describe('WebmailSessions', () => {
 
     sessions.close(token);
     expect(sessions.get(token)).toBeNull();
+  });
+});
+
+describe('WebmailClient sender blocks', () => {
+  it('creates and activates a Sieve script through an uploaded blob', async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const client = webmailClient(({ url, init }) => {
+      calls.push({ url, init });
+
+      if (url.endsWith('/.well-known/jmap')) {
+        return new Response(
+          JSON.stringify({
+            apiUrl: 'http://mail.test/jmap',
+            uploadUrl: 'http://mail.test/upload/{accountId}/',
+            downloadUrl: 'http://mail.test/download/{accountId}/{blobId}',
+            capabilities: { 'urn:ietf:params:jmap:sieve': {} },
+            primaryAccounts: { 'urn:ietf:params:jmap:mail': 'u1' },
+          }),
+        );
+      }
+      if (url.includes('/upload/')) return new Response(JSON.stringify({ blobId: 'blob-1' }));
+
+      const body = JSON.parse(String(init?.body)) as { methodCalls: [string, Record<string, unknown>, string][] };
+      return new Response(
+        JSON.stringify({
+          methodResponses: body.methodCalls.map(([name, , id]) =>
+            name === 'SieveScript/get'
+              ? [name, { list: [] }, id]
+              : [name, { created: { senderBlocks: { id: 'script-1' } } }, id],
+          ),
+        }),
+      );
+    });
+
+    await client.setSenderBlocked('Spam@example.com', true);
+
+    const upload = calls.find((call) => call.url.includes('/upload/'));
+    expect(upload?.init?.method).toBe('POST');
+    expect(String(upload?.init?.body)).toContain('address :is ["From"] "spam@example.com"');
+    const uploadedScript = String(upload?.init?.body);
+    expect(uploadedScript).toContain('fileinto "Junk";');
+    expect(uploadedScript).not.toContain(',if address');
+
+    const jmapBodies = calls
+      .filter((call) => call.url === 'http://mail.test/jmap')
+      .map((call) => JSON.parse(String(call.init?.body)) as {
+        using: string[];
+        methodCalls: [string, Record<string, unknown>, string][];
+      });
+    const getBody = jmapBodies[0];
+    const setBody = jmapBodies[1];
+    expect(getBody?.using).toContain('urn:ietf:params:jmap:sieve');
+    expect(getBody?.methodCalls[0]?.[1]).toEqual({
+      accountId: 'u1',
+      ids: null,
+      properties: ['id', 'name', 'blobId', 'isActive'],
+    });
+    expect(setBody?.methodCalls[0]?.[1]).toEqual({
+      accountId: 'u1',
+      create: { senderBlocks: { name: 'winpanel-blocked-senders', blobId: 'blob-1' } },
+      onSuccessActivateScript: '#senderBlocks',
+    });
+  });
+
+  it('updates an active script without removing its existing rules', async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const client = webmailClient(({ url, init }) => {
+      calls.push({ url, init });
+
+      if (url.endsWith('/.well-known/jmap')) {
+        return new Response(
+          JSON.stringify({
+            apiUrl: 'http://mail.test/jmap',
+            uploadUrl: 'http://mail.test/upload/{accountId}/',
+            downloadUrl: 'http://mail.test/download/{accountId}/{blobId}',
+            capabilities: { 'urn:ietf:params:jmap:sieve': {} },
+            primaryAccounts: { 'urn:ietf:params:jmap:mail': 'u1' },
+          }),
+        );
+      }
+      if (url.includes('/download/')) {
+        return new Response('require ["fileinto"];\nfileinto "Receipts";\n');
+      }
+      if (url.includes('/upload/')) return new Response(JSON.stringify({ blobId: 'blob-2' }));
+
+      const body = JSON.parse(String(init?.body)) as { methodCalls: [string, Record<string, unknown>, string][] };
+      return new Response(
+        JSON.stringify({
+          methodResponses: body.methodCalls.map(([name, , id]) =>
+            name === 'SieveScript/get'
+              ? [
+                  name,
+                  {
+                    list: [{ id: 'script-1', name: 'personal', blobId: 'blob-old', isActive: true }],
+                  },
+                  id,
+                ]
+              : [name, {}, id],
+          ),
+        }),
+      );
+    });
+
+    await client.setSenderBlocked('blocked@example.com', true);
+
+    const upload = calls.find((call) => call.url.includes('/upload/'));
+    expect(String(upload?.init?.body)).toContain('fileinto "Receipts";');
+    expect(String(upload?.init?.body)).toContain('blocked@example.com');
+
+    const jmapBodies = calls
+      .filter((call) => call.url === 'http://mail.test/jmap')
+      .map((call) => JSON.parse(String(call.init?.body)) as {
+        methodCalls: [string, Record<string, unknown>, string][];
+      });
+    expect(jmapBodies[1]?.methodCalls[0]?.[1]).toEqual({
+      accountId: 'u1',
+      update: { 'script-1': { blobId: 'blob-2' } },
+    });
   });
 });

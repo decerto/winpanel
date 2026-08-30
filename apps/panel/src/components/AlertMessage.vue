@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { CircleAlert, CircleCheck, Info, TriangleAlert, X } from 'lucide-vue-next';
+import Tooltip from './Tooltip.vue';
 
 /**
  * A message about something that just happened, or about to.
@@ -45,15 +46,15 @@ const appearance = computed(() => TONES[props.tone]);
         <slot />
       </div>
     </div>
-    <button
-      v-if="dismissible"
-      type="button"
-      class="btn btn-ghost btn-sm absolute right-2 top-2"
-      aria-label="Dismiss message"
-      title="Dismiss"
-      @click="emit('dismiss')"
-    >
-      <X :size="14" aria-hidden="true" />
-    </button>
+    <Tooltip v-if="dismissible" text="Dismiss message">
+      <button
+        type="button"
+        class="btn btn-ghost btn-sm absolute right-2 top-2"
+        aria-label="Dismiss message"
+        @click="emit('dismiss')"
+      >
+        <X :size="14" aria-hidden="true" />
+      </button>
+    </Tooltip>
   </div>
 </template>

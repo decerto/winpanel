@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { mount } from '@vue/test-utils';
+import { nextTick } from 'vue';
 import type { CheckResult } from '@winpanel/shared';
 import StatusBadge from '../src/components/StatusBadge.vue';
 import CheckCard from '../src/components/CheckCard.vue';
@@ -9,6 +10,7 @@ import RecoveryCodes from '../src/components/RecoveryCodes.vue';
 import PaginationBar from '../src/components/PaginationBar.vue';
 import SearchableSelect from '../src/components/SearchableSelect.vue';
 import AlertMessage from '../src/components/AlertMessage.vue';
+import Tooltip from '../src/components/Tooltip.vue';
 import { siteStatus } from '../src/lib/site-status';
 import { describeUserAgent, timeAgo } from '../src/lib/format';
 
@@ -98,6 +100,24 @@ describe('AlertMessage', () => {
 
     await wrapper.find('button[aria-label="Dismiss message"]').trigger('click');
     expect(wrapper.emitted('dismiss')).toHaveLength(1);
+  });
+});
+
+describe('Tooltip', () => {
+  it('shows its label on hover and removes it afterwards', async () => {
+    const wrapper = mount(Tooltip, {
+      props: { text: 'Close menu' },
+      slots: { default: '<button type="button" aria-label="Close menu">x</button>' },
+    });
+
+    const trigger = wrapper.find('.tooltip-trigger');
+    await trigger.trigger('mouseenter');
+    await nextTick();
+    expect(document.body.querySelector('[role="tooltip"]')?.textContent ?? '').toContain('Close menu');
+
+    await trigger.trigger('mouseleave');
+    expect(document.body.querySelector('[role="tooltip"]')).toBeNull();
+    wrapper.unmount();
   });
 });
 

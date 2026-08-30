@@ -23,7 +23,7 @@ export interface DatabaseRecord {
   username: string;
   siteId: string | null;
   ownerUserId: string | null;
-  /** Storage allocated to this database. Zero means unlimited. */
+  /** Storage allocated to this database. Zero means unlimited for this database. */
   sizeLimitBytes: number;
   /** Who may reach this database from off the machine. */
   network: DatabaseNetworkPolicy;

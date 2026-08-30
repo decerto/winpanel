@@ -39,7 +39,12 @@ const SUBMISSION_PORT = 587;
 /** Nothing sensible is ever this large, and it bounds a runaway response. */
 const PAGE_LIMIT = 500;
 
-type ObjectType = 'x:Domain' | 'x:Account' | 'x:NetworkListener' | 'x:Certificate';
+type ObjectType =
+  | 'x:Domain'
+  | 'x:Account'
+  | 'x:NetworkListener'
+  | 'x:Certificate'
+  | 'x:BlockedIp';
 
 /** One entry of a JMAP `methodResponses` array. */
 type MethodResponse = [string, Record<string, unknown>, string];
@@ -101,6 +106,22 @@ interface CertificatePayload {
   subjectAlternativeNames?: Record<string, unknown> | unknown[];
   issuer?: string;
   notValidAfter?: string;
+}
+
+interface BlockedIpPayload {
+  id?: string;
+  address?: string;
+  reason?: string;
+  createdAt?: string;
+  expiresAt?: string | null;
+}
+
+export interface BlockedIp {
+  id: string;
+  address: string;
+  reason: string;
+  createdAt: string;
+  expiresAt: string | null;
 }
 
 interface AccountPayload {
@@ -766,6 +787,51 @@ export class StalwartClient {
   async deleteMailbox(address: string): Promise<void> {
     const id = await this.requireAccountId(address);
     await this.set('x:Account', { destroy: [id] });
+  }
+
+  async listBlockedIps(): Promise<BlockedIp[]> {
+    const entries = await this.fetchByIds<BlockedIpPayload>(
+      'x:BlockedIp',
+      await this.queryIds('x:BlockedIp'),
+    );
+
+    return entries
+      .filter(
+        (entry): entry is BlockedIpPayload & { id: string; address: string; createdAt: string } =>
+          typeof entry.id === 'string' &&
+          typeof entry.address === 'string' &&
+          typeof entry.createdAt === 'string',
+      )
+      .map((entry) => ({
+        id: entry.id,
+        address: entry.address,
+        reason: entry.reason ?? 'manual',
+        createdAt: entry.createdAt,
+        expiresAt: entry.expiresAt ?? null,
+      }));
+  }
+
+  async createBlockedIp(address: string, expiresAt?: string): Promise<string> {
+    const result = await this.set('x:BlockedIp', {
+      create: {
+        new1: {
+          address,
+          reason: 'manual',
+          ...(expiresAt ? { expiresAt } : {}),
+        },
+      },
+    });
+
+    const id = (result.created as Record<string, { id?: unknown }> | undefined)?.new1?.id;
+    if (typeof id !== 'string') {
+      throw new MailServerError('The mail server created the block without returning its id.');
+    }
+
+    return id;
+  }
+
+  async deleteBlockedIp(id: string): Promise<void> {
+    await this.set('x:BlockedIp', { destroy: [id] });
   }
 
   /**

@@ -27,7 +27,10 @@ const CAPABILITIES = [
   'urn:ietf:params:jmap:core',
   'urn:ietf:params:jmap:mail',
   'urn:ietf:params:jmap:submission',
+  'urn:ietf:params:jmap:sieve',
 ];
+const BASE_CAPABILITIES = CAPABILITIES.slice(0, 3);
+const SIEVE_CAPABILITY = 'urn:ietf:params:jmap:sieve';
 
 const MAIL_CAPABILITY = 'urn:ietf:params:jmap:mail';
 
@@ -39,6 +42,18 @@ export const MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024;
 
 /** Nothing here is worth waiting on for longer than this. */
 const REQUEST_TIMEOUT_MS = 20_000;
+
+const SENDER_BLOCK_SCRIPT_NAME = 'winpanel-blocked-senders';
+const PANEL_SENDER_REQUIRE =
+  '# winpanel sender block requirement\nrequire ["address", "fileinto"];\n';
+const SENDER_BLOCK_START = '# winpanel sender blocks begin';
+const SENDER_BLOCK_END = '# winpanel sender blocks end';
+const SENDER_BLOCK_PATTERN = new RegExp(
+  `^${SENDER_BLOCK_START}\\r?\\n([\\s\\S]*?)^${SENDER_BLOCK_END}\\r?\\n?`,
+  'm',
+);
+const PANEL_SENDER_REQUIRE_PATTERN =
+  /^# winpanel sender block requirement\r?\nrequire \["address", "(?:discard|fileinto)"\];\r?\n/m;
 
 export class WebmailError extends Error {
   constructor(
@@ -101,8 +116,10 @@ export interface MessageDetail extends MessageSummary {
 
 interface JmapSession {
   apiUrl: string;
+  uploadUrl: string;
   downloadUrl: string;
   accountId: string;
+  sieve: boolean;
 }
 
 type MethodCall = [string, Record<string, unknown>, string];
@@ -136,6 +153,13 @@ interface EmailPayload {
   attachments?: EmailBodyPart[];
   messageId?: string[] | null;
   references?: string[] | null;
+}
+
+interface SieveScriptPayload {
+  id?: string;
+  name?: string;
+  blobId?: string;
+  isActive?: boolean;
 }
 
 const LIST_PROPERTIES = [
@@ -184,6 +208,58 @@ function bodyOf(
     if (found?.value) return { value: found.value, truncated: found.isTruncated === true };
   }
   return null;
+}
+
+function sieveString(value: string): string {
+  return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+}
+
+function stripPanelSenderBlocks(script: string): string {
+  return script.replace(SENDER_BLOCK_PATTERN, '').replace(PANEL_SENDER_REQUIRE_PATTERN, '');
+}
+
+function leadingRequirementsEnd(script: string): number {
+  const requirement = /^[\t \r\n]*(?:(?:#[^\r\n]*(?:\r\n|\n|$))|(?:\/\*[\s\S]*?\*\/\s*))*require\b[\s\S]*?;\s*/;
+  let offset = 0;
+
+  while (offset < script.length) {
+    const match = requirement.exec(script.slice(offset));
+    if (!match) break;
+    offset += match[0].length;
+  }
+
+  return offset;
+}
+
+function senderBlocksIn(script: string): string[] {
+  const match = SENDER_BLOCK_PATTERN.exec(script);
+  if (!match) return [];
+
+  const addresses = [
+    ...(match[1] ?? '').matchAll(
+      /^if address :is \["From"\] "((?:\\.|[^"\\])*)" \{\s*$/gm,
+    ),
+  ]
+    .map((entry) => (entry[1] ?? '').replace(/\\(.)/g, '$1').toLowerCase())
+    .filter((address) => address.length > 0);
+
+  return [...new Set(addresses)];
+}
+
+function withSenderBlocks(script: string, senders: readonly string[]): string {
+  const base = stripPanelSenderBlocks(script);
+
+  if (senders.length === 0) return base.trim().length > 0 ? base : 'keep;\n';
+
+  const withRequirement = `${PANEL_SENDER_REQUIRE}${base}`;
+  const block = [SENDER_BLOCK_START];
+  for (const sender of senders) {
+    block.push(`if address :is ["From"] ${sieveString(sender)} {`, '    fileinto "Junk";', '}');
+  }
+  block.push(SENDER_BLOCK_END, '');
+  const insertion = leadingRequirementsEnd(withRequirement);
+
+  return `${withRequirement.slice(0, insertion)}${block.join('\n')}\n${withRequirement.slice(insertion)}`;
 }
 
 export class WebmailClient {
@@ -256,7 +332,9 @@ export class WebmailClient {
 
     const body = (await response.json()) as {
       apiUrl?: string;
+      uploadUrl?: string;
       downloadUrl?: string;
+      capabilities?: Record<string, unknown>;
       primaryAccounts?: Record<string, string>;
       accounts?: Record<string, unknown>;
     };
@@ -270,8 +348,10 @@ export class WebmailClient {
 
     this.cachedSession = {
       apiUrl: this.rebase(body.apiUrl),
+      uploadUrl: body.uploadUrl ? this.rebase(body.uploadUrl) : '',
       downloadUrl: body.downloadUrl ?? '',
       accountId,
+      sieve: body.capabilities?.[SIEVE_CAPABILITY] !== undefined,
     };
 
     return this.cachedSession;
@@ -289,7 +369,10 @@ export class WebmailClient {
     const response = await this.request(session.apiUrl, {
       method: 'POST',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify({ using: CAPABILITIES, methodCalls: calls }),
+      body: JSON.stringify({
+        using: session.sieve ? CAPABILITIES : BASE_CAPABILITIES,
+        methodCalls: calls,
+      }),
     });
 
     const body = (await response.json()) as { methodResponses?: MethodCall[] };
@@ -516,6 +599,127 @@ export class WebmailClient {
         destroy: [...ids],
       }),
     );
+  }
+
+  private async uploadScript(script: string): Promise<string> {
+    const session = await this.session();
+
+    if (!session.uploadUrl) {
+      throw new WebmailError('This mail server does not offer mailbox filters.');
+    }
+
+    const response = await this.request(
+      session.uploadUrl
+        .replace('{accountId}', encodeURIComponent(session.accountId))
+        .replace('{type}', 'text%2Fplain'),
+      {
+        method: 'POST',
+        headers: { 'content-type': 'text/plain; charset=utf-8', accept: 'application/json' },
+        body: Buffer.from(script, 'utf8'),
+      },
+    );
+    const body = (await response.json()) as { blobId?: string };
+
+    if (!body.blobId) {
+      throw new WebmailError('The mail server accepted the filter without returning its blob.');
+    }
+
+    return body.blobId;
+  }
+
+  private async downloadScript(blobId: string): Promise<string> {
+    const session = await this.session();
+    const url = this.rebase(
+      session.downloadUrl
+        .replace('{accountId}', encodeURIComponent(session.accountId))
+        .replace('{blobId}', encodeURIComponent(blobId))
+        .replace('{type}', 'text%2Fplain')
+        .replace('{name}', 'filter.sieve'),
+    );
+    const response = await this.request(url, { method: 'GET' });
+    return Buffer.from(await response.arrayBuffer()).toString('utf8');
+  }
+
+  private async sieveScripts(): Promise<SieveScriptPayload[]> {
+    const session = await this.session();
+    if (!session.sieve) {
+      throw new WebmailError('This mail server does not support mailbox filters.');
+    }
+
+    const { accountId } = session;
+    const result = await this.invoke<{ list?: SieveScriptPayload[] }>('SieveScript/get', {
+      accountId,
+      ids: null,
+      properties: ['id', 'name', 'blobId', 'isActive'],
+    });
+
+    return (result.list ?? []).filter((script) => script.id && script.blobId);
+  }
+
+  async blockedSenders(): Promise<string[]> {
+    const active = (await this.sieveScripts()).find((script) => script.isActive);
+    if (!active?.blobId) return [];
+
+    return senderBlocksIn(await this.downloadScript(active.blobId));
+  }
+
+  async setSenderBlocked(sender: string, blocked: boolean): Promise<void> {
+    const session = await this.session();
+    const scripts = await this.sieveScripts();
+    const active = scripts.find((script) => script.isActive);
+    const managed = scripts.find((script) => script.name === SENDER_BLOCK_SCRIPT_NAME);
+    let target = blocked ? active ?? managed : undefined;
+    let currentScript = '';
+
+    if (target?.blobId) {
+      currentScript = await this.downloadScript(target.blobId);
+    } else if (!blocked) {
+      if (!managed?.blobId) return;
+      const managedScript = await this.downloadScript(managed.blobId);
+      if (!SENDER_BLOCK_PATTERN.test(managedScript)) return;
+      target = managed;
+      currentScript = managedScript;
+    }
+
+    if (!target && !blocked) return;
+
+    if (!blocked && !SENDER_BLOCK_PATTERN.test(currentScript)) return;
+
+    const senders = new Set(senderBlocksIn(currentScript));
+    const wanted = sender.trim().toLowerCase();
+
+    if (blocked) {
+      if (senders.has(wanted)) return;
+      senders.add(wanted);
+    } else {
+      if (!senders.has(wanted)) return;
+      senders.delete(wanted);
+    }
+
+    const script = withSenderBlocks(currentScript, [...senders].sort());
+    const blobId = await this.uploadScript(script);
+
+    if (target?.id) {
+      const result = await this.invoke<Record<string, unknown>>('SieveScript/set', {
+        accountId: session.accountId,
+        update: { [target.id]: { blobId } },
+        ...(blocked && !target.isActive ? { onSuccessActivateScript: target.id } : {}),
+      });
+      WebmailClient.throwSetErrors(result);
+      return;
+    }
+
+    const result = await this.invoke<Record<string, unknown>>('SieveScript/set', {
+      accountId: session.accountId,
+      create: {
+        senderBlocks: {
+          name: SENDER_BLOCK_SCRIPT_NAME,
+          blobId,
+        },
+      },
+      onSuccessActivateScript: '#senderBlocks',
+    });
+    WebmailClient.throwSetErrors(result);
   }
 
   /** One attachment, as bytes. Refused rather than truncated when huge. */

@@ -4,6 +4,7 @@ import { ArrowDownToLine, Boxes, Play, RefreshCw, Square, Trash2 } from 'lucide-
 import { api, describeError } from '../lib/api';
 import AlertMessage from './AlertMessage.vue';
 import LoadingBlock from './LoadingBlock.vue';
+import Tooltip from './Tooltip.vue';
 
 /**
  * The programs the panel drives: web server, mail server, git.
@@ -375,15 +376,17 @@ onUnmounted(stopPolling);
               Reinstall
             </button>
 
-            <button
-              type="button"
-              class="btn btn-danger btn-sm"
-              :disabled="busyId !== null"
-              :aria-label="`Remove ${component.name}`"
-              @click="uninstall(component)"
-            >
-              <Trash2 :size="13" />
-            </button>
+            <Tooltip :text="`Remove ${component.name}`">
+              <button
+                type="button"
+                class="btn btn-danger btn-sm"
+                :disabled="busyId !== null"
+                :aria-label="`Remove ${component.name}`"
+                @click="uninstall(component)"
+              >
+                <Trash2 :size="13" aria-hidden="true" />
+              </button>
+            </Tooltip>
           </template>
 
           <button

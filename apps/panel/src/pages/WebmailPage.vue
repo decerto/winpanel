@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router';
 import {
   ArrowLeft,
   Archive,
+  Ban,
   Inbox,
   LogOut,
   Mail,
@@ -15,6 +16,7 @@ import {
   Send,
   Star,
   Trash2,
+  X,
 } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
 import { formatBytes, formatCount } from '../lib/format';
@@ -22,6 +24,7 @@ import AlertMessage from '../components/AlertMessage.vue';
 import EmptyState from '../components/EmptyState.vue';
 import LoadingBlock from '../components/LoadingBlock.vue';
 import PageHeader from '../components/PageHeader.vue';
+import Tooltip from '../components/Tooltip.vue';
 
 /**
  * Reading a mailbox from the panel.
@@ -33,8 +36,9 @@ import PageHeader from '../components/PageHeader.vue';
  * yours.
  *
  * It is deliberately not a replacement for Outlook or Thunderbird. There is no
- * offline copy, no calendar, no rules — for daily use a real mail program is
- * better, and the settings to configure one are on the website's Email tab.
+ * offline copy, no calendar, and only a simple sender-block list — for daily
+ * use a real mail program is better, and the settings to configure one are on
+ * the website's Email tab.
  *
  * Signing in here is the *mailbox* password, not the panel's. Being able to
  * administer a server is not the same as being allowed to read the mail on it,
@@ -76,6 +80,9 @@ const loading = ref(false);
 const busy = ref(false);
 const error = ref<string | null>(null);
 const notice = ref<string | null>(null);
+const blockedSenders = ref<string[]>([]);
+const blockedSendersLoading = ref(false);
+const senderAction = ref<string | null>(null);
 
 const composing = ref(false);
 const draft = ref({ to: '', cc: '', subject: '', text: '', inReplyTo: null as string | null });
@@ -112,6 +119,16 @@ const sortedFolders = computed(() =>
 const currentFolder = computed(() => folders.value.find((folder) => folder.id === folderId.value));
 const trashFolder = computed(() => folders.value.find((folder) => folder.role === 'trash'));
 const inTrash = computed(() => currentFolder.value?.role === 'trash');
+const openSender = computed(
+  () =>
+    open.value?.from
+      .find((person) => person.email.trim().length > 0)
+      ?.email.trim()
+      .toLowerCase() ?? null,
+);
+const openSenderBlocked = computed(
+  () => openSender.value !== null && blockedSenders.value.includes(openSender.value),
+);
 
 const lastPage = computed(() => Math.max(0, Math.ceil(total.value / PAGE_SIZE) - 1));
 const page = computed(() => Math.floor(position.value / PAGE_SIZE));
@@ -157,6 +174,8 @@ function forget(): void {
   folders.value = [];
   messages.value = [];
   open.value = null;
+  blockedSenders.value = [];
+  senderAction.value = null;
   sessionStorage.removeItem(TOKEN_KEY);
   sessionStorage.removeItem(ADDRESS_KEY);
 }
@@ -193,6 +212,7 @@ async function signIn(): Promise<void> {
     signInPassword.value = '';
 
     await loadFolders();
+    await loadBlockedSenders();
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -223,6 +243,22 @@ async function loadFolders(): Promise<void> {
 
   loading.value = false;
   if (folderId.value) await loadMessages();
+}
+
+async function loadBlockedSenders(): Promise<void> {
+  if (!token.value) return;
+  blockedSendersLoading.value = true;
+
+  const result = await guard(() =>
+    api.webmail.blockedSenders.query({ token: token.value! }),
+  );
+
+  if (result) blockedSenders.value = [...result].sort((a, b) => a.localeCompare(b));
+  blockedSendersLoading.value = false;
+}
+
+async function refreshMailbox(): Promise<void> {
+  await Promise.all([loadFolders(), loadBlockedSenders()]);
 }
 
 async function loadMessages(): Promise<void> {
@@ -280,6 +316,38 @@ async function toggleFlag(message: Message): Promise<void> {
       flagged: message.flagged,
     }),
   );
+}
+
+async function setSenderBlocked(sender: string, blocked: boolean): Promise<void> {
+  if (!token.value) return;
+
+  const normalized = sender.trim().toLowerCase();
+  if (normalized.length === 0 || senderAction.value) return;
+
+  const question = blocked
+    ? `Block messages from ${normalized}? New messages from this address will go to Junk.`
+    : `Allow messages from ${normalized} again?`;
+  if (!window.confirm(question)) return;
+
+  senderAction.value = normalized;
+  error.value = null;
+  notice.value = null;
+
+  const result = await guard(() =>
+    blocked
+      ? api.webmail.blockSender.mutate({ token: token.value!, sender: normalized })
+      : api.webmail.unblockSender.mutate({ token: token.value!, sender: normalized }),
+  );
+
+  senderAction.value = null;
+  if (!result) return;
+
+  blockedSenders.value = blocked
+    ? [...new Set([...blockedSenders.value, normalized])].sort((a, b) => a.localeCompare(b))
+    : blockedSenders.value.filter((entry) => entry !== normalized);
+  notice.value = blocked
+    ? `Messages from ${normalized} are now blocked.`
+    : `Messages from ${normalized} are allowed again.`;
 }
 
 async function discard(id: string): Promise<void> {
@@ -439,7 +507,7 @@ onMounted(() => {
   if (stored) {
     token.value = stored;
     address.value = sessionStorage.getItem(ADDRESS_KEY) ?? '';
-    void loadFolders();
+    void Promise.all([loadFolders(), loadBlockedSenders()]);
   }
 });
 </script>
@@ -460,7 +528,7 @@ onMounted(() => {
             type="button"
             class="btn btn-ghost"
             :disabled="loading"
-            @click="loadFolders"
+            @click="refreshMailbox"
           >
             <RefreshCw :size="14" :class="loading ? 'animate-spin' : ''" aria-hidden="true" />
             Refresh
@@ -484,20 +552,20 @@ onMounted(() => {
         <Inbox :size="15" class="text-ink-faint" aria-hidden="true" /> Open a mailbox
       </h2>
       <p class="mt-1 text-sm text-ink-muted">
-        Use the email address and the password that was shown when the mailbox was created. This
-        is not your panel sign-in.
+        Use the address of a mailbox hosted on this server and the password shown when it was
+        created. This is not your panel sign-in.
       </p>
 
       <form class="mt-4 space-y-3" @submit.prevent="signIn">
         <div>
-          <label for="webmail-address" class="label">Email address</label>
+          <label for="webmail-address" class="label">Mailbox address on this server</label>
           <input
             id="webmail-address"
             v-model="signInAddress"
             type="email"
             class="field font-mono"
             autocomplete="username"
-            placeholder="you@example.com"
+            placeholder="name@your-domain.example"
             required
           />
         </div>
@@ -564,6 +632,38 @@ onMounted(() => {
             </button>
           </li>
         </ul>
+
+        <section class="border-t border-line px-4 py-4" aria-labelledby="blocked-senders-heading">
+          <div class="flex items-center justify-between gap-2">
+            <h2 id="blocked-senders-heading" class="text-xs font-semibold uppercase tracking-wide text-ink-faint">
+              Blocked senders
+            </h2>
+            <span v-if="blockedSenders.length > 0" class="text-xs text-ink-faint">
+              {{ blockedSenders.length }}
+            </span>
+          </div>
+
+          <p v-if="blockedSendersLoading" class="mt-3 text-xs text-ink-faint">Loading...</p>
+          <p v-else-if="blockedSenders.length === 0" class="mt-3 text-xs leading-relaxed text-ink-faint">
+            No senders are blocked.
+          </p>
+          <ul v-else class="mt-2 divide-y divide-line/70">
+            <li v-for="sender in blockedSenders" :key="sender" class="flex items-center gap-2 py-2">
+              <span class="min-w-0 flex-1 truncate font-mono text-xs text-ink-muted">{{ sender }}</span>
+              <Tooltip :text="`Allow messages from ${sender}`">
+                <button
+                  type="button"
+                  class="shrink-0 rounded-md p-1.5 text-ink-faint transition-colors hover:text-ok"
+                  :disabled="busy || senderAction !== null"
+                  :aria-label="`Allow messages from ${sender}`"
+                  @click="setSenderBlocked(sender, false)"
+                >
+                  <X :size="14" aria-hidden="true" />
+                </button>
+              </Tooltip>
+            </li>
+          </ul>
+        </section>
       </nav>
 
       <!-- Compose -->
@@ -622,6 +722,17 @@ onMounted(() => {
           </button>
           <button type="button" class="btn btn-ghost btn-sm" @click="reply">
             <Reply :size="14" aria-hidden="true" /> Reply
+          </button>
+          <button
+            v-if="openSender"
+            type="button"
+            class="btn btn-ghost btn-sm"
+            :disabled="busy || senderAction !== null"
+            :title="openSenderBlocked ? 'Allow this sender' : 'Block this sender'"
+            @click="setSenderBlocked(openSender, !openSenderBlocked)"
+          >
+            <Ban :size="14" aria-hidden="true" />
+            {{ openSenderBlocked ? 'Allow sender' : 'Block sender' }}
           </button>
           <button
             type="button"
@@ -793,19 +904,25 @@ onMounted(() => {
                   class="text-ink-faint"
                   aria-hidden="true"
                 />
-                <button
-                  type="button"
-                  class="rounded-md p-1.5 transition-colors"
-                  :class="
-                    message.flagged
-                      ? 'text-warn'
-                      : 'text-ink-faint opacity-0 hover:text-warn group-hover:opacity-100'
-                  "
-                  :aria-label="message.flagged ? 'Remove star' : 'Add star'"
-                  @click.stop="toggleFlag(message)"
-                >
-                  <Star :size="15" :fill="message.flagged ? 'currentColor' : 'none'" />
-                </button>
+                <Tooltip :text="message.flagged ? 'Remove star' : 'Add star'">
+                  <button
+                    type="button"
+                    class="rounded-md p-1.5 transition-colors"
+                    :class="
+                      message.flagged
+                        ? 'text-warn'
+                        : 'text-ink-faint opacity-0 hover:text-warn group-hover:opacity-100'
+                    "
+                    :aria-label="message.flagged ? 'Remove star' : 'Add star'"
+                    @click.stop="toggleFlag(message)"
+                  >
+                    <Star
+                      :size="15"
+                      :fill="message.flagged ? 'currentColor' : 'none'"
+                      aria-hidden="true"
+                    />
+                  </button>
+                </Tooltip>
               </div>
             </div>
           </li>

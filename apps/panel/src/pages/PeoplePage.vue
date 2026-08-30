@@ -1,12 +1,25 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { Gamepad2, KeyRound, ListChecks, Pencil, RefreshCw, Trash2, UserPlus, UsersRound } from 'lucide-vue-next';
+import {
+  Database,
+  Gamepad2,
+  Globe2,
+  Inbox,
+  KeyRound,
+  ListChecks,
+  Pencil,
+  RefreshCw,
+  Trash2,
+  UserPlus,
+  UsersRound,
+} from 'lucide-vue-next';
 import { PASSWORD_MIN_LENGTH, ROLE_LABELS, roleAtLeast, type UserRole } from '@winpanel/shared';
 import { api, describeError } from '../lib/api';
 import { formatBytes, timeAgo } from '../lib/format';
 import AlertMessage from '../components/AlertMessage.vue';
 import EmptyState from '../components/EmptyState.vue';
 import PageHeader from '../components/PageHeader.vue';
+import Tooltip from '../components/Tooltip.vue';
 
 /**
  * The people who can sign in to this server.
@@ -17,8 +30,8 @@ import PageHeader from '../components/PageHeader.vue';
  * role can reach rather than leaving it to a single word in a dropdown.
  *
  * Limits are entered in the units people actually think in — a number of
- * websites, a number of gigabytes — and left blank for "no limit", because an
- * empty field reads as unlimited far more naturally than a zero does.
+ * websites, a number of gigabytes — with an explicit mode so zero can keep
+ * its useful meaning: no access for count limits, and no storage for quotas.
  */
 
 type Person = Awaited<ReturnType<typeof api.users.list.query>>[number];
@@ -98,6 +111,10 @@ async function run(key: string, action: () => Promise<void>): Promise<void> {
 
 /* --------------------------------------------------------------- the form */
 
+type LimitMode = 'limited' | 'unlimited';
+type SiteDiskMode = 'limited' | 'server-default';
+type CountLimitKey = 'site' | 'subdomain' | 'mailbox' | 'gameServer' | 'database';
+
 interface FormState {
   open: boolean;
   /** Null when creating somebody new. */
@@ -105,14 +122,22 @@ interface FormState {
   username: string;
   password: string;
   role: UserRole;
-  /** Empty means no limit, which is what a blank field should mean. */
   siteLimit: string;
+  siteLimitMode: LimitMode;
   subdomainLimit: string;
+  subdomainLimitMode: LimitMode;
+  mailboxLimit: string;
+  mailboxLimitMode: LimitMode;
   mailQuotaGb: string;
+  mailQuotaMode: LimitMode;
   siteDiskQuotaGb: string;
+  siteDiskQuotaMode: SiteDiskMode;
   gameServerLimit: string;
+  gameServerLimitMode: LimitMode;
   databaseLimit: string;
+  databaseLimitMode: LimitMode;
   databaseQuotaGb: string;
+  databaseQuotaMode: LimitMode;
   gameServerProviders: string[];
 }
 
@@ -124,17 +149,26 @@ function blankForm(): FormState {
     password: '',
     role: 'user',
     siteLimit: '1',
+    siteLimitMode: 'limited',
     subdomainLimit: '5',
+    subdomainLimitMode: 'limited',
+    mailboxLimit: '5',
+    mailboxLimitMode: 'limited',
     mailQuotaGb: '5',
+    mailQuotaMode: 'limited',
     siteDiskQuotaGb: '20',
+    siteDiskQuotaMode: 'limited',
     gameServerLimit: '1',
+    gameServerLimitMode: 'limited',
     /*
      * Databases start at none. A customer who was not sold databases should
      * not find the whole section waiting in their panel — raising this is how
      * an administrator decides they were.
      */
     databaseLimit: '0',
-    databaseQuotaGb: '0',
+    databaseLimitMode: 'limited',
+    databaseQuotaGb: '',
+    databaseQuotaMode: 'unlimited',
     gameServerProviders: [],
   };
 }
@@ -156,22 +190,42 @@ function openEdit(person: Person): void {
     password: '',
     role: person.role,
     siteLimit: person.siteLimit === null ? '' : String(person.siteLimit),
+    siteLimitMode: person.siteLimit === null ? 'unlimited' : 'limited',
     subdomainLimit:
       person.subdomainLimit === null || person.subdomainLimit === undefined
         ? ''
         : String(person.subdomainLimit),
+    subdomainLimitMode:
+      person.subdomainLimit === null || person.subdomainLimit === undefined ? 'unlimited' : 'limited',
+    mailboxLimit:
+      person.mailboxLimit === null || person.mailboxLimit === undefined ? '' : String(person.mailboxLimit),
+    mailboxLimitMode:
+      person.mailboxLimit === null || person.mailboxLimit === undefined ? 'unlimited' : 'limited',
     mailQuotaGb: person.mailQuotaBytes === null ? '' : String(person.mailQuotaBytes / GB),
+    mailQuotaMode: person.mailQuotaBytes === null ? 'unlimited' : 'limited',
     siteDiskQuotaGb:
       person.siteDiskQuotaBytes === null ? '' : String(person.siteDiskQuotaBytes / GB),
+    siteDiskQuotaMode: person.siteDiskQuotaBytes === null ? 'server-default' : 'limited',
     gameServerLimit:
       person.gameServerLimit === null || person.gameServerLimit === undefined
         ? ''
         : String(person.gameServerLimit),
+    gameServerLimitMode:
+      person.gameServerLimit === null || person.gameServerLimit === undefined ? 'unlimited' : 'limited',
     databaseLimit:
       person.databaseLimit === null || person.databaseLimit === undefined
         ? ''
         : String(person.databaseLimit),
-    databaseQuotaGb: String((person.databaseQuotaBytes ?? 0) / GB),
+    databaseLimitMode:
+      person.databaseLimit === null || person.databaseLimit === undefined ? 'unlimited' : 'limited',
+    databaseQuotaGb:
+      person.databaseQuotaBytes === null || person.databaseQuotaBytes === undefined
+        ? ''
+        : String(person.databaseQuotaBytes / GB),
+    databaseQuotaMode:
+      person.databaseQuotaBytes === null || person.databaseQuotaBytes === undefined
+        ? 'unlimited'
+        : 'limited',
     gameServerProviders: [...(person.gameServerProviders ?? [])],
   };
 }
@@ -189,45 +243,142 @@ function suggestPassword(): string {
   return Array.from(values, (value) => alphabet[value % alphabet.length]).join('');
 }
 
-/** Blank means no limit; anything else has to be a sensible number. */
-function toLimit(value: string, multiplier = 1): number | null {
-  const trimmed = value.trim();
-  if (trimmed === '') return null;
-  const parsed = Number(trimmed);
-  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed * multiplier) : null;
+const countLimitFields = {
+  site: { value: 'siteLimit', mode: 'siteLimitMode' },
+  subdomain: { value: 'subdomainLimit', mode: 'subdomainLimitMode' },
+  mailbox: { value: 'mailboxLimit', mode: 'mailboxLimitMode' },
+  gameServer: { value: 'gameServerLimit', mode: 'gameServerLimitMode' },
+  database: { value: 'databaseLimit', mode: 'databaseLimitMode' },
+} as const;
+
+function setCountLimitMode(key: CountLimitKey, mode: LimitMode): void {
+  const fields = countLimitFields[key];
+  form.value[fields.mode] = mode;
+  if (mode === 'unlimited') {
+    form.value[fields.value] = '';
+  } else if (form.value[fields.value].trim() === '') {
+    // Zero is an intentional, visible "no access" starting point.
+    form.value[fields.value] = '0';
+  }
 }
 
-/** Database storage uses zero, rather than null, to mean unlimited. */
-function toStorageQuota(value: string): number {
-  return toLimit(value, GB) ?? 0;
+function setMailQuotaMode(mode: LimitMode): void {
+  form.value.mailQuotaMode = mode;
+  if (mode === 'unlimited') {
+    form.value.mailQuotaGb = '';
+  }
+}
+
+function setSiteDiskQuotaMode(mode: SiteDiskMode): void {
+  form.value.siteDiskQuotaMode = mode;
+  if (mode === 'server-default') {
+    form.value.siteDiskQuotaGb = '';
+  }
+}
+
+function setDatabaseQuotaMode(mode: LimitMode): void {
+  form.value.databaseQuotaMode = mode;
+  if (mode === 'unlimited') {
+    form.value.databaseQuotaGb = '';
+  } else if (form.value.databaseQuotaGb.trim() === '') {
+    form.value.databaseQuotaGb = '0';
+  }
+}
+
+function validateCountLimit(label: string, value: string, mode: LimitMode, maximum: number): string | null {
+  if (mode === 'unlimited') return null;
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(Number(trimmed))) {
+    return `${label}: enter a whole number, or choose No limit.`;
+  }
+  if (Number(trimmed) > maximum) return `${label}: enter a number up to ${maximum}.`;
+  return null;
+}
+
+function validateGbQuota(
+  label: string,
+  value: string,
+  mode: LimitMode | SiteDiskMode,
+  minimum: number,
+): string | null {
+  if (mode === 'unlimited' || mode === 'server-default') return null;
+  const parsed = Number(value.trim());
+  if (!value.trim() || !Number.isFinite(parsed) || parsed < minimum) {
+    const minimumText = minimum === 0 ? 'zero or more' : `at least ${minimum} GB`;
+    return `${label}: enter ${minimumText}, or choose the unlimited/default option.`;
+  }
+  if (!Number.isSafeInteger(Math.round(parsed * GB))) {
+    return `${label}: enter a smaller value.`;
+  }
+  return null;
+}
+
+const formValidationError = computed(() => {
+  if (form.value.role !== 'user') return null;
+
+  const checks = [
+    validateCountLimit('Websites', form.value.siteLimit, form.value.siteLimitMode, 1000),
+    validateCountLimit('Subdomains', form.value.subdomainLimit, form.value.subdomainLimitMode, 1000),
+    validateCountLimit('Mailboxes', form.value.mailboxLimit, form.value.mailboxLimitMode, 10000),
+    validateGbQuota('Email storage', form.value.mailQuotaGb, form.value.mailQuotaMode, 0),
+    validateGbQuota('Disk per site', form.value.siteDiskQuotaGb, form.value.siteDiskQuotaMode, 0),
+    validateCountLimit('Game servers', form.value.gameServerLimit, form.value.gameServerLimitMode, 1000),
+    databasesAvailable.value
+      ? validateCountLimit('Databases', form.value.databaseLimit, form.value.databaseLimitMode, 1000)
+      : null,
+    databasesAvailable.value
+      ? validateGbQuota('Database storage', form.value.databaseQuotaGb, form.value.databaseQuotaMode, 0)
+      : null,
+  ];
+  return checks.find((message): message is string => message !== null) ?? null;
+});
+
+function countValue(value: string, mode: LimitMode): number | null {
+  return mode === 'unlimited' ? null : Number(value.trim());
+}
+
+function quotaValue(value: string, mode: LimitMode | SiteDiskMode): number | null {
+  if (mode === 'unlimited' || mode === 'server-default') return null;
+  return Math.round(Number(value.trim()) * GB);
+}
+
+function databaseQuotaValue(value: string, mode: LimitMode): number | null {
+  return mode === 'unlimited' ? null : Math.round(Number(value.trim()) * GB);
 }
 
 const canSubmit = computed(() => {
+  if (formValidationError.value) return false;
   if (form.value.editing) return true;
   return form.value.username.trim().length >= 3 && form.value.password.length >= PASSWORD_MIN_LENGTH;
 });
 
 async function submitForm(): Promise<void> {
   const state = form.value;
+  if (formValidationError.value) return;
 
   const limits =
     state.role === 'user'
       ? {
-          siteLimit: toLimit(state.siteLimit),
-          subdomainLimit: toLimit(state.subdomainLimit),
-          mailQuotaBytes: toLimit(state.mailQuotaGb, GB),
-          siteDiskQuotaBytes: toLimit(state.siteDiskQuotaGb, GB),
-          gameServerLimit: toLimit(state.gameServerLimit),
-          databaseLimit: toLimit(state.databaseLimit),
-          databaseQuotaBytes: toStorageQuota(state.databaseQuotaGb),
+          siteLimit: countValue(state.siteLimit, state.siteLimitMode),
+          subdomainLimit: countValue(state.subdomainLimit, state.subdomainLimitMode),
+          mailboxLimit: countValue(state.mailboxLimit, state.mailboxLimitMode),
+          mailQuotaBytes: quotaValue(state.mailQuotaGb, state.mailQuotaMode),
+          siteDiskQuotaBytes: quotaValue(state.siteDiskQuotaGb, state.siteDiskQuotaMode),
+          gameServerLimit: countValue(state.gameServerLimit, state.gameServerLimitMode),
+          databaseLimit: countValue(state.databaseLimit, state.databaseLimitMode),
+          databaseQuotaBytes: databaseQuotaValue(state.databaseQuotaGb, state.databaseQuotaMode),
           gameServerProviders: state.gameServerProviders,
         }
       : {
           siteLimit: null,
           subdomainLimit: null,
+          mailboxLimit: null,
           mailQuotaBytes: null,
           siteDiskQuotaBytes: null,
-          databaseQuotaBytes: 0,
+          gameServerLimit: null,
+          databaseLimit: null,
+          databaseQuotaBytes: null,
+          gameServerProviders: [],
         };
 
   await run('form', async () => {
@@ -299,6 +450,7 @@ async function remove(person: Person): Promise<void> {
 function describeSites(person: Person): string {
   if (person.role !== 'user') return 'All websites';
   if (person.siteLimit === null) return `${person.siteCount} of unlimited`;
+  if (person.siteLimit === 0) return 'No websites';
   return `${person.siteCount} of ${person.siteLimit}`;
 }
 
@@ -307,12 +459,23 @@ function describeSubdomains(person: Person): string {
   if (person.subdomainLimit === null || person.subdomainLimit === undefined) {
     return `${person.subdomainCount ?? 0} of unlimited`;
   }
+  if (person.subdomainLimit === 0) return 'No subdomains';
   return `${person.subdomainCount ?? 0} of ${person.subdomainLimit}`;
 }
 
+function describeMailboxes(person: Person): string {
+  if (person.role !== 'user') return 'All mailboxes';
+  if (person.mailboxLimit === null || person.mailboxLimit === undefined) {
+    return 'Unlimited';
+  }
+  if (person.mailboxLimit === 0) return 'No mailboxes';
+  return `${person.mailboxLimit} allowed`;
+}
+
 function describeMail(person: Person): string {
-  if (person.role !== 'user') return 'No limit';
-  return person.mailQuotaBytes === null ? 'No limit' : formatBytes(person.mailQuotaBytes);
+  if (person.role !== 'user' || person.mailQuotaBytes === null) return 'No limit';
+  if (person.mailQuotaBytes === 0) return 'No storage';
+  return formatBytes(person.mailQuotaBytes);
 }
 
 function describeGameServers(person: Person): string {
@@ -320,6 +483,7 @@ function describeGameServers(person: Person): string {
   if (person.gameServerLimit === null || person.gameServerLimit === undefined) {
     return `${person.gameServerCount ?? 0} of unlimited`;
   }
+  if (person.gameServerLimit === 0) return 'No game servers';
   return `${person.gameServerCount ?? 0} of ${person.gameServerLimit}`;
 }
 
@@ -328,11 +492,19 @@ function describeDatabases(person: Person): string {
   if (person.databaseLimit === null || person.databaseLimit === undefined) {
     return `${person.databaseCount ?? 0} of unlimited`;
   }
+  if (person.databaseLimit === 0) return 'No databases';
   return `${person.databaseCount ?? 0} of ${person.databaseLimit}`;
 }
 
 function describeDatabaseStorage(person: Person): string {
-  if (person.role !== 'user' || !person.databaseQuotaBytes) return 'No limit';
+  if (
+    person.role !== 'user' ||
+    person.databaseQuotaBytes === null ||
+    person.databaseQuotaBytes === undefined
+  ) {
+    return 'No limit';
+  }
+  if (person.databaseQuotaBytes === 0) return 'No storage';
   return `${formatBytes(person.databaseAllocatedBytes ?? 0)} of ${formatBytes(person.databaseQuotaBytes)}`;
 }
 
@@ -344,6 +516,9 @@ function toggleGameProvider(catalogId: string): void {
 }
 
 const allowsAnyGame = computed(() => form.value.gameServerProviders.length === 0);
+const gameServersBlocked = computed(
+  () => form.value.gameServerLimitMode === 'limited' && Number(form.value.gameServerLimit) === 0,
+);
 
 function setGameAccess(mode: 'any' | 'selected'): void {
   if (mode === 'any') {
@@ -438,25 +613,29 @@ function selectAllGames(): void {
             </div>
 
             <div class="flex flex-wrap justify-end gap-1">
-                <button
-                  type="button"
-                  class="btn btn-ghost btn-sm"
-                  :disabled="!canManage(person) || busy !== null"
-                  title="Change role and limits"
-                  @click="openEdit(person)"
-                >
-                  <Pencil :size="14" aria-hidden="true" />
-                </button>
+                <Tooltip :text="`Change role and limits for ${person.username}`">
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-sm"
+                    :disabled="!canManage(person) || busy !== null"
+                    :aria-label="`Change role and limits for ${person.username}`"
+                    @click="openEdit(person)"
+                  >
+                    <Pencil :size="14" aria-hidden="true" />
+                  </button>
+                </Tooltip>
 
-                <button
-                  type="button"
-                  class="btn btn-ghost btn-sm"
-                  :disabled="!canManage(person) || busy !== null"
-                  title="Set a new password"
-                  @click="openReset(person)"
-                >
-                  <KeyRound :size="14" aria-hidden="true" />
-                </button>
+                <Tooltip :text="`Set a new password for ${person.username}`">
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-sm"
+                    :disabled="!canManage(person) || busy !== null"
+                    :aria-label="`Set a new password for ${person.username}`"
+                    @click="openReset(person)"
+                  >
+                    <KeyRound :size="14" aria-hidden="true" />
+                  </button>
+                </Tooltip>
 
                 <button
                   type="button"
@@ -468,19 +647,21 @@ function selectAllGames(): void {
                   {{ person.disabled ? 'Switch on' : 'Switch off' }}
                 </button>
 
-                <button
-                  type="button"
-                  class="btn btn-ghost btn-sm text-danger"
-                  :disabled="!canManage(person) || busy !== null"
-                  title="Delete this account"
-                  @click="remove(person)"
-                >
-                  <Trash2 :size="14" aria-hidden="true" />
-                </button>
+                <Tooltip :text="`Delete ${person.username}`">
+                  <button
+                    type="button"
+                    class="btn btn-ghost btn-sm text-danger"
+                    :disabled="!canManage(person) || busy !== null"
+                    :aria-label="`Delete ${person.username}`"
+                    @click="remove(person)"
+                  >
+                    <Trash2 :size="14" aria-hidden="true" />
+                  </button>
+                </Tooltip>
             </div>
           </div>
 
-          <dl class="mt-4 grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3 lg:grid-cols-7">
+          <dl class="mt-4 grid grid-cols-2 gap-x-5 gap-y-3 sm:grid-cols-3 lg:grid-cols-8">
             <div>
               <dt class="text-xs text-ink-faint">Websites</dt>
               <dd class="mt-0.5 text-sm text-ink-muted">{{ describeSites(person) }}</dd>
@@ -502,7 +683,11 @@ function selectAllGames(): void {
               <dd class="mt-0.5 text-sm text-ink-muted">{{ describeDatabaseStorage(person) }}</dd>
             </div>
             <div>
-              <dt class="text-xs text-ink-faint">Email</dt>
+              <dt class="text-xs text-ink-faint">Mailboxes</dt>
+              <dd class="mt-0.5 text-sm text-ink-muted">{{ describeMailboxes(person) }}</dd>
+            </div>
+            <div>
+              <dt class="text-xs text-ink-faint">Email storage</dt>
               <dd class="mt-0.5 text-sm text-ink-muted">{{ describeMail(person) }}</dd>
             </div>
             <div>
@@ -529,205 +714,473 @@ function selectAllGames(): void {
         aria-modal="true"
         @submit.prevent="submitForm"
       >
-        <h2 class="text-base font-semibold text-ink">
-          {{ form.editing ? `Edit ${form.editing.username}` : 'Add someone' }}
-        </h2>
-
-        <div v-if="!form.editing" class="space-y-1">
-          <label class="label" for="person-username">Username</label>
-          <input
-            id="person-username"
-            v-model="form.username"
-            class="field"
-            autocomplete="off"
-            spellcheck="false"
-          />
+        <div class="flex items-start justify-between gap-4 border-b border-line pb-4">
+          <div>
+            <h2 class="text-base font-semibold text-ink">
+              {{ form.editing ? `Edit ${form.editing.username}` : 'Add someone' }}
+            </h2>
+            <p class="mt-1 text-sm text-ink-faint">Set their role and the resources available to them.</p>
+          </div>
+          <UsersRound :size="20" class="mt-0.5 shrink-0 text-brand-bright" aria-hidden="true" />
         </div>
 
-        <div v-if="!form.editing" class="space-y-1">
-          <label class="label" for="person-password">First password</label>
-          <input id="person-password" v-model="form.password" class="field font-mono" />
-          <p class="text-xs text-ink-faint">
-            Give this to them yourself. It is not shown again, and they can change it once they
-            are in.
-          </p>
-        </div>
-
-        <div class="space-y-1">
-          <label class="label" for="person-role">Role</label>
-          <select id="person-role" v-model="form.role" class="field">
-            <option v-for="value in assignableRoles" :key="value" :value="value">
-              {{ ROLE_LABELS[value].label }}
-            </option>
-          </select>
-          <p class="text-xs text-ink-faint">{{ ROLE_LABELS[form.role].description }}</p>
-        </div>
-
-        <div v-if="showLimits" class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          <div class="space-y-1">
-            <label class="label" for="person-sites">Websites</label>
-            <input
-              id="person-sites"
-              v-model="form.siteLimit"
-              class="field"
-              inputmode="numeric"
-              placeholder="No limit"
-            />
+        <section class="form-section form-section-first" data-limit-section="account">
+          <div class="section-heading">
+            <div class="section-icon"><UsersRound :size="16" aria-hidden="true" /></div>
+            <div>
+              <h3 class="section-title">Account</h3>
+              <p class="section-description">Sign-in details and administrative role.</p>
+            </div>
           </div>
 
-          <div class="space-y-1">
-            <label class="label" for="person-subdomains">Subdomains</label>
-            <input
-              id="person-subdomains"
-              v-model="form.subdomainLimit"
-              class="field"
-              inputmode="numeric"
-              placeholder="No limit"
-            />
+          <div class="grid gap-4 sm:grid-cols-2">
+            <div v-if="!form.editing" class="space-y-1">
+              <label class="label" for="person-username">Username</label>
+              <input
+                id="person-username"
+                v-model="form.username"
+                class="field"
+                autocomplete="off"
+                spellcheck="false"
+              />
+            </div>
+
+            <div v-if="!form.editing" class="space-y-1">
+              <label class="label" for="person-password">First password</label>
+              <input id="person-password" v-model="form.password" class="field font-mono" />
+              <p class="hint">Give this to them yourself. It is not shown again.</p>
+            </div>
+
+            <div class="space-y-1 sm:col-span-2">
+              <label class="label" for="person-role">Role</label>
+              <select id="person-role" v-model="form.role" class="field">
+                <option v-for="value in assignableRoles" :key="value" :value="value">
+                  {{ ROLE_LABELS[value].label }}
+                </option>
+              </select>
+              <p class="hint">{{ ROLE_LABELS[form.role].description }}</p>
+            </div>
           </div>
+        </section>
 
-          <div class="space-y-1">
-            <label class="label" for="person-mail">Email (GB)</label>
-            <input
-              id="person-mail"
-              v-model="form.mailQuotaGb"
-              class="field"
-              inputmode="decimal"
-              placeholder="No limit"
-            />
-          </div>
-
-          <div class="space-y-1">
-            <label class="label" for="person-disk">Disk per site (GB)</label>
-            <input
-              id="person-disk"
-              v-model="form.siteDiskQuotaGb"
-              class="field"
-              inputmode="decimal"
-              placeholder="Server default"
-            />
-          </div>
-
-          <div class="space-y-1">
-            <label class="label" for="person-game-servers">Game servers</label>
-            <input
-              id="person-game-servers"
-              v-model="form.gameServerLimit"
-              class="field"
-              inputmode="numeric"
-              placeholder="No limit"
-            />
-          </div>
-
-          <!--
-            Only asked when the machine has a database server. On one that has
-            none, the question is about a feature nobody here can use.
-          -->
-          <div v-if="databasesAvailable" class="space-y-1">
-            <label class="label" for="person-databases">Databases</label>
-            <input
-              id="person-databases"
-              v-model="form.databaseLimit"
-              class="field"
-              inputmode="numeric"
-              placeholder="No limit"
-            />
-            <p class="hint">0 keeps databases out of their panel entirely.</p>
-          </div>
-
-          <div v-if="databasesAvailable" class="space-y-1">
-            <label class="label" for="person-database-storage">Database storage (GB)</label>
-            <input
-              id="person-database-storage"
-              v-model="form.databaseQuotaGb"
-              class="field"
-              inputmode="decimal"
-              placeholder="0"
-            />
-            <p class="hint">0 allows unlimited storage.</p>
-          </div>
-
-          <p class="text-xs text-ink-faint sm:col-span-2 lg:col-span-3">
-            Leave a field empty for no limit. These limits can be changed later.
-          </p>
-
-          <fieldset
-            v-if="gameCatalogue.length > 0"
-            class="space-y-3 sm:col-span-2 lg:col-span-3"
-          >
-            <legend class="label">Game access</legend>
-            <div class="grid gap-3 sm:grid-cols-2">
-              <label class="game-access-card" :class="allowsAnyGame ? 'game-access-card-on' : ''">
-                <input
-                  type="radio"
-                  name="game-access"
-                  class="sr-only"
-                  :checked="allowsAnyGame"
-                  @change="setGameAccess('any')"
-                />
-                <Gamepad2 :size="18" class="mt-0.5 shrink-0 text-brand-bright" aria-hidden="true" />
-                <span>
-                  <strong class="font-medium text-ink">Any supported game</strong>
-                  <span class="mt-0.5 block text-xs text-ink-faint">
-                    They pick the game themselves when they create their server.
-                  </span>
-                </span>
-              </label>
-              <label class="game-access-card" :class="!allowsAnyGame ? 'game-access-card-on' : ''">
-                <input
-                  type="radio"
-                  name="game-access"
-                  class="sr-only"
-                  :checked="!allowsAnyGame"
-                  @change="setGameAccess('selected')"
-                />
-                <ListChecks :size="18" class="mt-0.5 shrink-0 text-brand-bright" aria-hidden="true" />
-                <span>
-                  <strong class="font-medium text-ink">Selected games</strong>
-                  <span class="mt-0.5 block text-xs text-ink-faint">
-                    Only the games you pick below are available to them.
-                  </span>
-                </span>
-              </label>
-
-              <div
-                v-if="!allowsAnyGame"
-                data-game-picker
-                class="rounded-lg border border-line bg-black/15 p-3 sm:col-span-2"
-              >
-                <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-                  <span class="text-xs text-ink-faint">{{ form.gameServerProviders.length }} selected</span>
-                  <button type="button" class="text-xs text-brand-bright hover:underline" @click="selectAllGames">
-                    Select all supported games
-                  </button>
-                </div>
-                <div class="space-y-2">
-                  <input
-                    v-model="gamePickerQuery"
-                    class="field"
-                    placeholder="Search games"
-                    aria-label="Search supported games"
-                  />
-                  <div class="max-h-64 overflow-y-auto rounded-lg border border-line bg-black/10 p-2">
-                    <label
-                      v-for="entry in filteredGameCatalogue"
-                      :key="entry.id"
-                      class="flex items-center gap-2 rounded px-2 py-1 text-sm text-ink-muted hover:bg-white/[0.03]"
-                    >
-                      <input
-                        type="checkbox"
-                        :checked="form.gameServerProviders.includes(entry.id)"
-                        @change="toggleGameProvider(entry.id)"
-                      />
-                      <span class="min-w-0 flex-1">{{ entry.name }}</span>
-                      <span class="shrink-0 text-xs text-ink-faint">{{ entry.genre }}</span>
-                    </label>
-                  </div>
-                </div>
+        <div v-if="showLimits" class="space-y-5">
+          <section class="form-section" data-limit-section="hosting">
+            <div class="section-heading">
+              <div class="section-icon"><Globe2 :size="16" aria-hidden="true" /></div>
+              <div>
+                <h3 class="section-title">Hosting</h3>
+                <p class="section-description">Websites, subdomains, and disk assigned to each site.</p>
               </div>
             </div>
-          </fieldset>
+
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div class="limit-item">
+                <div>
+                  <label class="label mb-0" for="person-sites">Websites</label>
+                  <p class="limit-caption">Customer-owned websites</p>
+                </div>
+                <div class="limit-mode" role="group" aria-label="Website limit mode">
+                  <label class="limit-mode-option" :class="form.siteLimitMode === 'limited' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="site-limit-mode"
+                      class="sr-only"
+                      :checked="form.siteLimitMode === 'limited'"
+                      @change="setCountLimitMode('site', 'limited')"
+                    />
+                    Set a limit
+                  </label>
+                  <label class="limit-mode-option" :class="form.siteLimitMode === 'unlimited' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="site-limit-mode"
+                      class="sr-only"
+                      :checked="form.siteLimitMode === 'unlimited'"
+                      @change="setCountLimitMode('site', 'unlimited')"
+                    />
+                    No limit
+                  </label>
+                </div>
+                <div v-if="form.siteLimitMode === 'limited'" class="limit-input">
+                  <input id="person-sites" v-model="form.siteLimit" class="field" type="text" inputmode="numeric" />
+                  <span>sites</span>
+                </div>
+                <p v-if="form.siteLimitMode === 'limited' && form.siteLimit.trim() === '0'" class="limit-zero">
+                  No websites can be created.
+                </p>
+              </div>
+
+              <div class="limit-item">
+                <div>
+                  <label class="label mb-0" for="person-subdomains">Subdomains</label>
+                  <p class="limit-caption">Additional sites under their domains</p>
+                </div>
+                <div class="limit-mode" role="group" aria-label="Subdomain limit mode">
+                  <label class="limit-mode-option" :class="form.subdomainLimitMode === 'limited' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="subdomain-limit-mode"
+                      class="sr-only"
+                      :checked="form.subdomainLimitMode === 'limited'"
+                      @change="setCountLimitMode('subdomain', 'limited')"
+                    />
+                    Set a limit
+                  </label>
+                  <label class="limit-mode-option" :class="form.subdomainLimitMode === 'unlimited' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="subdomain-limit-mode"
+                      class="sr-only"
+                      :checked="form.subdomainLimitMode === 'unlimited'"
+                      @change="setCountLimitMode('subdomain', 'unlimited')"
+                    />
+                    No limit
+                  </label>
+                </div>
+                <div v-if="form.subdomainLimitMode === 'limited'" class="limit-input">
+                  <input id="person-subdomains" v-model="form.subdomainLimit" class="field" type="text" inputmode="numeric" />
+                  <span>subdomains</span>
+                </div>
+                <p v-if="form.subdomainLimitMode === 'limited' && form.subdomainLimit.trim() === '0'" class="limit-zero">
+                  No subdomains can be created.
+                </p>
+              </div>
+
+              <div class="limit-item sm:col-span-2">
+                <div>
+                  <label class="label mb-0" for="person-disk">Disk per site</label>
+                  <p class="limit-caption">Storage available to each new website</p>
+                </div>
+                <div class="limit-mode" role="group" aria-label="Disk per site mode">
+                  <label class="limit-mode-option" :class="form.siteDiskQuotaMode === 'limited' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="site-disk-mode"
+                      class="sr-only"
+                      :checked="form.siteDiskQuotaMode === 'limited'"
+                      @change="setSiteDiskQuotaMode('limited')"
+                    />
+                    Set a limit
+                  </label>
+                  <label class="limit-mode-option" :class="form.siteDiskQuotaMode === 'server-default' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="site-disk-mode"
+                      class="sr-only"
+                      :checked="form.siteDiskQuotaMode === 'server-default'"
+                      @change="setSiteDiskQuotaMode('server-default')"
+                    />
+                    Server default
+                  </label>
+                </div>
+                <div v-if="form.siteDiskQuotaMode === 'limited'" class="limit-input">
+                  <input id="person-disk" v-model="form.siteDiskQuotaGb" class="field" type="text" inputmode="decimal" />
+                  <span>GB per site</span>
+                </div>
+                <p v-if="form.siteDiskQuotaMode === 'limited' && form.siteDiskQuotaGb.trim() === '0'" class="limit-zero">
+                  No disk storage will be available.
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <section class="form-section" data-limit-section="email">
+            <div class="section-heading">
+              <div class="section-icon"><Inbox :size="16" aria-hidden="true" /></div>
+              <div>
+                <h3 class="section-title">Email</h3>
+                <p class="section-description">Mailbox count and total storage across their domains.</p>
+              </div>
+            </div>
+
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div class="limit-item">
+                <div>
+                  <label class="label mb-0" for="person-mailboxes">Mailboxes</label>
+                  <p class="limit-caption">Total mailboxes they can create</p>
+                </div>
+                <div class="limit-mode" role="group" aria-label="Mailbox limit mode">
+                  <label class="limit-mode-option" :class="form.mailboxLimitMode === 'limited' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="mailbox-limit-mode"
+                      class="sr-only"
+                      :checked="form.mailboxLimitMode === 'limited'"
+                      @change="setCountLimitMode('mailbox', 'limited')"
+                    />
+                    Set a limit
+                  </label>
+                  <label class="limit-mode-option" :class="form.mailboxLimitMode === 'unlimited' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="mailbox-limit-mode"
+                      class="sr-only"
+                      :checked="form.mailboxLimitMode === 'unlimited'"
+                      @change="setCountLimitMode('mailbox', 'unlimited')"
+                    />
+                    No limit
+                  </label>
+                </div>
+                <div v-if="form.mailboxLimitMode === 'limited'" class="limit-input">
+                  <input id="person-mailboxes" v-model="form.mailboxLimit" class="field" type="text" inputmode="numeric" />
+                  <span>mailboxes</span>
+                </div>
+                <p v-if="form.mailboxLimitMode === 'limited' && form.mailboxLimit.trim() === '0'" class="limit-zero">
+                  No mailboxes can be created.
+                </p>
+              </div>
+
+              <div class="limit-item">
+                <div>
+                  <label class="label mb-0" for="person-mail">Email storage</label>
+                  <p class="limit-caption">Combined storage for all mailboxes</p>
+                </div>
+                <div class="limit-mode" role="group" aria-label="Email storage mode">
+                  <label class="limit-mode-option" :class="form.mailQuotaMode === 'limited' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="mail-quota-mode"
+                      class="sr-only"
+                      :checked="form.mailQuotaMode === 'limited'"
+                      @change="setMailQuotaMode('limited')"
+                    />
+                    Set a limit
+                  </label>
+                  <label class="limit-mode-option" :class="form.mailQuotaMode === 'unlimited' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="mail-quota-mode"
+                      class="sr-only"
+                      :checked="form.mailQuotaMode === 'unlimited'"
+                      @change="setMailQuotaMode('unlimited')"
+                    />
+                    No limit
+                  </label>
+                </div>
+                <div v-if="form.mailQuotaMode === 'limited'" class="limit-input">
+                  <input id="person-mail" v-model="form.mailQuotaGb" class="field" type="text" inputmode="decimal" />
+                  <span>GB total</span>
+                </div>
+                <p v-if="form.mailQuotaMode === 'limited' && form.mailQuotaGb.trim() === '0'" class="limit-zero">
+                  No email storage will be available.
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <section v-if="databasesAvailable" class="form-section" data-limit-section="databases">
+            <div class="section-heading">
+              <div class="section-icon"><Database :size="16" aria-hidden="true" /></div>
+              <div>
+                <h3 class="section-title">Databases</h3>
+                <p class="section-description">Database count and the total storage they may allocate.</p>
+              </div>
+            </div>
+
+            <div class="grid gap-4 sm:grid-cols-2">
+              <div class="limit-item">
+                <div>
+                  <label class="label mb-0" for="person-databases">Databases</label>
+                  <p class="limit-caption">Across every supported database engine</p>
+                </div>
+                <div class="limit-mode" role="group" aria-label="Database limit mode">
+                  <label class="limit-mode-option" :class="form.databaseLimitMode === 'limited' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="database-limit-mode"
+                      class="sr-only"
+                      :checked="form.databaseLimitMode === 'limited'"
+                      @change="setCountLimitMode('database', 'limited')"
+                    />
+                    Set a limit
+                  </label>
+                  <label class="limit-mode-option" :class="form.databaseLimitMode === 'unlimited' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="database-limit-mode"
+                      class="sr-only"
+                      :checked="form.databaseLimitMode === 'unlimited'"
+                      @change="setCountLimitMode('database', 'unlimited')"
+                    />
+                    No limit
+                  </label>
+                </div>
+                <div v-if="form.databaseLimitMode === 'limited'" class="limit-input">
+                  <input id="person-databases" v-model="form.databaseLimit" class="field" type="text" inputmode="numeric" />
+                  <span>databases</span>
+                </div>
+                <p v-if="form.databaseLimitMode === 'limited' && form.databaseLimit.trim() === '0'" class="limit-zero">
+                  No databases can be created.
+                </p>
+              </div>
+
+              <div class="limit-item">
+                <div>
+                  <label class="label mb-0" for="person-database-storage">Database storage</label>
+                  <p class="limit-caption">Combined allocation across their databases</p>
+                </div>
+                <div class="limit-mode" role="group" aria-label="Database storage mode">
+                  <label class="limit-mode-option" :class="form.databaseQuotaMode === 'limited' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="database-quota-mode"
+                      class="sr-only"
+                      :checked="form.databaseQuotaMode === 'limited'"
+                      @change="setDatabaseQuotaMode('limited')"
+                    />
+                    Set a limit
+                  </label>
+                  <label class="limit-mode-option" :class="form.databaseQuotaMode === 'unlimited' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="database-quota-mode"
+                      class="sr-only"
+                      :checked="form.databaseQuotaMode === 'unlimited'"
+                      @change="setDatabaseQuotaMode('unlimited')"
+                    />
+                    No limit
+                  </label>
+                </div>
+                <div v-if="form.databaseQuotaMode === 'limited'" class="limit-input">
+                  <input id="person-database-storage" v-model="form.databaseQuotaGb" class="field" type="text" inputmode="decimal" />
+                  <span>GB total</span>
+                </div>
+                <p v-if="form.databaseQuotaMode === 'unlimited'" class="limit-status">No limit: storage allocation is unlimited.</p>
+                <p v-else class="limit-caption">A positive value is required. Zero means No limit here.</p>
+              </div>
+            </div>
+          </section>
+
+          <section class="form-section" data-limit-section="game-servers">
+            <div class="section-heading">
+              <div class="section-icon"><Gamepad2 :size="16" aria-hidden="true" /></div>
+              <div>
+                <h3 class="section-title">Game servers</h3>
+                <p class="section-description">How many servers they may run and which games they may choose.</p>
+              </div>
+            </div>
+
+            <div class="limit-item">
+              <div>
+                <label class="label mb-0" for="person-game-servers">Game servers</label>
+                <p class="limit-caption">Customer-owned game servers</p>
+              </div>
+              <div class="limit-mode" role="group" aria-label="Game server limit mode">
+                <label class="limit-mode-option" :class="form.gameServerLimitMode === 'limited' ? 'limit-mode-on' : ''">
+                  <input
+                    type="radio"
+                    name="game-server-limit-mode"
+                    class="sr-only"
+                    :checked="form.gameServerLimitMode === 'limited'"
+                    @change="setCountLimitMode('gameServer', 'limited')"
+                  />
+                  Set a limit
+                </label>
+                <label class="limit-mode-option" :class="form.gameServerLimitMode === 'unlimited' ? 'limit-mode-on' : ''">
+                  <input
+                    type="radio"
+                    name="game-server-limit-mode"
+                    class="sr-only"
+                    :checked="form.gameServerLimitMode === 'unlimited'"
+                    @change="setCountLimitMode('gameServer', 'unlimited')"
+                  />
+                  No limit
+                </label>
+              </div>
+              <div v-if="form.gameServerLimitMode === 'limited'" class="limit-input max-w-sm">
+                <input id="person-game-servers" v-model="form.gameServerLimit" class="field" type="text" inputmode="numeric" />
+                <span>servers</span>
+              </div>
+              <p v-if="form.gameServerLimitMode === 'limited' && form.gameServerLimit.trim() === '0'" class="limit-zero">
+                No game servers can be created.
+              </p>
+            </div>
+
+            <div v-if="gameCatalogue.length > 0" class="mt-4 border-t border-line pt-4">
+              <div v-if="gameServersBlocked" class="limit-blocked">
+                <Gamepad2 :size="17" class="shrink-0" aria-hidden="true" />
+                <span>Game access is unavailable while the game-server limit is 0.</span>
+              </div>
+              <fieldset v-else class="space-y-3" data-game-access>
+                <legend class="label">Game access</legend>
+                <div class="grid gap-3 sm:grid-cols-2">
+                  <label class="game-access-card" :class="allowsAnyGame ? 'game-access-card-on' : ''">
+                    <input
+                      type="radio"
+                      name="game-access"
+                      class="sr-only"
+                      :checked="allowsAnyGame"
+                      data-game-access-mode="any"
+                      @change="setGameAccess('any')"
+                    />
+                    <Gamepad2 :size="18" class="mt-0.5 shrink-0 text-brand-bright" aria-hidden="true" />
+                    <span>
+                      <strong class="font-medium text-ink">Any supported game</strong>
+                      <span class="mt-0.5 block text-xs text-ink-faint">
+                        They can choose any game when they create a server.
+                      </span>
+                    </span>
+                  </label>
+                  <label class="game-access-card" :class="!allowsAnyGame ? 'game-access-card-on' : ''">
+                    <input
+                      type="radio"
+                      name="game-access"
+                      class="sr-only"
+                      :checked="!allowsAnyGame"
+                      data-game-access-mode="selected"
+                      @change="setGameAccess('selected')"
+                    />
+                    <ListChecks :size="18" class="mt-0.5 shrink-0 text-brand-bright" aria-hidden="true" />
+                    <span>
+                      <strong class="font-medium text-ink">Selected games</strong>
+                      <span class="mt-0.5 block text-xs text-ink-faint">
+                        Only the games picked below are available to them.
+                      </span>
+                    </span>
+                  </label>
+
+                  <div
+                    v-if="!allowsAnyGame"
+                    data-game-picker
+                    class="rounded-lg border border-line bg-black/15 p-3 sm:col-span-2"
+                  >
+                    <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <span class="text-xs text-ink-faint">{{ form.gameServerProviders.length }} selected</span>
+                      <button type="button" class="text-xs text-brand-bright hover:underline" @click="selectAllGames">
+                        Select all supported games
+                      </button>
+                    </div>
+                    <div class="space-y-2">
+                      <input
+                        v-model="gamePickerQuery"
+                        class="field"
+                        placeholder="Search games"
+                        aria-label="Search supported games"
+                      />
+                      <div class="max-h-64 overflow-y-auto rounded-lg border border-line bg-black/10 p-2">
+                        <label
+                          v-for="entry in filteredGameCatalogue"
+                          :key="entry.id"
+                          class="flex items-center gap-2 rounded px-2 py-1 text-sm text-ink-muted hover:bg-white/[0.03]"
+                        >
+                          <input
+                            type="checkbox"
+                            :checked="form.gameServerProviders.includes(entry.id)"
+                            @change="toggleGameProvider(entry.id)"
+                          />
+                          <span class="min-w-0 flex-1">{{ entry.name }}</span>
+                          <span class="shrink-0 text-xs text-ink-faint">{{ entry.genre }}</span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </fieldset>
+            </div>
+          </section>
         </div>
+
+        <p v-if="formValidationError" class="form-error" role="alert">{{ formValidationError }}</p>
 
         <div class="flex justify-end gap-2 pt-2">
           <button type="button" class="btn btn-ghost" @click="form.open = false">Cancel</button>
@@ -777,6 +1230,146 @@ function selectAllGames(): void {
 </template>
 
 <style scoped>
+.form-section {
+  border-top: 1px solid var(--color-line);
+  padding-top: 1.25rem;
+}
+
+.form-section-first {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.section-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.625rem;
+  margin-bottom: 1rem;
+}
+
+.section-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 1.875rem;
+  height: 1.875rem;
+  border: 1px solid oklch(63% 0.2 300 / 0.35);
+  border-radius: 0.5rem;
+  background: oklch(30% 0.085 300 / 0.5);
+  color: var(--color-brand-bright);
+}
+
+.section-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-ink);
+}
+
+.section-description,
+.limit-caption {
+  margin-top: 0.15rem;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: var(--color-ink-faint);
+}
+
+.limit-item {
+  min-width: 0;
+  border: 1px solid var(--color-line);
+  border-radius: 0.625rem;
+  background: oklch(0% 0 0 / 0.12);
+  padding: 0.875rem;
+}
+
+.limit-mode {
+  display: flex;
+  gap: 0.2rem;
+  margin-top: 0.75rem;
+  border: 1px solid var(--color-line);
+  border-radius: 0.5rem;
+  background: oklch(0% 0 0 / 0.2);
+  padding: 0.2rem;
+}
+
+.limit-mode-option {
+  flex: 1 1 0;
+  cursor: pointer;
+  border-radius: 0.35rem;
+  padding: 0.4rem 0.5rem;
+  text-align: center;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-ink-faint);
+  transition: background-color 130ms ease, color 130ms ease;
+}
+
+.limit-mode-option:hover {
+  color: var(--color-ink);
+}
+
+.limit-mode-on {
+  background: var(--color-brand-soft);
+  color: var(--color-brand-bright);
+}
+
+.limit-mode-option:has(input:focus-visible) {
+  outline: 2px solid var(--color-brand-bright);
+  outline-offset: 1px;
+}
+
+.limit-input {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.limit-input > .field {
+  min-width: 0;
+}
+
+.limit-input > span {
+  flex: 0 0 auto;
+  font-size: 0.75rem;
+  color: var(--color-ink-muted);
+}
+
+.limit-zero,
+.limit-blocked,
+.form-error {
+  color: var(--color-danger);
+}
+
+.limit-zero,
+.limit-status {
+  margin-top: 0.55rem;
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
+.limit-status {
+  color: var(--color-brand-bright);
+}
+
+.limit-blocked {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid oklch(71% 0.19 20 / 0.35);
+  border-radius: 0.5rem;
+  background: oklch(28% 0.08 20 / 0.25);
+  padding: 0.75rem;
+  font-size: 0.8125rem;
+}
+
+.form-error {
+  border: 1px solid oklch(71% 0.19 20 / 0.35);
+  border-radius: 0.5rem;
+  background: oklch(28% 0.08 20 / 0.25);
+  padding: 0.7rem 0.8rem;
+  font-size: 0.8125rem;
+}
+
 /*
  * The two game-access options are peers, so they present as peers: same
  * width, an icon each, and a visible selected border rather than a bare radio

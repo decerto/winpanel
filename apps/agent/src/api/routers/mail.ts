@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import dns from 'node:dns/promises';
 import crypto from 'node:crypto';
+import { isIP } from 'node:net';
 import { eq } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
 import {
@@ -240,6 +241,34 @@ const MailboxAddress = z
   .max(254)
   .transform((value) => value.toLowerCase());
 
+/** Stalwart accepts a single address or a network written in CIDR notation. */
+export function isValidIpOrCidr(value: string): boolean {
+  const candidate = value.trim();
+  const slash = candidate.indexOf('/');
+
+  if (slash === -1) return isIP(candidate) !== 0;
+  if (candidate.indexOf('/', slash + 1) !== -1) return false;
+
+  const address = candidate.slice(0, slash);
+  const prefix = candidate.slice(slash + 1);
+  const version = isIP(address);
+
+  if (version === 0 || !/^\d+$/.test(prefix)) return false;
+
+  const bits = version === 4 ? 32 : 128;
+  const length = Number(prefix);
+  return Number.isSafeInteger(length) && length >= 0 && length <= bits;
+}
+
+const CIDR_MAX_LENGTH = 64;
+
+const IpOrCidr = z
+  .string()
+  .trim()
+  .min(1)
+  .max(CIDR_MAX_LENGTH)
+  .refine(isValidIpOrCidr, 'Enter an IPv4 address, IPv6 address, or CIDR network.');
+
 /**
  * Keeps a customer inside the mail storage they were sold.
  *
@@ -274,6 +303,47 @@ export function allocatedMailBytes(
   }
 
   return allocated;
+}
+
+/** Counts the individual mailboxes returned for a customer's domains. */
+export function countMailboxes(
+  mailboxes: ReadonlyArray<{ type: 'individual' | 'group' | 'domain' | 'list' }>,
+): number {
+  return mailboxes.filter((mailbox) => mailbox.type === 'individual').length;
+}
+
+async function assertWithinMailboxAllowance(ctx: RequestContext): Promise<void> {
+  if (ctx.user?.role !== 'user') return;
+
+  const account = ctx.app.auth.getUser(ctx.user.id);
+  if (!account || account.mailboxLimit === null) return;
+
+  const client = clientFor(ctx.app);
+  const domains = new Set(
+    ctx.app.sites
+      .list(ctx.user.id)
+      .flatMap((site) => (site.domains as string[]).map((name) => name.toLowerCase())),
+  );
+
+  let mailboxCount = 0;
+  for (const domain of domains) {
+    try {
+      mailboxCount += countMailboxes(await client.listMailboxes(domain));
+    } catch {
+      // A domain the mail server has never heard of has no mailboxes, which
+      // is not a reason to refuse the first one being created.
+      continue;
+    }
+  }
+
+  if (mailboxCount >= account.mailboxLimit) {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message:
+        `That account already has ${mailboxCount} ${mailboxCount === 1 ? 'mailbox' : 'mailboxes'}. ` +
+        `Raise the mailbox limit of ${account.mailboxLimit} or remove one first.`,
+    });
+  }
 }
 
 async function assertWithinMailAllowance(
@@ -1120,6 +1190,36 @@ export const mailRouter = router({
     }
   }),
 
+  blockedIps: adminProcedure.query(async ({ ctx }) => {
+    try {
+      return await clientFor(ctx.app).listBlockedIps();
+    } catch (error) {
+      toTrpcError(error);
+    }
+  }),
+
+  blockIp: adminProcedure
+    .input(z.object({ address: IpOrCidr }))
+    .mutation(async ({ ctx, input }) => {
+      try {
+        const id = await clientFor(ctx.app).createBlockedIp(input.address);
+        return { ok: true, id };
+      } catch (error) {
+        toTrpcError(error);
+      }
+    }),
+
+  unblockIp: adminProcedure
+    .input(z.object({ id: z.string().trim().min(1).max(200) }))
+    .mutation(async ({ ctx, input }) => {
+      try {
+        await clientFor(ctx.app).deleteBlockedIp(input.id);
+        return { ok: true };
+      } catch (error) {
+        toTrpcError(error);
+      }
+    }),
+
   /**
    * Makes the mail server accept mail for a domain.
    *
@@ -1199,6 +1299,7 @@ export const mailRouter = router({
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'That is not an email address.' });
       }
 
+      await assertWithinMailboxAllowance(ctx);
       await assertWithinMailAllowance(ctx, input.quotaBytes, null);
 
       const password = input.password ?? generatePassword();

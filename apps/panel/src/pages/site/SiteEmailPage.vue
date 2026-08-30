@@ -28,6 +28,7 @@ import AlertMessage from '../../components/AlertMessage.vue';
 import EmptyState from '../../components/EmptyState.vue';
 import LoadingBlock from '../../components/LoadingBlock.vue';
 import StatusBadge from '../../components/StatusBadge.vue';
+import Tooltip from '../../components/Tooltip.vue';
 
 /**
  * Email for one website.
@@ -733,8 +734,10 @@ watch(() => site.value?.slug, load, { immediate: true });
           </div>
 
           <p class="hint">
-            In Outlook, use <span class="font-mono text-ink">{{ mailHostname }}</span> for both
-            incoming and outgoing mail, with the full address as the username.
+            In Outlook or another mail app, enter
+            <span class="font-mono text-ink">{{ revealed.address }}</span> as the email address.
+            Use <span class="font-mono text-ink">{{ mailHostname }}</span> for both incoming and
+            outgoing mail, with the same mailbox address as the username.
             <button
               type="button"
               class="text-brand-bright underline"
@@ -1206,63 +1209,75 @@ watch(() => site.value?.slug, load, { immediate: true });
                     can reset that password, which is visible; it cannot read
                     somebody's mail without being given it.
                   -->
-                  <RouterLink
-                    :to="`/webmail?address=${encodeURIComponent(mailbox.address)}`"
-                    class="rounded-md p-2 text-ink-faint hover:bg-white/5 hover:text-ink"
-                    :aria-label="`Open ${mailbox.address} in webmail`"
-                  >
-                    <ExternalLink :size="15" />
-                  </RouterLink>
+                  <Tooltip :text="`Open ${mailbox.address} in webmail`">
+                    <RouterLink
+                      :to="`/webmail?address=${encodeURIComponent(mailbox.address)}`"
+                      class="rounded-md p-2 text-ink-faint hover:bg-white/5 hover:text-ink"
+                      :aria-label="`Open ${mailbox.address} in webmail`"
+                    >
+                      <ExternalLink :size="15" aria-hidden="true" />
+                    </RouterLink>
+                  </Tooltip>
 
-                  <button
-                    type="button"
-                    class="rounded-md p-2 text-ink-faint hover:bg-white/5 hover:text-ink"
-                    :aria-label="`Mail program settings for ${mailbox.address}`"
-                    @click="openClientSetup(mailbox.address)"
-                  >
-                    <Settings2 :size="15" />
-                  </button>
+                  <Tooltip :text="`Mail program settings for ${mailbox.address}`">
+                    <button
+                      type="button"
+                      class="rounded-md p-2 text-ink-faint hover:bg-white/5 hover:text-ink"
+                      :aria-label="`Mail program settings for ${mailbox.address}`"
+                      @click="openClientSetup(mailbox.address)"
+                    >
+                      <Settings2 :size="15" aria-hidden="true" />
+                    </button>
+                  </Tooltip>
 
-                  <button
-                    type="button"
-                    class="rounded-md p-2 text-ink-faint hover:bg-white/5 hover:text-ink"
-                    :class="renaming?.address === mailbox.address ? 'bg-white/5 text-ink' : ''"
-                    :aria-label="`Change the name shown on mail from ${mailbox.address}`"
-                    :aria-expanded="renaming?.address === mailbox.address"
-                    @click="openRename(mailbox)"
-                  >
-                    <Pencil :size="15" />
-                  </button>
+                  <Tooltip :text="`Change the name shown on mail from ${mailbox.address}`">
+                    <button
+                      type="button"
+                      class="rounded-md p-2 text-ink-faint hover:bg-white/5 hover:text-ink"
+                      :class="renaming?.address === mailbox.address ? 'bg-white/5 text-ink' : ''"
+                      :aria-label="`Change the name shown on mail from ${mailbox.address}`"
+                      :aria-expanded="renaming?.address === mailbox.address"
+                      @click="openRename(mailbox)"
+                    >
+                      <Pencil :size="15" aria-hidden="true" />
+                    </button>
+                  </Tooltip>
 
-                  <button
-                    type="button"
-                    class="rounded-md p-2 text-ink-faint hover:bg-white/5 hover:text-ink"
-                    :class="aliasEditor?.address === mailbox.address ? 'bg-white/5 text-ink' : ''"
-                    :aria-label="`Other addresses for ${mailbox.address}`"
-                    :aria-expanded="aliasEditor?.address === mailbox.address"
-                    @click="openAliases(mailbox)"
-                  >
-                    <AtSign :size="15" />
-                  </button>
+                  <Tooltip :text="`Other addresses for ${mailbox.address}`">
+                    <button
+                      type="button"
+                      class="rounded-md p-2 text-ink-faint hover:bg-white/5 hover:text-ink"
+                      :class="aliasEditor?.address === mailbox.address ? 'bg-white/5 text-ink' : ''"
+                      :aria-label="`Other addresses for ${mailbox.address}`"
+                      :aria-expanded="aliasEditor?.address === mailbox.address"
+                      @click="openAliases(mailbox)"
+                    >
+                      <AtSign :size="15" aria-hidden="true" />
+                    </button>
+                  </Tooltip>
 
-                  <button
-                    type="button"
-                    class="rounded-md p-2 text-ink-faint hover:bg-white/5 hover:text-ink"
-                    :class="passwordReset?.address === mailbox.address ? 'bg-white/5 text-ink' : ''"
-                    :aria-label="`Change the password for ${mailbox.address}`"
-                    :aria-expanded="passwordReset?.address === mailbox.address"
-                    @click="openPasswordReset(mailbox)"
-                  >
-                    <KeyRound :size="15" />
-                  </button>
-                  <button
-                    type="button"
-                    class="rounded-md p-2 text-ink-faint hover:bg-danger-soft hover:text-danger"
-                    :aria-label="`Delete ${mailbox.address}`"
-                    @click="remove(mailbox)"
-                  >
-                    <Trash2 :size="15" />
-                  </button>
+                  <Tooltip :text="`Change the password for ${mailbox.address}`">
+                    <button
+                      type="button"
+                      class="rounded-md p-2 text-ink-faint hover:bg-white/5 hover:text-ink"
+                      :class="passwordReset?.address === mailbox.address ? 'bg-white/5 text-ink' : ''"
+                      :aria-label="`Change the password for ${mailbox.address}`"
+                      :aria-expanded="passwordReset?.address === mailbox.address"
+                      @click="openPasswordReset(mailbox)"
+                    >
+                      <KeyRound :size="15" aria-hidden="true" />
+                    </button>
+                  </Tooltip>
+                  <Tooltip :text="`Delete ${mailbox.address}`">
+                    <button
+                      type="button"
+                      class="rounded-md p-2 text-ink-faint hover:bg-danger-soft hover:text-danger"
+                      :aria-label="`Delete ${mailbox.address}`"
+                      @click="remove(mailbox)"
+                    >
+                      <Trash2 :size="15" aria-hidden="true" />
+                    </button>
+                  </Tooltip>
                 </div>
               </div>
 
@@ -1338,14 +1353,16 @@ watch(() => site.value?.slug, load, { immediate: true });
                       :aria-label="`Other address ${index + 1} for ${mailbox.address}`"
                       maxlength="254"
                     />
-                    <button
-                      type="button"
-                      class="rounded-md p-2 text-ink-faint hover:bg-danger-soft hover:text-danger"
-                      :aria-label="`Remove address ${index + 1}`"
-                      @click="aliasEditor.entries.splice(index, 1)"
-                    >
-                      <Trash2 :size="15" />
-                    </button>
+                    <Tooltip :text="`Remove address ${index + 1}`">
+                      <button
+                        type="button"
+                        class="rounded-md p-2 text-ink-faint hover:bg-danger-soft hover:text-danger"
+                        :aria-label="`Remove address ${index + 1}`"
+                        @click="aliasEditor.entries.splice(index, 1)"
+                      >
+                        <Trash2 :size="15" aria-hidden="true" />
+                      </button>
+                    </Tooltip>
                   </div>
                 </div>
 

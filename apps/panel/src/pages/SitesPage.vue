@@ -21,6 +21,7 @@ import PageHeader from '../components/PageHeader.vue';
 import PaginationBar from '../components/PaginationBar.vue';
 import ViewToggle from '../components/ViewToggle.vue';
 import SiteCard from '../components/SiteCard.vue';
+import Tooltip from '../components/Tooltip.vue';
 import { api, describeError } from '../lib/api';
 import { usePreference } from '../lib/preferences';
 import { RUNTIME_LABEL, siteStatus } from '../lib/site-status';
@@ -296,17 +297,20 @@ onMounted(load);
 
               <td class="w-px px-4 py-2">
                 <div class="flex items-center justify-end gap-1">
-                  <RouterLink
+                  <Tooltip
                     v-for="tool in TOOLS"
                     :key="tool.path"
-                    :to="`/sites/${site.slug}/${tool.path}`"
-                    class="rounded-md p-1.5 text-ink-faint transition-colors
-                           hover:bg-brand-soft/50 hover:text-brand-bright"
-                    :title="tool.label"
-                    :aria-label="`${tool.label} for ${site.displayName}`"
+                    :text="`${tool.label} for ${site.displayName}`"
                   >
-                    <component :is="tool.icon" :size="15" />
-                  </RouterLink>
+                    <RouterLink
+                      :to="`/sites/${site.slug}/${tool.path}`"
+                      class="rounded-md p-1.5 text-ink-faint transition-colors
+                             hover:bg-brand-soft/50 hover:text-brand-bright"
+                      :aria-label="`${tool.label} for ${site.displayName}`"
+                    >
+                      <component :is="tool.icon" :size="15" aria-hidden="true" />
+                    </RouterLink>
+                  </Tooltip>
                 </div>
               </td>
             </tr>

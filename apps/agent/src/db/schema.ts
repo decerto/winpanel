@@ -52,6 +52,8 @@ export const users = sqliteTable(
     siteLimit: integer('site_limit'),
     /** How many subdomain websites this account may own. Null means no limit. */
     subdomainLimit: integer('subdomain_limit'),
+    /** How many mailboxes this account may hold across all of its domains. */
+    mailboxLimit: integer('mailbox_limit'),
     mailQuotaBytes: integer('mail_quota_bytes'),
     siteDiskQuotaBytes: integer('site_disk_quota_bytes'),
     gameServerLimit: integer('game_server_limit'),
@@ -61,8 +63,8 @@ export const users = sqliteTable(
      * limit; zero means databases are not part of what they were sold.
      */
     databaseLimit: integer('database_limit'),
-    /** Total database storage allocated to this account. Zero means unlimited. */
-    databaseQuotaBytes: integer('database_quota_bytes').notNull().default(0),
+    /** Total database storage allocated to this account. Null means unlimited; zero means none. */
+    databaseQuotaBytes: integer('database_quota_bytes'),
     gameServerProviders: text('game_server_providers', { mode: 'json' })
       .notNull()
       .default(sql`'[]'`),
@@ -254,7 +256,7 @@ export const hostedDatabases = sqliteTable(
     siteId: text('site_id').references(() => sites.id, { onDelete: 'set null' }),
     /** Whose it is. Null means it belongs to the server rather than a customer. */
     ownerUserId: text('owner_user_id').references(() => users.id, { onDelete: 'set null' }),
-    /** Storage allocated to this database. Zero means unlimited. */
+    /** Storage allocated to this database. Zero means unlimited for this database. */
     sizeLimitBytes: integer('size_limit_bytes').notNull().default(0),
     /**
      * Who may reach this one database from off the machine.

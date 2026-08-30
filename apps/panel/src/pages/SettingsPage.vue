@@ -19,6 +19,7 @@ import AlertMessage from '../components/AlertMessage.vue';
 import ComponentsPanel from '../components/ComponentsPanel.vue';
 import HowTo from '../components/HowTo.vue';
 import ServerPathPicker from '../components/ServerPathPicker.vue';
+import Tooltip from '../components/Tooltip.vue';
 
 /**
  * Server-wide settings: the services this panel drives on your behalf.
@@ -1394,16 +1395,17 @@ async function installUpdate(): Promise<void> {
                 >. The setup file downloads directly to this server.
               </p>
             </div>
-            <button
-              type="button"
-              class="btn btn-ghost btn-sm shrink-0"
-              :disabled="officialReleasesBusy"
-              aria-label="Refresh official releases"
-              title="Refresh official releases"
-              @click="refreshOfficialReleases"
-            >
-              <RefreshCw :size="15" :class="officialReleasesBusy ? 'animate-spin' : ''" aria-hidden="true" />
-            </button>
+            <Tooltip text="Refresh official releases">
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm shrink-0"
+                :disabled="officialReleasesBusy"
+                aria-label="Refresh official releases"
+                @click="refreshOfficialReleases"
+              >
+                <RefreshCw :size="15" :class="officialReleasesBusy ? 'animate-spin' : ''" aria-hidden="true" />
+              </button>
+            </Tooltip>
           </div>
 
           <div

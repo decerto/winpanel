@@ -181,7 +181,7 @@ const creationStorage = computed(() => {
     }
   }
   return {
-    quotaBytes: overview.value?.storageQuotaBytes ?? 0,
+    quotaBytes: overview.value?.storageQuotaBytes ?? null,
     allocatedBytes: overview.value?.storageAllocatedBytes ?? 0,
   };
 });
@@ -191,7 +191,8 @@ const sizeProblem = computed(() => {
   if (bytes === null) return 'Enter zero or a positive number.';
 
   const storage = creationStorage.value;
-  if (storage.quotaBytes === 0) return null;
+  if (storage.quotaBytes === null) return null;
+  if (storage.quotaBytes === 0) return 'This owner has no database storage quota.';
   if (bytes === 0) return 'This owner has a finite storage quota, so this database needs a size.';
 
   const remaining = Math.max(0, storage.quotaBytes - storage.allocatedBytes);
@@ -583,7 +584,7 @@ onMounted(load);
               placeholder="0"
             />
             <p v-if="sizeProblem" class="mt-1 text-xs text-danger">{{ sizeProblem }}</p>
-            <p v-else class="hint">0 allows unlimited storage.</p>
+            <p v-else class="hint">0 means unlimited for this database. An account with a finite quota needs a positive allowance.</p>
           </div>
 
           <div v-if="isAdmin && attachable.length > 0" class="space-y-1">
@@ -824,7 +825,7 @@ onMounted(load);
                 />
                 <p class="hint">
                   {{ row.sizeBytes == null ? 'Current usage is unavailable.' : `${formatBytes(row.sizeBytes)} currently used.` }}
-                  0 allows unlimited storage.
+                  0 means unlimited for this database.
                 </p>
               </div>
               <div class="flex gap-2">
@@ -930,11 +931,16 @@ onMounted(load);
         {{ overview.used }} of {{ overview.limit }} databases used on this account.
       </p>
       <p
-        v-if="overview && overview.storageQuotaBytes > 0"
+        v-if="overview && overview.storageQuotaBytes !== null"
         class="mt-1 text-xs text-ink-faint"
       >
-        {{ formatBytes(overview.storageAllocatedBytes) }} of
-        {{ formatBytes(overview.storageQuotaBytes) }} database storage allocated.
+        <template v-if="overview.storageQuotaBytes === 0">
+          No database storage is included on this account.
+        </template>
+        <template v-else>
+          {{ formatBytes(overview.storageAllocatedBytes) }} of
+          {{ formatBytes(overview.storageQuotaBytes) }} database storage allocated.
+        </template>
       </p>
     </template>
 
