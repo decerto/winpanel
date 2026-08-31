@@ -41,6 +41,7 @@ interface DomainRow {
 }
 
 const PAGE_SIZE = 12;
+const BLOCKED_IP_PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
 
 const status = ref<MailStatus | null>(null);
 const isAdministrator = ref(false);
@@ -49,6 +50,8 @@ const blockedIpsLoading = ref(false);
 const blockedIpBusy = ref(false);
 const blockedIpAddress = ref('');
 const blockedIpError = ref<string | null>(null);
+const blockedIpPage = ref(1);
+const blockedIpPageSize = ref(BLOCKED_IP_PAGE_SIZE_OPTIONS[0]);
 const rows = ref<DomainRow[]>([]);
 const loading = ref(true);
 const error = ref<string | null>(null);
@@ -73,6 +76,13 @@ const matching = computed(() => {
 
 const visible = computed(() =>
   matching.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE),
+);
+
+const visibleBlockedIps = computed(() =>
+  blockedIps.value.slice(
+    (blockedIpPage.value - 1) * blockedIpPageSize.value,
+    blockedIpPage.value * blockedIpPageSize.value,
+  ),
 );
 
 const totals = computed(() => {
@@ -195,6 +205,15 @@ watch(matching, () => {
   if (page.value > lastPage) page.value = lastPage;
 });
 
+watch(blockedIps, () => {
+  const lastPage = Math.max(1, Math.ceil(blockedIps.value.length / blockedIpPageSize.value));
+  if (blockedIpPage.value > lastPage) blockedIpPage.value = lastPage;
+});
+
+watch(blockedIpPageSize, () => {
+  blockedIpPage.value = 1;
+});
+
 watch(visible, () => void loadCountsForPage());
 
 void load();
@@ -260,85 +279,6 @@ void load();
         </dl>
 
         <RouterLink v-else to="/settings" class="btn btn-primary">Connect it</RouterLink>
-      </section>
-
-      <section
-        v-if="isAdministrator"
-        class="card mb-5 overflow-hidden"
-        aria-labelledby="inbound-access-heading"
-      >
-        <div class="flex flex-wrap items-start justify-between gap-4 border-b border-line px-5 py-4">
-          <div>
-            <h2 id="inbound-access-heading" class="text-base font-semibold text-ink">
-              Inbound access
-            </h2>
-            <p class="mt-1 max-w-2xl text-sm text-ink-muted">
-              Block an IP address or network before it reaches the mail server.
-            </p>
-          </div>
-          <span class="text-xs text-ink-faint">
-            {{ blockedIps.length }} {{ blockedIps.length === 1 ? 'address' : 'addresses' }} blocked
-          </span>
-        </div>
-
-        <div class="p-5">
-          <AlertMessage v-if="blockedIpError" class="mb-4">{{ blockedIpError }}</AlertMessage>
-
-          <form class="flex flex-col gap-2 sm:flex-row" @submit.prevent="blockIp">
-            <label for="blocked-ip-address" class="sr-only">IP address or network</label>
-            <input
-              id="blocked-ip-address"
-              v-model="blockedIpAddress"
-              class="field min-w-0 flex-1 font-mono"
-              placeholder="203.0.113.0/24 or 203.0.113.7"
-              inputmode="text"
-              autocomplete="off"
-              required
-            />
-            <button
-              type="submit"
-              class="btn btn-primary shrink-0"
-              :disabled="blockedIpBusy || !status?.connected || blockedIpAddress.trim().length === 0"
-            >
-              <Ban :size="14" aria-hidden="true" />
-              {{ blockedIpBusy ? 'Saving...' : 'Block address' }}
-            </button>
-          </form>
-          <p class="hint mt-2">Use an IPv4 or IPv6 address, or a CIDR network.</p>
-
-          <LoadingBlock v-if="blockedIpsLoading" class="mt-4 h-20 rounded-card bg-surface" />
-          <p v-else-if="!status?.connected" class="mt-4 text-sm text-ink-faint">
-            Connect the mail server before changing inbound access.
-          </p>
-          <p v-else-if="blockedIps.length === 0" class="mt-4 text-sm text-ink-faint">
-            No inbound addresses are blocked.
-          </p>
-          <ul v-else class="mt-4 divide-y divide-line rounded-lg border border-line">
-            <li
-              v-for="entry in blockedIps"
-              :key="entry.id"
-              class="flex items-center gap-4 px-4 py-3"
-            >
-              <div class="min-w-0 flex-1">
-                <p class="truncate font-mono text-sm text-ink">{{ entry.address }}</p>
-                <p class="mt-1 text-xs text-ink-faint">
-                  {{ entry.reason }} &middot; {{ blockedIpExpiry(entry.expiresAt) }}
-                </p>
-              </div>
-              <Tooltip :text="`Allow connections from ${entry.address}`">
-                <button
-                  type="button"
-                  class="shrink-0 rounded-md p-1.5 text-ink-faint transition-colors hover:text-ok"
-                  :disabled="blockedIpBusy"
-                  :aria-label="`Allow connections from ${entry.address}`"
-                  @click="unblockIp(entry)"
-                >
-                  <X :size="15" aria-hidden="true" />
-                </button>
-              </Tooltip>
-            </li>
-          </ul>
-        </div>
       </section>
 
       <EmptyState
@@ -422,6 +362,122 @@ void load();
           noun="domains"
         />
       </template>
+
+      <section
+        v-if="isAdministrator"
+        class="card mt-5 overflow-hidden"
+        aria-labelledby="inbound-access-heading"
+      >
+        <div class="flex flex-wrap items-start justify-between gap-4 border-b border-line px-5 py-4">
+          <div>
+            <h2 id="inbound-access-heading" class="text-base font-semibold text-ink">
+              Inbound access
+            </h2>
+            <p class="mt-1 max-w-2xl text-sm text-ink-muted">
+              Block an IP address or network before it reaches the mail server.
+            </p>
+          </div>
+          <span class="text-xs text-ink-faint">
+            {{ blockedIps.length }} {{ blockedIps.length === 1 ? 'address' : 'addresses' }} blocked
+          </span>
+        </div>
+
+        <div class="p-5">
+          <AlertMessage v-if="blockedIpError" class="mb-4">{{ blockedIpError }}</AlertMessage>
+
+          <form class="flex flex-col gap-2 sm:flex-row" @submit.prevent="blockIp">
+            <label for="blocked-ip-address" class="sr-only">IP address or network</label>
+            <input
+              id="blocked-ip-address"
+              v-model="blockedIpAddress"
+              class="field min-w-0 flex-1 font-mono"
+              placeholder="203.0.113.0/24 or 203.0.113.7"
+              inputmode="text"
+              autocomplete="off"
+              required
+            />
+            <button
+              type="submit"
+              class="btn btn-primary shrink-0"
+              :disabled="blockedIpBusy || !status?.connected || blockedIpAddress.trim().length === 0"
+            >
+              <Ban :size="14" aria-hidden="true" />
+              {{ blockedIpBusy ? 'Saving...' : 'Block address' }}
+            </button>
+          </form>
+          <p class="hint mt-2">Use an IPv4 or IPv6 address, or a CIDR network.</p>
+
+          <LoadingBlock v-if="blockedIpsLoading" class="mt-4 h-20 rounded-card bg-surface" />
+          <p v-else-if="!status?.connected" class="mt-4 text-sm text-ink-faint">
+            Connect the mail server before changing inbound access.
+          </p>
+          <p v-else-if="blockedIps.length === 0" class="mt-4 text-sm text-ink-faint">
+            No inbound addresses are blocked.
+          </p>
+          <div v-else class="mt-4">
+            <div class="overflow-x-auto rounded-lg border border-line">
+              <table class="min-w-[36rem] w-full text-sm">
+                <thead>
+                  <tr
+                    class="border-b border-line text-left text-xs uppercase tracking-wide text-ink-faint"
+                  >
+                    <th scope="col" class="px-4 py-3 font-medium">Address or network</th>
+                    <th scope="col" class="px-4 py-3 font-medium">Reason</th>
+                    <th scope="col" class="px-4 py-3 font-medium">Expires</th>
+                    <th scope="col" class="w-px px-4 py-3"><span class="sr-only">Manage</span></th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-line">
+                  <tr
+                    v-for="entry in visibleBlockedIps"
+                    :key="entry.id"
+                    class="transition-colors hover:bg-white/[0.03]"
+                  >
+                    <td class="whitespace-nowrap px-4 py-3 font-mono text-ink">
+                      {{ entry.address }}
+                    </td>
+                    <td class="whitespace-nowrap px-4 py-3 text-ink-muted">{{ entry.reason }}</td>
+                    <td class="whitespace-nowrap px-4 py-3 text-ink-muted">
+                      {{ blockedIpExpiry(entry.expiresAt) }}
+                    </td>
+                    <td class="w-px whitespace-nowrap px-4 py-3 text-right">
+                      <Tooltip :text="`Allow connections from ${entry.address}`">
+                        <button
+                          type="button"
+                          class="rounded-md p-1.5 text-ink-faint transition-colors hover:text-ok"
+                          :disabled="blockedIpBusy"
+                          :aria-label="`Allow connections from ${entry.address}`"
+                          @click="unblockIp(entry)"
+                        >
+                          <X :size="15" aria-hidden="true" />
+                        </button>
+                      </Tooltip>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
+              <label class="flex items-center gap-2 text-xs text-ink-faint" for="blocked-ip-page-size">
+                <span>Rows per page</span>
+                <select id="blocked-ip-page-size" v-model.number="blockedIpPageSize" class="field w-auto py-1.5">
+                  <option v-for="size in BLOCKED_IP_PAGE_SIZE_OPTIONS" :key="size" :value="size">
+                    {{ size }}
+                  </option>
+                </select>
+              </label>
+            </div>
+
+            <PaginationBar
+              v-model:page="blockedIpPage"
+              :total="blockedIps.length"
+              :page-size="blockedIpPageSize"
+              noun="blocked addresses"
+            />
+          </div>
+        </div>
+      </section>
     </template>
   </div>
 </template>

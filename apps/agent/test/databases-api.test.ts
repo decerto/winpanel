@@ -1,13 +1,14 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import superjson from 'superjson';
 import { eq } from 'drizzle-orm';
 import { createAppContext, type AppContext } from '../src/app-context.js';
 import { createServer } from '../src/server.js';
 import { hostedDatabases, sites, users } from '../src/db/schema.js';
+import { mariadbAdapter } from '../src/databases/mariadb.js';
 
 /**
  * Who can see and touch which database, over real HTTP.
@@ -321,6 +322,30 @@ describe('the storage allowance', () => {
     expect(theirs.body.result.data.storageQuotaBytes).toBe(10 * GB);
     expect(theirs.body.result.data.storageAllocatedBytes).toBe(4 * GB);
     expect(theirs.body.result.data.databases[0].sizeLimitBytes).toBe(4 * GB);
+  });
+
+  it('reports live usage separately from the account allocation', async () => {
+    app.db.db
+      .update(users)
+      .set({ databaseQuotaBytes: 1 * GB })
+      .where(eq(users.id, freyaId))
+      .run();
+    app.db.db
+      .update(hostedDatabases)
+      .set({ sizeLimitBytes: 1 * GB })
+      .where(eq(hostedDatabases.id, freyaDatabaseId))
+      .run();
+
+    const sizeOf = vi.spyOn(mariadbAdapter, 'sizeOf').mockResolvedValue(11 * 1024 ** 2);
+    try {
+      const people = await call('GET', 'users.list', ownerCookie);
+      const freya = people.body.result.data.find((person: any) => person.username === 'freya');
+
+      expect(freya.databaseAllocatedBytes).toBe(1 * GB);
+      expect(freya.databaseUsedBytes).toBe(11 * 1024 ** 2);
+    } finally {
+      sizeOf.mockRestore();
+    }
   });
 
   it('requires a finite database size inside a finite account quota', async () => {

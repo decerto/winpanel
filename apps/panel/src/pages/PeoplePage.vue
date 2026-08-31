@@ -505,7 +505,10 @@ function describeDatabaseStorage(person: Person): string {
     return 'No limit';
   }
   if (person.databaseQuotaBytes === 0) return 'No storage';
-  return `${formatBytes(person.databaseAllocatedBytes ?? 0)} of ${formatBytes(person.databaseQuotaBytes)}`;
+  if (person.databaseUsedBytes == null) {
+    return `Usage unavailable of ${formatBytes(person.databaseQuotaBytes)}`;
+  }
+  return `${formatBytes(person.databaseUsedBytes)} used of ${formatBytes(person.databaseQuotaBytes)}`;
 }
 
 function toggleGameProvider(catalogId: string): void {

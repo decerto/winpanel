@@ -81,6 +81,32 @@ describe('MailPage inbound access', () => {
     expect(state.blockedIpsQuery).toHaveBeenCalledOnce();
   });
 
+  it('keeps the website mailbox overview before inbound access', async () => {
+    const wrapper = await render();
+
+    expect(wrapper.html().indexOf('example.com')).toBeLessThan(
+      wrapper.html().indexOf('Inbound access'),
+    );
+  });
+
+  it('pages blocked addresses and lets administrators choose the page size', async () => {
+    state.blockedIps = Array.from({ length: 25 }, (_, index) => ({
+      id: `rule-${index}`,
+      address: `203.0.113.${index}`,
+      reason: 'manual',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      expiresAt: null,
+    }));
+    const wrapper = await render();
+    const inbound = wrapper.find('section[aria-labelledby="inbound-access-heading"]');
+
+    expect(inbound.findAll('tbody tr')).toHaveLength(10);
+    expect(inbound.text()).toContain('Showing 1–10 of 25 blocked addresses');
+
+    await inbound.get('#blocked-ip-page-size').setValue('25');
+    expect(inbound.findAll('tbody tr')).toHaveLength(25);
+  });
+
   it('removes a block by its opaque server rule id', async () => {
     const wrapper = await render();
 

@@ -25,6 +25,7 @@ import {
   countDatabasesForOwner,
   findDatabaseByName,
   forgetDatabase,
+  listDatabasesForOwner,
   listDatabasesForSite,
   recordDatabase,
   type DatabaseRecord,
@@ -335,6 +336,20 @@ export interface StorageAllowance {
   /** Null means unlimited; zero means no database storage. */
   quotaBytes: number | null;
   allocatedBytes: number;
+}
+
+/** Live storage used by an account's databases, or null when one cannot answer. */
+export async function databaseUsedBytesForOwner(
+  ctx: EngineContext,
+  ownerUserId: string,
+): Promise<number | null> {
+  const records = listDatabasesForOwner(ctx.db, ownerUserId);
+  const sizes = await Promise.all(
+    records.map((record) => adapterFor(record.engine).sizeOf(ctx, record.name).catch(() => null)),
+  );
+
+  if (!sizes.every((size): size is number => size !== null)) return null;
+  return sizes.reduce((total, size) => total + size, 0);
 }
 
 export function accountStorageAllowance(

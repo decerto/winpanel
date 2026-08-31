@@ -70,6 +70,7 @@ const person = (over: Record<string, unknown>) => ({
   gameServerCount: 0,
   databaseCount: 0,
   databaseAllocatedBytes: 0,
+  databaseUsedBytes: 0,
   ...over,
 });
 
@@ -327,9 +328,10 @@ describe('the limits on the People page', () => {
       username: 'freya',
       databaseQuotaBytes: 10 * 1024 ** 3,
       databaseAllocatedBytes: 4 * 1024 ** 3,
+      databaseUsedBytes: 11 * 1024 ** 2,
     });
     const wrapper = await render();
-    expect(wrapper.text()).toContain('4.0 GB of 10.0 GB');
+    expect(wrapper.text()).toContain('11.0 MB used of 10.0 GB');
 
     await wrapper.findAll('button').find((node: any) => node.text().includes('Add someone'))!.trigger('click');
     await wrapper.find('#person-username').setValue('storage-user');

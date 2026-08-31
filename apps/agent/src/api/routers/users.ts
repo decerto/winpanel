@@ -11,7 +11,10 @@ import {
 import { AuthError } from '../../services/auth-service.js';
 import { isSshUrl } from '../../sites/ssh-keys.js';
 import { DatabaseAllocationError } from '../../databases/errors.js';
-import { assertDatabaseStorageAllocation } from '../../databases/service.js';
+import {
+  assertDatabaseStorageAllocation,
+  databaseUsedBytesForOwner,
+} from '../../databases/service.js';
 import { listDatabasesForSite, reassignSiteDatabases } from '../../databases/store.js';
 import { adminProcedure, router } from '../trpc.js';
 import type { RequestContext } from '../trpc.js';
@@ -70,7 +73,18 @@ function assertNotSelf(ctx: RequestContext, userId: string, what: string): void 
 }
 
 export const usersRouter = router({
-  list: adminProcedure.query(({ ctx }) => ctx.app.auth.listUsers()),
+  list: adminProcedure.query(async ({ ctx }) => {
+    const context = { db: ctx.app.db, vault: ctx.app.vault, binDir: ctx.app.config.binDir };
+    const people = ctx.app.auth.listUsers();
+
+    return await Promise.all(
+      people.map(async (person) => ({
+        ...person,
+        databaseUsedBytes:
+          person.role === 'user' ? await databaseUsedBytesForOwner(context, person.id) : null,
+      })),
+    );
+  }),
 
   /**
    * Creates an account.
