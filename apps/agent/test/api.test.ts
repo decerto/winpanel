@@ -337,6 +337,79 @@ describe('first-run setup', () => {
 });
 
 describe('account email and password recovery', () => {
+  it('sends a verification link when an owner creates an account with an email', async () => {
+    const ownerCookie = await completeSetup();
+    const send = vi.spyOn(app.mailer, 'send').mockResolvedValue();
+
+    const response = await call(
+      'POST',
+      'users.create',
+      {
+        username: 'customer',
+        password: PASSWORD,
+        role: 'user',
+        email: 'customer@example.com',
+      },
+      ownerCookie,
+    );
+
+    expect(response.body.result.data).toMatchObject({
+      username: 'customer',
+      email: 'customer@example.com',
+      emailVerified: false,
+      verificationSent: true,
+    });
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: { name: 'customer', email: 'customer@example.com' },
+        subject: 'Confirm your WinPanel email address',
+      }),
+    );
+  });
+
+  it('lets an administrator set a customer email and sends its verification link', async () => {
+    const ownerCookie = await completeSetup();
+    const admin = await app.auth.createUser({
+      username: 'admin',
+      password: PASSWORD,
+      role: 'admin',
+    });
+    const customer = await app.auth.createUser({
+      username: 'customer',
+      password: PASSWORD,
+      role: 'user',
+    });
+    const login = await call('POST', 'auth.login', {
+      username: admin.username,
+      password: PASSWORD,
+    });
+    const session = login.cookies.find((entry) => entry.name === 'winpanel_session');
+    expect(session).toBeDefined();
+    const adminCookie = `winpanel_session=${session.value}`;
+    const send = vi.spyOn(app.mailer, 'send').mockResolvedValue();
+
+    const response = await call(
+      'POST',
+      'users.update',
+      { userId: customer.id, email: 'customer@example.com' },
+      adminCookie,
+    );
+
+    expect(response.body.result.data).toMatchObject({
+      id: customer.id,
+      email: 'customer@example.com',
+      emailVerified: false,
+      verificationSent: true,
+    });
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: { name: 'customer', email: 'customer@example.com' },
+        subject: 'Confirm your WinPanel email address',
+      }),
+    );
+    expect(ownerCookie).toContain('winpanel_session=');
+  });
+
   it('keeps unknown and unverified reset requests indistinguishable', async () => {
     await completeSetup();
     const owner = app.auth.listUsers()[0]!;

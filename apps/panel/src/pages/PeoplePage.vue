@@ -360,6 +360,10 @@ async function submitForm(): Promise<void> {
   const state = form.value;
   if (formValidationError.value) return;
 
+  const requestedEmail = state.email.trim();
+  const previousEmail = state.editing?.email?.trim() ?? '';
+  const emailChanged = !state.editing || requestedEmail.toLowerCase() !== previousEmail.toLowerCase();
+
   const limits =
     state.role === 'user'
       ? {
@@ -386,18 +390,23 @@ async function submitForm(): Promise<void> {
         };
 
   await run('form', async () => {
-    const email = state.role === 'user' && state.editing ? {} : { email: state.email.trim() || null };
+    const email = { email: state.email.trim() || null };
 
     if (state.editing) {
-      await api.users.update.mutate({
+      const result = await api.users.update.mutate({
         userId: state.editing.id,
         role: state.role,
         ...email,
         ...limits,
       });
       notice.value = `${state.editing.username} has been updated.`;
+      if (emailChanged && requestedEmail) {
+        notice.value += result.verificationSent
+          ? ' A verification email is on its way.'
+          : ' The account was saved, but the verification email could not be sent.';
+      }
     } else {
-      await api.users.create.mutate({
+      const result = await api.users.create.mutate({
         username: state.username.trim(),
         password: state.password,
         role: state.role,
@@ -407,6 +416,11 @@ async function submitForm(): Promise<void> {
       notice.value =
         `${state.username.trim()} can now sign in. Give them their password — it is not ` +
         'shown again.';
+      if (requestedEmail) {
+        notice.value += result.verificationSent
+          ? ' A verification email is on its way.'
+          : ' The account was saved, but the verification email could not be sent.';
+      }
     }
 
     form.value = blankForm();
@@ -776,7 +790,7 @@ function selectAllGames(): void {
               <p class="hint">Give this to them yourself. It is not shown again.</p>
             </div>
 
-            <div v-if="form.role !== 'user'" class="space-y-1 sm:col-span-2">
+            <div class="space-y-1 sm:col-span-2">
               <label class="label" for="person-email">
                 Notification email <span class="text-ink-faint">(optional)</span>
               </label>
@@ -790,8 +804,8 @@ function selectAllGames(): void {
                 placeholder="owner@example.com"
               />
               <p class="hint">
-                They can enter or replace this in Account settings later. The address must be
-                verified before panel alerts are sent.
+                We will send them a verification link. They can enter or replace this in Account
+                settings later, and the address must be verified before panel alerts are sent.
               </p>
             </div>
 

@@ -39,7 +39,7 @@ function panelLink(baseUrl: string, path: string, token: string): string {
   return `${baseUrl.replace(/\/$/, '')}${path}?token=${encodeURIComponent(token)}`;
 }
 
-async function sendVerificationEmail(
+export async function sendVerificationEmail(
   ctx: RequestContext,
   verification: { token: string; username: string; email: string },
 ): Promise<boolean> {

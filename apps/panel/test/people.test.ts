@@ -238,21 +238,20 @@ describe('the limits on the People page', () => {
     });
   });
 
-  it('sends an optional notification email when creating staff', async () => {
+  it('sends an optional notification email when creating a customer', async () => {
     const wrapper = await render();
     await wrapper.findAll('button').find((b: any) => b.text().includes('Add someone'))!.trigger('click');
 
-    await wrapper.find('#person-username').setValue('sam');
+    await wrapper.find('#person-username').setValue('freya2');
     await wrapper.find('#person-password').setValue('a-password-long-enough');
-    await wrapper.find('select').setValue('admin');
-    await wrapper.find('#person-email').setValue('sam@example.com');
+    await wrapper.find('#person-email').setValue('freya2@example.com');
     await wrapper.find('form').trigger('submit');
     await flushPromises();
 
     expect(state.created[0]).toMatchObject({
-      username: 'sam',
-      role: 'admin',
-      email: 'sam@example.com',
+      username: 'freya2',
+      role: 'user',
+      email: 'freya2@example.com',
     });
   });
 
@@ -297,8 +296,11 @@ describe('the limits on the People page', () => {
     await wrapper.find('form').trigger('submit');
     await flushPromises();
 
-    expect(state.updated[0]).toMatchObject({ userId: 'f', role: 'user' });
-    expect(state.updated[0]).not.toHaveProperty('email');
+    expect(state.updated[0]).toMatchObject({
+      userId: 'f',
+      role: 'user',
+      email: 'freya@example.com',
+    });
   });
 
   it('requires an explicit no-limit choice instead of treating a blank as unlimited', async () => {

@@ -19,6 +19,7 @@ import {
 import { listDatabasesForSite, reassignSiteDatabases } from '../../databases/store.js';
 import { adminProcedure, router } from '../trpc.js';
 import type { RequestContext } from '../trpc.js';
+import { sendVerificationEmail } from './auth.js';
 
 /**
  * The people who can sign in to this server.
@@ -91,15 +92,15 @@ export const usersRouter = router({
    * Creates an account.
    *
    * The password is chosen by whoever creates the account and handed over out
-   * of band. There is deliberately no emailed invitation: a brand new server
-   * often cannot send mail yet, and an invite link that never arrives is a
-   * worse first experience than a password read down the phone.
+   * of band. When an email is supplied, the account also receives the normal
+   * verification link so recovery and panel alerts can be used after it is
+   * confirmed. A mail delivery failure must not undo account creation.
    */
   create: adminProcedure.input(CreateUserRequest).mutation(async ({ ctx, input }) => {
     assertOutranks(ctx, input.role);
 
     try {
-      return await ctx.app.auth.createUser({
+      const created = await ctx.app.auth.createUser({
         username: input.username,
         password: input.password,
         role: input.role,
@@ -115,12 +116,19 @@ export const usersRouter = router({
         gameServerProviders: input.gameServerProviders,
         createdBy: ctx.user?.id ?? null,
       });
+
+      let verificationSent = false;
+      if (created.email) {
+        const verification = ctx.app.auth.createEmailVerificationToken(created.id);
+        if (verification) verificationSent = await sendVerificationEmail(ctx, verification);
+      }
+      return { ...created, verificationSent };
     } catch (error) {
       toTrpcError(error);
     }
   }),
 
-  update: adminProcedure.input(UpdateUserRequest).mutation(({ ctx, input }) => {
+  update: adminProcedure.input(UpdateUserRequest).mutation(async ({ ctx, input }) => {
     const target = ctx.app.auth.getUser(input.userId);
     if (!target) throw new TRPCError({ code: 'NOT_FOUND', message: 'No such account.' });
 
@@ -131,7 +139,20 @@ export const usersRouter = router({
 
     try {
       const { userId, ...changes } = input;
-      return ctx.app.auth.updateUser(userId, changes);
+      const wantedEmail =
+        input.email === undefined ? undefined : input.email?.trim().toLowerCase() ?? null;
+      const emailChanged = wantedEmail !== undefined && wantedEmail !== target.email;
+      const updated = ctx.app.auth.updateUser(userId, {
+        ...changes,
+        ...(wantedEmail === undefined ? {} : { email: wantedEmail }),
+      });
+
+      let verificationSent = false;
+      if (emailChanged && updated.email) {
+        const verification = ctx.app.auth.createEmailVerificationToken(updated.id);
+        if (verification) verificationSent = await sendVerificationEmail(ctx, verification);
+      }
+      return { ...updated, verificationSent };
     } catch (error) {
       toTrpcError(error);
     }
