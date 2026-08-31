@@ -97,6 +97,45 @@ describe('managing accounts', () => {
     expect(customer.siteCount).toBe(0);
   });
 
+  it('normalizes managed email addresses and leaves them unverified', async () => {
+    const { auth } = await ownerService();
+    const managed = await auth.createUser({
+      username: 'sam',
+      password: PASSWORD,
+      role: 'admin',
+      email: '  Sam@Example.COM ',
+    });
+
+    expect(managed.email).toBe('sam@example.com');
+    expect(managed.emailVerified).toBe(false);
+    await expect(
+      auth.createUser({
+        username: 'other',
+        password: PASSWORD,
+        role: 'user',
+        email: 'sam@example.com',
+      }),
+    ).rejects.toMatchObject({ code: 'invalid-input' });
+  });
+
+  it('clears verification when a managed email address changes', async () => {
+    const { auth } = await ownerService();
+    const managed = await auth.createUser({
+      username: 'sam',
+      password: PASSWORD,
+      role: 'admin',
+      email: 'old@example.com',
+    });
+    const verification = auth.createEmailVerificationToken(managed.id);
+    expect(verification).not.toBeNull();
+    auth.verifyEmailToken(verification!.token);
+    expect(auth.getProfile(managed.id).emailVerified).toBe(true);
+
+    const updated = auth.updateUser(managed.id, { email: 'new@example.com' });
+    expect(updated.email).toBe('new@example.com');
+    expect(updated.emailVerified).toBe(false);
+  });
+
   it('never caps an administrator', async () => {
     // An admin capped at two websites would be an admin in name only, and the
     // number would sit in the database waiting to surprise somebody.

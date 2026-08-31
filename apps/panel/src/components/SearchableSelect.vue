@@ -27,6 +27,7 @@ const props = defineProps<{
   /** The currently selected value, or '' for none. */
   modelValue: string;
   options: SearchableOption[];
+  id?: string;
   /** What the closed control says when nothing is chosen. */
   placeholder?: string;
   /** Accessible name for the control. */
@@ -123,6 +124,7 @@ defineExpose({ open });
 <template>
   <div ref="root" class="relative" @keydown="onKeydown">
     <button
+      :id="id"
       type="button"
       class="field flex w-full items-center justify-between gap-2 text-left"
       :aria-expanded="open"

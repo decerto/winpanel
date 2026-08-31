@@ -201,7 +201,7 @@ export const router = createRouter({
       path: '/security',
       name: 'security',
       component: () => import('./pages/SecurityPage.vue'),
-      meta: { title: 'Security' },
+      meta: { title: 'Account settings' },
     },
     {
       path: '/people',

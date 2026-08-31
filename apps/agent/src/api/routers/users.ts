@@ -103,6 +103,7 @@ export const usersRouter = router({
         username: input.username,
         password: input.password,
         role: input.role,
+        email: input.email,
         siteLimit: input.siteLimit,
         subdomainLimit: input.subdomainLimit,
         mailboxLimit: input.mailboxLimit,

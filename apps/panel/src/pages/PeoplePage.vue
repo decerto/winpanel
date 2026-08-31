@@ -7,6 +7,7 @@ import {
   Inbox,
   KeyRound,
   ListChecks,
+  Mail,
   Pencil,
   RefreshCw,
   Trash2,
@@ -121,6 +122,7 @@ interface FormState {
   editing: Person | null;
   username: string;
   password: string;
+  email: string;
   role: UserRole;
   siteLimit: string;
   siteLimitMode: LimitMode;
@@ -147,6 +149,7 @@ function blankForm(): FormState {
     editing: null,
     username: '',
     password: '',
+    email: '',
     role: 'user',
     siteLimit: '1',
     siteLimitMode: 'limited',
@@ -188,6 +191,7 @@ function openEdit(person: Person): void {
     editing: person,
     username: person.username,
     password: '',
+    email: person.email ?? '',
     role: person.role,
     siteLimit: person.siteLimit === null ? '' : String(person.siteLimit),
     siteLimitMode: person.siteLimit === null ? 'unlimited' : 'limited',
@@ -382,14 +386,22 @@ async function submitForm(): Promise<void> {
         };
 
   await run('form', async () => {
+    const email = state.role === 'user' && state.editing ? {} : { email: state.email.trim() || null };
+
     if (state.editing) {
-      await api.users.update.mutate({ userId: state.editing.id, role: state.role, ...limits });
+      await api.users.update.mutate({
+        userId: state.editing.id,
+        role: state.role,
+        ...email,
+        ...limits,
+      });
       notice.value = `${state.editing.username} has been updated.`;
     } else {
       await api.users.create.mutate({
         username: state.username.trim(),
         password: state.password,
         role: state.role,
+        ...email,
         ...limits,
       });
       notice.value =
@@ -613,6 +625,16 @@ function selectAllGames(): void {
               <p class="mt-1 max-w-2xl text-sm leading-5 text-ink-faint">
                 {{ ROLE_LABELS[person.role].description }}
               </p>
+              <p
+                v-if="person.email"
+                class="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-ink-faint"
+              >
+                <Mail :size="13" aria-hidden="true" />
+                <span>{{ person.email }}</span>
+                <span :class="person.emailVerified ? 'text-ok' : 'text-warn'">
+                  {{ person.emailVerified ? 'Verified' : 'Needs verification' }}
+                </span>
+              </p>
             </div>
 
             <div class="flex flex-wrap justify-end gap-1">
@@ -752,6 +774,25 @@ function selectAllGames(): void {
               <label class="label" for="person-password">First password</label>
               <input id="person-password" v-model="form.password" class="field font-mono" />
               <p class="hint">Give this to them yourself. It is not shown again.</p>
+            </div>
+
+            <div v-if="form.role !== 'user'" class="space-y-1 sm:col-span-2">
+              <label class="label" for="person-email">
+                Notification email <span class="text-ink-faint">(optional)</span>
+              </label>
+              <input
+                id="person-email"
+                v-model="form.email"
+                class="field"
+                type="email"
+                autocomplete="email"
+                spellcheck="false"
+                placeholder="owner@example.com"
+              />
+              <p class="hint">
+                They can enter or replace this in Account settings later. The address must be
+                verified before panel alerts are sent.
+              </p>
             </div>
 
             <div class="space-y-1 sm:col-span-2">

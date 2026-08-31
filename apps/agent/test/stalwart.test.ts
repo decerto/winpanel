@@ -247,6 +247,7 @@ describe('mailboxes', () => {
         type: 'individual',
         description: 'Sam',
         emails: ['sam@example.com', 'sales@example.com'],
+        receivesMail: true,
         quota: 5368709120,
         usedQuota: 1073741824,
       },
@@ -281,9 +282,63 @@ describe('mailboxes', () => {
         type: 'individual',
         description: '',
         emails: ['a@example.com'],
+        receivesMail: true,
         quota: 0,
         usedQuota: 0,
       },
+    ]);
+  });
+
+  it('recognises an account with inbound delivery disabled', async () => {
+    const { mail } = client({
+      ...DOMAIN_HANDLERS,
+      'x:Account/query': { ids: ['a6'] },
+      'x:Account/get': {
+        list: [
+          {
+            id: 'a6',
+            '@type': 'User',
+            name: 'noreply',
+            domainId: 'd1',
+            emailAddress: 'noreply@example.com',
+            permissions: {
+              '@type': 'Merge',
+              enabledPermissions: {},
+              disabledPermissions: { 'email-receive': true },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(await mail.listMailboxes('example.com')).toMatchObject([
+      { name: 'noreply@example.com', receivesMail: false },
+    ]);
+  });
+
+  it('lets a disabled permission override an enabled permission', async () => {
+    const { mail } = client({
+      ...DOMAIN_HANDLERS,
+      'x:Account/query': { ids: ['a7'] },
+      'x:Account/get': {
+        list: [
+          {
+            id: 'a7',
+            '@type': 'User',
+            name: 'noreply',
+            domainId: 'd1',
+            permissions: {
+              '@type': 'Replace',
+              enabledPermissions: { 'email-receive': true },
+              disabledPermissions: { 'email-receive': true },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(await mail.listMailboxes('example.com')).toMatchObject([
+      { name: 'noreply@example.com', receivesMail: false },
     ]);
   });
 
@@ -310,6 +365,28 @@ describe('mailboxes', () => {
       credentials: { '0': { '@type': 'Password', secret: 'a-long-password' } },
       quotas: { maxDiskQuota: 1024 },
       roles: { '@type': 'User' },
+    });
+  });
+
+  it('creates a no-reply account that can send but cannot receive', async () => {
+    const { mail, seen } = client({
+      ...DOMAIN_HANDLERS,
+      'x:Account/set': { created: { new1: { id: 'a5' } } },
+    });
+
+    await mail.createMailbox({
+      address: 'noreply@example.com',
+      password: 'a-long-password',
+      displayName: 'No Reply',
+      quotaBytes: 1024,
+      receivesMail: false,
+    });
+
+    const create = argsOf(seen, 'x:Account/set')?.['create'] as Record<string, Record<string, unknown>>;
+    expect(create['new1']?.['permissions']).toEqual({
+      '@type': 'Merge',
+      enabledPermissions: {},
+      disabledPermissions: { 'email-receive': true },
     });
   });
 
@@ -340,6 +417,65 @@ describe('mailboxes', () => {
 
     await mail.setQuota('sam@example.com', 0);
     expect(argsOf(seen, 'x:Account/set')?.['update']).toEqual({ a1: { quotas: {} } });
+  });
+
+  it('disables inbound delivery without disabling the account', async () => {
+    const { mail, seen } = client(oneAccount);
+
+    await mail.setReceivesMail('sam@example.com', false);
+    expect(argsOf(seen, 'x:Account/set')?.['update']).toEqual({
+      a1: {
+        permissions: {
+          '@type': 'Merge',
+          enabledPermissions: {},
+          disabledPermissions: { 'email-receive': true },
+        },
+      },
+    });
+  });
+
+  it('restores inherited inbound delivery permissions', async () => {
+    const { mail, seen } = client(oneAccount);
+
+    await mail.setReceivesMail('sam@example.com', true);
+    expect(argsOf(seen, 'x:Account/set')?.['update']).toEqual({
+      a1: { permissions: { '@type': 'Inherit' } },
+    });
+  });
+
+  it('preserves other account permissions when changing inbound delivery', async () => {
+    const { mail, seen } = client({
+      ...DOMAIN_HANDLERS,
+      'x:Account/query': { ids: ['a1'] },
+      'x:Account/get': {
+        list: [
+          {
+            id: 'a1',
+            '@type': 'User',
+            name: 'sam',
+            domainId: 'd1',
+            emailAddress: 'sam@example.com',
+            permissions: {
+              '@type': 'Merge',
+              enabledPermissions: { 'imap-authenticate': true },
+              disabledPermissions: { 'pop3-authenticate': true },
+            },
+          },
+        ],
+      },
+      'x:Account/set': { updated: { a1: null } },
+    });
+
+    await mail.setReceivesMail('sam@example.com', false);
+    expect(argsOf(seen, 'x:Account/set')?.['update']).toEqual({
+      a1: {
+        permissions: {
+          '@type': 'Merge',
+          enabledPermissions: { 'imap-authenticate': true },
+          disabledPermissions: { 'pop3-authenticate': true, 'email-receive': true },
+        },
+      },
+    });
   });
 
   it('replaces the password rather than adding a second one', async () => {

@@ -27,12 +27,16 @@ own domains' mailboxes and nothing else.
 | Procedure | Role |
 | --- | --- |
 | `mail.domains`, `mail.serverStatus`, `mail.provisionServer`, `mail.connectServer`, `mail.blockedIps`, `mail.blockIp`, `mail.unblockIp` | `admin` |
-| `mail.mailboxes`, `mail.createMailbox`, `mail.setMailboxQuota`, `mail.setMailboxDisplayName`, `mail.setMailboxAliases`, `mail.setMailboxPassword`, `mail.deleteMailbox`, `mail.addDomain` | site-scoped |
+| `mail.mailboxes`, `mail.createMailbox`, `mail.setMailboxReceiving`, `mail.setMailboxQuota`, `mail.setMailboxDisplayName`, `mail.setMailboxAliases`, `mail.setMailboxPassword`, `mail.deleteMailbox`, `mail.addDomain` | site-scoped |
 | `mail.testOutbound`, `mail.installCertificate`, `mail.recordUnblockRequested` | `admin` |
 | `webmail.signIn`, `webmail.folders`, `webmail.messages`, `webmail.message`, `webmail.send`, `webmail.blockedSenders`, `webmail.blockSender`, `webmail.unblockSender` | protected by a mailbox session |
 
-Each mailbox carries a quota (`null` meaning no limit), aliases, a display name (the mail
-server's `description` field, shown as the sender's name on outgoing mail) and a password.
+Each mailbox carries a receive mode, quota (`null` meaning no limit), aliases, a display name
+(the mail server's `description` field, shown as the sender's name on outgoing mail) and a
+password. A normal mailbox receives mail. A **No Reply** mailbox keeps `emailSend` enabled but
+disables Stalwart's `emailReceive` permission, so it can authenticate and send while messages
+addressed to it, or to one of its aliases, are refused. `mail.createMailbox` accepts the mode
+with `receivesMail`; `mail.setMailboxReceiving` changes it for an existing mailbox.
 Both `mail.createMailbox` and `mail.setMailboxPassword` take an optional `password`: supply
 one to choose it, or omit it and the panel generates one. Either way it is returned once and
 never stored here. A customer account additionally has a total mail allowance across all of
@@ -40,6 +44,16 @@ their domains - see [users-and-roles.md](users-and-roles.md). Opening Webmail st
 that mailbox password: an administrator can reset a mailbox password, but cannot silently read
 the mailbox. Webmail keeps the password only in an in-memory session, and a newly generated or
 chosen password is shown once before it can only be replaced.
+
+### Panel sender
+
+The owner configures the sender for outage alerts, password recovery and other panel mail in
+Settings. **From this server** lists every existing mailbox address and alias; selecting one asks
+for its mailbox password, which is stored encrypted on the server. When an alias is selected, the
+panel signs in through the primary mailbox and sends with the alias as the visible sender.
+**External SMTP** uses a separate SMTP provider. **Create New** makes a new send-only mailbox on
+the local server with a generated password. A newly created sender appears under **From this
+server** afterward, and an existing address should be selected there rather than created again.
 
 ### Sender blocks
 

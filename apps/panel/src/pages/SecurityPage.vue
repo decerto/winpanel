@@ -275,7 +275,7 @@ async function changePassword(): Promise<void> {
 <template>
   <div class="mx-auto w-full max-w-2xl">
     <PageHeader
-      title="Security"
+      title="Account settings"
       description="How this panel decides it is really you. Every change here re-asks for your
                    password, and anything that weakens the account also asks for a code."
     />

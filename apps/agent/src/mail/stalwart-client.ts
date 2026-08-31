@@ -75,6 +75,7 @@ export interface MailPrincipal {
   description: string;
   /** Primary address first, then aliases. */
   emails: string[];
+  receivesMail: boolean;
   /** Bytes. Zero means no limit, which is the mail server's own convention. */
   quota: number;
   usedQuota: number;
@@ -91,6 +92,12 @@ interface AliasPayload {
   name?: string;
   domainId?: string;
   enabled?: boolean;
+}
+
+interface PermissionsPayload {
+  '@type'?: string;
+  enabledPermissions?: Record<string, boolean>;
+  disabledPermissions?: Record<string, boolean>;
 }
 
 interface ListenerPayload {
@@ -132,8 +139,71 @@ interface AccountPayload {
   description?: string | null;
   domainId?: string;
   aliases?: Record<string, AliasPayload> | AliasPayload[];
+  permissions?: PermissionsPayload;
   quotas?: Record<string, number>;
   usedDiskQuota?: number;
+}
+
+const EMAIL_RECEIVE_PERMISSION = 'email-receive';
+
+function accountReceivesMail(permissions: PermissionsPayload | undefined): boolean {
+  if (!permissions) return true;
+  if (permissions['@type'] === 'Replace') {
+    return (
+      permissions.enabledPermissions?.[EMAIL_RECEIVE_PERMISSION] === true &&
+      permissions.disabledPermissions?.[EMAIL_RECEIVE_PERMISSION] !== true
+    );
+  }
+
+  return permissions.disabledPermissions?.[EMAIL_RECEIVE_PERMISSION] !== true;
+}
+
+function permissionsForMailbox(receivesMail: boolean): PermissionsPayload {
+  if (receivesMail) return { '@type': 'Inherit' };
+
+  return {
+    '@type': 'Merge',
+    enabledPermissions: {},
+    disabledPermissions: { [EMAIL_RECEIVE_PERMISSION]: true },
+  };
+}
+
+function permissionsWithReceiveState(
+  current: PermissionsPayload | undefined,
+  receivesMail: boolean,
+): PermissionsPayload {
+  if (current?.['@type'] === 'Replace') {
+    const enabledPermissions = { ...(current.enabledPermissions ?? {}) };
+    const disabledPermissions = { ...(current.disabledPermissions ?? {}) };
+
+    delete disabledPermissions[EMAIL_RECEIVE_PERMISSION];
+    if (receivesMail) {
+      enabledPermissions[EMAIL_RECEIVE_PERMISSION] = true;
+    } else {
+      disabledPermissions[EMAIL_RECEIVE_PERMISSION] = true;
+    }
+
+    return { '@type': 'Replace', enabledPermissions, disabledPermissions };
+  }
+
+  if (current?.['@type'] === 'Merge') {
+    const enabledPermissions = { ...(current.enabledPermissions ?? {}) };
+    const disabledPermissions = { ...(current.disabledPermissions ?? {}) };
+
+    if (receivesMail) {
+      delete disabledPermissions[EMAIL_RECEIVE_PERMISSION];
+    } else {
+      disabledPermissions[EMAIL_RECEIVE_PERMISSION] = true;
+    }
+
+    if (Object.keys(enabledPermissions).length === 0 && Object.keys(disabledPermissions).length === 0) {
+      return { '@type': 'Inherit' };
+    }
+
+    return { '@type': 'Merge', enabledPermissions, disabledPermissions };
+  }
+
+  return permissionsForMailbox(receivesMail);
 }
 
 /**
@@ -605,6 +675,7 @@ export class StalwartClient {
       type: account['@type'] === 'Group' ? 'group' : 'individual',
       description: account.description ?? '',
       emails,
+      receivesMail: accountReceivesMail(account.permissions),
       quota: account.quotas?.['maxDiskQuota'] ?? 0,
       usedQuota: account.usedDiskQuota ?? 0,
     };
@@ -696,6 +767,7 @@ export class StalwartClient {
     password: string;
     displayName: string;
     quotaBytes: number;
+    receivesMail?: boolean;
   }): Promise<void> {
     const address = input.address.toLowerCase();
     const [local, domain] = address.split('@');
@@ -718,7 +790,7 @@ export class StalwartClient {
           aliases: {},
           credentials: { '0': { '@type': 'Password', secret: input.password } },
           memberGroupIds: {},
-          permissions: { '@type': 'Inherit' },
+          permissions: permissionsForMailbox(input.receivesMail !== false),
           quotas: input.quotaBytes > 0 ? { maxDiskQuota: input.quotaBytes } : {},
           roles: { '@type': 'User' },
           encryptionAtRest: { '@type': 'Disabled' },
@@ -782,6 +854,22 @@ export class StalwartClient {
 
   async setDisplayName(address: string, displayName: string): Promise<void> {
     await this.update(address, { description: displayName });
+  }
+
+  async setReceivesMail(address: string, receivesMail: boolean): Promise<void> {
+    const account = await this.accountRecord(address);
+
+    if (!account?.id) {
+      throw new MailServerError(`There is no mailbox for ${address} on the mail server.`);
+    }
+
+    await this.set('x:Account', {
+      update: {
+        [account.id]: {
+          permissions: permissionsWithReceiveState(account.permissions, receivesMail),
+        },
+      },
+    });
   }
 
   async deleteMailbox(address: string): Promise<void> {

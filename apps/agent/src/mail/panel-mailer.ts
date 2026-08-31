@@ -13,12 +13,14 @@ export const PANEL_EMAIL_LOCAL_PASSWORD_KEY = 'panel.email.localPassword';
 export const PANEL_EMAIL_SMTP_PASSWORD_KEY = 'panel.email.smtpPassword';
 
 export type PanelEmailMode = 'local' | 'external';
+export type PanelEmailSetupMode = PanelEmailMode | 'new';
 export type PanelEmailSecurity = 'none' | 'starttls' | 'tls';
 
 export interface PanelEmailSettings {
   mode: PanelEmailMode;
   fromAddress: string;
   fromName: string;
+  localPasswordConfigured: boolean;
   smtpHost: string | null;
   smtpPort: number | null;
   smtpSecurity: PanelEmailSecurity | null;
@@ -26,10 +28,17 @@ export interface PanelEmailSettings {
   smtpPasswordConfigured: boolean;
 }
 
+export interface PanelEmailAddressOption {
+  value: string;
+  label: string;
+  hint?: string;
+}
+
 export interface ConfigurePanelEmailInput {
-  mode: PanelEmailMode;
+  mode: PanelEmailSetupMode;
   fromAddress: string;
   fromName?: string;
+  localPassword?: string | null;
   smtpHost?: string | null;
   smtpPort?: number | null;
   smtpSecurity?: PanelEmailSecurity | null;
@@ -44,7 +53,18 @@ export interface PanelMessage {
   html?: string;
 }
 
-function settingsFromValue(value: unknown): Omit<PanelEmailSettings, 'smtpPasswordConfigured'> | null {
+interface StoredPanelEmailSettings {
+  mode: PanelEmailMode;
+  fromAddress: string;
+  fromName: string;
+  localLoginAddress: string | null;
+  smtpHost: string | null;
+  smtpPort: number | null;
+  smtpSecurity: PanelEmailSecurity | null;
+  smtpUsername: string | null;
+}
+
+function settingsFromValue(value: unknown): StoredPanelEmailSettings | null {
   if (typeof value !== 'object' || value === null) return null;
   const entry = value as Record<string, unknown>;
   if (entry.mode !== 'local' && entry.mode !== 'external') return null;
@@ -64,6 +84,10 @@ function settingsFromValue(value: unknown): Omit<PanelEmailSettings, 'smtpPasswo
     mode: entry.mode,
     fromAddress: entry.fromAddress,
     fromName: entry.fromName,
+    localLoginAddress:
+      typeof entry.localLoginAddress === 'string' && entry.localLoginAddress.trim().length > 0
+        ? entry.localLoginAddress.trim().toLowerCase()
+        : null,
     smtpHost: typeof entry.smtpHost === 'string' ? entry.smtpHost : null,
     smtpPort: typeof entry.smtpPort === 'number' ? entry.smtpPort : null,
     smtpSecurity,
@@ -75,28 +99,99 @@ export class PanelMailer {
   constructor(
     private readonly db: DatabaseHandle,
     private readonly vault: SecretVault,
-    private readonly localClient: (address: string, password: string) => WebmailClient =
-      (address, password) => new WebmailClient(address, password),
+    private readonly localClient: (
+      senderAddress: string,
+      password: string,
+      loginAddress?: string,
+    ) => WebmailClient = (senderAddress, password, loginAddress = senderAddress) =>
+      new WebmailClient(senderAddress, password, undefined, undefined, loginAddress),
     private readonly smtpTransport: typeof nodemailer.createTransport = nodemailer.createTransport,
   ) {}
 
-  getSettings(): PanelEmailSettings | null {
+  private getStoredSettings(): StoredPanelEmailSettings | null {
     const row = this.db.db.select().from(settings).where(eq(settings.key, PANEL_EMAIL_SETTINGS_KEY)).get();
-    const parsed = settingsFromValue(row?.value);
+    return settingsFromValue(row?.value);
+  }
+
+  getSettings(): PanelEmailSettings | null {
+    const parsed = this.getStoredSettings();
     if (!parsed) return null;
 
     return {
-      ...parsed,
+      mode: parsed.mode,
+      fromAddress: parsed.fromAddress,
+      fromName: parsed.fromName,
+      localPasswordConfigured: parsed.mode === 'local' && this.hasSecret(PANEL_EMAIL_LOCAL_PASSWORD_KEY),
+      smtpHost: parsed.smtpHost,
+      smtpPort: parsed.smtpPort,
+      smtpSecurity: parsed.smtpSecurity,
+      smtpUsername: parsed.smtpUsername,
       smtpPasswordConfigured: this.hasSecret(PANEL_EMAIL_SMTP_PASSWORD_KEY),
     };
   }
 
+  async getLocalAddressOptions(): Promise<PanelEmailAddressOption[]> {
+    const current = this.getSettings();
+    const credentials = loadMailAdminCredentials(this.db, this.vault);
+    if (!credentials) {
+      return current?.mode === 'local'
+        ? [{ value: current.fromAddress, label: current.fromAddress, hint: 'Current sender' }]
+        : [];
+    }
+
+    const admin = new StalwartClient(credentials.username, credentials.password);
+    const domains = (await admin.listDomains())
+      .map((domain) => domain.toLowerCase())
+      .filter((domain, index, values) => values.indexOf(domain) === index)
+      .sort();
+    const options = new Map<string, PanelEmailAddressOption>();
+
+    for (const domain of domains) {
+      try {
+        const mailboxes = await admin.listMailboxes(domain);
+        for (const mailbox of mailboxes) {
+          const primary = mailbox.name.toLowerCase();
+          for (const email of mailbox.emails) {
+            const value = email.trim().toLowerCase();
+            if (value.length === 0) continue;
+            options.set(value, {
+              value,
+              label: value,
+              hint: value === primary ? mailbox.description || 'Mailbox' : `Alias for ${primary}`,
+            });
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    if (current?.mode === 'local') {
+      options.set(current.fromAddress, {
+        value: current.fromAddress,
+        label: current.fromAddress,
+        hint: 'Current sender',
+      });
+    }
+
+    return [...options.values()].sort((left, right) => left.value.localeCompare(right.value));
+  }
+
   async configure(input: ConfigurePanelEmailInput): Promise<PanelEmailSettings> {
     const fromAddress = input.fromAddress.trim().toLowerCase();
-    const current = this.getSettings();
+    const current = this.getStoredSettings();
+    let localLoginAddress: string | null = null;
 
     if (input.mode === 'local') {
-      await this.configureLocalMailbox(fromAddress, current);
+      localLoginAddress = await this.configureExistingLocalMailbox(
+        fromAddress,
+        input.localPassword,
+        current,
+      );
+
+      this.deleteSecret(PANEL_EMAIL_SMTP_PASSWORD_KEY);
+    } else if (input.mode === 'new') {
+      localLoginAddress = await this.createLocalMailbox(fromAddress);
       this.deleteSecret(PANEL_EMAIL_SMTP_PASSWORD_KEY);
     } else {
       if (!input.smtpHost?.trim()) throw new Error('Enter the external mail server address.');
@@ -110,18 +205,21 @@ export class PanelMailer {
           this.deleteSecret(PANEL_EMAIL_SMTP_PASSWORD_KEY);
         }
       }
+      this.deleteSecret(PANEL_EMAIL_LOCAL_PASSWORD_KEY);
     }
 
+    const mode: PanelEmailMode = input.mode === 'new' ? 'local' : input.mode;
     const value = {
-      mode: input.mode,
+      mode,
       fromAddress,
       fromName: input.fromName?.trim() ?? '',
+      localLoginAddress: mode === 'local' ? localLoginAddress : null,
       smtpHost: input.mode === 'external' ? input.smtpHost!.trim() : null,
       smtpPort: input.mode === 'external' ? input.smtpPort ?? 587 : null,
       smtpSecurity: input.mode === 'external' ? input.smtpSecurity ?? 'starttls' : null,
       smtpUsername:
         input.mode === 'external' ? input.smtpUsername?.trim() || null : null,
-    } satisfies Omit<PanelEmailSettings, 'smtpPasswordConfigured'>;
+    } satisfies StoredPanelEmailSettings;
 
     this.db.db
       .insert(settings)
@@ -136,7 +234,7 @@ export class PanelMailer {
   }
 
   async send(message: PanelMessage): Promise<void> {
-    const configured = this.getSettings();
+    const configured = this.getStoredSettings();
     if (!configured) {
       throw new Error('Panel email is not configured. Set it up on the Settings page first.');
     }
@@ -145,7 +243,11 @@ export class PanelMailer {
       const password = this.loadSecret(PANEL_EMAIL_LOCAL_PASSWORD_KEY);
       if (!password) throw new Error('The panel mailbox password is unavailable. Save its address again.');
 
-      await this.localClient(configured.fromAddress, password).send({
+      await this.localClient(
+        configured.fromAddress,
+        password,
+        configured.localLoginAddress ?? configured.fromAddress,
+      ).send({
         to: [message.to],
         subject: message.subject,
         text: message.text,
@@ -186,13 +288,52 @@ export class PanelMailer {
     for (const message of messages) await this.send(message);
   }
 
-  private async configureLocalMailbox(
+  private async configureExistingLocalMailbox(
     address: string,
-    current: PanelEmailSettings | null,
-  ): Promise<void> {
-    const existingPassword = this.loadSecret(PANEL_EMAIL_LOCAL_PASSWORD_KEY);
-    if (current?.mode === 'local' && current.fromAddress === address && existingPassword) return;
+    suppliedPassword: string | null | undefined,
+    current: StoredPanelEmailSettings | null,
+  ): Promise<string> {
+    const credentials = loadMailAdminCredentials(this.db, this.vault);
+    if (!credentials) {
+      throw new Error('Connect the local mail server on the Settings page before using it here.');
+    }
 
+    const admin = new StalwartClient(credentials.username, credentials.password);
+    const [, domain] = address.split('@');
+    const mailbox = domain
+      ? (await admin.listMailboxes(domain)).find((entry) =>
+          entry.emails.some((email) => email.toLowerCase() === address),
+        )
+      : undefined;
+
+    if (!mailbox) {
+      throw new Error('Choose a mailbox that already exists on this server.');
+    }
+
+    const loginAddress =
+      current?.mode === 'local' && current.fromAddress === address
+        ? current.localLoginAddress ?? mailbox.name
+        : mailbox.name;
+    const enteredPassword = suppliedPassword && suppliedPassword.length > 0 ? suppliedPassword : null;
+    const password =
+      enteredPassword ??
+      (current?.mode === 'local' && current.fromAddress === address
+        ? this.loadSecret(PANEL_EMAIL_LOCAL_PASSWORD_KEY)
+        : null);
+
+    if (!password) {
+      throw new Error(`Enter the password for ${address}.`);
+    }
+
+    if (enteredPassword) {
+      await this.localClient(address, password, loginAddress).signIn();
+    }
+
+    this.storeSecret(PANEL_EMAIL_LOCAL_PASSWORD_KEY, password);
+    return loginAddress.toLowerCase();
+  }
+
+  private async createLocalMailbox(address: string): Promise<string> {
     const credentials = loadMailAdminCredentials(this.db, this.vault);
     if (!credentials) {
       throw new Error('Connect the local mail server on the Settings page before using it here.');
@@ -201,14 +342,14 @@ export class PanelMailer {
     const admin = new StalwartClient(credentials.username, credentials.password);
     const [, domain] = address.split('@');
     const existing = domain
-      ? (await admin.listMailboxes(domain)).some(
-          (mailbox) => mailbox.name.toLowerCase() === address,
+      ? (await admin.listMailboxes(domain)).some((mailbox) =>
+          mailbox.emails.some((email) => email.toLowerCase() === address),
         )
       : false;
 
     if (existing) {
       throw new Error(
-        'That address already belongs to a mailbox. Choose an unused address for panel mail.',
+        'That address already belongs to a mailbox. Select it under From this server instead.',
       );
     }
 
@@ -218,8 +359,10 @@ export class PanelMailer {
       password,
       displayName: 'WinPanel notifications',
       quotaBytes: 0,
+      receivesMail: false,
     });
     this.storeSecret(PANEL_EMAIL_LOCAL_PASSWORD_KEY, password);
+    return address;
   }
 
   private hasSecret(key: string): boolean {

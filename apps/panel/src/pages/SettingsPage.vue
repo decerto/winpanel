@@ -19,6 +19,7 @@ import PageHeader from '../components/PageHeader.vue';
 import AlertMessage from '../components/AlertMessage.vue';
 import ComponentsPanel from '../components/ComponentsPanel.vue';
 import HowTo from '../components/HowTo.vue';
+import SearchableSelect from '../components/SearchableSelect.vue';
 import ServerPathPicker from '../components/ServerPathPicker.vue';
 import Tooltip from '../components/Tooltip.vue';
 
@@ -37,6 +38,7 @@ type ShutdownResult = Awaited<ReturnType<typeof api.system.shutdown.mutate>>;
 type PanelCertificate = Awaited<ReturnType<typeof api.system.panelCertificate.query>>;
 type GameServersSettings = Awaited<ReturnType<typeof api.gameServers.settings.query>>;
 type PanelEmailSettings = Awaited<ReturnType<typeof api.notifications.settings.query>>;
+type PanelEmailAddressOption = Awaited<ReturnType<typeof api.notifications.localAddresses.query>>[number];
 type OfficialReleases = Awaited<ReturnType<typeof api.system.releases.query>>;
 type OfficialRelease = OfficialReleases['releases'][number];
 
@@ -55,9 +57,11 @@ const mailBusy = ref(false);
 /** The manual sign-in is the fallback, so it stays out of the way until asked for. */
 const mailManual = ref(false);
 const panelEmail = ref<PanelEmailSettings | null>(null);
-const panelEmailMode = ref<'local' | 'external'>('local');
+const panelEmailLocalAddresses = ref<PanelEmailAddressOption[]>([]);
+const panelEmailMode = ref<'local' | 'external' | 'new'>('local');
 const panelEmailAddress = ref('');
 const panelEmailName = ref('WinPanel');
+const panelEmailLocalPassword = ref('');
 const panelEmailSmtpHost = ref('');
 const panelEmailSmtpPort = ref('587');
 const panelEmailSmtpSecurity = ref<'none' | 'starttls' | 'tls'>('starttls');
@@ -384,65 +388,97 @@ async function refresh(): Promise<void> {
 }
 
 async function refreshPanelEmail(): Promise<void> {
-  try {
-    const result = await api.notifications.settings.query();
-    panelEmail.value = result;
-    if (!result) return;
+  const [settingsResult, addressesResult] = await Promise.allSettled([
+    api.notifications.settings.query(),
+    api.notifications.localAddresses.query(),
+  ]);
 
-    panelEmailMode.value = result.mode;
-    panelEmailAddress.value = result.fromAddress;
-    panelEmailName.value = result.fromName;
-    panelEmailSmtpHost.value = result.smtpHost ?? '';
-    panelEmailSmtpPort.value = String(result.smtpPort ?? 587);
-    panelEmailSmtpSecurity.value = result.smtpSecurity ?? 'starttls';
-    panelEmailSmtpUsername.value = result.smtpUsername ?? '';
-  } catch {
-    // Owner-only optional settings should not hide the rest of Settings.
+  if (settingsResult.status === 'fulfilled') {
+    const result = settingsResult.value;
+    panelEmail.value = result;
+    if (result) {
+      panelEmailMode.value = result.mode;
+      panelEmailAddress.value = result.fromAddress;
+      panelEmailName.value = result.fromName;
+      panelEmailLocalPassword.value = '';
+      panelEmailSmtpHost.value = result.smtpHost ?? '';
+      panelEmailSmtpPort.value = String(result.smtpPort ?? 587);
+      panelEmailSmtpSecurity.value = result.smtpSecurity ?? 'starttls';
+      panelEmailSmtpUsername.value = result.smtpUsername ?? '';
+    }
   }
+  if (addressesResult.status === 'fulfilled') panelEmailLocalAddresses.value = addressesResult.value;
 }
 
-async function savePanelEmail(): Promise<void> {
+async function savePanelEmail(): Promise<boolean> {
+  const mode = panelEmailMode.value;
+  if (!panelEmailAddress.value.trim()) {
+    error.value = mode === 'local' ? 'Choose an existing mailbox.' : 'Enter a sender address.';
+    return false;
+  }
+
   panelEmailSaving.value = true;
   error.value = null;
   notice.value = null;
 
   try {
     const result = await api.notifications.saveSettings.mutate({
-      mode: panelEmailMode.value,
+      mode,
       fromAddress: panelEmailAddress.value.trim(),
       fromName: panelEmailName.value.trim() || 'WinPanel',
-      smtpHost: panelEmailMode.value === 'external' ? panelEmailSmtpHost.value.trim() || null : null,
+      smtpHost: mode === 'external' ? panelEmailSmtpHost.value.trim() || null : null,
       smtpPort:
-        panelEmailMode.value === 'external' ? Number(panelEmailSmtpPort.value) || null : null,
-      smtpSecurity: panelEmailMode.value === 'external' ? panelEmailSmtpSecurity.value : null,
+        mode === 'external' ? Number(panelEmailSmtpPort.value) || null : null,
+      smtpSecurity: mode === 'external' ? panelEmailSmtpSecurity.value : null,
       smtpUsername:
-        panelEmailMode.value === 'external' ? panelEmailSmtpUsername.value.trim() || null : null,
-      ...(panelEmailMode.value === 'external' && panelEmailSmtpPassword.value
+        mode === 'external' ? panelEmailSmtpUsername.value.trim() || null : null,
+      ...(mode === 'external' && panelEmailSmtpPassword.value
         ? { smtpPassword: panelEmailSmtpPassword.value }
+        : {}),
+      ...(mode === 'local' && panelEmailLocalPassword.value
+        ? { localPassword: panelEmailLocalPassword.value }
         : {}),
     });
     panelEmail.value = result;
+    panelEmailMode.value = result.mode;
+    panelEmailAddress.value = result.fromAddress;
+    panelEmailLocalPassword.value = '';
     panelEmailSmtpPassword.value = '';
     notice.value =
-      panelEmailMode.value === 'local'
-        ? 'Panel email is ready. The sender mailbox was created on this server.'
+      mode === 'new'
+        ? 'A new send-only panel mailbox was created on this server.'
+        : mode === 'local'
+          ? 'Panel email is ready. The selected mailbox will send panel messages.'
         : 'Panel email settings saved. Send a test message to verify the connection.';
+    return true;
   } catch (err) {
     error.value = describeError(err);
+    return false;
   } finally {
     panelEmailSaving.value = false;
   }
 }
 
+function localPasswordIsOptional(): boolean {
+  return (
+    panelEmail.value?.mode === 'local' &&
+    panelEmail.value.fromAddress === panelEmailAddress.value.trim().toLowerCase() &&
+    panelEmail.value.localPasswordConfigured
+  );
+}
+
 async function testPanelEmail(): Promise<void> {
-  if (!panelEmailTestRecipient.value.trim()) return;
+  const recipient = panelEmailTestRecipient.value.trim();
+  if (!recipient || panelEmailTesting.value) return;
   panelEmailTesting.value = true;
   error.value = null;
   notice.value = null;
 
   try {
-    await api.notifications.test.mutate({ recipient: panelEmailTestRecipient.value.trim() });
-    notice.value = `Test email sent to ${panelEmailTestRecipient.value.trim()}.`;
+    if (!(await savePanelEmail())) return;
+    notice.value = null;
+    await api.notifications.test.mutate({ recipient });
+    notice.value = `Test email sent to ${recipient}.`;
   } catch (err) {
     error.value = describeError(err);
   } finally {
@@ -1241,11 +1277,50 @@ async function installUpdate(): Promise<void> {
           >
             External SMTP
           </button>
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            :class="panelEmailMode === 'new' ? 'text-ink' : ''"
+            :aria-pressed="panelEmailMode === 'new'"
+            @click="panelEmailMode = 'new'"
+          >
+            Create New
+          </button>
         </div>
 
         <div class="grid gap-3 sm:grid-cols-2">
-          <div>
-            <label for="panel-email-address" class="label">Sender address</label>
+          <div v-if="panelEmailMode === 'local'">
+            <label for="panel-email-address" class="label">Existing mailbox</label>
+            <SearchableSelect
+              v-if="panelEmailLocalAddresses.length > 0"
+              v-model="panelEmailAddress"
+              id="panel-email-address"
+              :options="panelEmailLocalAddresses"
+              placeholder="Choose an existing mailbox"
+              label="Existing mailbox"
+            />
+            <input
+              v-else
+              id="panel-email-address"
+              v-model="panelEmailAddress"
+              class="field"
+              type="email"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="mailbox@example.com"
+              required
+            />
+            <p v-if="panelEmailLocalAddresses.length > 0" class="hint">
+              Choose any mailbox or alias on this server. The list can be filtered by typing.
+            </p>
+            <p v-else class="hint">
+              No existing mailboxes were found. Use Create New to make a dedicated sender.
+            </p>
+          </div>
+          <div v-else>
+            <label for="panel-email-address" class="label">
+              {{ panelEmailMode === 'new' ? 'New mailbox address' : 'Sender address' }}
+            </label>
             <input
               id="panel-email-address"
               v-model="panelEmailAddress"
@@ -1253,7 +1328,7 @@ async function installUpdate(): Promise<void> {
               type="email"
               autocomplete="off"
               spellcheck="false"
-              placeholder="panel@example.com"
+              :placeholder="panelEmailMode === 'new' ? 'noreply@example.com' : 'you@example.com'"
               required
             />
           </div>
@@ -1270,9 +1345,32 @@ async function installUpdate(): Promise<void> {
           </div>
         </div>
 
-        <div v-if="panelEmailMode === 'local'" class="hint">
-          The address must belong to a domain already configured in the local mail server. WinPanel
-          creates a separate sender mailbox and keeps its password encrypted.
+        <div v-if="panelEmailMode === 'local'" class="space-y-1">
+          <label for="panel-email-local-password" class="label">Mailbox password</label>
+          <input
+            id="panel-email-local-password"
+            v-model="panelEmailLocalPassword"
+            class="field"
+            type="password"
+            autocomplete="current-password"
+            :placeholder="localPasswordIsOptional() ? 'Unchanged' : 'Password for this mailbox'"
+            :required="!localPasswordIsOptional()"
+          />
+          <p class="hint">
+            Enter the selected mailbox's password. It is stored encrypted on this server and is
+            not sent to the browser after saving. Leave it blank to keep the current sender's
+            password.
+          </p>
+        </div>
+
+        <div v-if="panelEmailMode === 'new'" class="hint">
+          WinPanel creates this as a send-only mailbox and keeps its generated password encrypted.
+          Use From this server to select a mailbox that already exists.
+        </div>
+
+        <div v-else-if="panelEmailMode === 'local'" class="hint">
+          The selected mailbox must belong to a domain configured in the local mail server. Its
+          aliases can also be used as the sender address.
         </div>
 
         <div v-else class="space-y-3 rounded-lg border border-line bg-black/20 p-4">
@@ -1361,7 +1459,7 @@ async function installUpdate(): Promise<void> {
           <button
             type="button"
             class="btn btn-ghost"
-            :disabled="panelEmailTesting || !panelEmail"
+            :disabled="panelEmailTesting || panelEmailSaving || !panelEmailTestRecipient.trim()"
             @click="testPanelEmail"
           >
             {{ panelEmailTesting ? 'Sending...' : 'Send test email' }}

@@ -133,6 +133,7 @@ export const CreateUserRequest = AccountLimits.extend({
   username: Username,
   password: Password,
   role: UserRole,
+  email: z.string().trim().email().max(254).nullable().optional(),
 });
 export type CreateUserRequest = z.infer<typeof CreateUserRequest>;
 
@@ -140,6 +141,7 @@ export const UpdateUserRequest = AccountLimits.partial().extend({
   userId: z.string().uuid(),
   role: UserRole.optional(),
   disabled: z.boolean().optional(),
+  email: z.string().trim().email().max(254).nullable().optional(),
 });
 export type UpdateUserRequest = z.infer<typeof UpdateUserRequest>;
 

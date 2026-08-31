@@ -5,12 +5,15 @@ import { WebmailSessions } from '../src/mail/webmail-sessions.js';
 
 function webmailClient(
   handler: (request: { url: string; init: RequestInit | undefined }) => Response | Promise<Response>,
+  address = 'person@example.com',
+  loginAddress?: string,
 ) {
   return new WebmailClient(
-    'person@example.com',
+    address,
     'secret',
     (async (url: string, init?: RequestInit) => handler({ url, init })) as typeof fetch,
     'http://mail.test',
+    loginAddress,
   );
 }
 
@@ -254,6 +257,80 @@ describe('WebmailClient send', () => {
       subject: 'A panel message',
       text: 'Plain version',
       html: '<p>HTML version</p>',
+    });
+  });
+
+  it('authenticates as the primary mailbox while sending from its alias', async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const client = webmailClient(
+      ({ url, init }) => {
+        calls.push({ url, init });
+        if (url.endsWith('/.well-known/jmap')) {
+          return new Response(
+            JSON.stringify({
+              apiUrl: 'http://mail.test/jmap',
+              primaryAccounts: { 'urn:ietf:params:jmap:mail': 'u1' },
+            }),
+          );
+        }
+
+        const body = JSON.parse(String(init?.body)) as {
+          methodCalls: [string, Record<string, unknown>, string][];
+        };
+        const [first, second] = body.methodCalls;
+        if (first?.[0] === 'Identity/get') {
+          return new Response(
+            JSON.stringify({
+              methodResponses: [
+                ['Identity/get', { list: [{ id: 'identity-1', email: 'alerts@example.com' }] }, 'c0'],
+              ],
+            }),
+          );
+        }
+        if (first?.[0] === 'Mailbox/get') {
+          return new Response(
+            JSON.stringify({
+              methodResponses: [
+                ['Mailbox/get', { list: [{ id: 'drafts', role: 'drafts' }, { id: 'sent', role: 'sent' }] }, 'c0'],
+              ],
+            }),
+          );
+        }
+
+        expect(first?.[0]).toBe('Email/set');
+        expect(second?.[0]).toBe('EmailSubmission/set');
+        if (!first || !second) throw new Error('The send request did not contain both JMAP calls.');
+        expect((first[1].create as { draft: { from: unknown } }).draft.from).toEqual([
+          { email: 'alerts@example.com' },
+        ]);
+        expect(
+          (second[1].create as { submission: { envelope: Record<string, unknown> } }).submission
+            .envelope,
+        ).toMatchObject({
+          mailFrom: { email: 'alerts@example.com' },
+        });
+        return new Response(
+          JSON.stringify({
+            methodResponses: [
+              ['Email/set', {}, 'draft'],
+              ['EmailSubmission/set', {}, 'send'],
+            ],
+          }),
+        );
+      },
+      'alerts@example.com',
+      'person@example.com',
+    );
+
+    await client.send({
+      to: [{ name: null, email: 'recipient@example.com' }],
+      subject: 'Alias message',
+      text: 'Plain version',
+    });
+
+    const sessionRequest = calls.find((call) => call.url.endsWith('/.well-known/jmap'));
+    expect(sessionRequest?.init?.headers).toMatchObject({
+      authorization: `Basic ${Buffer.from('person@example.com:secret').toString('base64')}`,
     });
   });
 });

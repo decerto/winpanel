@@ -1265,6 +1265,7 @@ export const mailRouter = router({
           /** Zero means no limit, which is the mail server's own convention. */
           quotaBytes: account.quota,
           usedBytes: account.usedQuota,
+          receivesMail: account.receivesMail,
           aliases: account.emails.slice(1),
         }));
       } catch (error) {
@@ -1290,6 +1291,7 @@ export const mailRouter = router({
           .min(0)
           .max(2 * 1024 * 1024 * 1024 * 1024)
           .default(DEFAULT_MAILBOX_QUOTA_BYTES),
+        receivesMail: z.boolean().default(true),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -1319,6 +1321,7 @@ export const mailRouter = router({
           password,
           displayName: input.displayName,
           quotaBytes: input.quotaBytes,
+          receivesMail: input.receivesMail,
         });
 
         return {
@@ -1326,6 +1329,22 @@ export const mailRouter = router({
           password,
           generated: input.password === undefined,
           mailHostname: mailHostnameFor(domain),
+        };
+      } catch (error) {
+        toTrpcError(error);
+      }
+    }),
+
+  setMailboxReceiving: protectedProcedure
+    .input(z.object({ address: MailboxAddress, receivesMail: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      try {
+        await clientFor(ctx.app).setReceivesMail(input.address, input.receivesMail);
+        return {
+          ok: true,
+          note: input.receivesMail
+            ? 'This mailbox accepts incoming mail again.'
+            : 'This address can send mail, but incoming messages will be refused.',
         };
       } catch (error) {
         toTrpcError(error);

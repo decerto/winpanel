@@ -66,6 +66,7 @@ const creating = ref(false);
 const localPart = ref('');
 const displayName = ref('');
 const newQuota = ref<number>(DEFAULT_MAILBOX_QUOTA_BYTES);
+const newReceivesMail = ref(true);
 const ownPassword = ref(false);
 const newPassword = ref('');
 
@@ -372,6 +373,7 @@ async function createMailbox(): Promise<void> {
       address: `${localPart.value.trim()}@${domain.value}`,
       displayName: displayName.value.trim(),
       quotaBytes: newQuota.value,
+      receivesMail: newReceivesMail.value,
       password: ownPassword.value ? newPassword.value : undefined,
     });
 
@@ -382,6 +384,7 @@ async function createMailbox(): Promise<void> {
     };
     localPart.value = '';
     displayName.value = '';
+    newReceivesMail.value = true;
     newPassword.value = '';
     ownPassword.value = false;
     creating.value = false;
@@ -401,6 +404,22 @@ async function changeQuota(mailbox: Mailbox, quotaBytes: number): Promise<void> 
     const result = await api.mail.setMailboxQuota.mutate({
       address: mailbox.address,
       quotaBytes,
+    });
+    notice.value = `${mailbox.address}: ${result.note}`;
+    await loadMailboxes();
+  } catch (err) {
+    error.value = describeError(err);
+  }
+}
+
+async function changeReceiving(mailbox: Mailbox, receivesMail: boolean): Promise<void> {
+  error.value = null;
+  notice.value = null;
+
+  try {
+    const result = await api.mail.setMailboxReceiving.mutate({
+      address: mailbox.address,
+      receivesMail,
     });
     notice.value = `${mailbox.address}: ${result.note}`;
     await loadMailboxes();
@@ -1104,6 +1123,14 @@ watch(() => site.value?.slug, load, { immediate: true });
             </div>
 
             <div>
+              <label for="mailbox-type" class="label">Mailbox type</label>
+              <select id="mailbox-type" v-model="newReceivesMail" class="field w-44">
+                <option :value="true">Receives mail</option>
+                <option :value="false">No reply (send only)</option>
+              </select>
+            </div>
+
+            <div>
               <label for="quota" class="label">Size</label>
               <select id="quota" v-model.number="newQuota" class="field w-32">
                 <option
@@ -1174,6 +1201,9 @@ watch(() => site.value?.slug, load, { immediate: true });
                   <p v-if="mailbox.displayName" class="text-xs text-ink-muted">
                     {{ mailbox.displayName }}
                   </p>
+                  <p v-if="!mailbox.receivesMail" class="text-xs text-warn">
+                    No reply address &middot; sends only
+                  </p>
                   <p v-if="mailbox.aliases.length > 0" class="truncate text-xs text-ink-faint">
                     also {{ mailbox.aliases.join(', ') }}
                   </p>
@@ -1202,6 +1232,21 @@ watch(() => site.value?.slug, load, { immediate: true });
                     >
                       {{ preset.label }}
                     </option>
+                  </select>
+
+                  <select
+                    class="field w-44 py-1 text-xs"
+                    :value="mailbox.receivesMail"
+                    :aria-label="`Mailbox type for ${mailbox.address}`"
+                    @change="
+                      changeReceiving(
+                        mailbox,
+                        ($event.target as HTMLSelectElement).value === 'true',
+                      )
+                    "
+                  >
+                    <option :value="true">Receives mail</option>
+                    <option :value="false">No reply (send only)</option>
                   </select>
 
                   <!--
@@ -1382,11 +1427,15 @@ watch(() => site.value?.slug, load, { immediate: true });
                   </button>
                 </div>
 
-                <p class="hint mt-2">
+                <p v-if="mailbox.receivesMail" class="hint mt-2">
                   Mail sent to these arrives in this mailbox, and an app signed in as
                   {{ mailbox.address }} may send from them. That is what a website needs when it
                   sends as more than one address — the mail server refuses a message whose sender
                   is not one the account owns.
+                </p>
+                <p v-else class="hint mt-2">
+                  Apps signed in as {{ mailbox.address }} may send from these addresses, but mail
+                  sent to them is refused because this is a No Reply mailbox.
                 </p>
               </form>
 

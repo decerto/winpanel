@@ -15,7 +15,7 @@ import {
   ServerCog,
   Settings,
   ScrollText,
-  ShieldCheck,
+  UserRound,
   UsersRound,
   X,
 } from 'lucide-vue-next';
@@ -54,7 +54,7 @@ const NAV = [
   },
   { to: '/email', label: 'Email', icon: Mail, hint: 'Mailboxes and delivery' },
   { to: '/webmail', label: 'Webmail', icon: Inbox, hint: 'Read and send mail' },
-  { to: '/security', label: 'Security', icon: ShieldCheck, hint: 'Sign-in protection' },
+  { to: '/security', label: 'Account', icon: UserRound, hint: 'Email and sign-in security' },
   { to: '/backups', label: 'Backup', icon: ArchiveRestore, hint: 'Recover this server', minRole: 'superadmin' },
   { to: '/people', label: 'People', icon: UsersRound, hint: 'Accounts and limits', minRole: 'admin' },
   {
@@ -271,17 +271,23 @@ function isCurrent(to: string): boolean {
       </nav>
 
       <div class="border-t border-line p-3">
-        <div class="flex items-center gap-2.5 rounded-lg px-2 py-1.5">
-          <span
-            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-soft
-                   text-xs font-semibold text-brand-bright"
-            aria-hidden="true"
+        <div class="flex items-center gap-2.5">
+          <RouterLink
+            to="/security"
+            class="group flex min-w-0 flex-1 items-center gap-2.5 rounded-lg px-2 py-1.5 text-ink-muted hover:bg-white/5 hover:text-ink"
+            aria-label="Open account settings"
           >
-            {{ (username || '?').slice(0, 1).toUpperCase() }}
-          </span>
-          <span class="min-w-0 flex-1 truncate text-sm text-ink-muted">
-            {{ username || 'Signed in' }}
-          </span>
+            <span
+              class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-soft
+                     text-xs font-semibold text-brand-bright"
+              aria-hidden="true"
+            >
+              {{ (username || '?').slice(0, 1).toUpperCase() }}
+            </span>
+            <span class="min-w-0 flex-1 truncate text-sm">
+              {{ username || 'Signed in' }}
+            </span>
+          </RouterLink>
           <Tooltip text="Sign out">
             <button
               type="button"

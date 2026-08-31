@@ -7,7 +7,18 @@ import {
   PANEL_EMAIL_LOCAL_PASSWORD_KEY,
   PanelMailer,
 } from '../src/mail/panel-mailer.js';
+import { storeMailAdminCredentials } from '../src/mail/credentials.js';
 import { SecretVault } from '../src/security/vault.js';
+
+const stalwart = vi.hoisted(() => ({
+  listDomains: vi.fn(),
+  listMailboxes: vi.fn(),
+  createMailbox: vi.fn(),
+}));
+
+vi.mock('../src/mail/stalwart-client.js', () => ({
+  StalwartClient: vi.fn(() => stalwart),
+}));
 
 const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
 
@@ -21,6 +32,9 @@ beforeEach(async () => {
   migrateDatabase(handle, MIGRATIONS);
   vault = new SecretVault(path.join(tmpDir, 'vault.key'));
   await vault.initialise();
+  stalwart.listDomains.mockReset();
+  stalwart.listMailboxes.mockReset();
+  stalwart.createMailbox.mockReset();
 });
 
 afterEach(async () => {
@@ -29,6 +43,50 @@ afterEach(async () => {
 });
 
 describe('PanelMailer', () => {
+  it('lists existing local senders and keeps the configured sender visible', async () => {
+    handle.db
+      .insert(schema.settings)
+      .values({
+        key: 'panel.email',
+        value: {
+          mode: 'local',
+          fromAddress: 'panel@example.com',
+          fromName: 'WinPanel',
+          smtpHost: null,
+          smtpPort: null,
+          smtpSecurity: null,
+          smtpUsername: null,
+        },
+      })
+      .run();
+    storeMailAdminCredentials(handle, vault, { username: 'admin', password: 'mail-admin' });
+
+    stalwart.listDomains.mockResolvedValue(['Example.com', 'other.example']);
+    stalwart.listMailboxes.mockImplementation(async (domain: string) =>
+      domain === 'example.com'
+        ? [
+            { name: 'panel@example.com', emails: ['panel@example.com'] },
+            { name: 'winpanel@example.com', emails: ['winpanel@example.com', 'alerts@example.com'] },
+          ]
+        : [{ name: 'panel@other.example', emails: ['panel@other.example'] }],
+    );
+
+    const mailer = new PanelMailer(handle, vault, () => ({ send: vi.fn() } as never));
+    const options = await mailer.getLocalAddressOptions();
+
+    expect(options.map((option) => option.value)).toEqual([
+      'alerts@example.com',
+      'panel@example.com',
+      'panel@other.example',
+      'winpanel@example.com',
+    ]);
+    expect(options.find((option) => option.value === 'panel@example.com')).toMatchObject({
+      hint: 'Current sender',
+    });
+    expect(stalwart.listMailboxes).toHaveBeenCalledWith('example.com');
+    expect(stalwart.listMailboxes).toHaveBeenCalledWith('other.example');
+  });
+
   it('sends local mail through the dedicated encrypted mailbox', async () => {
     const send = vi.fn(async () => ({ ok: true as const }));
     const address = 'panel@example.com';
@@ -71,6 +129,77 @@ describe('PanelMailer', () => {
       text: 'Plain',
       html: '<p>HTML</p>',
     });
+  });
+
+  it('creates the local panel sender as a send-only mailbox', async () => {
+    storeMailAdminCredentials(handle, vault, { username: 'admin', password: 'mail-admin' });
+    stalwart.listMailboxes.mockResolvedValue([]);
+
+    const mailer = new PanelMailer(handle, vault, () => ({ send: vi.fn() } as never));
+    await mailer.configure({
+      mode: 'new',
+      fromAddress: 'noreply@example.com',
+      fromName: 'WinPanel',
+    });
+
+    expect(stalwart.createMailbox).toHaveBeenCalledWith(
+      expect.objectContaining({
+        address: 'noreply@example.com',
+        receivesMail: false,
+      }),
+    );
+  });
+
+  it('uses the primary mailbox login when an existing alias is selected', async () => {
+    storeMailAdminCredentials(handle, vault, { username: 'admin', password: 'mail-admin' });
+    stalwart.listMailboxes.mockResolvedValue([
+      {
+        name: 'primary@example.com',
+        emails: ['primary@example.com', 'alerts@example.com'],
+      },
+    ]);
+
+    const signIn = vi.fn(async () => ({ address: 'primary@example.com', accountId: 'account-1' }));
+    const localClient = vi.fn(() => ({ signIn, send: vi.fn() } as never));
+    const mailer = new PanelMailer(handle, vault, localClient);
+    await mailer.configure({
+      mode: 'local',
+      fromAddress: 'alerts@example.com',
+      fromName: 'WinPanel',
+      localPassword: 'mailbox-secret',
+    });
+
+    expect(localClient).toHaveBeenCalledWith(
+      'alerts@example.com',
+      'mailbox-secret',
+      'primary@example.com',
+    );
+    expect(signIn).toHaveBeenCalledWith();
+    expect(mailer.getSettings()).toMatchObject({
+      mode: 'local',
+      fromAddress: 'alerts@example.com',
+      localPasswordConfigured: true,
+    });
+  });
+
+  it('rejects a create-new address already owned as a mailbox alias', async () => {
+    storeMailAdminCredentials(handle, vault, { username: 'admin', password: 'mail-admin' });
+    stalwart.listMailboxes.mockResolvedValue([
+      {
+        name: 'primary@example.com',
+        emails: ['primary@example.com', 'alerts@example.com'],
+      },
+    ]);
+
+    const mailer = new PanelMailer(handle, vault, () => ({ send: vi.fn() } as never));
+    await expect(
+      mailer.configure({
+        mode: 'new',
+        fromAddress: 'alerts@example.com',
+        fromName: 'WinPanel',
+      }),
+    ).rejects.toThrow(/select it under from this server/i);
+    expect(stalwart.createMailbox).not.toHaveBeenCalled();
   });
 
   it('keeps SMTP credentials out of settings and sends each recipient separately', async () => {

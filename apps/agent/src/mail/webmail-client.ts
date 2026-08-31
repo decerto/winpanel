@@ -271,8 +271,9 @@ export class WebmailClient {
     password: string,
     private readonly fetchImpl: typeof fetch = fetch,
     private readonly baseUrl: string = DEFAULT_BASE_URL,
+    loginAddress: string = address,
   ) {
-    this.authorisation = `Basic ${Buffer.from(`${address}:${password}`).toString('base64')}`;
+    this.authorisation = `Basic ${Buffer.from(`${loginAddress}:${password}`).toString('base64')}`;
   }
 
   /**

@@ -91,6 +91,7 @@ export interface ManagedUser {
   username: string;
   role: UserRole;
   email: string | null;
+  emailVerified: boolean;
   outageNotifications: boolean;
   disabled: boolean;
   totpEnrolled: boolean;
@@ -165,6 +166,7 @@ function toManagedUser(
     username: row.username,
     role: row.role,
     email: row.email,
+    emailVerified: row.emailVerifiedAt !== null,
     outageNotifications: row.outageNotifications,
     disabled: row.disabled,
     totpEnrolled: row.totpEnrolled,
@@ -402,9 +404,19 @@ export class AuthService {
     createdBy?: string | null;
   }): Promise<ManagedUser> {
     const username = input.username.trim();
+    const email = input.email?.trim().toLowerCase() ?? null;
 
     if (this.findByUsername(username)) {
       throw new AuthError('That username is already taken.', 'username-taken');
+    }
+
+    if (email) {
+      const duplicate = this.handle.db
+        .select({ id: users.id })
+        .from(users)
+        .where(eq(users.email, email))
+        .get();
+      if (duplicate) throw new AuthError('That email address is already in use.', 'invalid-input');
     }
 
     const id = crypto.randomUUID();
@@ -416,7 +428,7 @@ export class AuthService {
         username,
         passwordHash: await hashPassword(input.password),
         role: input.role,
-        email: input.email ?? null,
+        email,
         // Limits only mean anything for a customer; an admin who could be
         // capped at two websites would be an admin in name only.
         siteLimit: input.role === 'user' ? (input.siteLimit ?? null) : null,
@@ -451,6 +463,7 @@ export class AuthService {
     changes: {
       role?: UserRole;
       disabled?: boolean;
+      email?: string | null;
       siteLimit?: number | null;
       subdomainLimit?: number | null;
       mailboxLimit?: number | null;
@@ -466,6 +479,26 @@ export class AuthService {
     if (!existing) throw new AuthError('No such account.', 'not-found');
 
     const role = changes.role ?? existing.role;
+    const email =
+      changes.email === undefined
+        ? undefined
+        : changes.email === null
+          ? null
+          : changes.email.trim().toLowerCase();
+    const emailChanged = email !== undefined && email !== existing.email;
+
+    if (emailChanged && email !== null) {
+      const duplicate = this.handle.db
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.email, email), ne(users.id, userId)))
+        .get();
+      if (duplicate) throw new AuthError('That email address is already in use.', 'invalid-input');
+    }
+
+    if (emailChanged) {
+      this.handle.db.delete(emailVerificationTokens).where(eq(emailVerificationTokens.userId, userId)).run();
+    }
 
     const databaseQuotaBytes =
       role === 'user'
@@ -550,6 +583,7 @@ export class AuthService {
       .set({
         role,
         ...limits,
+        ...(email === undefined ? {} : { email, ...(emailChanged ? { emailVerifiedAt: null } : {}) }),
         ...(changes.disabled === undefined ? {} : { disabled: changes.disabled }),
         updatedAt: new Date(),
       })

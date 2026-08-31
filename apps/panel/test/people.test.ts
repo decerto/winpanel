@@ -52,6 +52,8 @@ const person = (over: Record<string, unknown>) => ({
   id: 'x',
   username: 'x',
   role: 'user',
+  email: null,
+  emailVerified: false,
   disabled: false,
   totpEnrolled: false,
   siteLimit: null,
@@ -234,6 +236,69 @@ describe('the limits on the People page', () => {
       mailQuotaBytes: null,
       siteDiskQuotaBytes: null,
     });
+  });
+
+  it('sends an optional notification email when creating staff', async () => {
+    const wrapper = await render();
+    await wrapper.findAll('button').find((b: any) => b.text().includes('Add someone'))!.trigger('click');
+
+    await wrapper.find('#person-username').setValue('sam');
+    await wrapper.find('#person-password').setValue('a-password-long-enough');
+    await wrapper.find('select').setValue('admin');
+    await wrapper.find('#person-email').setValue('sam@example.com');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(state.created[0]).toMatchObject({
+      username: 'sam',
+      role: 'admin',
+      email: 'sam@example.com',
+    });
+  });
+
+  it('loads and updates an existing staff notification email', async () => {
+    state.people[1] = person({
+      id: 'a',
+      username: 'admin',
+      role: 'admin',
+      email: 'old@example.com',
+      emailVerified: true,
+    });
+    const wrapper = await render();
+
+    expect(wrapper.text()).toContain('old@example.com');
+    expect(wrapper.text()).toContain('Verified');
+    await rowButtons(wrapper, 1)[0]!.trigger('click');
+    expect(wrapper.find('#person-email').element).toHaveProperty('value', 'old@example.com');
+
+    await wrapper.find('#person-email').setValue('new@example.com');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(state.updated[0]).toMatchObject({
+      userId: 'a',
+      role: 'admin',
+      email: 'new@example.com',
+    });
+  });
+
+  it('preserves a customer notification email when editing limits', async () => {
+    state.people[2] = person({
+      id: 'f',
+      username: 'freya',
+      role: 'user',
+      email: 'freya@example.com',
+      emailVerified: true,
+      siteLimit: 2,
+    });
+    const wrapper = await render();
+
+    await rowButtons(wrapper, 2)[0]!.trigger('click');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(state.updated[0]).toMatchObject({ userId: 'f', role: 'user' });
+    expect(state.updated[0]).not.toHaveProperty('email');
   });
 
   it('requires an explicit no-limit choice instead of treating a blank as unlimited', async () => {
