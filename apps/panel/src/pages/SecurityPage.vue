@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { KeyRound, ShieldCheck, ShieldOff } from 'lucide-vue-next';
+import { KeyRound, Mail, ShieldCheck, ShieldOff } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
 import TotpEnrolment from '../components/TotpEnrolment.vue';
 import RecoveryCodes from '../components/RecoveryCodes.vue';
@@ -21,8 +21,10 @@ import PageHeader from '../components/PageHeader.vue';
  */
 
 type Mode = 'idle' | 'enrolling' | 'disabling' | 'regenerating';
+type AccountProfile = Awaited<ReturnType<typeof api.auth.profile.query>>;
 
 const enrolled = ref(false);
+const role = ref<'superadmin' | 'admin' | 'user'>('user');
 const loading = ref(true);
 const mode = ref<Mode>('idle');
 
@@ -43,6 +45,15 @@ const confirmPassword = ref('');
 const passwordBusy = ref(false);
 const passwordError = ref<string | null>(null);
 const passwordNotice = ref<string | null>(null);
+
+const profile = ref<AccountProfile | null>(null);
+const accountEmail = ref('');
+const savedAccountEmail = ref('');
+const outageNotifications = ref(false);
+const profilePassword = ref('');
+const profileBusy = ref(false);
+const profileError = ref<string | null>(null);
+const profileNotice = ref<string | null>(null);
 
 const canStart = computed(
   () => password.value.length > 0 && (!enrolled.value || currentCode.value.trim().length === 6),
@@ -74,10 +85,21 @@ const canChangePassword = computed(
     newPassword.value === confirmPassword.value,
 );
 
+const accountEmailChanged = computed(() => accountEmail.value.trim().toLowerCase() !== savedAccountEmail.value);
+const canSaveProfile = computed(
+  () => !accountEmailChanged.value || profilePassword.value.length > 0,
+);
+
 async function refresh(): Promise<void> {
   try {
     const user = await api.auth.me.query();
+    const account = await api.auth.profile.query();
+    role.value = user?.role ?? 'user';
     enrolled.value = user?.totpEnrolled ?? false;
+    profile.value = account;
+    accountEmail.value = account.email ?? '';
+    savedAccountEmail.value = account.email ?? '';
+    outageNotifications.value = account.outageNotifications;
     codeStatus.value = enrolled.value
       ? await api.auth.recoveryCodeStatus.query()
       : { remaining: 0, total: 0 };
@@ -85,6 +107,50 @@ async function refresh(): Promise<void> {
     error.value = describeError(err);
   } finally {
     loading.value = false;
+  }
+}
+
+async function saveProfile(): Promise<void> {
+  profileBusy.value = true;
+  profileError.value = null;
+  profileNotice.value = null;
+
+  try {
+    const result = await api.auth.updateProfile.mutate({
+      email: accountEmail.value.trim() || null,
+      outageNotifications: outageNotifications.value,
+      ...(accountEmailChanged.value ? { currentPassword: profilePassword.value } : {}),
+    });
+    profile.value = result.profile;
+    accountEmail.value = result.profile.email ?? '';
+    savedAccountEmail.value = result.profile.email ?? '';
+    profilePassword.value = '';
+    profileNotice.value = result.verificationSent
+      ? 'A verification link is on its way. Password recovery stays off until you confirm it.'
+      : result.profile.email && !result.profile.emailVerified
+        ? 'Saved. Configure panel email or resend the verification message when delivery is ready.'
+        : 'Account settings saved.';
+  } catch (err) {
+    profileError.value = describeError(err);
+  } finally {
+    profileBusy.value = false;
+  }
+}
+
+async function resendVerification(): Promise<void> {
+  profileBusy.value = true;
+  profileError.value = null;
+  profileNotice.value = null;
+
+  try {
+    const result = await api.auth.resendEmailVerification.mutate();
+    profileNotice.value = result.sent
+      ? 'A new verification link is on its way.'
+      : 'There is no unverified account email to send.';
+  } catch (err) {
+    profileError.value = describeError(err);
+  } finally {
+    profileBusy.value = false;
   }
 }
 
@@ -213,6 +279,79 @@ async function changePassword(): Promise<void> {
       description="How this panel decides it is really you. Every change here re-asks for your
                    password, and anything that weakens the account also asks for a code."
     />
+
+    <section class="card mb-4 p-6">
+      <div class="flex items-start gap-3">
+        <span
+          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-line
+                 bg-brand-soft/50 text-brand-bright"
+          aria-hidden="true"
+        >
+          <Mail :size="19" />
+        </span>
+        <div class="min-w-0 flex-1">
+          <h2 class="text-base font-semibold text-ink">Account email</h2>
+          <p class="mt-1 text-sm text-ink-muted">
+            Used for password recovery and account security messages. It is never shown to other
+            customers.
+          </p>
+        </div>
+      </div>
+
+      <form class="mt-5 max-w-xl space-y-4" @submit.prevent="saveProfile">
+        <div>
+          <label for="account-email" class="label">Email address</label>
+          <input
+            id="account-email"
+            v-model="accountEmail"
+            class="field"
+            type="email"
+            autocomplete="email"
+            spellcheck="false"
+            placeholder="you@example.com"
+          />
+          <p v-if="profile?.emailVerified" class="mt-1.5 text-xs text-ok">Verified</p>
+          <p v-else-if="accountEmail" class="mt-1.5 text-xs text-warn">
+            Not verified. Password recovery is unavailable until this address is confirmed.
+          </p>
+        </div>
+
+        <label v-if="role === 'user'" class="flex items-start gap-2 text-sm text-ink-muted">
+          <input v-model="outageNotifications" type="checkbox" class="mt-0.5" />
+          <span>Send me an email when one of my websites goes down or comes back.</span>
+        </label>
+
+        <div v-if="accountEmailChanged" class="max-w-sm">
+          <label for="profile-password" class="label">Current password</label>
+          <input
+            id="profile-password"
+            v-model="profilePassword"
+            class="field"
+            type="password"
+            autocomplete="current-password"
+            placeholder="Required to change the address"
+          />
+        </div>
+
+        <AlertMessage v-if="profileError">{{ profileError }}</AlertMessage>
+        <AlertMessage v-if="profileNotice" tone="success">{{ profileNotice }}</AlertMessage>
+
+        <div class="flex flex-wrap gap-2">
+          <button type="submit" class="btn btn-primary" :disabled="profileBusy || !canSaveProfile">
+            {{ profileBusy ? 'Saving...' : 'Save account settings' }}
+          </button>
+          <button
+            v-if="accountEmail && profile && !profile.emailVerified"
+            type="button"
+            class="btn btn-ghost"
+            :disabled="profileBusy"
+            @click="resendVerification"
+          >
+            Resend verification
+          </button>
+        </div>
+      </form>
+    </section>
 
     <section class="card p-6">
       <div class="flex items-start gap-3">

@@ -18,6 +18,8 @@ import { firstIpv4 } from './databases/network.js';
 import { createServiceRecovery } from './windows/watched-services.js';
 import { CADDY_SERVICE_ID, quarantineUnloadableCaddyConfig } from './caddy/service.js';
 import { prepareStalwartForWebServer } from './mail/service.js';
+import { PanelMailer } from './mail/panel-mailer.js';
+import { SiteOutageMonitor } from './mail/site-outage-monitor.js';
 import { SiteService } from './sites/site-service.js';
 import { GameServerService } from './game-servers/game-server-service.js';
 import { createInstallGameServerHandler } from './game-servers/install-handler.js';
@@ -55,6 +57,9 @@ export interface AppContext {
   schema: typeof schema;
   vault: SecretVault;
   auth: AuthService;
+  mailer: PanelMailer;
+  /** Checks hosted websites independently of panel requests and sends transition alerts. */
+  outageMonitor: SiteOutageMonitor;
   jobs: JobQueue;
   backupScheduler: BackupScheduler;
   caddy: CaddyClient;
@@ -114,6 +119,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
   }
 
   const auth = new AuthService(db, vault, options.setupTokenPath ?? paths.setupToken());
+  const mailer = new PanelMailer(db, vault);
 
   const jobs = new JobQueue(db);
   const backupScheduler = new BackupScheduler(db, jobs);
@@ -222,6 +228,13 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     panelAddress: firstIpv4(localAddresses()),
   });
   const traffic = new TrafficCollector({ db, accessLogDir: config.accessLogDir });
+  const outageMonitor = new SiteOutageMonitor({
+    db,
+    mailer,
+    log: (message, detail) => {
+      process.stderr.write(`${message}${detail ? ` ${String(detail)}` : ''}\n`);
+    },
+  });
 
   if (options.demoSeed) {
     await seedDemoGameServers(db, gameServers, config.gameServersRoot);
@@ -341,6 +354,8 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     schema,
     vault,
     auth,
+    mailer,
+    outageMonitor,
     jobs,
     backupScheduler,
     caddy,
@@ -352,6 +367,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
     traffic,
     legacyCloudflareTokenMigration,
     shutdown: async () => {
+      outageMonitor.stop();
       backupScheduler.stop();
       await jobs.stop();
       traffic.stop();

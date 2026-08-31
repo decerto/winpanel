@@ -758,6 +758,7 @@ export class WebmailClient {
     cc?: MailAddress[];
     subject: string;
     text: string;
+    html?: string;
     inReplyTo?: string | null;
     references?: string[] | null;
   }): Promise<{ ok: true }> {
@@ -807,8 +808,12 @@ export class WebmailClient {
               ...(input.references && input.references.length > 0
                 ? { references: input.references }
                 : {}),
-              bodyValues: { body: { value: input.text } },
+              bodyValues: {
+                body: { value: input.text },
+                ...(input.html ? { html: { value: input.html } } : {}),
+              },
               textBody: [{ partId: 'body', type: 'text/plain' }],
+              ...(input.html ? { htmlBody: [{ partId: 'html', type: 'text/html' }] } : {}),
             },
           },
         },

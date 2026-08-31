@@ -29,6 +29,9 @@ importers:
       '@trpc/server':
         specifier: ^11.7.1
         version: 11.18.0(typescript@5.9.3)
+      '@types/nodemailer':
+        specifier: ^8.0.1
+        version: 8.0.1
       '@winpanel/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -44,6 +47,9 @@ importers:
       mongodb:
         specifier: ^7.6.0
         version: 7.6.0
+      nodemailer:
+        specifier: ^9.1.0
+        version: 9.1.0
       otpauth:
         specifier: ^9.4.1
         version: 9.5.1
@@ -1105,6 +1111,9 @@ packages:
   '@types/node@22.20.1':
     resolution: {integrity: sha512-EANqOCF9QFyra+4pfxUcX9STKJpCLjMbObVzljIJomAWSnuSIEAvyzEU53GaajbXJEgdh0iEcPL+DGvpUd4k1Q==}
 
+  '@types/nodemailer@8.0.1':
+    resolution: {integrity: sha512-PxpaInm8V1JQDd4j0ds5HfvWQk8JupS1C0Picb96QJsrrRDjBH+DlK7L4ZdNSqNULhiZRQHc40nLVShaGxXAMw==}
+
   '@types/webidl-conversions@7.0.3':
     resolution: {integrity: sha512-CiJJvcRtIgzadHCYXw7dqEnMNRjhGZlYK05Mj9OyktqV8uVT8fD2BFOB7S1uwBE3Kj2Z+4UyPmFw/Ixgw/LAlA==}
 
@@ -1860,6 +1869,10 @@ packages:
   node-forge@1.4.0:
     resolution: {integrity: sha512-LarFH0+6VfriEhqMMcLX2F7SwSXeWwnEAJEsYm5QKWchiVYVvJyV9v7UDvUv+w5HO23ZpQTXDv/GxdDdMyOuoQ==}
     engines: {node: '>= 6.13.0'}
+
+  nodemailer@9.1.0:
+    resolution: {integrity: sha512-xj1Ri5Sau3qpPffHJwi2bY0oWVVWYq62Ph17l+2v1xXpxjqTls3YPc3L8dub9mcJpxj+1ucNnuYVqLlgh4pmDA==}
+    engines: {node: '>=6.0.0'}
 
   nopt@7.2.1:
     resolution: {integrity: sha512-taM24ViiimT/XntxbPyJQzCG+p4EKOpgD3mxFwW38mGjVUrfERQOeY4EDHjdnptttfHuHQXFx+lTP08Q+mLa/w==}
@@ -2967,6 +2980,10 @@ snapshots:
     dependencies:
       undici-types: 6.21.0
 
+  '@types/nodemailer@8.0.1':
+    dependencies:
+      '@types/node': 22.20.1
+
   '@types/webidl-conversions@7.0.3': {}
 
   '@types/whatwg-mimetype@3.0.2': {}
@@ -3676,6 +3693,8 @@ snapshots:
       semver: 7.8.5
 
   node-forge@1.4.0: {}
+
+  nodemailer@9.1.0: {}
 
   nopt@7.2.1:
     dependencies:

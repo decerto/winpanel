@@ -8,6 +8,7 @@ import {
   Github,
   Info,
   Lock,
+  Mail,
   Power,
   RefreshCw,
   Server,
@@ -35,6 +36,7 @@ type BackgroundServices = Awaited<ReturnType<typeof api.system.backgroundService
 type ShutdownResult = Awaited<ReturnType<typeof api.system.shutdown.mutate>>;
 type PanelCertificate = Awaited<ReturnType<typeof api.system.panelCertificate.query>>;
 type GameServersSettings = Awaited<ReturnType<typeof api.gameServers.settings.query>>;
+type PanelEmailSettings = Awaited<ReturnType<typeof api.notifications.settings.query>>;
 type OfficialReleases = Awaited<ReturnType<typeof api.system.releases.query>>;
 type OfficialRelease = OfficialReleases['releases'][number];
 
@@ -52,6 +54,18 @@ const mailPassword = ref('');
 const mailBusy = ref(false);
 /** The manual sign-in is the fallback, so it stays out of the way until asked for. */
 const mailManual = ref(false);
+const panelEmail = ref<PanelEmailSettings | null>(null);
+const panelEmailMode = ref<'local' | 'external'>('local');
+const panelEmailAddress = ref('');
+const panelEmailName = ref('WinPanel');
+const panelEmailSmtpHost = ref('');
+const panelEmailSmtpPort = ref('587');
+const panelEmailSmtpSecurity = ref<'none' | 'starttls' | 'tls'>('starttls');
+const panelEmailSmtpUsername = ref('');
+const panelEmailSmtpPassword = ref('');
+const panelEmailSaving = ref(false);
+const panelEmailTestRecipient = ref('');
+const panelEmailTesting = ref(false);
 
 const services = ref<BackgroundServices>([]);
 const gameServers = ref<GameServersSettings | null>(null);
@@ -353,7 +367,12 @@ async function refresh(): Promise<void> {
    */
   if (me.status === 'fulfilled') {
     isOwner.value = me.value?.role === 'superadmin';
-    if (isOwner.value) void refreshOfficialReleases();
+    if (isOwner.value) {
+      void refreshOfficialReleases();
+      void refreshPanelEmail();
+    } else {
+      panelEmail.value = null;
+    }
   }
   if (gameServerSettings.status === 'fulfilled') gameServers.value = gameServerSettings.value;
 
@@ -362,6 +381,73 @@ async function refresh(): Promise<void> {
 
   const failure = results.find((result) => result.status === 'rejected');
   if (failure) error.value = describeError(failure.reason);
+}
+
+async function refreshPanelEmail(): Promise<void> {
+  try {
+    const result = await api.notifications.settings.query();
+    panelEmail.value = result;
+    if (!result) return;
+
+    panelEmailMode.value = result.mode;
+    panelEmailAddress.value = result.fromAddress;
+    panelEmailName.value = result.fromName;
+    panelEmailSmtpHost.value = result.smtpHost ?? '';
+    panelEmailSmtpPort.value = String(result.smtpPort ?? 587);
+    panelEmailSmtpSecurity.value = result.smtpSecurity ?? 'starttls';
+    panelEmailSmtpUsername.value = result.smtpUsername ?? '';
+  } catch {
+    // Owner-only optional settings should not hide the rest of Settings.
+  }
+}
+
+async function savePanelEmail(): Promise<void> {
+  panelEmailSaving.value = true;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    const result = await api.notifications.saveSettings.mutate({
+      mode: panelEmailMode.value,
+      fromAddress: panelEmailAddress.value.trim(),
+      fromName: panelEmailName.value.trim() || 'WinPanel',
+      smtpHost: panelEmailMode.value === 'external' ? panelEmailSmtpHost.value.trim() || null : null,
+      smtpPort:
+        panelEmailMode.value === 'external' ? Number(panelEmailSmtpPort.value) || null : null,
+      smtpSecurity: panelEmailMode.value === 'external' ? panelEmailSmtpSecurity.value : null,
+      smtpUsername:
+        panelEmailMode.value === 'external' ? panelEmailSmtpUsername.value.trim() || null : null,
+      ...(panelEmailMode.value === 'external' && panelEmailSmtpPassword.value
+        ? { smtpPassword: panelEmailSmtpPassword.value }
+        : {}),
+    });
+    panelEmail.value = result;
+    panelEmailSmtpPassword.value = '';
+    notice.value =
+      panelEmailMode.value === 'local'
+        ? 'Panel email is ready. The sender mailbox was created on this server.'
+        : 'Panel email settings saved. Send a test message to verify the connection.';
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    panelEmailSaving.value = false;
+  }
+}
+
+async function testPanelEmail(): Promise<void> {
+  if (!panelEmailTestRecipient.value.trim()) return;
+  panelEmailTesting.value = true;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    await api.notifications.test.mutate({ recipient: panelEmailTestRecipient.value.trim() });
+    notice.value = `Test email sent to ${panelEmailTestRecipient.value.trim()}.`;
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    panelEmailTesting.value = false;
+  }
 }
 
 async function refreshOfficialReleases(): Promise<void> {
@@ -1114,6 +1200,174 @@ async function installUpdate(): Promise<void> {
       >
         {{ mailBusy ? 'Working\u2026' : 'Disconnect' }}
       </button>
+    </section>
+
+    <section v-if="isOwner" class="card mt-4 p-6">
+      <div class="flex items-start gap-3">
+        <span
+          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border
+                 border-line bg-brand-soft/50 text-brand-bright"
+          aria-hidden="true"
+        >
+          <Mail :size="19" />
+        </span>
+
+        <div class="min-w-0 flex-1">
+          <h2 class="text-base font-semibold text-ink">Panel email</h2>
+          <p class="mt-1 text-sm text-ink-muted">
+            Used for website outage alerts, password recovery, and messages from the panel.
+            Only the owner can change these settings.
+          </p>
+        </div>
+      </div>
+
+      <form class="mt-5 space-y-4" @submit.prevent="savePanelEmail">
+        <div class="flex flex-wrap gap-2" role="group" aria-label="Email delivery">
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            :class="panelEmailMode === 'local' ? 'text-ink' : ''"
+            :aria-pressed="panelEmailMode === 'local'"
+            @click="panelEmailMode = 'local'"
+          >
+            From this server
+          </button>
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            :class="panelEmailMode === 'external' ? 'text-ink' : ''"
+            :aria-pressed="panelEmailMode === 'external'"
+            @click="panelEmailMode = 'external'"
+          >
+            External SMTP
+          </button>
+        </div>
+
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div>
+            <label for="panel-email-address" class="label">Sender address</label>
+            <input
+              id="panel-email-address"
+              v-model="panelEmailAddress"
+              class="field"
+              type="email"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="panel@example.com"
+              required
+            />
+          </div>
+          <div>
+            <label for="panel-email-name" class="label">Sender name</label>
+            <input
+              id="panel-email-name"
+              v-model="panelEmailName"
+              class="field"
+              type="text"
+              autocomplete="organization"
+              placeholder="WinPanel"
+            />
+          </div>
+        </div>
+
+        <div v-if="panelEmailMode === 'local'" class="hint">
+          The address must belong to a domain already configured in the local mail server. WinPanel
+          creates a separate sender mailbox and keeps its password encrypted.
+        </div>
+
+        <div v-else class="space-y-3 rounded-lg border border-line bg-black/20 p-4">
+          <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_8rem]">
+            <div>
+              <label for="panel-smtp-host" class="label">SMTP host</label>
+              <input
+                id="panel-smtp-host"
+                v-model="panelEmailSmtpHost"
+                class="field"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="smtp.example.com"
+                required
+              />
+            </div>
+            <div>
+              <label for="panel-smtp-port" class="label">Port</label>
+              <input
+                id="panel-smtp-port"
+                v-model="panelEmailSmtpPort"
+                class="field"
+                type="number"
+                min="1"
+                max="65535"
+                inputmode="numeric"
+                required
+              />
+            </div>
+          </div>
+
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label for="panel-smtp-security" class="label">Connection security</label>
+              <select id="panel-smtp-security" v-model="panelEmailSmtpSecurity" class="field">
+                <option value="starttls">STARTTLS</option>
+                <option value="tls">TLS from the start</option>
+                <option value="none">None</option>
+              </select>
+            </div>
+            <div>
+              <label for="panel-smtp-username" class="label">Username</label>
+              <input
+                id="panel-smtp-username"
+                v-model="panelEmailSmtpUsername"
+                class="field"
+                type="text"
+                autocomplete="off"
+                placeholder="Optional"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label for="panel-smtp-password" class="label">Password</label>
+            <input
+              id="panel-smtp-password"
+              v-model="panelEmailSmtpPassword"
+              class="field"
+              type="password"
+              autocomplete="new-password"
+              :placeholder="panelEmail?.smtpPasswordConfigured ? 'Unchanged' : 'Optional'"
+            />
+          </div>
+        </div>
+
+        <div class="flex flex-wrap gap-2">
+          <button type="submit" class="btn btn-primary" :disabled="panelEmailSaving">
+            {{ panelEmailSaving ? 'Saving...' : 'Save sender settings' }}
+          </button>
+        </div>
+      </form>
+
+      <div class="mt-5 border-t border-line pt-4">
+        <label for="panel-email-test-recipient" class="label">Test recipient</label>
+        <div class="mt-1 flex flex-wrap gap-2">
+          <input
+            id="panel-email-test-recipient"
+            v-model="panelEmailTestRecipient"
+            class="field min-w-56 flex-1"
+            type="email"
+            autocomplete="email"
+            placeholder="you@example.com"
+          />
+          <button
+            type="button"
+            class="btn btn-ghost"
+            :disabled="panelEmailTesting || !panelEmail"
+            @click="testPanelEmail"
+          >
+            {{ panelEmailTesting ? 'Sending...' : 'Send test email' }}
+          </button>
+        </div>
+      </div>
     </section>
 
     <section v-if="info" class="card mt-4 p-6">

@@ -336,6 +336,96 @@ describe('first-run setup', () => {
   });
 });
 
+describe('account email and password recovery', () => {
+  it('keeps unknown and unverified reset requests indistinguishable', async () => {
+    await completeSetup();
+    const owner = app.auth.listUsers()[0]!;
+    app.auth.updateProfile(owner.id, {
+      email: 'owner@example.com',
+      outageNotifications: false,
+    });
+    const send = vi.spyOn(app.mailer, 'send').mockResolvedValue();
+
+    const response = await call('POST', 'auth.requestPasswordReset', {
+      email: 'owner@example.com',
+    });
+    const unknown = await call('POST', 'auth.requestPasswordReset', {
+      email: 'nobody@example.com',
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.result.data).toEqual({ ok: true });
+    expect(unknown.status).toBe(200);
+    expect(unknown.body.result.data).toEqual({ ok: true });
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('sends a reset link and accepts it once', async () => {
+    await completeSetup();
+    const owner = app.auth.listUsers()[0]!;
+    app.auth.updateProfile(owner.id, {
+      email: 'owner@example.com',
+      outageNotifications: false,
+    });
+    const verification = app.auth.createEmailVerificationToken(owner.id);
+    app.auth.verifyEmailToken(verification!.token);
+    app.db.db
+      .insert(app.schema.settings)
+      .values({ key: 'panel.hostname', value: 'panel.example.com' })
+      .run();
+    const send = vi.spyOn(app.mailer, 'send').mockResolvedValue();
+
+    await call('POST', 'auth.requestPasswordReset', { email: 'OWNER@example.com' });
+    const resetEmail = send.mock.calls[0]?.[0];
+    const token = decodeURIComponent(
+      resetEmail?.html?.match(/reset-password\?token=([^"&]+)/)?.[1] ?? '',
+    );
+    expect(resetEmail?.html).toContain('https://panel.example.com:8443/reset-password?token=');
+    expect(token).toBeTruthy();
+
+    const reset = await call('POST', 'auth.resetPassword', {
+      token,
+      password: 'a-new-password-long-enough',
+    });
+    expect(reset.body.result.data).toEqual({ ok: true });
+    await expect(
+      app.auth.resetPassword(token, 'another-password-long-enough'),
+    ).rejects.toThrow(/invalid or has expired/);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('emails a verified account after an administrator resets its password', async () => {
+    const ownerCookie = await completeSetup();
+    const customer = await app.auth.createUser({
+      username: 'customer',
+      password: PASSWORD,
+      role: 'user',
+    });
+    app.auth.updateProfile(customer.id, {
+      email: 'customer@example.com',
+      outageNotifications: false,
+    });
+    const verification = app.auth.createEmailVerificationToken(customer.id);
+    app.auth.verifyEmailToken(verification!.token);
+    const send = vi.spyOn(app.mailer, 'send').mockResolvedValue();
+
+    const response = await call(
+      'POST',
+      'users.setPassword',
+      { userId: customer.id, password: 'a-reset-password-long-enough' },
+      ownerCookie,
+    );
+
+    expect(response.body.result.data).toEqual({ ok: true });
+    expect(send).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: { name: 'customer', email: 'customer@example.com' },
+        subject: 'Your WinPanel password was reset',
+      }),
+    );
+  });
+});
+
 describe('batched requests', () => {
   /*
    * The client packs every query a page fires in one tick into a single

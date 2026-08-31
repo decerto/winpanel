@@ -55,6 +55,8 @@ export const User = z.object({
   id: z.string().uuid(),
   username: Username,
   role: UserRole,
+  email: z.string().email().nullable().default(null),
+  outageNotifications: z.boolean().default(false),
   /** TOTP is mandatory; an account without it can only reach the setup flow. */
   totpEnrolled: z.boolean().default(false),
   disabled: z.boolean().default(false),

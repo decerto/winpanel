@@ -9,6 +9,7 @@ import {
   type SiteSource,
 } from '@winpanel/shared';
 import { AuthError } from '../../services/auth-service.js';
+import { passwordResetByAdminEmail } from '../../mail/templates.js';
 import { isSshUrl } from '../../sites/ssh-keys.js';
 import { DatabaseAllocationError } from '../../databases/errors.js';
 import {
@@ -149,13 +150,33 @@ export const usersRouter = router({
 
       assertOutranks(ctx, target.role);
       assertNotSelf(ctx, input.userId, 'reset the password of');
+      const profile = ctx.app.auth.getProfile(input.userId);
 
       try {
         await ctx.app.auth.setPassword(input.userId, input.password);
-        return { ok: true };
       } catch (error) {
         toTrpcError(error);
       }
+
+      if (profile.email && profile.emailVerified) {
+        const message = passwordResetByAdminEmail({
+          username: target.username,
+          administrator: ctx.user.username,
+        });
+        try {
+          await ctx.app.mailer.send({
+            to: { name: target.username, email: profile.email },
+            subject: message.subject,
+            text: message.text,
+            html: message.html,
+          });
+        } catch {
+          // The reset succeeded; an unavailable notification transport must
+          // not turn it into an error or invite a second reset attempt.
+        }
+      }
+
+      return { ok: true };
     }),
 
   /**

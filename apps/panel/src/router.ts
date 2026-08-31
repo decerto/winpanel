@@ -28,6 +28,24 @@ export const router = createRouter({
       meta: { public: true, bare: true },
     },
     {
+      path: '/forgot-password',
+      name: 'forgot-password',
+      component: () => import('./pages/ForgotPasswordPage.vue'),
+      meta: { public: true, bare: true },
+    },
+    {
+      path: '/reset-password',
+      name: 'reset-password',
+      component: () => import('./pages/ResetPasswordPage.vue'),
+      meta: { public: true, bare: true },
+    },
+    {
+      path: '/verify-email',
+      name: 'verify-email',
+      component: () => import('./pages/VerifyEmailPage.vue'),
+      meta: { public: true, bare: true },
+    },
+    {
       path: '/health',
       name: 'health',
       component: () => import('./pages/HealthPage.vue'),

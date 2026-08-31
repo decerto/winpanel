@@ -31,6 +31,11 @@ export const users = sqliteTable(
     role: text('role', { enum: ['superadmin', 'admin', 'user'] })
       .notNull()
       .default('user'),
+    email: text('email'),
+    emailVerifiedAt: integer('email_verified_at', { mode: 'timestamp_ms' }),
+    outageNotifications: integer('outage_notifications', { mode: 'boolean' })
+      .notNull()
+      .default(false),
     /** Encrypted with the vault. Null until enrolment completes. */
     totpSecret: text('totp_secret'),
     /*
@@ -117,6 +122,39 @@ export const recoveryCodes = sqliteTable(
       .default(sql`(unixepoch() * 1000)`),
   },
   (table) => [index('recovery_codes_user_idx').on(table.userId)],
+);
+
+export const passwordResetTokens = sqliteTable(
+  'password_reset_tokens',
+  {
+    tokenHash: text('token_hash').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+    usedAt: integer('used_at', { mode: 'timestamp_ms' }),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (table) => [index('password_reset_tokens_user_idx').on(table.userId)],
+);
+
+export const emailVerificationTokens = sqliteTable(
+  'email_verification_tokens',
+  {
+    tokenHash: text('token_hash').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    email: text('email').notNull(),
+    expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+    usedAt: integer('used_at', { mode: 'timestamp_ms' }),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (table) => [index('email_verification_tokens_user_idx').on(table.userId)],
 );
 
 /** Failed login tracking, for progressive rate limiting and IP banning. */
@@ -223,6 +261,19 @@ export const sites = sqliteTable(
     index('sites_parent_idx').on(table.parentSiteId),
   ],
 );
+
+export const siteOutageStates = sqliteTable('site_outage_states', {
+  siteId: text('site_id')
+    .primaryKey()
+    .references(() => sites.id, { onDelete: 'cascade' }),
+  state: text('state', { enum: ['unknown', 'up', 'down'] }).notNull().default('unknown'),
+  consecutiveFailures: integer('consecutive_failures').notNull().default(0),
+  checkedAt: integer('checked_at', { mode: 'timestamp_ms' }),
+  notifiedState: text('notified_state', { enum: ['up', 'down'] }),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+    .notNull()
+    .default(sql`(unixepoch() * 1000)`),
+});
 
 /**
  * The databases the panel has created on the servers it runs.

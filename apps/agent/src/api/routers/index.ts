@@ -18,6 +18,7 @@ import { usersRouter } from './users.js';
 import { gameServersRouter } from './game-servers.js';
 import { backupsRouter } from './backups.js';
 import { logsRouter } from './logs.js';
+import { notificationsRouter } from './notifications.js';
 import type { RequestContext } from '../trpc.js';
 
 /**
@@ -154,6 +155,7 @@ export const appRouter = router({
   components: componentsRouter,
   jobs: jobsRouter,
   audit: auditRouter,
+  notifications: notificationsRouter,
 
   /** Cheap liveness probe used by the installer and the service wrapper. */
   ping: protectedProcedure.query(() => ({ ok: true, at: new Date().toISOString() })),

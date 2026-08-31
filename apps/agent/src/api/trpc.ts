@@ -9,18 +9,55 @@ import type {} from '@fastify/cookie';
 import { roleAtLeast, type UserRole } from '@winpanel/shared';
 import type { AppContext } from '../app-context.js';
 import type { SessionUser } from '../services/auth-service.js';
+import { readPanelHostname } from '../tls/panel-hostname.js';
 
 export interface RequestContext {
   app: AppContext;
   user: SessionUser | null;
   ip: string;
   userAgent: string | undefined;
+  baseUrl: string;
   sessionToken: string | undefined;
   setSessionCookie: (token: string, expiresAt: Date) => void;
   clearSessionCookie: () => void;
 }
 
 export const SESSION_COOKIE = 'winpanel_session';
+
+function safeHostHeader(host: string | undefined): string {
+  if (!host || /[\r\n]/.test(host)) return 'localhost';
+
+  try {
+    const parsed = new URL(`http://${host.trim()}`);
+    if (
+      parsed.hostname.length === 0 ||
+      parsed.username ||
+      parsed.password ||
+      parsed.pathname !== '/' ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      return 'localhost';
+    }
+    return parsed.host;
+  } catch {
+    return 'localhost';
+  }
+}
+
+/**
+ * Chooses the origin placed in account email links.
+ *
+ * A configured panel hostname is an owner-approved canonical address. Before
+ * one exists, the validated request host keeps IP-based fresh installs usable;
+ * it is never interpolated raw, and user-info/path syntax is rejected.
+ */
+export function panelBaseUrl(app: AppContext, requestHost: string | undefined): string {
+  const scheme = app.config.httpsEnabled ? 'https' : 'http';
+  const hostname = readPanelHostname(app.db);
+  if (hostname) return `${scheme}://${hostname}:${app.config.port}`;
+  return `${scheme}://${safeHostHeader(requestHost)}`;
+}
 
 export function createContextFactory(app: AppContext) {
   return function createContext({ req, res }: CreateFastifyContextOptions): RequestContext {
@@ -31,6 +68,7 @@ export function createContextFactory(app: AppContext) {
       user: app.auth.resolveSession(token),
       ip: req.ip,
       userAgent: req.headers['user-agent'],
+      baseUrl: panelBaseUrl(app, req.headers.host),
       sessionToken: token,
       setSessionCookie: (value, expiresAt) => {
         void res.setCookie(SESSION_COOKIE, value, {

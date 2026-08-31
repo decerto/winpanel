@@ -440,6 +440,11 @@ async function main(): Promise<void> {
   // that leaves it stopped.
   await startupRepairs;
 
+  // Notifications begin only after the initial website configuration has been
+  // applied, so Caddy starting up cannot look like a customer outage.
+  app.outageMonitor.start();
+  void app.outageMonitor.sweep();
+
   watchdog.start();
   void watchdog.sweep();
 }

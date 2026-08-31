@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import { useRouter } from 'vue-router';
+import { RouterLink, useRouter } from 'vue-router';
 import { ServerCog } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
 import AlertMessage from '../components/AlertMessage.vue';
@@ -170,6 +170,10 @@ async function signIn(): Promise<void> {
             {{ busy ? 'Signing in\u2026' : 'Sign in' }}
           </button>
         </form>
+
+        <RouterLink to="/forgot-password" class="mt-4 block text-center text-sm text-ink-faint underline">
+          Forgot your password?
+        </RouterLink>
       </div>
     </div>
   </div>

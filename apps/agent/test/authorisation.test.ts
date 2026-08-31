@@ -28,6 +28,10 @@ const ALLOWED_PUBLIC = new Set([
   'completeSetup',
   // Signing in.
   'login',
+  // Verifying an account email and requesting or completing a reset link.
+  'verifyEmail',
+  'requestPasswordReset',
+  'resetPassword',
 ]);
 
 async function routerSources(): Promise<Array<{ file: string; source: string }>> {
@@ -78,6 +82,10 @@ const UNSCOPED_FOR_CUSTOMERS = new Set([
   'disableTotp',
   'recoveryCodeStatus',
   'regenerateRecoveryCodes',
+  // The caller's account email and outage-notification preference.
+  'profile',
+  'updateProfile',
+  'resendEmailVerification',
   // Their own websites; each of these filters or checks ownership itself.
   'list',
   'get',

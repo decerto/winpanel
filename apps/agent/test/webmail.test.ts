@@ -202,3 +202,58 @@ describe('WebmailClient sender blocks', () => {
     });
   });
 });
+
+describe('WebmailClient send', () => {
+  it('submits a plain-text and HTML alternative from the authenticated mailbox', async () => {
+    const client = webmailClient(({ url, init }) => {
+      if (url.endsWith('/.well-known/jmap')) {
+        return new Response(
+          JSON.stringify({
+            apiUrl: 'http://mail.test/jmap',
+            primaryAccounts: { 'urn:ietf:params:jmap:mail': 'u1' },
+          }),
+        );
+      }
+
+      const body = JSON.parse(String(init?.body)) as {
+        methodCalls: [string, Record<string, unknown>, string][];
+      };
+      const [first, second, third] = body.methodCalls;
+
+      if (first?.[0] === 'Mailbox/get') {
+        return new Response(
+          JSON.stringify({
+            methodResponses: [
+              ['Mailbox/get', { list: [{ id: 'drafts', role: 'drafts' }, { id: 'sent', role: 'sent' }] }, 'c0'],
+            ],
+          }),
+        );
+      }
+
+      if (first?.[0] === 'Identity/get') {
+        return new Response(
+          JSON.stringify({
+            methodResponses: [
+              ['Identity/get', { list: [{ id: 'identity-1', email: 'person@example.com' }] }, 'c0'],
+            ],
+          }),
+        );
+      }
+
+      expect(first?.[0]).toBe('Email/set');
+      expect(second?.[0]).toBe('EmailSubmission/set');
+      expect(third).toBeUndefined();
+      return new Response(JSON.stringify({ methodResponses: [
+        ['Email/set', {}, 'draft'],
+        ['EmailSubmission/set', {}, 'send'],
+      ] }));
+    });
+
+    await client.send({
+      to: [{ name: null, email: 'recipient@example.com' }],
+      subject: 'A panel message',
+      text: 'Plain version',
+      html: '<p>HTML version</p>',
+    });
+  });
+});

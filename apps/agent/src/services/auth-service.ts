@@ -1,12 +1,14 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
-import { and, count, desc, eq, gt, isNull, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gt, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import type { UserRole } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
 import {
   gameServers,
   hostedDatabases,
   ipAllowlist,
+  emailVerificationTokens,
+  passwordResetTokens,
   recoveryCodes,
   sessions,
   settings,
@@ -27,7 +29,7 @@ import {
   normaliseRecoveryCode,
   verifyTotp,
 } from '../security/totp.js';
-import { LoginThrottle, ipMatchesAllowlist } from '../security/throttle.js';
+import { LoginThrottle, PasswordResetThrottle, ipMatchesAllowlist } from '../security/throttle.js';
 import type { IpBanRow, LoginAttemptRow } from '../security/throttle.js';
 import type { SecretVault } from '../security/vault.js';
 
@@ -73,6 +75,14 @@ export interface SessionUser {
   username: string;
   role: UserRole;
   totpEnrolled: boolean;
+  email: string | null;
+  outageNotifications: boolean;
+}
+
+export interface AccountProfile {
+  email: string | null;
+  emailVerified: boolean;
+  outageNotifications: boolean;
 }
 
 /** An account, as shown on the people page. */
@@ -80,6 +90,8 @@ export interface ManagedUser {
   id: string;
   username: string;
   role: UserRole;
+  email: string | null;
+  outageNotifications: boolean;
   disabled: boolean;
   totpEnrolled: boolean;
   siteLimit: number | null;
@@ -152,6 +164,8 @@ function toManagedUser(
     id: row.id,
     username: row.username,
     role: row.role,
+    email: row.email,
+    outageNotifications: row.outageNotifications,
     disabled: row.disabled,
     totpEnrolled: row.totpEnrolled,
     siteLimit: row.siteLimit,
@@ -177,6 +191,7 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 export class AuthService {
   private readonly throttle: LoginThrottle;
+  private readonly passwordResetThrottle = new PasswordResetThrottle();
 
   constructor(
     private readonly handle: DatabaseHandle,
@@ -260,7 +275,14 @@ export class AuthService {
     await this.destroySetupToken();
 
     return {
-      user: { id, username: input.username, role: 'superadmin', totpEnrolled: false },
+      user: {
+        id,
+        username: input.username,
+        role: 'superadmin',
+        totpEnrolled: false,
+        email: null,
+        outageNotifications: false,
+      },
     };
   }
 
@@ -367,6 +389,7 @@ export class AuthService {
     username: string;
     password: string;
     role: UserRole;
+    email?: string | null;
     siteLimit?: number | null;
     subdomainLimit?: number | null;
     mailboxLimit?: number | null;
@@ -393,6 +416,7 @@ export class AuthService {
         username,
         passwordHash: await hashPassword(input.password),
         role: input.role,
+        email: input.email ?? null,
         // Limits only mean anything for a customer; an admin who could be
         // capped at two websites would be an admin in name only.
         siteLimit: input.role === 'user' ? (input.siteLimit ?? null) : null,
@@ -559,6 +583,280 @@ export class AuthService {
       .run();
 
     this.handle.db.delete(sessions).where(eq(sessions.userId, userId)).run();
+    this.handle.db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, userId)).run();
+  }
+
+  getProfile(userId: string): AccountProfile {
+    const row = this.handle.db
+      .select({
+        email: users.email,
+        emailVerifiedAt: users.emailVerifiedAt,
+        outageNotifications: users.outageNotifications,
+      })
+      .from(users)
+      .where(eq(users.id, userId))
+      .get();
+
+    if (!row) throw new AuthError('No such account.', 'not-found');
+    return {
+      email: row.email ?? null,
+      emailVerified: row.emailVerifiedAt !== null,
+      outageNotifications: row.outageNotifications,
+    };
+  }
+
+  updateProfile(
+    userId: string,
+    changes: { email?: string | null; outageNotifications?: boolean },
+  ): AccountProfile {
+    const existing = this.handle.db
+      .select({ email: users.email, emailVerifiedAt: users.emailVerifiedAt })
+      .from(users)
+      .where(eq(users.id, userId))
+      .get();
+    if (!existing) throw new AuthError('No such account.', 'not-found');
+
+    const email =
+      changes.email === undefined
+        ? undefined
+        : changes.email === null
+          ? null
+          : changes.email.trim().toLowerCase();
+
+    const emailChanged = email !== undefined && email !== existing.email;
+    if (emailChanged && email !== null) {
+      const duplicate = this.handle.db
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.email, email), ne(users.id, userId)))
+        .get();
+      if (duplicate) throw new AuthError('That email address is already in use.', 'invalid-input');
+    }
+
+    if (emailChanged) {
+      this.handle.db.delete(emailVerificationTokens).where(eq(emailVerificationTokens.userId, userId)).run();
+    }
+
+    this.handle.db
+      .update(users)
+      .set({
+        ...(email === undefined ? {} : { email }),
+        ...(emailChanged ? { emailVerifiedAt: null } : {}),
+        ...(changes.outageNotifications === undefined
+          ? {}
+          : { outageNotifications: changes.outageNotifications }),
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, userId))
+      .run();
+
+    return this.getProfile(userId);
+  }
+
+  createEmailVerificationToken(
+    userId: string,
+    now = new Date(),
+  ): { token: string; userId: string; username: string; email: string } | null {
+    const user = this.handle.db
+      .select({ id: users.id, username: users.username, email: users.email, emailVerifiedAt: users.emailVerifiedAt })
+      .from(users)
+      .where(and(eq(users.id, userId), eq(users.disabled, false)))
+      .get();
+
+    if (!user?.email || user.emailVerifiedAt !== null) return null;
+
+    this.handle.db
+      .delete(emailVerificationTokens)
+      .where(eq(emailVerificationTokens.userId, user.id))
+      .run();
+
+    const token = generateToken();
+    this.handle.db
+      .insert(emailVerificationTokens)
+      .values({
+        tokenHash: hashToken(token),
+        userId: user.id,
+        email: user.email,
+        expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+      })
+      .run();
+
+    return { token, userId: user.id, username: user.username, email: user.email };
+  }
+
+  verifyEmailToken(token: string, now = new Date()): AccountProfile {
+    return this.handle.db.transaction((tx) => {
+      const match = tx
+        .select({
+          tokenHash: emailVerificationTokens.tokenHash,
+          userId: users.id,
+          email: emailVerificationTokens.email,
+        })
+        .from(emailVerificationTokens)
+        .innerJoin(users, eq(users.id, emailVerificationTokens.userId))
+        .where(
+          and(
+            eq(emailVerificationTokens.tokenHash, hashToken(token)),
+            eq(emailVerificationTokens.email, users.email),
+            gt(emailVerificationTokens.expiresAt, now),
+            isNull(emailVerificationTokens.usedAt),
+            eq(users.disabled, false),
+          ),
+        )
+        .get();
+
+      if (!match) {
+        throw new AuthError(
+          'That email verification link is invalid or has expired.',
+          'invalid-token',
+        );
+      }
+
+      const claimed = tx
+        .update(emailVerificationTokens)
+        .set({ usedAt: now })
+        .where(
+          and(
+            eq(emailVerificationTokens.tokenHash, match.tokenHash),
+            isNull(emailVerificationTokens.usedAt),
+          ),
+        )
+        .run();
+
+      if (claimed.changes !== 1) {
+        throw new AuthError(
+          'That email verification link is invalid or has expired.',
+          'invalid-token',
+        );
+      }
+
+      tx.update(users)
+        .set({ emailVerifiedAt: now, updatedAt: now })
+        .where(eq(users.id, match.userId))
+        .run();
+      tx.delete(emailVerificationTokens).where(eq(emailVerificationTokens.userId, match.userId)).run();
+
+      const profile = tx
+        .select({
+          email: users.email,
+          emailVerifiedAt: users.emailVerifiedAt,
+          outageNotifications: users.outageNotifications,
+        })
+        .from(users)
+        .where(eq(users.id, match.userId))
+        .get();
+      if (!profile) throw new AuthError('No such account.', 'not-found');
+      return {
+        email: profile.email,
+        emailVerified: profile.emailVerifiedAt !== null,
+        outageNotifications: profile.outageNotifications,
+      };
+    });
+  }
+
+  createPasswordResetToken(
+    email: string,
+    now = new Date(),
+  ): { token: string; userId: string; username: string; email: string } | null {
+    const wanted = email.trim().toLowerCase();
+    const user = this.handle.db
+      .select({
+        id: users.id,
+        username: users.username,
+        email: users.email,
+        emailVerifiedAt: users.emailVerifiedAt,
+      })
+      .from(users)
+      .where(and(eq(users.email, wanted), eq(users.disabled, false)))
+      .get();
+
+    if (!user?.email || user.emailVerifiedAt === null) return null;
+
+    this.handle.db
+      .delete(passwordResetTokens)
+      .where(eq(passwordResetTokens.userId, user.id))
+      .run();
+
+    const token = generateToken();
+    this.handle.db
+      .insert(passwordResetTokens)
+      .values({
+        tokenHash: hashToken(token),
+        userId: user.id,
+        expiresAt: new Date(now.getTime() + 30 * 60 * 1000),
+      })
+      .run();
+
+    return { token, userId: user.id, username: user.username, email: user.email };
+  }
+
+  /** Checked before a public request can cause a reset email to be sent. */
+  canRequestPasswordReset(ip: string, email: string): boolean {
+    return this.passwordResetThrottle.allow(ip, email);
+  }
+
+  async resetPassword(
+    token: string,
+    password: string,
+    now = new Date(),
+  ): Promise<{ userId: string; username: string; email: string | null }> {
+    const passwordHash = await hashPassword(password);
+
+    return this.handle.db.transaction((tx) => {
+      const match = tx
+        .select({
+          tokenHash: passwordResetTokens.tokenHash,
+          userId: users.id,
+          username: users.username,
+          email: users.email,
+        })
+        .from(passwordResetTokens)
+        .innerJoin(users, eq(users.id, passwordResetTokens.userId))
+        .where(
+          and(
+            eq(passwordResetTokens.tokenHash, hashToken(token)),
+            gt(passwordResetTokens.expiresAt, now),
+            isNull(passwordResetTokens.usedAt),
+            eq(users.disabled, false),
+            isNotNull(users.emailVerifiedAt),
+          ),
+        )
+        .get();
+
+      if (!match) {
+        throw new AuthError(
+          'That password reset link is invalid or has expired.',
+          'invalid-token',
+        );
+      }
+
+      const claimed = tx
+        .update(passwordResetTokens)
+        .set({ usedAt: now })
+        .where(
+          and(
+            eq(passwordResetTokens.tokenHash, match.tokenHash),
+            isNull(passwordResetTokens.usedAt),
+          ),
+        )
+        .run();
+
+      if (claimed.changes !== 1) {
+        throw new AuthError(
+          'That password reset link is invalid or has expired.',
+          'invalid-token',
+        );
+      }
+
+      tx.update(users)
+        .set({ passwordHash, updatedAt: now })
+        .where(eq(users.id, match.userId))
+        .run();
+      tx.delete(sessions).where(eq(sessions.userId, match.userId)).run();
+      tx.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, match.userId)).run();
+
+      return { userId: match.userId, username: match.username, email: match.email };
+    });
   }
 
   /**
@@ -1046,6 +1344,8 @@ export class AuthService {
         username: user.username,
         role: user.role,
         totpEnrolled: user.totpEnrolled,
+        email: user.email,
+        outageNotifications: user.outageNotifications,
       },
     };
   }
@@ -1060,6 +1360,8 @@ export class AuthService {
         username: users.username,
         role: users.role,
         totpEnrolled: users.totpEnrolled,
+        email: users.email,
+        outageNotifications: users.outageNotifications,
         disabled: users.disabled,
       })
       .from(sessions)
@@ -1074,6 +1376,8 @@ export class AuthService {
       username: row.username,
       role: row.role,
       totpEnrolled: row.totpEnrolled,
+      email: row.email,
+      outageNotifications: row.outageNotifications,
     };
   }
 

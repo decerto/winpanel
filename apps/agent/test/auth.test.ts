@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
+import { createDatabase, migrateDatabase, schema, type DatabaseHandle } from '../src/db/index.js';
 import {
   generateSetupToken,
   generateToken,
@@ -17,9 +17,15 @@ import {
   normaliseRecoveryCode,
   verifyTotp,
 } from '../src/security/totp.js';
-import { LoginThrottle, ipMatchesAllowlist } from '../src/security/throttle.js';
+import {
+  LoginThrottle,
+  PasswordResetThrottle,
+  ipMatchesAllowlist,
+} from '../src/security/throttle.js';
 import { SecretVault } from '../src/security/vault.js';
 import { AuthService } from '../src/services/auth-service.js';
+import { panelBaseUrl } from '../src/api/trpc.js';
+import type { AppContext } from '../src/app-context.js';
 
 const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
 
@@ -199,6 +205,35 @@ describe('LoginThrottle', () => {
 
     // 16 minutes later the 15-minute ban has lapsed.
     expect(throttle.check(ip, new Date(base + 16 * 60_000 + 61_000)).allowed).toBe(true);
+  });
+});
+
+describe('PasswordResetThrottle', () => {
+  it('limits both the source address and the requested account', () => {
+    const throttle = new PasswordResetThrottle(2, 60_000);
+    const base = new Date(10_000);
+
+    expect(throttle.allow('203.0.113.1', 'owner@example.com', base)).toBe(true);
+    expect(throttle.allow('203.0.113.1', 'owner@example.com', new Date(11_000))).toBe(true);
+    expect(throttle.allow('203.0.113.1', 'owner@example.com', new Date(12_000))).toBe(false);
+    expect(throttle.allow('203.0.113.2', 'owner@example.com', new Date(13_000))).toBe(false);
+    expect(throttle.allow('203.0.113.1', 'other@example.com', new Date(14_000))).toBe(false);
+    expect(throttle.allow('203.0.113.1', 'owner@example.com', new Date(71_000))).toBe(true);
+  });
+});
+
+describe('panel email links', () => {
+  it('uses the configured panel hostname instead of an attacker-controlled host', () => {
+    const app = {
+      db: handle,
+      config: { httpsEnabled: true, port: 8443 },
+    } as AppContext;
+
+    expect(panelBaseUrl(app, 'panel.example.com:8443')).toBe('https://panel.example.com:8443');
+    expect(panelBaseUrl(app, 'evil.example/path')).toBe('https://localhost');
+
+    handle.db.insert(schema.settings).values({ key: 'panel.hostname', value: 'panel.example.com' }).run();
+    expect(panelBaseUrl(app, 'evil.example:8443')).toBe('https://panel.example.com:8443');
   });
 });
 
@@ -395,5 +430,50 @@ describe('AuthService sessions', () => {
     expect(summary.addressesLastDay).toBe(1);
     expect(summary.blockedAddresses).toBe(0);
     expect(summary.lastSuccessfulSignInAt).toBeInstanceOf(Date);
+  });
+
+  it('requires a verified account email before issuing a reset link', async () => {
+    const { auth } = await signedInService();
+    const owner = auth.listUsers()[0]!;
+    const profile = auth.updateProfile(owner.id, {
+      email: 'owner@example.com',
+      outageNotifications: true,
+    });
+
+    expect(profile.email).toBe('owner@example.com');
+    expect(profile.emailVerified).toBe(false);
+    expect(auth.createPasswordResetToken('owner@example.com')).toBeNull();
+
+    const verification = auth.createEmailVerificationToken(owner.id, new Date(1_000));
+    expect(verification?.token).toBeTruthy();
+    expect(auth.verifyEmailToken(verification!.token, new Date(2_000)).emailVerified).toBe(true);
+    expect(() => auth.verifyEmailToken(verification!.token, new Date(3_000))).toThrow(/invalid or has expired/);
+
+    expect(auth.createPasswordResetToken('owner@example.com', new Date(4_000))).not.toBeNull();
+  });
+
+  it('uses reset links once, expires them, and ends every live session', async () => {
+    const { auth, token } = await signedInService();
+    const owner = auth.listUsers()[0]!;
+    auth.updateProfile(owner.id, { email: 'owner@example.com', outageNotifications: false });
+    const verification = auth.createEmailVerificationToken(owner.id);
+    auth.verifyEmailToken(verification!.token);
+
+    const reset = auth.createPasswordResetToken('OWNER@example.com', new Date(10_000))!;
+    const result = await auth.resetPassword(reset.token, 'a-new-password-long-enough', new Date(11_000));
+
+    expect(result.email).toBe('owner@example.com');
+    expect(auth.resolveSession(token)).toBeNull();
+    await expect(auth.resetPassword(reset.token, 'another-password-long-enough', new Date(12_000))).rejects.toThrow(
+      /invalid or has expired/,
+    );
+    const expired = auth.createPasswordResetToken('owner@example.com', new Date(20_000))!;
+    await expect(
+      auth.resetPassword(
+        expired.token,
+        'yet-another-password-long-enough',
+        new Date(20_000 + 30 * 60 * 1000 + 1),
+      ),
+    ).rejects.toThrow(/invalid or has expired/);
   });
 });

@@ -24,6 +24,61 @@ export interface ThrottleDecision {
 
 const WINDOW_MS = 15 * 60 * 1000;
 
+interface WindowEntry {
+  count: number;
+  resetAt: number;
+}
+
+/** Small in-memory limiter for public actions that can cause outbound mail. */
+export class PasswordResetThrottle {
+  readonly #maxRequests: number;
+  readonly #windowMs: number;
+  readonly #entries = new Map<string, WindowEntry>();
+
+  constructor(maxRequests = 5, windowMs = WINDOW_MS) {
+    this.#maxRequests = maxRequests;
+    this.#windowMs = windowMs;
+  }
+
+  /** Limits both a source address and the requested account address. */
+  allow(ip: string, email: string, now = new Date()): boolean {
+    const current = now.getTime();
+    this.prune(current);
+
+    const keys = [`ip:${ip}`, `email:${email.trim().toLowerCase()}`];
+    let allowed = true;
+    for (const key of keys) {
+      const entry = this.#entries.get(key);
+      if (!entry || entry.resetAt <= current) {
+        this.#entries.set(key, { count: 1, resetAt: current + this.#windowMs });
+        continue;
+      }
+
+      if (entry.count >= this.#maxRequests) {
+        allowed = false;
+        continue;
+      }
+
+      entry.count++;
+    }
+
+    return allowed;
+  }
+
+  private prune(now: number): void {
+    for (const [key, entry] of this.#entries) {
+      if (entry.resetAt <= now) this.#entries.delete(key);
+    }
+
+    // An attacker should not be able to turn this into an unbounded IP list.
+    while (this.#entries.size > 10_000) {
+      const oldest = this.#entries.keys().next().value as string | undefined;
+      if (oldest === undefined) return;
+      this.#entries.delete(oldest);
+    }
+  }
+}
+
 export class LoginThrottle {
   constructor(
     private readonly handle: DatabaseHandle,
