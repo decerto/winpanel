@@ -548,6 +548,8 @@ export class AuthService {
               changes.subdomainLimit === undefined
                 ? existing.subdomainLimit
                 : changes.subdomainLimit,
+            mailboxLimit:
+              changes.mailboxLimit === undefined ? existing.mailboxLimit : changes.mailboxLimit,
             mailQuotaBytes:
               changes.mailQuotaBytes === undefined
                 ? existing.mailQuotaBytes

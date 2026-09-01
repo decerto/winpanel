@@ -203,6 +203,21 @@ describe('the limits on the People page', () => {
     expect(wrapper.find('#person-subdomains').element).toHaveProperty('value', '7');
   });
 
+  it('saves the mailbox allowance when editing a customer', async () => {
+    const wrapper = await render();
+
+    await rowButtons(wrapper, 2)[0]!.trigger('click');
+  await wrapper.findAll('input[name="mailbox-limit-mode"]')[0]!.trigger('change');
+    await wrapper.find('#person-mailboxes').setValue('20');
+    await wrapper.find('form').trigger('submit');
+    await flushPromises();
+
+    expect(state.updated[0]).toMatchObject({
+      userId: 'f',
+      mailboxLimit: 20,
+    });
+  });
+
   it('describes a staff account as reaching everything', async () => {
     const wrapper = await render();
     expect(wrapper.text()).toContain('All websites');

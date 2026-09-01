@@ -97,6 +97,20 @@ describe('managing accounts', () => {
     expect(customer.siteCount).toBe(0);
   });
 
+  it('updates a customer mailbox allowance', async () => {
+    const { auth } = await ownerService();
+    const customer = await auth.createUser({
+      username: 'freya',
+      password: PASSWORD,
+      role: 'user',
+    });
+
+    const updated = auth.updateUser(customer.id, { mailboxLimit: 20 });
+
+    expect(updated.mailboxLimit).toBe(20);
+    expect(auth.getUser(customer.id)?.mailboxLimit).toBe(20);
+  });
+
   it('normalizes managed email addresses and leaves them unverified', async () => {
     const { auth } = await ownerService();
     const managed = await auth.createUser({
