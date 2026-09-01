@@ -316,11 +316,27 @@ export interface ServiceRecovery {
 }
 
 export class ServiceManager {
+  readonly #intentionallyStopped = new Set<string>();
+
   constructor(
     private readonly winswPath: string,
     private readonly configDir: string,
     private readonly recovery?: ServiceRecovery,
   ) {}
+
+  /** Records a stop requested through the panel, so the watchdog does not undo it. */
+  markIntentionallyStopped(id: string): void {
+    this.#intentionallyStopped.add(id.toLowerCase());
+  }
+
+  /** Clears a requested stop when an operator or the watchdog starts the service. */
+  markIntentionallyStarted(id: string): void {
+    this.#intentionallyStopped.delete(id.toLowerCase());
+  }
+
+  isIntentionallyStopped(id: string): boolean {
+    return this.#intentionallyStopped.has(id.toLowerCase());
+  }
 
   private configPathFor(id: string): string {
     return path.join(this.configDir, `${id}.xml`);
@@ -609,6 +625,7 @@ export class ServiceManager {
    * by killing something.
    */
   async start(id: string): Promise<void> {
+    this.markIntentionallyStarted(id);
     let failure = await this.startOnce(id);
     if (!failure) return;
 
@@ -711,9 +728,12 @@ export class ServiceManager {
   async stop(id: string): Promise<void> {
     let state = await this.getState(id);
     if (state === 'stopped' || state === 'not-installed') {
+      if (state === 'stopped') this.markIntentionallyStopped(id);
       await this.recovery?.unblock(id);
       return;
     }
+
+    this.markIntentionallyStopped(id);
 
     const wrapper = this.wrapperPathFor(id);
     if (await this.exists(wrapper)) {

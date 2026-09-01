@@ -477,7 +477,11 @@ export const systemRouter = router({
         return { id: service.id, label: service.label };
       }
 
-      const options = { unblock: recovery.unblock };
+      const options = {
+        unblock: recovery.unblock,
+        markIntentionallyStopped: (id: string) => ctx.app.services.markIntentionallyStopped(id),
+        markIntentionallyStarted: (id: string) => ctx.app.services.markIntentionallyStarted(id),
+      };
 
       if (service.id.toLowerCase() === CADDY_SERVICE_ID && input.action !== 'stop') {
         await repairMailPortConflict(ctx);
@@ -601,6 +605,7 @@ export const systemRouter = router({
     }
     const report = await startSupportingServices(services, {
       unblock: createServiceRecovery(ctx.app.db, ctx.app.gameServers).unblock,
+      markIntentionallyStarted: (id) => ctx.app.services.markIntentionallyStarted(id),
     });
     markStartedGameServers(ctx, services, report.failed);
     return report;
@@ -630,6 +635,7 @@ export const systemRouter = router({
       const recovery = createServiceRecovery(ctx.app.db, ctx.app.gameServers);
       const { changed, failed } = await stopSupportingServices(services, {
         unblock: recovery.unblock,
+        markIntentionallyStopped: (id) => ctx.app.services.markIntentionallyStopped(id),
       });
       markStoppedGameServers(ctx, services, failed);
 

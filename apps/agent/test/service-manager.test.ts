@@ -385,6 +385,19 @@ describe('waitUntilGone', () => {
   });
 });
 
+describe('ServiceManager stop intent', () => {
+  it('tracks requested stops case-insensitively and clears them on start', () => {
+    const manager = new ServiceManager('WinSW.exe', 'services');
+
+    expect(manager.isIntentionallyStopped('WINPANEL-CADDY')).toBe(false);
+    manager.markIntentionallyStopped('winpanel-caddy');
+    expect(manager.isIntentionallyStopped('WINPANEL-CADDY')).toBe(true);
+
+    manager.markIntentionallyStarted('WINPANEL-CADDY');
+    expect(manager.isIntentionallyStopped('winpanel-caddy')).toBe(false);
+  });
+});
+
 describe('ServiceManager layout', () => {
   let root: string;
 

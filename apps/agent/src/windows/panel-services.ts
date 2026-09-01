@@ -214,6 +214,7 @@ function delay(ms: number): Promise<void> {
  * on our own ports after a stop is therefore ended, not left.
  */
 export async function stopPanelService(id: string, options: StopOptions = {}): Promise<boolean> {
+  options.markIntentionallyStopped?.(id);
   const timeoutMs = options.timeoutMs ?? 60_000;
   await runCommand({ exe: 'sc.exe', args: ['stop', id], timeoutMs: 30_000 });
 
@@ -248,6 +249,8 @@ export interface StopOptions {
   timeoutMs?: number;
   /** Ends any of the service's own processes still holding its ports. */
   unblock?: (id: string) => Promise<boolean>;
+  /** Records that this stop was requested by the panel, not caused by a crash. */
+  markIntentionallyStopped?: (id: string) => void;
 }
 
 /**
@@ -265,6 +268,7 @@ export interface StopOptions {
  * other reason is not answered by killing something.
  */
 export async function startPanelService(id: string, options: StartOptions = {}): Promise<boolean> {
+  options.markIntentionallyStarted?.(id);
   if (await startOnce(id, options.timeoutMs ?? 60_000)) return true;
   if (!options.unblock) return false;
 
@@ -279,6 +283,10 @@ export interface StartOptions {
   timeoutMs?: number;
   /** Frees the service's ports. Returns whether anything was actually cleared. */
   unblock?: (id: string) => Promise<boolean>;
+  /** Records the requested stop while a restart is taking the service down. */
+  markIntentionallyStopped?: (id: string) => void;
+  /** Clears a previous panel stop request before attempting the start. */
+  markIntentionallyStarted?: (id: string) => void;
 }
 
 async function startOnce(id: string, timeoutMs: number): Promise<boolean> {
@@ -296,7 +304,10 @@ async function startOnce(id: string, timeoutMs: number): Promise<boolean> {
 }
 
 export async function restartPanelService(id: string, options: StartOptions = {}): Promise<boolean> {
-  await stopPanelService(id, { unblock: options.unblock });
+  await stopPanelService(id, {
+    unblock: options.unblock,
+    markIntentionallyStopped: options.markIntentionallyStopped,
+  });
   return await startPanelService(id, options);
 }
 

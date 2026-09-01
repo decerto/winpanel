@@ -18,6 +18,7 @@ import {
 
 describe.runIf(process.platform === 'win32')('panel service recovery', () => {
   it('forces a stuck service down through its verified wrapper PID', async () => {
+    const intentionallyStopped: string[] = [];
     runCommandMock.mockImplementation(async ({ exe, args }: { exe: string; args: readonly string[] }) => {
       if (exe === 'sc.exe' && args[0] === 'stop') {
         return { exitCode: 0, stdout: '', stderr: '' };
@@ -38,9 +39,14 @@ describe.runIf(process.platform === 'win32')('panel service recovery', () => {
     });
 
     await expect(
-      stopPanelService('winpanel-caddy', { timeoutMs: 0, unblock: async () => false }),
+      stopPanelService('winpanel-caddy', {
+        timeoutMs: 0,
+        unblock: async () => false,
+        markIntentionallyStopped: (id) => intentionallyStopped.push(id),
+      }),
     ).resolves.toBe(true);
 
+    expect(intentionallyStopped).toEqual(['winpanel-caddy']);
     expect(runCommandMock).toHaveBeenCalledWith(expect.objectContaining({
       exe: 'taskkill.exe',
       args: ['/PID', '4321', '/T', '/F'],
@@ -50,6 +56,7 @@ describe.runIf(process.platform === 'win32')('panel service recovery', () => {
   it('retries a failed start only when the service reports that it cleared something', async () => {
     let starts = 0;
     let unblocks = 0;
+    const intentionallyStarted: string[] = [];
     runCommandMock.mockImplementation(async ({ exe, args }: { exe: string; args: readonly string[] }) => {
       if (exe === 'sc.exe' && args[0] === 'start') {
         starts++;
@@ -65,11 +72,13 @@ describe.runIf(process.platform === 'win32')('panel service recovery', () => {
           unblocks++;
           return true;
         },
+        markIntentionallyStarted: (id) => intentionallyStarted.push(id),
       }),
     ).resolves.toBe(false);
 
     expect(starts).toBe(2);
     expect(unblocks).toBe(1);
+    expect(intentionallyStarted).toEqual(['winpanel-caddy']);
   });
 });
 

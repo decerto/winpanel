@@ -98,6 +98,16 @@ describe('recoverStalledService', () => {
     expect(d.started).toEqual([]);
   });
 
+  it('restarts a cleanly stopped service when the caller confirms it was unexpected', async () => {
+    const d = {
+      ...deps({ states: ['stopped', 'running'], holders: [] }),
+      shouldRestartStopped: () => true,
+    };
+
+    expect(await recoverStalledService(caddy, d)).toBe('recovered');
+    expect(d.started).toEqual(['winpanel-caddy']);
+  });
+
   it('clears a Stalwart copy that still holds a transitional web port', async () => {
     const stalwart = WATCHED_SERVICES.find((service) => service.id === 'winpanel-stalwart');
     const d = deps({
@@ -300,6 +310,49 @@ describe('ServiceWatchdog', () => {
 
     await watchdog.sweep();
     expect(started).toEqual(['winpanel-caddy']); // second silent sweep: restarted
+  });
+
+  it('restarts a service that changes from running to stopped', async () => {
+    const states: ServiceState[] = ['running', 'stopped', 'running'];
+    const started: string[] = [];
+    const watchdog = new ServiceWatchdog(
+      {
+        getState: async () => states.shift() ?? 'stopped',
+        start: async (id) => {
+          started.push(id);
+        },
+        probePort: async () => true,
+        listHolders: async () => [],
+      },
+      [caddy],
+    );
+
+    await watchdog.sweep();
+    await watchdog.sweep();
+
+    expect(started).toEqual(['winpanel-caddy']);
+  });
+
+  it('does not restart a clean stop explicitly requested through the panel', async () => {
+    const states: ServiceState[] = ['running', 'stopped'];
+    const started: string[] = [];
+    const watchdog = new ServiceWatchdog(
+      {
+        getState: async () => states.shift() ?? 'stopped',
+        start: async (id) => {
+          started.push(id);
+        },
+        probePort: async () => true,
+        listHolders: async () => [],
+        isIntentionallyStopped: () => true,
+      },
+      [caddy],
+    );
+
+    await watchdog.sweep();
+    await watchdog.sweep();
+
+    expect(started).toEqual([]);
   });
 
   it('forgets a service that answers again, so a later blip starts the count over', async () => {

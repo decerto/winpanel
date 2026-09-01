@@ -36,9 +36,9 @@ import type { ServiceState } from './service-manager.js';
  *
  * Two rules keep this from being dangerous:
  *
- *   - A stopped service with no stray process is left alone. Somebody stopped
- *     it deliberately, and a control panel that restarts services behind your
- *     back is worse than one that does nothing.
+ *   - A service stopped deliberately through the panel is left alone. A clean
+ *     stop after the service was observed running is treated as a crash only
+ *     when no explicit stop intent was recorded.
  *   - Only a process matching the service's own executable *and* holding one
  *     of the service's own ports is killed. Anything else on the port is
  *     reported and left running.
@@ -141,6 +141,10 @@ export interface WatchdogDeps {
   confirmDead?: (id: string, silent: boolean) => boolean;
   /** Clears remembered silence when a service is removed or deliberately stopped. */
   clearDead?: (id: string) => void;
+  /** True when the panel explicitly asked for this service to stay stopped. */
+  isIntentionallyStopped?: (id: string) => boolean;
+  /** Whether a cleanly stopped service should be started by this recovery. */
+  shouldRestartStopped?: (id: string) => boolean;
   log?: (message: string, detail?: unknown) => void;
 }
 
@@ -151,22 +155,31 @@ export interface WatchdogDeps {
  * the port is the previous incarnation and has to go before the new one can
  * bind it.
  */
-async function clearOursAndStart(
+async function clearOurs(
   service: WatchedService,
   ours: readonly StrayProcess[],
   deps: WatchdogDeps,
-): Promise<WatchdogOutcome> {
+  restart: boolean,
+): Promise<void> {
   const kill = deps.kill ?? killProcessTree;
   const pids = [...new Set(ours.map((stray) => stray.pid))];
 
   if (pids.length > 0) {
     deps.log?.(
       `The ${service.label} has ${pids.length === 1 ? 'a process' : 'processes'} still ` +
-        'holding its ports. Ending them so it can start again.',
+        `holding its ports. Ending them so it can ${restart ? 'start again' : 'stay stopped'}.`,
       { service: service.id, strays: ours },
     );
     for (const pid of pids) await kill(pid);
   }
+}
+
+async function clearOursAndStart(
+  service: WatchedService,
+  ours: readonly StrayProcess[],
+  deps: WatchdogDeps,
+): Promise<WatchdogOutcome> {
+  await clearOurs(service, ours, deps, true);
 
   try {
     await deps.start(service.id);
@@ -277,11 +290,22 @@ export async function recoverStalledService(
     await listHolders(portsForRecovery(service)),
     service.images,
   );
+  // Direct callers retain the old orphan-recovery behavior. The watchdog
+  // supplies an explicit decision for a clean running-to-stopped transition.
+  const shouldRestart = deps.shouldRestartStopped?.(service.id) ?? ours.length > 0;
   const requiredPorts = new Set(service.ports);
   const requiredForeign = foreign.filter((holder) => requiredPorts.has(holder.port));
 
   if (ours.length === 0) {
-    if (requiredForeign.length === 0) return 'left-alone';
+    if (requiredForeign.length === 0) {
+      if (!shouldRestart) return 'left-alone';
+
+      deps.log?.(
+        `The ${service.label} stopped after it was previously running. Restarting it.`,
+        { service: service.id },
+      );
+      return await clearOursAndStart(service, [], deps);
+    }
 
     /*
      * Reported every sweep on purpose. A port collision does not heal itself,
@@ -296,6 +320,13 @@ export async function recoverStalledService(
       { service: service.id, holders: requiredForeign },
     );
     return 'blocked';
+  }
+
+  if (!shouldRestart) {
+    // A requested stop still gets its own orphan cleaned up, but it is never
+    // started again by the watchdog.
+    await clearOurs(service, ours, deps, false);
+    return 'left-alone';
   }
 
   return await clearOursAndStart(service, ours, deps);
@@ -325,6 +356,8 @@ export class ServiceWatchdog {
    * death. Entries clear the moment a service answers again.
    */
   readonly #silentLastSweep = new Map<string, boolean>();
+  /** Last observed Windows state, used to distinguish a crash from a clean stop. */
+  readonly #lastState = new Map<string, ServiceState>();
 
   constructor(
     private readonly deps: WatchdogDeps,
@@ -358,14 +391,34 @@ export class ServiceWatchdog {
       for (const id of this.#silentLastSweep.keys()) {
         if (!currentIds.has(id)) this.#silentLastSweep.delete(id);
       }
+      for (const id of this.#lastState.keys()) {
+        if (!currentIds.has(id)) this.#lastState.delete(id);
+      }
 
-      const deps: WatchdogDeps = {
+      const sharedDeps: WatchdogDeps = {
         ...this.deps,
         confirmDead: this.#confirmDead,
         clearDead: (id) => this.#silentLastSweep.delete(id),
       };
 
       for (const service of services) {
+        let observedState: ServiceState | undefined;
+        const deps: WatchdogDeps = {
+          ...sharedDeps,
+          getState: async (id) => {
+            const state = await this.deps.getState(id);
+            if (id === service.id && observedState === undefined) observedState = state;
+            return state;
+          },
+          shouldRestartStopped: (id) => {
+            const previous = this.#lastState.get(id);
+            return (
+              (previous === 'running' || previous === 'starting') &&
+              !this.deps.isIntentionallyStopped?.(id)
+            );
+          },
+        };
+
         try {
           const outcome = await recoverStalledService(service, deps);
           if (outcome === 'recovered') {
@@ -379,6 +432,8 @@ export class ServiceWatchdog {
           }
         } catch (error) {
           this.deps.log?.(`Could not check on the ${service.label}.`, error);
+        } finally {
+          if (observedState !== undefined) this.#lastState.set(service.id, observedState);
         }
       }
     } finally {

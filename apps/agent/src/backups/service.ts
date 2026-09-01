@@ -83,6 +83,8 @@ export interface BackupServiceOptions {
   binDir: string;
   backupDir: string;
   gameServers?: Pick<GameServerService, 'list' | 'catalogEntryFor'>;
+  markIntentionallyStopped?: (id: string) => void;
+  markIntentionallyStarted?: (id: string) => void;
 }
 
 function archivePath(backupDir: string, scope: 'site' | 'panel', id: string): string {
@@ -827,7 +829,10 @@ async function restorePanelArchive(
       throw new Error('That file is not a WinPanel panel backup.');
     }
 
-    const stoppedReport = await stopSupportingServices(services, { unblock: recovery.unblock });
+    const stoppedReport = await stopSupportingServices(services, {
+      unblock: recovery.unblock,
+      markIntentionallyStopped: options.markIntentionallyStopped,
+    });
     if (stoppedReport.failed.length > 0) {
       throw new Error(
         `Could not stop ${stoppedReport.failed[0]?.label ?? 'a panel service'} before restoring.`,
@@ -897,7 +902,12 @@ async function restorePanelArchive(
   } finally {
     if (!deferred) {
       await fs.rm(workDir, { recursive: true, force: true });
-      if (stopped) await startSupportingServices(resumableServices, { unblock: recovery.unblock });
+      if (stopped) {
+        await startSupportingServices(resumableServices, {
+          unblock: recovery.unblock,
+          markIntentionallyStarted: options.markIntentionallyStarted,
+        });
+      }
     }
   }
 

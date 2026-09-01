@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm';
 import type { DatabaseHandle } from '../db/index.js';
 import { siteOutageStates, sites, users } from '../db/schema.js';
 import { isPortAnswered, type PortProbe } from '../windows/service-probe.js';
+import { siteServiceId } from '../windows/panel-services.js';
 import { websiteOutageEmail } from './templates.js';
 import type { MailAddress } from './webmail-client.js';
 
@@ -47,6 +48,8 @@ export interface SiteOutageMonitorOptions {
   db: DatabaseHandle;
   mailer: OutageMonitorMailer;
   probe?: PortProbe;
+  /** True when the panel asked the site's Windows service to stay stopped. */
+  isIntentionallyStopped?: (serviceId: string) => boolean;
   now?: () => Date;
   log?: (message: string, detail?: unknown) => void;
 }
@@ -84,15 +87,18 @@ export class SiteOutageMonitor {
   readonly #db: DatabaseHandle;
   readonly #mailer: OutageMonitorMailer;
   readonly #probe: PortProbe;
+  readonly #isIntentionallyStopped: (serviceId: string) => boolean;
   readonly #now: () => Date;
   readonly #log: (message: string, detail?: unknown) => void;
   #timer: NodeJS.Timeout | null = null;
   #sweeping = false;
+  #initialSweep = true;
 
   constructor(options: SiteOutageMonitorOptions) {
     this.#db = options.db;
     this.#mailer = options.mailer;
     this.#probe = options.probe ?? isPortAnswered;
+    this.#isIntentionallyStopped = options.isIntentionallyStopped ?? (() => false);
     this.#now = options.now ?? (() => new Date());
     this.#log = options.log ?? (() => undefined);
   }
@@ -130,6 +136,8 @@ export class SiteOutageMonitor {
         })
         .from(sites)
         .all() as MonitorSite[];
+      const allowNotifications = !this.#initialSweep;
+      this.#initialSweep = false;
 
       const result: OutageSweepResult = {
         checked: 0,
@@ -139,6 +147,15 @@ export class SiteOutageMonitor {
       };
 
       for (const site of rows) {
+        const serviceId = PROCESS_RUNTIMES.has(site.runtime)
+          ? siteServiceId(site.slug, site.activeColour)
+          : null;
+        if (serviceId && this.#isIntentionallyStopped(serviceId)) {
+          this.saveIgnored(site.id);
+          result.ignored++;
+          continue;
+        }
+
         const port = appPort(site);
         if (port === null) {
           this.saveIgnored(site.id);
@@ -158,7 +175,7 @@ export class SiteOutageMonitor {
           continue;
         }
 
-        const notified = await this.record(site, answered);
+        const notified = await this.record(site, answered, allowNotifications);
         result.notifications += notified;
       }
 
@@ -193,7 +210,11 @@ export class SiteOutageMonitor {
       .run();
   }
 
-  private async record(site: MonitorSite, answered: boolean): Promise<number> {
+  private async record(
+    site: MonitorSite,
+    answered: boolean,
+    allowNotifications: boolean,
+  ): Promise<number> {
     const now = this.#now();
     const previous = this.#db.db
       .select()
@@ -204,13 +225,13 @@ export class SiteOutageMonitor {
     if (answered) {
       const recovered = previous?.notifiedState === 'down';
       this.saveResult(site.id, 'up', 0, recovered ? 'up' : (previous?.notifiedState ?? null), now);
-      if (!recovered) return 0;
+      if (!recovered || !allowNotifications) return 0;
       return await this.notify(site, true);
     }
 
     const consecutiveFailures = (previous?.consecutiveFailures ?? 0) + 1;
     const confirmed = consecutiveFailures >= FAILURE_CONFIRMATION_COUNT;
-    const shouldNotify = confirmed && previous?.notifiedState !== 'down';
+    const shouldNotify = allowNotifications && confirmed && previous?.notifiedState !== 'down';
     this.saveResult(
       site.id,
       confirmed ? 'down' : 'unknown',

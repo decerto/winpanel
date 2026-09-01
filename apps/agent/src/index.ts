@@ -399,6 +399,7 @@ async function main(): Promise<void> {
     {
       getState: (id) => app.services.getState(id),
       start: (id) => app.services.start(id),
+      isIntentionallyStopped: (id) => app.services.isIntentionallyStopped(id),
       log: (message, detail) => server.log.warn({ detail }, message),
     },
     () => watchdogServices(app.db),

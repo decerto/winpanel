@@ -304,7 +304,7 @@ describe('mailboxes', () => {
             permissions: {
               '@type': 'Merge',
               enabledPermissions: {},
-              disabledPermissions: { 'email-receive': true },
+              disabledPermissions: { emailReceive: true },
             },
           },
         ],
@@ -329,8 +329,8 @@ describe('mailboxes', () => {
             domainId: 'd1',
             permissions: {
               '@type': 'Replace',
-              enabledPermissions: { 'email-receive': true },
-              disabledPermissions: { 'email-receive': true },
+              enabledPermissions: { emailReceive: true },
+              disabledPermissions: { emailReceive: true },
             },
           },
         ],
@@ -386,7 +386,7 @@ describe('mailboxes', () => {
     expect(create['new1']?.['permissions']).toEqual({
       '@type': 'Merge',
       enabledPermissions: {},
-      disabledPermissions: { 'email-receive': true },
+      disabledPermissions: { emailReceive: true },
     });
   });
 
@@ -428,7 +428,7 @@ describe('mailboxes', () => {
         permissions: {
           '@type': 'Merge',
           enabledPermissions: {},
-          disabledPermissions: { 'email-receive': true },
+          disabledPermissions: { emailReceive: true },
         },
       },
     });
@@ -472,7 +472,7 @@ describe('mailboxes', () => {
         permissions: {
           '@type': 'Merge',
           enabledPermissions: { 'imap-authenticate': true },
-          disabledPermissions: { 'pop3-authenticate': true, 'email-receive': true },
+          disabledPermissions: { 'pop3-authenticate': true, emailReceive: true },
         },
       },
     });

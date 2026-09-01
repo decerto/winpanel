@@ -144,7 +144,7 @@ interface AccountPayload {
   usedDiskQuota?: number;
 }
 
-const EMAIL_RECEIVE_PERMISSION = 'email-receive';
+const EMAIL_RECEIVE_PERMISSION = 'emailReceive';
 
 function accountReceivesMail(permissions: PermissionsPayload | undefined): boolean {
   if (!permissions) return true;

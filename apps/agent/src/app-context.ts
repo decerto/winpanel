@@ -231,6 +231,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
   const outageMonitor = new SiteOutageMonitor({
     db,
     mailer,
+    isIntentionallyStopped: (serviceId) => services.isIntentionallyStopped(serviceId),
     log: (message, detail) => {
       process.stderr.write(`${message}${detail ? ` ${String(detail)}` : ''}\n`);
     },
@@ -344,6 +345,8 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
         binDir: config.binDir,
         backupDir: config.backupDir,
         gameServers,
+        markIntentionallyStopped: (id) => services.markIntentionallyStopped(id),
+        markIntentionallyStarted: (id) => services.markIntentionallyStarted(id),
       }),
     );
   }
