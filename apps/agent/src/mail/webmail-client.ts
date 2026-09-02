@@ -371,7 +371,7 @@ export class WebmailClient {
 
     this.cachedSession = {
       apiUrl: this.rebase(body.apiUrl),
-      uploadUrl: body.uploadUrl ? this.rebase(body.uploadUrl) : '',
+      uploadUrl: body.uploadUrl ?? '',
       downloadUrl: body.downloadUrl ?? '',
       accountId,
       sieve: body.capabilities?.[SIEVE_CAPABILITY] !== undefined,
@@ -655,9 +655,11 @@ export class WebmailClient {
     }
 
     const response = await this.request(
-      session.uploadUrl
-        .replace('{accountId}', encodeURIComponent(session.accountId))
-        .replace('{type}', 'text%2Fplain'),
+      this.rebase(
+        session.uploadUrl
+          .replace('{accountId}', encodeURIComponent(session.accountId))
+          .replace('{type}', 'text%2Fplain'),
+      ),
       {
         method: 'POST',
         headers: { 'content-type': 'text/plain; charset=utf-8', accept: 'application/json' },
@@ -842,9 +844,11 @@ export class WebmailClient {
     }
 
     const response = await this.request(
-      session.uploadUrl
-        .replace('{accountId}', encodeURIComponent(session.accountId))
-        .replace('{type}', encodeURIComponent(type)),
+      this.rebase(
+        session.uploadUrl
+          .replace('{accountId}', encodeURIComponent(session.accountId))
+          .replace('{type}', encodeURIComponent(type)),
+      ),
       {
         method: 'POST',
         headers: { 'content-type': type, accept: 'application/json' },

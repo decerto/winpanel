@@ -155,6 +155,26 @@ describe('WebmailClient attachments', () => {
 
     await expect(client.attachment('blob-1', 1)).rejects.toThrow(/too large/i);
   });
+
+  it('reports a failed attachment download instead of returning partial data', async () => {
+    const client = webmailClient(({ url }) => {
+      if (url.endsWith('/.well-known/jmap')) {
+        return new Response(
+          JSON.stringify({
+            downloadUrl: 'http://mail.test/jmap/download/{accountId}/{blobId}/{name}?accept={type}',
+            primaryAccounts: { 'urn:ietf:params:jmap:mail': 'u1' },
+            apiUrl: 'http://mail.test/jmap',
+          }),
+        );
+      }
+
+      return new Response(null, { status: 503 });
+    });
+
+    await expect(client.attachment('blob-1', 1)).rejects.toThrow(
+      'The mail server answered with an error (503).',
+    );
+  });
 });
 
 describe('WebmailClient sender blocks', () => {
@@ -469,15 +489,18 @@ describe('WebmailClient conversations', () => {
   });
 
   it('copies source attachments and reply headers into a forwarded message', async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
     let emailGetRequest = 0;
     let draft: Record<string, unknown> | undefined;
     const client = webmailClient(({ url, init }) => {
+      calls.push({ url, init });
+
       if (url.endsWith('/.well-known/jmap')) {
         return new Response(
           JSON.stringify({
             apiUrl: 'http://mail.test/jmap',
-            uploadUrl: 'http://mail.test/upload/{accountId}/{type}',
-            downloadUrl: 'http://mail.test/download/{accountId}/{blobId}/{type}/{name}',
+            uploadUrl: 'http://mail.test/jmap/upload/{accountId}/',
+            downloadUrl: 'http://mail.test/jmap/download/{accountId}/{blobId}/{name}?accept={type}',
             primaryAccounts: { 'urn:ietf:params:jmap:mail': 'u1' },
           }),
         );
@@ -577,5 +600,186 @@ describe('WebmailClient conversations', () => {
         },
       ],
     });
+
+    const download = calls.find((call) => call.url.includes('/download/'));
+    const upload = calls.find((call) => call.url.includes('/upload/'));
+    expect(download?.url).toBe(
+      'http://mail.test/jmap/download/u1/source-blob/attachment?accept=application%2Foctet-stream',
+    );
+    expect(upload?.url).toBe('http://mail.test/jmap/upload/u1/');
+    expect(upload?.init?.method).toBe('POST');
+    expect((upload?.init?.headers as Record<string, string>)['content-type']).toBe('application/pdf');
+  });
+
+  it('reports a failed attachment upload before creating the forwarded message', async () => {
+    const client = webmailClient(({ url, init }) => {
+      if (url.endsWith('/.well-known/jmap')) {
+        return new Response(
+          JSON.stringify({
+            apiUrl: 'http://mail.test/jmap',
+            uploadUrl: 'http://mail.test/jmap/upload/{accountId}/',
+            downloadUrl: 'http://mail.test/jmap/download/{accountId}/{blobId}/{name}?accept={type}',
+            primaryAccounts: { 'urn:ietf:params:jmap:mail': 'u1' },
+          }),
+        );
+      }
+
+      if (url.includes('/download/')) return new Response('attachment bytes');
+      if (url.includes('/upload/')) return new Response(null, { status: 502 });
+
+      const body = JSON.parse(String(init?.body)) as {
+        methodCalls: [string, Record<string, unknown>, string][];
+      };
+      const [name, , callId] = body.methodCalls[0]!;
+
+      if (name === 'Identity/get') {
+        return new Response(
+          JSON.stringify({
+            methodResponses: [['Identity/get', { list: [{ id: 'identity-1', email: 'person@example.com' }] }, callId]],
+          }),
+        );
+      }
+
+      if (name === 'Mailbox/get') {
+        return new Response(
+          JSON.stringify({
+            methodResponses: [['Mailbox/get', { list: [{ id: 'drafts', role: 'drafts' }] }, callId]],
+          }),
+        );
+      }
+
+      if (name === 'Email/get') {
+        return new Response(
+          JSON.stringify({
+            methodResponses: [
+              [
+                'Email/get',
+                {
+                  list: [
+                    {
+                      id: 'source-message',
+                      attachments: [
+                        {
+                          blobId: 'source-blob',
+                          name: 'invoice.pdf',
+                          type: 'application/pdf',
+                          size: 17,
+                        },
+                      ],
+                    },
+                  ],
+                },
+                callId,
+              ],
+            ],
+          }),
+        );
+      }
+
+      throw new Error(`Unexpected JMAP call: ${name}`);
+    });
+
+    await expect(
+      client.send({
+        to: [{ name: null, email: 'friend@example.com' }],
+        subject: 'Fwd: Original subject',
+        text: 'Forwarded body',
+        forwardOf: 'source-message',
+      }),
+    ).rejects.toThrow('The mail server answered with an error (502).');
+  });
+
+  it('forwards a message without calling blob endpoints when it has no attachments', async () => {
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    const jmapCalls: string[] = [];
+    const client = webmailClient(({ url, init }) => {
+      calls.push({ url, init });
+
+      if (url.endsWith('/.well-known/jmap')) {
+        return new Response(
+          JSON.stringify({
+            apiUrl: 'http://mail.test/jmap',
+            uploadUrl: 'http://mail.test/upload/{accountId}/{type}',
+            downloadUrl: 'http://mail.test/download/{accountId}/{blobId}/{type}/{name}',
+            primaryAccounts: { 'urn:ietf:params:jmap:mail': 'u1' },
+          }),
+        );
+      }
+
+      if (url.includes('/download/') || url.includes('/upload/')) {
+        throw new Error('A no-attachment forward must not call a blob endpoint.');
+      }
+
+      const body = JSON.parse(String(init?.body)) as {
+        methodCalls: [string, Record<string, unknown>, string][];
+      };
+      const [name, , callId] = body.methodCalls[0]!;
+      jmapCalls.push(name);
+
+      if (name === 'Identity/get') {
+        return new Response(
+          JSON.stringify({
+            methodResponses: [['Identity/get', { list: [{ id: 'identity-1', email: 'person@example.com' }] }, callId]],
+          }),
+        );
+      }
+
+      if (name === 'Mailbox/get') {
+        return new Response(
+          JSON.stringify({
+            methodResponses: [
+              ['Mailbox/get', { list: [{ id: 'drafts', role: 'drafts' }, { id: 'sent', role: 'sent' }] }, callId],
+            ],
+          }),
+        );
+      }
+
+      if (name === 'Email/get') {
+        return new Response(
+          JSON.stringify({
+            methodResponses: [
+              [
+                'Email/get',
+                {
+                  list: [
+                    {
+                      id: 'source-message',
+                      threadId: 'thread-1',
+                      subject: 'Original subject',
+                      receivedAt: '2026-02-09T09:00:00.000Z',
+                      attachments: [],
+                    },
+                  ],
+                },
+                callId,
+              ],
+            ],
+          }),
+        );
+      }
+
+      expect(name).toBe('Email/set');
+      expect(body.methodCalls[1]?.[0]).toBe('EmailSubmission/set');
+      return new Response(
+        JSON.stringify({
+          methodResponses: [
+            ['Email/set', {}, callId],
+            ['EmailSubmission/set', {}, 'send'],
+          ],
+        }),
+      );
+    });
+
+    await client.send({
+      to: [{ name: null, email: 'friend@example.com' }],
+      subject: 'Fwd: Original subject',
+      text: 'Forwarded body',
+      forwardOf: 'source-message',
+    });
+
+    expect(jmapCalls).toEqual(['Identity/get', 'Mailbox/get', 'Email/get', 'Email/set']);
+    expect(calls.some((call) => call.url.includes('/download/') || call.url.includes('/upload/'))).toBe(
+      false,
+    );
   });
 });
