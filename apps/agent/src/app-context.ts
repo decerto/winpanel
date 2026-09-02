@@ -12,6 +12,7 @@ import { AuthService } from './services/auth-service.js';
 import { CaddyClient } from './caddy/client.js';
 import { CaddyReconciler } from './caddy/reconciler.js';
 import { ServiceManager } from './windows/service-manager.js';
+import { createServiceStopIntentStore } from './windows/service-intent.js';
 import { FirewallManager } from './bootstrap/windows-setup.js';
 import { DatabaseNetworkService } from './databases/network-service.js';
 import { firstIpv4 } from './databases/network.js';
@@ -190,6 +191,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
       const freed = await prepareStalwartForWebServer({ db, vault, services });
       return quarantined !== null || freed !== null;
     }),
+    createServiceStopIntentStore(db),
   );
   if (process.platform === 'win32') {
     for (const server of gameServers.list()) {

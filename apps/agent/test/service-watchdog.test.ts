@@ -24,21 +24,27 @@ function deps(overrides: {
 }): {
   getState: (id: string) => Promise<ServiceState>;
   start: (id: string) => Promise<void>;
+  restart: (id: string) => Promise<void>;
   listHolders: () => Promise<Array<{ pid: number; port: number; image: string }>>;
   kill: (pid: number) => Promise<boolean>;
   probePort: () => Promise<boolean>;
   killed: number[];
   started: string[];
+  restarted: string[];
 } {
   const states = overrides.states ?? ['stopped'];
   const killed: number[] = [];
   const started: string[] = [];
+  const restarted: string[] = [];
 
   return {
     getState: async () => states.shift() ?? states.at(-1) ?? 'stopped',
     start: async (id) => {
       started.push(id);
       if (overrides.start) await overrides.start();
+    },
+    restart: async (id) => {
+      restarted.push(id);
     },
     listHolders: async () => overrides.holders ?? [],
     kill: async (pid) => {
@@ -49,6 +55,7 @@ function deps(overrides: {
     probePort: async () => overrides.answered ?? true,
     killed,
     started,
+    restarted,
   };
 }
 
@@ -71,9 +78,22 @@ describe('recoverStalledService', () => {
     };
 
     expect(await recoverStalledService(caddy, d)).toBe('revived');
-    expect(d.started).toEqual(['winpanel-caddy']);
+    expect(d.started).toEqual([]);
+    expect(d.restarted).toEqual(['winpanel-caddy']);
     // No stray to kill — the child was already gone.
     expect(d.killed).toEqual([]);
+  });
+
+  it('does not revive a service that was intentionally stopped while its wrapper is still running', async () => {
+    const d = {
+      ...deps({ states: ['running'], answered: false }),
+      confirmDead: () => true,
+      isIntentionallyStopped: () => true,
+    };
+
+    expect(await recoverStalledService(caddy, d)).toBe('left-alone');
+    expect(d.restarted).toEqual([]);
+    expect(d.started).toEqual([]);
   });
 
   it('does not mistake Caddy answering on 443 for a healthy Stalwart', async () => {
@@ -85,7 +105,8 @@ describe('recoverStalledService', () => {
     };
 
     expect(await recoverStalledService(stalwart!, d)).toBe('revived');
-    expect(d.started).toEqual(['winpanel-stalwart']);
+    expect(d.started).toEqual([]);
+    expect(d.restarted).toEqual(['winpanel-stalwart']);
   });
 
   it('does not report Caddy as blocking an intentionally stopped repaired Stalwart', async () => {
@@ -152,7 +173,8 @@ describe('recoverStalledService', () => {
 
     expect(await recoverStalledService(site, d)).toBe('revived');
     expect(d.killed).toEqual([6792]);
-    expect(d.started).toEqual(['winpanel-site-forgeandfilter-com-blue']);
+  expect(d.started).toEqual([]);
+  expect(d.restarted).toEqual(['winpanel-site-forgeandfilter-com-blue']);
   });
 
   it('does not treat a service that answers on one of several ports as dead', async () => {
@@ -238,6 +260,16 @@ describe('recoverStalledService', () => {
     expect(await recoverStalledService(caddy, d)).toBe('still-down');
   });
 
+  it('does not report recovery when the service disappears after starting', async () => {
+    const d = {
+      ...deps({ states: ['stopped', 'not-installed'], holders: [] }),
+      shouldRestartStopped: () => true,
+    };
+
+    expect(await recoverStalledService(caddy, d)).toBe('still-down');
+    expect(d.started).toEqual(['winpanel-caddy']);
+  });
+
   it('ignores a service that is not installed', async () => {
     const d = deps({ states: ['not-installed'] });
 
@@ -257,6 +289,7 @@ describe('ServiceWatchdog', () => {
           return 'running';
         },
         start: async () => undefined,
+        restart: async () => undefined,
         probePort: async () => true,
         log: () => undefined,
       },
@@ -279,6 +312,7 @@ describe('ServiceWatchdog', () => {
           return 'running';
         },
         start: async () => undefined,
+        restart: async () => undefined,
         probePort: async () => true,
       },
       [caddy],
@@ -293,11 +327,15 @@ describe('ServiceWatchdog', () => {
     // sweep is logged and watched, the second acts. This mirrors a service
     // that is dead rather than merely slow to start.
     const started: string[] = [];
+    const restarted: string[] = [];
     const watchdog = new ServiceWatchdog(
       {
         getState: async () => 'running',
         start: async (id) => {
           started.push(id);
+        },
+        restart: async (id) => {
+          restarted.push(id);
         },
         probePort: async () => false, // never answers
         listHolders: async () => [],
@@ -309,7 +347,8 @@ describe('ServiceWatchdog', () => {
     expect(started).toEqual([]); // first silent sweep: watched, not restarted
 
     await watchdog.sweep();
-    expect(started).toEqual(['winpanel-caddy']); // second silent sweep: restarted
+    expect(started).toEqual([]); // second silent sweep: it must restart the live wrapper
+    expect(restarted).toEqual(['winpanel-caddy']);
   });
 
   it('restarts a service that changes from running to stopped', async () => {
@@ -321,6 +360,7 @@ describe('ServiceWatchdog', () => {
         start: async (id) => {
           started.push(id);
         },
+        restart: async () => undefined,
         probePort: async () => true,
         listHolders: async () => [],
       },
@@ -333,6 +373,44 @@ describe('ServiceWatchdog', () => {
     expect(started).toEqual(['winpanel-caddy']);
   });
 
+  it('restarts an automatic service that is already stopped when supervision begins', async () => {
+    const states: ServiceState[] = ['stopped', 'running'];
+    const started: string[] = [];
+    const watchdog = new ServiceWatchdog(
+      {
+        getState: async () => states.shift() ?? 'stopped',
+        start: async (id) => {
+          started.push(id);
+        },
+        restart: async () => undefined,
+        listHolders: async () => [],
+        probePort: async () => true,
+      },
+      [caddy],
+    );
+
+    await watchdog.sweep();
+
+    expect(started).toEqual(['winpanel-caddy']);
+  });
+
+  it('leaves a service intentionally stopped before the first sweep alone', async () => {
+    const watchdog = new ServiceWatchdog(
+      {
+        getState: async () => 'stopped',
+        start: async () => {
+          throw new Error('should not start');
+        },
+        restart: async () => undefined,
+        isIntentionallyStopped: () => true,
+        listHolders: async () => [],
+      },
+      [caddy],
+    );
+
+    await watchdog.sweep();
+  });
+
   it('does not restart a clean stop explicitly requested through the panel', async () => {
     const states: ServiceState[] = ['running', 'stopped'];
     const started: string[] = [];
@@ -342,6 +420,7 @@ describe('ServiceWatchdog', () => {
         start: async (id) => {
           started.push(id);
         },
+        restart: async () => undefined,
         probePort: async () => true,
         listHolders: async () => [],
         isIntentionallyStopped: () => true,
@@ -364,6 +443,7 @@ describe('ServiceWatchdog', () => {
         start: async (id) => {
           started.push(id);
         },
+        restart: async () => undefined,
         probePort: async () => !silent,
         listHolders: async () => [],
       },
@@ -387,6 +467,7 @@ describe('ServiceWatchdog', () => {
         start: async (id) => {
           started.push(id);
         },
+        restart: async () => undefined,
         probePort: async () => false,
         listHolders: async () => [],
       },
@@ -406,6 +487,7 @@ describe('ServiceWatchdog', () => {
       {
         getState: async () => 'running',
         start: async () => undefined,
+        restart: async () => undefined,
         probePort: async () => false,
         listHolders: async () => [],
         log: (message) => logged.push(message),
@@ -447,6 +529,7 @@ describe('ServiceWatchdog', () => {
           return 'running';
         },
         start: async () => undefined,
+        restart: async () => undefined,
         probePort: async () => true,
       },
       () => sets.shift() ?? [],
@@ -464,6 +547,7 @@ describe('ServiceWatchdog', () => {
       {
         getState: async () => 'running',
         start: async () => undefined,
+        restart: async () => undefined,
         probePort: async () => true,
         log: (message) => logged.push(message),
       },

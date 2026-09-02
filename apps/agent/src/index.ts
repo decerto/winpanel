@@ -390,8 +390,8 @@ async function main(): Promise<void> {
    * or power cut leaves each website's last node process orphaned and still
    * holding its port, so the auto-started service's new child dies on
    * EADDRINUSE a second after boot and the wrapper reports RUNNING over a dead
-   * site. The sweep probes every watched port, finds the ones that say running
-   * but answer nothing, and restarts them through `services.start` — which
+    * site. The sweep probes every watched port, finds the ones that say running
+    * but answer nothing, and restarts them through `services.restart` — which
    * clears the orphan before binding. One sweep, a minute after boot, is what
    * turns "every site is down until somebody RDPs in" into a self-heal.
    */
@@ -399,6 +399,7 @@ async function main(): Promise<void> {
     {
       getState: (id) => app.services.getState(id),
       start: (id) => app.services.start(id),
+      restart: (id) => app.services.restart(id),
       isIntentionallyStopped: (id) => app.services.isIntentionallyStopped(id),
       log: (message, detail) => server.log.warn({ detail }, message),
     },

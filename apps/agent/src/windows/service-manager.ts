@@ -315,6 +315,11 @@ export interface ServiceRecovery {
   makeRoom?: (id: string, failure: string) => Promise<boolean>;
 }
 
+export interface ServiceStopIntentStore {
+  load: () => readonly string[];
+  save: (ids: readonly string[]) => void;
+}
+
 export class ServiceManager {
   readonly #intentionallyStopped = new Set<string>();
 
@@ -322,16 +327,33 @@ export class ServiceManager {
     private readonly winswPath: string,
     private readonly configDir: string,
     private readonly recovery?: ServiceRecovery,
-  ) {}
+    private readonly stopIntentStore?: ServiceStopIntentStore,
+  ) {
+    for (const id of stopIntentStore?.load() ?? []) {
+      this.#intentionallyStopped.add(id.toLowerCase());
+    }
+  }
+
+  private persistStopIntents(): void {
+    try {
+      this.stopIntentStore?.save([...this.#intentionallyStopped]);
+    } catch {
+      return;
+    }
+  }
 
   /** Records a stop requested through the panel, so the watchdog does not undo it. */
   markIntentionallyStopped(id: string): void {
-    this.#intentionallyStopped.add(id.toLowerCase());
+    const normalized = id.toLowerCase();
+    if (this.#intentionallyStopped.has(normalized)) return;
+    this.#intentionallyStopped.add(normalized);
+    this.persistStopIntents();
   }
 
   /** Clears a requested stop when an operator or the watchdog starts the service. */
   markIntentionallyStarted(id: string): void {
-    this.#intentionallyStopped.delete(id.toLowerCase());
+    if (!this.#intentionallyStopped.delete(id.toLowerCase())) return;
+    this.persistStopIntents();
   }
 
   isIntentionallyStopped(id: string): boolean {
@@ -592,6 +614,7 @@ export class ServiceManager {
 
     await fs.rm(this.configPathFor(id), { force: true });
     await fs.rm(wrapperPath, { force: true }).catch(() => undefined);
+    this.markIntentionallyStarted(id);
   }
 
   /**

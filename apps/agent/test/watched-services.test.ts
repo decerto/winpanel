@@ -194,6 +194,40 @@ describe('watchdogServices', () => {
     expect(watchdogServices(handle).some((service) => service.siteId === site.id)).toBe(true);
   }, 30_000);
 
+  it('keeps watching while a non-deploy site job is pending', async () => {
+    const site = await createSite('shop', 'node');
+
+    handle.db
+      .insert(jobs)
+      .values({
+        id: 'job-1',
+        kind: 'run-command',
+        status: 'pending',
+        title: 'Installing packages',
+        siteId: site.id,
+      })
+      .run();
+
+    expect(watchdogServices(handle).some((service) => service.siteId === site.id)).toBe(true);
+  }, 30_000);
+
+  it('keeps watching while a deploy is queued but not running', async () => {
+    const site = await createSite('shop', 'node');
+
+    handle.db
+      .insert(jobs)
+      .values({
+        id: 'job-1',
+        kind: 'deploy',
+        status: 'pending',
+        title: 'Deploying',
+        siteId: site.id,
+      })
+      .run();
+
+    expect(watchdogServices(handle).some((service) => service.siteId === site.id)).toBe(true);
+  }, 30_000);
+
   /*
    * The watchdog runs inside the panel. If the panel were in its list, the
    * process it would find on the panel's port while the service reads as

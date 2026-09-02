@@ -396,6 +396,25 @@ describe('ServiceManager stop intent', () => {
     manager.markIntentionallyStarted('WINPANEL-CADDY');
     expect(manager.isIntentionallyStopped('winpanel-caddy')).toBe(false);
   });
+
+  it('restores stop intent when a new manager is created', () => {
+    let saved: readonly string[] = [];
+    const store = {
+      load: () => saved,
+      save: (ids: readonly string[]) => {
+        saved = [...ids];
+      },
+    };
+
+    const first = new ServiceManager('WinSW.exe', 'services', undefined, store);
+    first.markIntentionallyStopped('winpanel-caddy');
+
+    const afterRestart = new ServiceManager('WinSW.exe', 'services', undefined, store);
+    expect(afterRestart.isIntentionallyStopped('WINPANEL-CADDY')).toBe(true);
+
+    afterRestart.markIntentionallyStarted('winpanel-caddy');
+    expect(saved).toEqual([]);
+  });
 });
 
 describe('ServiceManager layout', () => {

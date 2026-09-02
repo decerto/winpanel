@@ -1,4 +1,4 @@
-import { inArray } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { config } from '../config.js';
 import type { DatabaseHandle } from '../db/index.js';
 import { gameServerPorts, jobs, sites } from '../db/schema.js';
@@ -124,7 +124,7 @@ const PANEL_SERVICE: WatchedService = {
 };
 
 /**
- * Sites with a deploy in flight, which must be left entirely alone.
+ * Sites with an active deploy, which must be left entirely alone.
  *
  * A deploy stops the service on purpose, swaps the folder underneath it and
  * starts it again. Anything else starting it in the middle of that is fighting
@@ -135,7 +135,7 @@ function sitesMidDeploy(db: DatabaseHandle): Set<string> {
   const rows = db.db
     .select({ siteId: jobs.siteId })
     .from(jobs)
-    .where(inArray(jobs.status, ['pending', 'running']))
+    .where(and(eq(jobs.kind, 'deploy'), eq(jobs.status, 'running')))
     .all();
 
   return new Set(rows.map((row) => row.siteId).filter((id): id is string => id !== null));
@@ -189,7 +189,7 @@ export function siteWatchedServices(db: DatabaseHandle): WatchedService[] {
 /**
  * Everything the panel supervises: its components and every website.
  *
- * This is what the watchdog acts on, so a website with a deploy in flight is
+ * This is what the watchdog acts on, so a website with an active deploy is
  * left out. A deploy stops the service on purpose, swaps the folder underneath
  * it and starts it again; anything else starting it in the middle is fighting
  * the deploy over the same files, and the deploy is the one that knows what it

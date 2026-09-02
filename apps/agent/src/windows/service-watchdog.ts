@@ -37,7 +37,8 @@ import type { ServiceState } from './service-manager.js';
  * Two rules keep this from being dangerous:
  *
  *   - A service stopped deliberately through the panel is left alone. A clean
- *     stop after the service was observed running is treated as a crash only
+ *     stop after the service was observed running, or an automatic service
+ *     already stopped when supervision begins, is treated as a crash only
  *     when no explicit stop intent was recorded.
  *   - Only a process matching the service's own executable *and* holding one
  *     of the service's own ports is killed. Anything else on the port is
@@ -123,6 +124,7 @@ export type WatchdogOutcome =
 export interface WatchdogDeps {
   getState: (id: string) => Promise<ServiceState>;
   start: (id: string) => Promise<void>;
+  restart: (id: string) => Promise<void>;
   /** Everything listening on those ports, whatever it is. Filtering is done here. */
   listHolders?: (ports: readonly number[]) => Promise<StrayProcess[]>;
   kill?: (pid: number) => Promise<boolean>;
@@ -178,17 +180,20 @@ async function clearOursAndStart(
   service: WatchedService,
   ours: readonly StrayProcess[],
   deps: WatchdogDeps,
+  operation: 'start' | 'restart' = 'start',
 ): Promise<WatchdogOutcome> {
-  await clearOurs(service, ours, deps, true);
+  await clearOurs(service, ours, deps, operation === 'restart');
 
   try {
-    await deps.start(service.id);
+    const run = operation === 'restart' ? deps.restart : deps.start;
+    await run(service.id);
   } catch (error) {
     deps.log?.(`Could not restart the ${service.label}.`, error);
     return 'still-down';
   }
 
-  return (await deps.getState(service.id)) === 'stopped' ? 'still-down' : 'recovered';
+  const state = await deps.getState(service.id);
+  return state === 'running' || state === 'starting' ? 'recovered' : 'still-down';
 }
 
 /**
@@ -212,6 +217,11 @@ async function reviveDeadService(
   service: WatchedService,
   deps: WatchdogDeps,
 ): Promise<WatchdogOutcome> {
+  if (deps.isIntentionallyStopped?.(service.id)) {
+    deps.clearDead?.(service.id);
+    return 'left-alone';
+  }
+
   const probe = deps.probePort ?? isPortAnswered;
   const probePorts = service.probePorts ?? service.ports;
 
@@ -256,7 +266,7 @@ async function reviveDeadService(
     { service: service.id },
   );
 
-  const outcome = await clearOursAndStart(service, ours, deps);
+  const outcome = await clearOursAndStart(service, ours, deps, 'restart');
   return outcome === 'recovered' ? 'revived' : outcome;
 }
 
@@ -301,7 +311,7 @@ export async function recoverStalledService(
       if (!shouldRestart) return 'left-alone';
 
       deps.log?.(
-        `The ${service.label} stopped after it was previously running. Restarting it.`,
+        `The ${service.label} is stopped but should be running. Restarting it.`,
         { service: service.id },
       );
       return await clearOursAndStart(service, [], deps);
@@ -356,7 +366,7 @@ export class ServiceWatchdog {
    * death. Entries clear the moment a service answers again.
    */
   readonly #silentLastSweep = new Map<string, boolean>();
-  /** Last observed Windows state, used to distinguish a crash from a clean stop. */
+  /** Last observed Windows state; a missing entry is the first sweep after boot. */
   readonly #lastState = new Map<string, ServiceState>();
 
   constructor(
@@ -413,7 +423,7 @@ export class ServiceWatchdog {
           shouldRestartStopped: (id) => {
             const previous = this.#lastState.get(id);
             return (
-              (previous === 'running' || previous === 'starting') &&
+              (previous === undefined || previous === 'running' || previous === 'starting') &&
               !this.deps.isIntentionallyStopped?.(id)
             );
           },

@@ -158,9 +158,10 @@ For a website it is worse, because nothing looks wrong from outside:
 
 Everything below obeys both, and they are what keep this from being dangerous:
 
-1. **A stopped service with no stray is left alone.** Somebody stopped it deliberately,
-   and a control panel that restarts services behind your back is worse than one that
-   does nothing.
+1. **An explicit stop is respected, including after an agent restart.** The panel records
+  that intent in its local database. An automatic service that is stopped with no recorded
+  stop intent is started by the watchdog, including when it was already down on the first
+  sweep after boot.
 2. **Only a process holding one of the service's own ports *and* running one of its own
    executables is ended.** Anything else on the port is named in the error and left
    running. The panel allocated the port; it does not own the machine.
@@ -175,7 +176,7 @@ something like `SMTP_PORT` and aim a kill at the wrong process.
 
 | Moment | What it does |
 | --- | --- |
-| Every 60 seconds | `ServiceWatchdog` sweeps every component and website, clears strays under a stopped service, and starts it |
+| Every 60 seconds | `ServiceWatchdog` sweeps every component and website, clears strays under a stopped service, and starts automatic services without a recorded stop intent |
 | Start, Restart | Clears the port and tries once more, but only after a real failure and only if something was actually cleared |
 | Stop, Stop everything | Ends the leftover after the service reports stopped, so "stopped" means the program is gone and its files are released |
 | Deploy | `claimPort` frees the port *before* the new process starts, so the health check cannot be satisfied by an impostor |
@@ -189,9 +190,10 @@ something like `SMTP_PORT` and aim a kill at the wrong process.
   it could find on the panel's port while that service reads as stopped is itself. It is
   unblockable - stopping it before an update has to release `bin\node\node.exe` - but it
   is not in the swept list.
-- **Sites mid-deploy are skipped.** A deploy stops the service on purpose and swaps the
-  folder underneath it. Anything else starting it in the middle is fighting the deploy
-  over the same files, and the deploy is the one that knows what it is doing.
+- **Sites with an active deploy are skipped.** A running deploy stops the service on purpose
+  and swaps the folder underneath it. Queued deploys have not started changing files yet,
+  so they do not remove a site's supervision and cannot leave a stale pending row hiding an
+  outage forever.
 - **Foreign programs are never ended**, only reported. Quietly proxying a customer's
   website to a stranger's process is a worse outcome than a start that stops and explains
   itself.
