@@ -491,17 +491,31 @@ function describeSubdomains(person: Person): string {
 
 function describeMailboxes(person: Person): string {
   if (person.role !== 'user') return 'All mailboxes';
+  if (person.mailboxCount === null || person.mailboxCount === undefined) {
+    if (person.mailboxLimit === 0) return 'No mailboxes';
+    return person.mailboxLimit === null || person.mailboxLimit === undefined
+      ? 'Usage unavailable'
+      : `Usage unavailable of ${person.mailboxLimit}`;
+  }
   if (person.mailboxLimit === null || person.mailboxLimit === undefined) {
-    return 'Unlimited';
+    return `${person.mailboxCount} of unlimited`;
   }
   if (person.mailboxLimit === 0) return 'No mailboxes';
-  return `${person.mailboxLimit} allowed`;
+  return `${person.mailboxCount} of ${person.mailboxLimit}`;
 }
 
 function describeMail(person: Person): string {
-  if (person.role !== 'user' || person.mailQuotaBytes === null) return 'No limit';
+  if (person.role !== 'user') return 'No limit';
+  if (person.mailQuotaBytes === null) {
+    return person.mailUsedBytes == null
+      ? 'Usage unavailable'
+      : `${formatBytes(person.mailUsedBytes)} used of unlimited`;
+  }
   if (person.mailQuotaBytes === 0) return 'No storage';
-  return formatBytes(person.mailQuotaBytes);
+  if (person.mailUsedBytes == null) {
+    return `Usage unavailable of ${formatBytes(person.mailQuotaBytes)}`;
+  }
+  return `${formatBytes(person.mailUsedBytes)} used of ${formatBytes(person.mailQuotaBytes)}`;
 }
 
 function describeGameServers(person: Person): string {
@@ -601,6 +615,13 @@ function selectAllGames(): void {
 
     <section class="card overflow-hidden">
       <p v-if="loading" class="px-5 py-10 text-center text-sm text-ink-muted">Loading&hellip;</p>
+
+      <EmptyState
+        v-else-if="error"
+        :icon="RefreshCw"
+        title="Could not load people"
+        description="Use Refresh to try again."
+      />
 
       <EmptyState
         v-else-if="people.length === 0"

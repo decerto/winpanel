@@ -9,6 +9,7 @@ import {
   SCHEDULE_ATTEMPT_LIMIT,
   deleteBackupArchive,
   describeBackupSchedule,
+  nextScheduledBackupAt,
   pruneFrequencyBackups,
   startOfNextPeriod,
   writeBackupSchedule,
@@ -119,6 +120,31 @@ describe('automatic panel snapshots', () => {
     expect(scheduledJobs('daily')).toHaveLength(2);
   });
 
+  it('retries a period whose pending scheduled snapshot was cancelled', async () => {
+    await scheduler.checkNow(new Date(2026, 7, 26, 9, 0));
+    const jobId = scheduledJobs('daily')[0]!.id;
+    queue.requestCancel(jobId);
+    expect(queue.getJob(jobId)?.status).toBe('cancelled');
+
+    await scheduler.checkNow(new Date(2026, 7, 26, 9, 15));
+    expect(scheduledJobs('daily')).toHaveLength(2);
+  });
+
+  it('retries a period whose running scheduled snapshot was cancelled', async () => {
+    queue.register('backup', async (_payload, context) => {
+      queue.requestCancel(context.jobId);
+      context.throwIfCancelled();
+    });
+
+    await scheduler.checkNow(new Date(2026, 7, 26, 9, 0));
+    const jobId = scheduledJobs('daily')[0]!.id;
+    await queue.drain();
+    expect(queue.getJob(jobId)?.status).toBe('cancelled');
+
+    await scheduler.checkNow(new Date(2026, 7, 26, 9, 15));
+    expect(scheduledJobs('daily')).toHaveLength(2);
+  });
+
   it('stops retrying a period once it has used up its attempts', async () => {
     for (let attempt = 0; attempt < SCHEDULE_ATTEMPT_LIMIT + 2; attempt += 1) {
       await scheduler.checkNow(new Date(2026, 7, 26, 9, attempt));
@@ -164,6 +190,22 @@ describe('automatic panel snapshots', () => {
 });
 
 describe('when the next snapshot is due', () => {
+  it('waits a full day after the last daily snapshot, even across a restart', async () => {
+    const created = new Date(2026, 7, 26, 9, 0);
+    await completedSnapshot('daily', '2026-08-26', created);
+
+    await scheduler.checkNow(new Date(2026, 7, 27, 8, 59));
+    expect(scheduledJobs('daily')).toHaveLength(1);
+
+    await scheduler.checkNow(new Date(2026, 7, 27, 9, 0));
+    expect(scheduledJobs('daily')).toHaveLength(2);
+  });
+
+  it('uses a calendar month for monthly snapshots', () => {
+    const january = new Date(2026, 0, 31, 9, 0);
+    expect(nextScheduledBackupAt(january, 'monthly')).toEqual(new Date(2026, 1, 28, 9, 0));
+  });
+
   it('counts from the start of the next period', () => {
     const wednesday = new Date(2026, 7, 26, 14, 30);
     expect(startOfNextPeriod(wednesday, 'daily')).toEqual(new Date(2026, 7, 27, 0, 0, 0, 0));
@@ -195,13 +237,23 @@ describe('when the next snapshot is due', () => {
     const report = describeBackupSchedule(handle, new Date(2026, 7, 26, 14, 30));
     const daily = report.slots.find((slot) => slot.frequency === 'daily')!;
     expect(daily.dueNow).toBe(false);
-    expect(daily.nextRunAt).toEqual(new Date(2026, 7, 27, 0, 0, 0, 0));
+    expect(daily.nextRunAt).toEqual(new Date(2026, 7, 27, 0, 10, 0, 0));
     expect(daily.currentBackupId).toBe(id);
     expect(daily.lastSuccessAt).toEqual(created);
 
     const weekly = report.slots.find((slot) => slot.frequency === 'weekly')!;
     expect(weekly.enabled).toBe(false);
     expect(weekly.nextRunAt).toBeNull();
+  });
+
+  it('reports the elapsed-time cooldown instead of saying a recent schedule is due', async () => {
+    const created = new Date(2026, 7, 26, 9, 0);
+    await completedSnapshot('daily', '2026-08-26', created);
+
+    const report = describeBackupSchedule(handle, new Date(2026, 7, 27, 1, 0));
+    const daily = report.slots.find((slot) => slot.frequency === 'daily')!;
+    expect(daily.dueNow).toBe(false);
+    expect(daily.nextRunAt).toEqual(new Date(2026, 7, 27, 9, 0));
   });
 });
 

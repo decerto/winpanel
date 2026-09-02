@@ -183,6 +183,8 @@ watch(() => route.fullPath, () => (drawerOpen.value = false));
 
 async function signOut(): Promise<void> {
   await api.auth.logout.mutate().catch(() => undefined);
+  sessionStorage.removeItem('winpanel.webmail.token');
+  sessionStorage.removeItem('winpanel.webmail.address');
   await router.push('/login');
   // The panel caches nothing sensitive in memory beyond this point, but a
   // full reload is the only way to be sure of it.

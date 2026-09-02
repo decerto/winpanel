@@ -47,12 +47,38 @@ export function sanitiseHtml(html: string): string {
   return html
     .replace(/<\s*(script|iframe|object|embed|link|meta|base|form)\b[^>]*>[\s\S]*?<\s*\/\s*\1\s*>/gi, '')
     .replace(/<\s*(script|iframe|object|embed|link|meta|base|form)\b[^>]*\/?>/gi, '')
+    .replace(/<\s*style\b[^>]*>[\s\S]*?<\s*\/\s*style\s*>/gi, '')
     .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(
+      /\s(?:src|srcset|background|poster|data|formaction|xlink:href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
+      (attribute, doubleQuoted, singleQuoted, bare) => {
+        const value = doubleQuoted ?? singleQuoted ?? bare ?? '';
+        return /^data:image\/(?:gif|jpeg|png|webp);base64,/i.test(value)
+          ? attribute
+          : '';
+      },
+    )
+    .replace(
+      /\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
+      (attribute, doubleQuoted, singleQuoted, bare) => {
+        const value = doubleQuoted ?? singleQuoted ?? bare ?? '';
+        return /\b(?:url|expression|behavior)\s*\(|-moz-binding\s*:/i.test(value)
+          ? ''
+          : attribute;
+      },
+    )
+    .replace(
+      /\shref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi,
+      (attribute, doubleQuoted, singleQuoted, bare) => {
+        const value = (doubleQuoted ?? singleQuoted ?? bare ?? '').trim();
+        return /^(?:https?:|mailto:|tel:|#|\/)/i.test(value) ? attribute : ' href="#"';
+      },
+    )
     .replace(/(href|src|action)\s*=\s*(["']?)\s*javascript:[^"'>\s]*\2/gi, '$1="#"');
 }
 
-function clientFor(token: string): WebmailClient {
-  const credentials = webmailSessions.get(token);
+function clientFor(token: string, userId: string): WebmailClient {
+  const credentials = webmailSessions.get(token, userId);
 
   if (!credentials) {
     throw new TRPCError({
@@ -90,14 +116,14 @@ export const webmailRouter = router({
         password: z.string().min(1).max(512),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       try {
         await new WebmailClient(input.address, input.password).signIn();
       } catch (error) {
         toTrpcError(error);
       }
 
-      const { token, expiresAt } = webmailSessions.open({
+      const { token, expiresAt } = webmailSessions.open(ctx.user.id, {
         address: input.address,
         password: input.password,
       });
@@ -105,14 +131,14 @@ export const webmailRouter = router({
       return { token, address: input.address, expiresAt: new Date(expiresAt).toISOString() };
     }),
 
-  signOut: protectedProcedure.input(Token).mutation(({ input }) => {
-    webmailSessions.close(input.token);
+  signOut: protectedProcedure.input(Token).mutation(({ input, ctx }) => {
+    webmailSessions.close(input.token, ctx.user.id);
     return { ok: true };
   }),
 
-  folders: protectedProcedure.input(Token).query(async ({ input }) => {
+  folders: protectedProcedure.input(Token).query(async ({ input, ctx }) => {
     try {
-      return await clientFor(input.token).folders();
+      return await clientFor(input.token, ctx.user.id).folders();
     } catch (error) {
       toTrpcError(error);
     }
@@ -127,9 +153,9 @@ export const webmailRouter = router({
         search: z.string().max(200).optional(),
       }),
     )
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       try {
-        return await clientFor(input.token).messages(input);
+        return await clientFor(input.token, ctx.user.id).messages(input);
       } catch (error) {
         toTrpcError(error);
       }
@@ -137,15 +163,23 @@ export const webmailRouter = router({
 
   message: protectedProcedure
     .input(Token.extend({ id: z.string().min(1).max(200) }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       try {
-        const message = await clientFor(input.token).message(input.id);
+        const thread = await clientFor(input.token, ctx.user.id).thread(input.id);
+        const message = thread.find((entry) => entry.id === input.id);
 
         if (!message) {
           throw new TRPCError({ code: 'NOT_FOUND', message: 'That message is no longer there.' });
         }
 
-        return { ...message, html: message.html ? sanitiseHtml(message.html) : null };
+        return {
+          ...message,
+          html: message.html ? sanitiseHtml(message.html) : null,
+          thread: thread.map((entry) => ({
+            ...entry,
+            html: entry.html ? sanitiseHtml(entry.html) : null,
+          })),
+        };
       } catch (error) {
         if (error instanceof TRPCError) throw error;
         toTrpcError(error);
@@ -154,9 +188,9 @@ export const webmailRouter = router({
 
   setSeen: protectedProcedure
     .input(Token.extend({ ids: z.array(z.string().min(1).max(200)).min(1).max(100), seen: z.boolean() }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       try {
-        await clientFor(input.token).setSeen(input.ids, input.seen);
+        await clientFor(input.token, ctx.user.id).setSeen(input.ids, input.seen);
         return { ok: true };
       } catch (error) {
         toTrpcError(error);
@@ -170,9 +204,9 @@ export const webmailRouter = router({
         flagged: z.boolean(),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       try {
-        await clientFor(input.token).setFlagged(input.ids, input.flagged);
+        await clientFor(input.token, ctx.user.id).setFlagged(input.ids, input.flagged);
         return { ok: true };
       } catch (error) {
         toTrpcError(error);
@@ -194,9 +228,9 @@ export const webmailRouter = router({
         mailboxId: z.string().min(1).max(200),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       try {
-        await clientFor(input.token).move(input.ids, input.mailboxId);
+        await clientFor(input.token, ctx.user.id).move(input.ids, input.mailboxId);
         return { ok: true };
       } catch (error) {
         toTrpcError(error);
@@ -206,9 +240,9 @@ export const webmailRouter = router({
   /** Permanent removal, offered only from within the bin. */
   destroy: protectedProcedure
     .input(Token.extend({ ids: z.array(z.string().min(1).max(200)).min(1).max(100) }))
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       try {
-        await clientFor(input.token).destroy(input.ids);
+        await clientFor(input.token, ctx.user.id).destroy(input.ids);
         return { ok: true };
       } catch (error) {
         toTrpcError(error);
@@ -231,9 +265,9 @@ export const webmailRouter = router({
         type: z.string().max(120).default('application/octet-stream'),
       }),
     )
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       try {
-        const bytes = await clientFor(input.token).attachment(input.blobId, input.size);
+        const bytes = await clientFor(input.token, ctx.user.id).attachment(input.blobId, input.size);
 
         return {
           name: input.name,
@@ -258,17 +292,19 @@ export const webmailRouter = router({
         text: z.string().max(200_000).default(''),
         inReplyTo: z.string().max(400).nullable().default(null),
         references: z.array(z.string().max(400)).max(50).default([]),
+        forwardOf: z.string().min(1).max(200).nullable().default(null),
       }),
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       try {
-        await clientFor(input.token).send({
+        await clientFor(input.token, ctx.user.id).send({
           to: input.to as MailAddress[],
           cc: input.cc as MailAddress[],
           subject: input.subject,
           text: input.text,
           inReplyTo: input.inReplyTo,
           references: input.references,
+          forwardOf: input.forwardOf,
         });
 
         return { ok: true, note: 'Sent. A copy is in your Sent folder.' };
@@ -277,26 +313,26 @@ export const webmailRouter = router({
       }
     }),
 
-  blockedSenders: protectedProcedure.input(Token).query(async ({ input }) => {
+  blockedSenders: protectedProcedure.input(Token).query(async ({ input, ctx }) => {
     try {
-      return await clientFor(input.token).blockedSenders();
+      return await clientFor(input.token, ctx.user.id).blockedSenders();
     } catch (error) {
       toTrpcError(error);
     }
   }),
 
-  blockSender: protectedProcedure.input(SenderInput).mutation(async ({ input }) => {
+  blockSender: protectedProcedure.input(SenderInput).mutation(async ({ input, ctx }) => {
     try {
-      await clientFor(input.token).setSenderBlocked(input.sender, true);
+      await clientFor(input.token, ctx.user.id).setSenderBlocked(input.sender, true);
       return { ok: true, sender: input.sender };
     } catch (error) {
       toTrpcError(error);
     }
   }),
 
-  unblockSender: protectedProcedure.input(SenderInput).mutation(async ({ input }) => {
+  unblockSender: protectedProcedure.input(SenderInput).mutation(async ({ input, ctx }) => {
     try {
-      await clientFor(input.token).setSenderBlocked(input.sender, false);
+      await clientFor(input.token, ctx.user.id).setSenderBlocked(input.sender, false);
       return { ok: true, sender: input.sender };
     } catch (error) {
       toTrpcError(error);

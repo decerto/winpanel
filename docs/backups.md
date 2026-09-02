@@ -28,9 +28,9 @@ A panel snapshot includes every file in the panel installation folder, the compl
 
 ### Schedules and retention
 
-The server looks for due snapshots every fifteen minutes. A daily snapshot is due once the local date changes, a weekly one on Monday, and a monthly one on the first of the month. The Backup page shows, for each schedule, when the next snapshot is expected, how the last one ended, and which snapshot it is currently holding. Switching a schedule on or off saves immediately; there is no separate save step.
+The server looks for due snapshots every fifteen minutes. A daily snapshot waits 24 hours from the last successful scheduled daily snapshot, and a weekly snapshot waits 7 days from the last successful scheduled weekly snapshot. A monthly snapshot runs in the next calendar month on the same day, clamped to the last day when necessary. Restarting or updating the panel does not reset these timers, so an update does not create an extra snapshot just because the agent started again. The Backup page shows, for each schedule, when the next snapshot is expected, how the last one ended, and which snapshot it is currently holding. Switching a schedule on or off saves immediately; there is no separate save step.
 
-**Each schedule keeps only its most recent snapshot.** Today's daily snapshot replaces yesterday's, this week's replaces last week's, and this month's replaces last month's. Without that, a machine taking nightly snapshots of itself eventually fills its own disk. Snapshots taken with **Back up now** are not on a schedule and are kept until you delete them.
+**Each schedule keeps only its most recent snapshot.** The next successful daily snapshot replaces the previous daily snapshot, the next weekly snapshot replaces the previous weekly snapshot, and the next monthly snapshot replaces the previous monthly snapshot. Without that, a machine taking regular snapshots of itself eventually fills its own disk. Snapshots taken with **Back up now** are not on a schedule and are kept until you delete them.
 
 If a snapshot fails, the schedule tries again on the next check, up to three attempts for that day, week or month. After three failures it stops until the next period is due, and the Backup page says so along with the error the last attempt reported. A failed attempt no longer counts as that period's snapshot.
 

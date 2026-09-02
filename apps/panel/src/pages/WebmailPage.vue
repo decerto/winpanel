@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Archive,
   Ban,
+  Forward,
   Inbox,
   LogOut,
   Mail,
@@ -51,6 +52,7 @@ const route = useRoute();
 type Folder = Awaited<ReturnType<typeof api.webmail.folders.query>>[number];
 type Message = Awaited<ReturnType<typeof api.webmail.messages.query>>['messages'][number];
 type MessageDetail = Awaited<ReturnType<typeof api.webmail.message.query>>;
+type MessageForAction = Omit<MessageDetail, 'thread'>;
 
 /**
  * Kept for the tab rather than the browser: closing the tab ends the sitting,
@@ -75,6 +77,10 @@ const search = ref('');
 
 const open = ref<MessageDetail | null>(null);
 const showPlainText = ref(false);
+const openMessages = computed(() => {
+  if (!open.value) return [];
+  return open.value.thread?.length ? open.value.thread : [open.value];
+});
 
 const loading = ref(false);
 const busy = ref(false);
@@ -85,9 +91,26 @@ const blockedSendersLoading = ref(false);
 const senderAction = ref<string | null>(null);
 
 const composing = ref(false);
-const draft = ref({ to: '', cc: '', subject: '', text: '', inReplyTo: null as string | null });
+const draft = ref({
+  to: '',
+  cc: '',
+  subject: '',
+  text: '',
+  inReplyTo: null as string | null,
+  references: [] as string[],
+  forwardOf: null as string | null,
+});
 
 const PAGE_SIZE = 25;
+
+const MESSAGE_FRAME_CSP =
+  "default-src 'none'; img-src data:; media-src data:; style-src 'unsafe-inline'; " +
+  "font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; " +
+  "base-uri 'none'; form-action 'none'";
+
+function messageDocument(html: string): string {
+  return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${MESSAGE_FRAME_CSP}"></head><body>${html}</body></html>`;
+}
 
 /** Folders people expect at the top, in the order they expect them. */
 const ROLE_ORDER: Record<string, number> = {
@@ -144,6 +167,17 @@ function nameOf(person: { name: string | null; email: string }): string {
 function peopleOf(list: Array<{ name: string | null; email: string }>): string {
   if (list.length === 0) return '(nobody)';
   return list.map(nameOf).join(', ');
+}
+
+function bodyTextOf(message: Pick<MessageDetail, 'text' | 'html' | 'preview'>): string {
+  if (message.text !== null) return message.text;
+  if (!message.html) return message.preview;
+
+  const htmlWithBreaks = message.html
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<\/\s*(p|div|li|tr|h[1-6]|blockquote)\s*>/gi, '\n');
+  const parsed = new DOMParser().parseFromString(htmlWithBreaks, 'text/html');
+  return parsed.body.textContent?.trim() || message.preview;
 }
 
 /** A sender's initial, for the avatar on each row. Falls back to the address. */
@@ -296,7 +330,7 @@ async function openMessage(message: Message): Promise<void> {
   if (!result) return;
 
   open.value = result;
-  showPlainText.value = result.html === null;
+  showPlainText.value = false;
 
   if (!message.seen) {
     message.seen = true;
@@ -382,17 +416,25 @@ async function discard(id: string): Promise<void> {
 }
 
 function compose(): void {
-  draft.value = { to: '', cc: '', subject: '', text: '', inReplyTo: null };
+  draft.value = {
+    to: '',
+    cc: '',
+    subject: '',
+    text: '',
+    inReplyTo: null,
+    references: [],
+    forwardOf: null,
+  };
   composing.value = true;
   open.value = null;
 }
 
-function reply(): void {
-  const message = open.value;
+function reply(source: MessageForAction | null = open.value): void {
+  const message = source;
   if (!message) return;
 
   const to = message.replyTo.length > 0 ? message.replyTo : message.from;
-  const quoted = (message.text ?? message.preview ?? '')
+  const quoted = bodyTextOf(message)
     .split('\n')
     .map((line) => `> ${line}`)
     .join('\n');
@@ -404,7 +446,39 @@ function reply(): void {
     text: `\n\nOn ${new Date(message.receivedAt).toLocaleString()}, ${peopleOf(
       message.from,
     )} wrote:\n${quoted}`,
+    inReplyTo: message.messageId.at(-1) ?? null,
+    references: [...new Set([...message.references, ...message.messageId])].slice(-50),
+    forwardOf: null,
+  };
+  composing.value = true;
+  open.value = null;
+}
+
+function forward(source: MessageForAction | null = open.value): void {
+  const message = source;
+  if (!message) return;
+
+  const forwarded = [
+    '',
+    '',
+    '---------- Forwarded message ----------',
+    `From: ${peopleOf(message.from)}`,
+    `Date: ${new Date(message.receivedAt).toLocaleString()}`,
+    `Subject: ${message.subject}`,
+    `To: ${peopleOf(message.to)}`,
+    ...(message.cc.length > 0 ? [`Cc: ${peopleOf(message.cc)}`] : []),
+    '',
+    bodyTextOf(message),
+  ].join('\n');
+
+  draft.value = {
+    to: '',
+    cc: '',
+    subject: /^fwd:/i.test(message.subject) ? message.subject : `Fwd: ${message.subject}`,
+    text: forwarded,
     inReplyTo: null,
+    references: [],
+    forwardOf: message.id,
   };
   composing.value = true;
   open.value = null;
@@ -436,7 +510,8 @@ async function send(): Promise<void> {
       subject: draft.value.subject,
       text: draft.value.text,
       inReplyTo: draft.value.inReplyTo,
-      references: [],
+      references: draft.value.references,
+      forwardOf: draft.value.forwardOf,
     }),
   );
 
@@ -720,9 +795,6 @@ onMounted(() => {
           <button type="button" class="btn btn-ghost btn-sm" @click="open = null">
             <ArrowLeft :size="14" aria-hidden="true" /> Back
           </button>
-          <button type="button" class="btn btn-ghost btn-sm" @click="reply">
-            <Reply :size="14" aria-hidden="true" /> Reply
-          </button>
           <button
             v-if="openSender"
             type="button"
@@ -745,69 +817,85 @@ onMounted(() => {
           </button>
         </div>
 
-        <header class="border-b border-line px-6 py-5">
-          <h2 class="text-base font-semibold text-ink">{{ open.subject }}</h2>
-          <p class="mt-1 text-sm text-ink-muted">
-            From <span class="text-ink">{{ peopleOf(open.from) }}</span>
-            to <span class="text-ink">{{ peopleOf(open.to) }}</span>
-          </p>
-          <p v-if="open.cc.length > 0" class="text-sm text-ink-muted">
-            Copied to {{ peopleOf(open.cc) }}
-          </p>
-          <p class="mt-1 text-xs text-ink-faint">
-            {{ new Date(open.receivedAt).toLocaleString() }} · {{ formatBytes(open.size) }}
-          </p>
-
-          <div v-if="open.attachments.length > 0" class="mt-3 flex flex-wrap gap-2">
-            <button
-              v-for="attachment in open.attachments"
-              :key="attachment.blobId"
-              type="button"
-              class="btn btn-ghost btn-sm"
-              :disabled="busy"
-              @click="download(attachment)"
-            >
-              <Paperclip :size="13" aria-hidden="true" />
-              {{ attachment.name }}
-              <span class="text-ink-faint">({{ formatBytes(attachment.size) }})</span>
-            </button>
-          </div>
-
-          <div v-if="open.html && open.text" class="mt-3">
-            <button
-              type="button"
-              class="text-xs text-ink-faint underline underline-offset-2 hover:text-ink"
-              @click="showPlainText = !showPlainText"
-            >
-              {{ showPlainText ? 'Show the formatted message' : 'Show the plain text version' }}
-            </button>
-          </div>
-        </header>
-
-        <AlertMessage v-if="open.truncated" tone="info" class="m-5">
-          This message is very long, so only the beginning is shown here. Open it in a mail
-          program to read the rest.
-        </AlertMessage>
-
-        <!--
-          Message HTML is somebody else's, so it is rendered in a frame with
-          scripting switched off and its own origin. The panel can create
-          websites and change DNS; a message must never be able to reach that.
-        -->
-        <iframe
-          v-if="open.html && !showPlainText"
-          :srcdoc="open.html"
-          sandbox=""
-          referrerpolicy="no-referrer"
-          class="h-[72vh] w-full bg-white"
-          title="Message"
-        />
-        <pre
-          v-else
-          class="max-h-[72vh] overflow-auto whitespace-pre-wrap break-words px-6 py-5 font-sans
-                 text-sm leading-relaxed text-ink"
-          >{{ open.text ?? open.preview }}</pre
+        <div
+          v-for="(message, index) in openMessages"
+          :key="message.id"
+          data-thread-message
+          class="border-b border-line last:border-b-0"
         >
+          <header class="px-6 py-5">
+            <div class="flex flex-wrap items-baseline justify-between gap-3">
+              <h2 class="text-base font-semibold text-ink">{{ message.subject }}</h2>
+              <span v-if="openMessages.length > 1" class="text-xs text-ink-faint">
+                Message {{ index + 1 }} of {{ openMessages.length }}
+              </span>
+            </div>
+            <p class="mt-1 text-sm text-ink-muted">
+              From <span class="text-ink">{{ peopleOf(message.from) }}</span>
+              to <span class="text-ink">{{ peopleOf(message.to) }}</span>
+            </p>
+            <p v-if="message.cc.length > 0" class="text-sm text-ink-muted">
+              Copied to {{ peopleOf(message.cc) }}
+            </p>
+            <p class="mt-1 text-xs text-ink-faint">
+              {{ new Date(message.receivedAt).toLocaleString() }} · {{ formatBytes(message.size) }}
+            </p>
+
+            <div v-if="message.attachments.length > 0" class="mt-3 flex flex-wrap gap-2">
+              <button
+                v-for="attachment in message.attachments"
+                :key="attachment.blobId"
+                type="button"
+                class="btn btn-ghost btn-sm"
+                :disabled="busy"
+                @click="download(attachment)"
+              >
+                <Paperclip :size="13" aria-hidden="true" />
+                {{ attachment.name }}
+                <span class="text-ink-faint">({{ formatBytes(attachment.size) }})</span>
+              </button>
+            </div>
+
+            <div v-if="message.html && message.text" class="mt-3">
+              <button
+                type="button"
+                class="text-xs text-ink-faint underline underline-offset-2 hover:text-ink"
+                @click="showPlainText = !showPlainText"
+              >
+                {{ showPlainText ? 'Show the formatted message' : 'Show the plain text version' }}
+              </button>
+            </div>
+
+            <div class="mt-3 flex flex-wrap gap-2">
+              <button type="button" class="btn btn-ghost btn-sm" @click="reply(message)">
+                <Reply :size="14" aria-hidden="true" /> Reply to this message
+              </button>
+              <button type="button" class="btn btn-ghost btn-sm" @click="forward(message)">
+                <Forward :size="14" aria-hidden="true" /> Forward this message
+              </button>
+            </div>
+          </header>
+
+          <AlertMessage v-if="message.truncated" tone="info" class="m-5">
+            This message is very long, so only the beginning is shown here. Open it in a mail
+            program to read the rest.
+          </AlertMessage>
+
+          <iframe
+            v-if="message.html && (!showPlainText || message.text === null)"
+            :srcdoc="messageDocument(message.html)"
+            sandbox=""
+            referrerpolicy="no-referrer"
+            class="h-[72vh] w-full bg-white"
+            title="Message"
+          />
+          <pre
+            v-else
+            class="max-h-[72vh] overflow-auto whitespace-pre-wrap break-words px-6 py-5 font-sans
+                   text-sm leading-relaxed text-ink"
+            >{{ message.text ?? message.preview }}</pre
+          >
+        </div>
       </section>
 
       <!-- The list -->

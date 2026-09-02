@@ -66,6 +66,13 @@ export const SCHEDULER_INTERVAL_MS = 15 * 60 * 1000;
  */
 export const SCHEDULE_ATTEMPT_LIMIT = 3;
 
+/** Minimum time between successful automatic snapshots of each frequency. */
+export const BACKUP_FREQUENCY_INTERVAL_MS: Record<BackupFrequency, number> = {
+  daily: 24 * 60 * 60 * 1000,
+  weekly: 7 * 24 * 60 * 60 * 1000,
+  monthly: 0,
+};
+
 export interface BackupArchive {
   id: string;
   scope: 'site' | 'panel';
@@ -988,6 +995,24 @@ export function startOfNextPeriod(from: Date, frequency: BackupFrequency): Date 
   return new Date(year, month, date + (8 - (from.getDay() || 7)), 0, 0, 0, 0);
 }
 
+/** The earliest moment another successful snapshot of this frequency may run. */
+export function nextScheduledBackupAt(lastRunAt: Date, frequency: BackupFrequency): Date {
+  if (frequency !== 'monthly') {
+    return new Date(lastRunAt.getTime() + BACKUP_FREQUENCY_INTERVAL_MS[frequency]);
+  }
+
+  // A month is a calendar month rather than an arbitrary thirty-day period.
+  // Clamp the day so a snapshot taken on the 31st still gets a future run in
+  // February instead of rolling into March.
+  const next = new Date(lastRunAt);
+  const day = next.getDate();
+  next.setDate(1);
+  next.setMonth(next.getMonth() + 1);
+  const lastDay = new Date(next.getFullYear(), next.getMonth() + 1, 0).getDate();
+  next.setDate(Math.min(day, lastDay));
+  return next;
+}
+
 interface ScheduledAttempt {
   readonly jobId: string;
   readonly status: string;
@@ -1039,8 +1064,13 @@ function scheduledAttempts(db: DatabaseHandle, frequency: BackupFrequency): Sche
 function periodIsSettled(attempts: readonly ScheduledAttempt[], periodKey: string): boolean {
   const forPeriod = attempts.filter((attempt) => attempt.periodKey === periodKey);
   return (
-    forPeriod.some((attempt) => attempt.status !== 'failed') ||
-    forPeriod.length >= SCHEDULE_ATTEMPT_LIMIT
+    forPeriod.some(
+      (attempt) =>
+        attempt.status === 'pending' ||
+        attempt.status === 'running' ||
+        attempt.status === 'succeeded',
+    ) ||
+    forPeriod.filter((attempt) => attempt.status === 'failed').length >= SCHEDULE_ATTEMPT_LIMIT
   );
 }
 
@@ -1092,19 +1122,43 @@ export function describeBackupSchedule(db: DatabaseHandle, now = new Date()): Ba
     const enabled = schedule[frequency];
     const succeeded = attempts.find((attempt) => attempt.status === 'succeeded');
     const last = attempts[0];
+    const lastSuccessAt = succeeded ? (succeeded.finishedAt ?? succeeded.createdAt) : null;
+    const nextIntervalAt = lastSuccessAt
+      ? nextScheduledBackupAt(lastSuccessAt, frequency)
+      : null;
 
     return {
       frequency,
       enabled,
       periodKey,
-      dueNow: enabled && !settled,
-      nextRunAt: !enabled ? null : settled ? startOfNextPeriod(now, frequency) : now,
+      dueNow:
+        enabled &&
+        !settled &&
+        (nextIntervalAt === null || now.getTime() >= nextIntervalAt.getTime()),
+      nextRunAt: !enabled
+        ? null
+        : settled
+          ? new Date(
+              Math.max(
+                startOfNextPeriod(now, frequency).getTime(),
+                nextIntervalAt?.getTime() ?? 0,
+              ),
+            )
+          : nextIntervalAt && nextIntervalAt > now
+            ? nextIntervalAt
+            : now,
       attemptsThisPeriod: thisPeriod.length,
       attemptLimit: SCHEDULE_ATTEMPT_LIMIT,
       givenUpThisPeriod:
         enabled &&
-        thisPeriod.length >= SCHEDULE_ATTEMPT_LIMIT &&
-        thisPeriod.every((attempt) => attempt.status === 'failed'),
+        thisPeriod.filter((attempt) => attempt.status === 'failed').length >=
+          SCHEDULE_ATTEMPT_LIMIT &&
+        !thisPeriod.some(
+          (attempt) =>
+            attempt.status === 'pending' ||
+            attempt.status === 'running' ||
+            attempt.status === 'succeeded',
+        ),
       lastRun: last
         ? {
             jobId: last.jobId,
@@ -1113,7 +1167,7 @@ export function describeBackupSchedule(db: DatabaseHandle, now = new Date()): Ba
             error: last.errorMessage,
           }
         : null,
-      lastSuccessAt: succeeded ? (succeeded.finishedAt ?? succeeded.createdAt) : null,
+      lastSuccessAt,
       currentBackupId: succeeded?.jobId ?? null,
     };
   });
@@ -1184,7 +1238,16 @@ export class BackupScheduler {
     for (const frequency of BackupFrequency.options) {
       if (!schedule[frequency]) continue;
       const periodKey = localPeriodKey(now, frequency);
-      if (periodIsSettled(scheduledAttempts(this.db, frequency), periodKey)) continue;
+      const attempts = scheduledAttempts(this.db, frequency);
+      if (periodIsSettled(attempts, periodKey)) continue;
+
+      const lastSuccess = attempts.find((attempt) => attempt.status === 'succeeded');
+      if (
+        lastSuccess &&
+        now < nextScheduledBackupAt(lastSuccess.finishedAt ?? lastSuccess.createdAt, frequency)
+      ) {
+        continue;
+      }
 
       this.jobs.enqueue({
         kind: 'backup',

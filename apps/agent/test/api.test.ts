@@ -7,6 +7,8 @@ import { Secret, TOTP } from 'otpauth';
 import superjson from 'superjson';
 import { createAppContext, type AppContext } from '../src/app-context.js';
 import { createServer } from '../src/server.js';
+import { storeMailAdminCredentials } from '../src/mail/credentials.js';
+import { StalwartClient, type MailPrincipal } from '../src/mail/stalwart-client.js';
 import { WebmailClient } from '../src/mail/webmail-client.js';
 import { webmailSessions } from '../src/mail/webmail-sessions.js';
 
@@ -268,6 +270,85 @@ async function enrolAndCollectCodes(cookie: string): Promise<{
   const confirm = await call('POST', 'auth.confirmTotp', { code: codeFor(secret) }, cookie);
   return { secret, codes: confirm.body.result.data.recoveryCodes as string[] };
 }
+
+describe('customer resource usage', () => {
+  it('reports live mailbox usage for owned domains and distinguishes unavailable data', async () => {
+    const cookie = await completeSetup();
+    const customer = await app.auth.createUser({
+      username: 'customer',
+      password: PASSWORD,
+      role: 'user',
+      mailboxLimit: 20,
+      mailQuotaBytes: 20 * 1024 ** 3,
+    });
+
+    app.db.db
+      .insert(app.schema.sites)
+      .values({
+        id: '00000000-0000-0000-0000-000000000001',
+        slug: 'customer-site',
+        displayName: 'Customer site',
+        ownerUserId: customer.id,
+        runtime: 'static',
+        domains: ['Example.com', 'example.com', 'other.example'],
+        source: { kind: 'upload' },
+        manifest: { runtime: 'static' },
+      })
+      .run();
+
+    const unavailable = await call('GET', 'users.list', undefined, cookie);
+    const unavailableCustomer = unavailable.body.result.data.find(
+      (person: any) => person.id === customer.id,
+    );
+    expect(unavailableCustomer).toMatchObject({ mailboxCount: null, mailUsedBytes: null });
+
+    storeMailAdminCredentials(app.db, app.vault, { username: 'admin', password: 'secret' });
+    const domains: string[] = [];
+    const listMailboxes = vi
+      .spyOn(StalwartClient.prototype, 'listMailboxes')
+      .mockImplementation(async (domain?: string): Promise<MailPrincipal[]> => {
+        domains.push(domain ?? '');
+        if (domain) return [];
+
+        return [
+          ...Array.from({ length: 18 }, (_, index) => ({
+            name: `mailbox-${index}@example.com`,
+            type: 'individual' as const,
+            description: '',
+            emails: [`mailbox-${index}@example.com`],
+            receivesMail: true,
+            quota: 20 * 1024 ** 3,
+            usedQuota: 1024 ** 3,
+          })),
+          {
+            name: 'team@example.com',
+            type: 'group' as const,
+            description: '',
+            emails: ['team@example.com'],
+            receivesMail: true,
+            quota: 20 * 1024 ** 3,
+            usedQuota: 20 * 1024 ** 3,
+          },
+        ];
+      });
+
+    try {
+      const result = await call('GET', 'users.list', undefined, cookie);
+      const listedCustomer = result.body.result.data.find(
+        (person: any) => person.id === customer.id,
+      );
+
+      expect(result.body.error).toBeUndefined();
+      expect(listedCustomer).toMatchObject({
+        mailboxCount: 18,
+        mailUsedBytes: 18 * 1024 ** 3,
+      });
+      expect(domains).toEqual(['']);
+    } finally {
+      listMailboxes.mockRestore();
+    }
+  });
+});
 
 describe('first-run setup', () => {
   it('reports that setup is needed', async () => {
@@ -1098,13 +1179,18 @@ describe('email', () => {
 
 describe('webmail sender blocks', () => {
   let cookie: string;
+  let ownerId: string;
 
   beforeEach(async () => {
     cookie = await completeSetup();
+    ownerId = app.auth.listUsers()[0]!.id;
   });
 
   it('keeps sender operations scoped to the mailbox sitting', async () => {
-    const sitting = webmailSessions.open({ address: 'person@example.com', password: 'secret' });
+    const sitting = webmailSessions.open(ownerId, {
+      address: 'person@example.com',
+      password: 'secret',
+    });
     const list = vi
       .spyOn(WebmailClient.prototype, 'blockedSenders')
       .mockResolvedValue(['blocked@example.com']);
@@ -1134,13 +1220,16 @@ describe('webmail sender blocks', () => {
     } finally {
       list.mockRestore();
       change.mockRestore();
-      webmailSessions.close(sitting.token);
+      webmailSessions.close(sitting.token, ownerId);
     }
   });
 
   it('rejects a malformed sender before contacting the mailbox', async () => {
     const change = vi.spyOn(WebmailClient.prototype, 'setSenderBlocked').mockResolvedValue();
-    const sitting = webmailSessions.open({ address: 'person@example.com', password: 'secret' });
+    const sitting = webmailSessions.open(ownerId, {
+      address: 'person@example.com',
+      password: 'secret',
+    });
 
     try {
       const response = await call(
@@ -1155,7 +1244,65 @@ describe('webmail sender blocks', () => {
       expect(change).not.toHaveBeenCalled();
     } finally {
       change.mockRestore();
-      webmailSessions.close(sitting.token);
+      webmailSessions.close(sitting.token, ownerId);
+    }
+  });
+
+  it('rejects a mailbox sitting from another panel account', async () => {
+    const sitting = webmailSessions.open(ownerId, {
+      address: 'person@example.com',
+      password: 'secret',
+    });
+    await app.auth.createUser({ username: 'customer', password: PASSWORD, role: 'user' });
+    const login = await call('POST', 'auth.login', {
+      username: 'customer',
+      password: PASSWORD,
+    });
+    const customerSession = login.cookies.find((entry) => entry.name === 'winpanel_session');
+    const customerCookie = `winpanel_session=${customerSession.value}`;
+    const input = encodeURIComponent(JSON.stringify(superjson.serialize({ token: sitting.token })));
+
+    try {
+      const response = await call(
+        'GET',
+        `webmail.blockedSenders?input=${input}`,
+        undefined,
+        customerCookie,
+      );
+
+      expect(response.status).toBe(401);
+    } finally {
+      webmailSessions.close(sitting.token, ownerId);
+    }
+  });
+
+  it('revokes mailbox sittings when the panel account logs out', async () => {
+    const sitting = webmailSessions.open(ownerId, {
+      address: 'person@example.com',
+      password: 'secret',
+    });
+    const logout = await call('POST', 'auth.logout', undefined, cookie);
+    expect(logout.status).toBe(200);
+
+    const login = await call('POST', 'auth.login', {
+      username: 'owner',
+      password: PASSWORD,
+    });
+    const nextSession = login.cookies.find((entry) => entry.name === 'winpanel_session');
+    const nextCookie = `winpanel_session=${nextSession.value}`;
+    const input = encodeURIComponent(JSON.stringify(superjson.serialize({ token: sitting.token })));
+
+    try {
+      const response = await call(
+        'GET',
+        `webmail.blockedSenders?input=${input}`,
+        undefined,
+        nextCookie,
+      );
+
+      expect(response.status).toBe(401);
+    } finally {
+      webmailSessions.close(sitting.token, ownerId);
     }
   });
 });

@@ -103,11 +103,15 @@ export interface MessageAttachment {
   size: number;
   /** True for images referenced from the body rather than listed separately. */
   inline: boolean;
+  cid: string | null;
 }
 
 export interface MessageDetail extends MessageSummary {
   cc: MailAddress[];
   replyTo: MailAddress[];
+  messageId: string[];
+  inReplyTo: string[];
+  references: string[];
   text: string | null;
   html: string | null;
   truncated: boolean;
@@ -152,6 +156,7 @@ interface EmailPayload {
   htmlBody?: EmailBodyPart[];
   attachments?: EmailBodyPart[];
   messageId?: string[] | null;
+  inReplyTo?: string[] | null;
   references?: string[] | null;
 }
 
@@ -175,11 +180,28 @@ const LIST_PROPERTIES = [
   'hasAttachment',
 ];
 
+const DETAIL_PROPERTIES = [
+  ...LIST_PROPERTIES,
+  'cc',
+  'replyTo',
+  'messageId',
+  'inReplyTo',
+  'references',
+  'bodyValues',
+  'textBody',
+  'htmlBody',
+  'attachments',
+];
+
 function addressesOf(value: MailAddress[] | null | undefined): MailAddress[] {
   return (value ?? []).map((entry) => ({
     name: entry.name?.trim() || null,
     email: entry.email,
   }));
+}
+
+function stringsOf(value: string[] | null | undefined): string[] {
+  return [...new Set((value ?? []).filter((entry) => entry.length > 0))];
 }
 
 function summarise(email: EmailPayload): MessageSummary {
@@ -504,51 +526,74 @@ export class WebmailClient {
     return { messages, total: query?.total ?? messages.length, position };
   }
 
-  async message(id: string): Promise<MessageDetail | null> {
+  private async details(ids: readonly string[]): Promise<MessageDetail[]> {
     const { accountId } = await this.session();
+    const wanted = [...new Set(ids.filter((id) => id.length > 0))];
+    if (wanted.length === 0) return [];
 
     const result = await this.invoke<{ list?: EmailPayload[] }>('Email/get', {
       accountId,
-      ids: [id],
-      properties: [
-        ...LIST_PROPERTIES,
-        'cc',
-        'replyTo',
-        'messageId',
-        'references',
-        'bodyValues',
-        'textBody',
-        'htmlBody',
-        'attachments',
-      ],
+      ids: wanted,
+      properties: DETAIL_PROPERTIES,
       fetchTextBodyValues: true,
       fetchHTMLBodyValues: true,
       maxBodyValueBytes: MAX_BODY_BYTES,
     });
 
-    const email = result.list?.[0];
-    if (!email) return null;
+    const byId = new Map((result.list ?? []).map((email) => [email.id ?? '', email]));
 
-    const text = bodyOf(email, email.textBody);
-    const html = bodyOf(email, email.htmlBody);
+    return wanted
+      .map((id) => byId.get(id))
+      .filter((email): email is EmailPayload => email !== undefined)
+      .map((email) => {
+        const text = bodyOf(email, email.textBody);
+        const html = bodyOf(email, email.htmlBody);
 
-    return {
-      ...summarise(email),
-      cc: addressesOf(email.cc),
-      replyTo: addressesOf(email.replyTo),
-      text: text?.value ?? null,
-      html: html?.value ?? null,
-      truncated: (text?.truncated ?? false) || (html?.truncated ?? false),
-      attachments: (email.attachments ?? [])
-        .filter((part) => part.blobId)
-        .map((part) => ({
-          blobId: part.blobId!,
-          name: part.name?.trim() || 'attachment',
-          type: part.type ?? 'application/octet-stream',
-          size: part.size ?? 0,
-          inline: part.disposition === 'inline' || Boolean(part.cid),
-        })),
-    };
+        return {
+          ...summarise(email),
+          cc: addressesOf(email.cc),
+          replyTo: addressesOf(email.replyTo),
+          messageId: stringsOf(email.messageId),
+          inReplyTo: stringsOf(email.inReplyTo),
+          references: stringsOf(email.references),
+          text: text?.value ?? null,
+          html: html?.value ?? null,
+          truncated: (text?.truncated ?? false) || (html?.truncated ?? false),
+          attachments: (email.attachments ?? [])
+            .filter((part) => part.blobId)
+            .map((part) => ({
+              blobId: part.blobId!,
+              name: part.name?.trim() || 'attachment',
+              type: part.type ?? 'application/octet-stream',
+              size: part.size ?? 0,
+              inline: part.disposition === 'inline' || Boolean(part.cid),
+              cid: part.cid ?? null,
+            })),
+        };
+      });
+  }
+
+  async message(id: string): Promise<MessageDetail | null> {
+    return (await this.details([id]))[0] ?? null;
+  }
+
+  async thread(id: string): Promise<MessageDetail[]> {
+    const current = await this.message(id);
+    if (!current || !current.threadId) return current ? [current] : [];
+
+    const { accountId } = await this.session();
+    const result = await this.invoke<{
+      list?: Array<{ id?: string; emailIds?: string[] }>;
+    }>('Thread/get', { accountId, ids: [current.threadId] });
+    const thread = result.list?.find((entry) => entry.id === current.threadId);
+    const messages = await this.details([id, ...(thread?.emailIds ?? [])]);
+
+    if (!messages.some((message) => message.id === current.id)) messages.push(current);
+
+    return messages.sort(
+      (left, right) =>
+        new Date(left.receivedAt).getTime() - new Date(right.receivedAt).getTime(),
+    );
   }
 
   async setSeen(ids: readonly string[], seen: boolean): Promise<void> {
@@ -733,6 +778,9 @@ export class WebmailClient {
     }
 
     const session = await this.session();
+    if (!session.downloadUrl) {
+      throw new WebmailError('The mail server did not offer downloads for this message.');
+    }
     const url = this.rebase(
       session.downloadUrl
         .replace('{accountId}', encodeURIComponent(session.accountId))
@@ -742,7 +790,104 @@ export class WebmailClient {
     );
 
     const response = await this.request(url, { method: 'GET' });
-    return Buffer.from(await response.arrayBuffer());
+    const contentLength = Number(response.headers.get('content-length'));
+    if (Number.isFinite(contentLength) && contentLength > MAX_ATTACHMENT_BYTES) {
+      throw new WebmailError(
+        'That attachment is too large to open here. Use a mail program such as Outlook or ' +
+          'Thunderbird for this message.',
+      );
+    }
+
+    if (!response.body) {
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length > MAX_ATTACHMENT_BYTES) {
+        throw new WebmailError(
+          'That attachment is too large to open here. Use a mail program such as Outlook or ' +
+            'Thunderbird for this message.',
+        );
+      }
+      return bytes;
+    }
+
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let total = 0;
+
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        total += value.byteLength;
+        if (total > MAX_ATTACHMENT_BYTES) {
+          await reader.cancel().catch(() => undefined);
+          throw new WebmailError(
+            'That attachment is too large to open here. Use a mail program such as Outlook or ' +
+              'Thunderbird for this message.',
+          );
+        }
+        chunks.push(Buffer.from(value));
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    return Buffer.concat(chunks, total);
+  }
+
+  private async uploadBlob(bytes: Buffer, type: string): Promise<string> {
+    const session = await this.session();
+    if (!session.uploadUrl) {
+      throw new WebmailError('The mail server did not offer uploads for this message.');
+    }
+
+    const response = await this.request(
+      session.uploadUrl
+        .replace('{accountId}', encodeURIComponent(session.accountId))
+        .replace('{type}', encodeURIComponent(type)),
+      {
+        method: 'POST',
+        headers: { 'content-type': type, accept: 'application/json' },
+        body: bytes as unknown as RequestInit['body'],
+      },
+    );
+    const body = (await response.json()) as { blobId?: string };
+    if (!body.blobId) {
+      throw new WebmailError('The mail server accepted the attachment without returning its blob.');
+    }
+
+    return body.blobId;
+  }
+
+  private async forwardedAttachments(
+    sourceId: string,
+  ): Promise<Array<{ blobId: string; name: string; type: string; disposition: string; cid?: string }>> {
+    const source = await this.message(sourceId);
+    if (!source) throw new WebmailError('The message to forward is no longer there.');
+
+    const forwarded: Array<{
+      blobId: string;
+      name: string;
+      type: string;
+      disposition: string;
+      cid?: string;
+    }> = [];
+
+    // One download and upload at a time keeps a message with many large
+    // attachments from multiplying its memory footprint.
+    for (const attachment of source.attachments) {
+      const bytes = await this.attachment(attachment.blobId, attachment.size);
+      const blobId = await this.uploadBlob(bytes, attachment.type);
+      forwarded.push({
+        blobId,
+        name: attachment.name,
+        type: attachment.type,
+        disposition: attachment.inline ? 'inline' : 'attachment',
+        ...(attachment.cid ? { cid: attachment.cid } : {}),
+      });
+    }
+
+    return forwarded;
   }
 
   /**
@@ -762,6 +907,7 @@ export class WebmailClient {
     html?: string;
     inReplyTo?: string | null;
     references?: string[] | null;
+    forwardOf?: string | null;
   }): Promise<{ ok: true }> {
     const { accountId } = await this.session();
 
@@ -792,6 +938,10 @@ export class WebmailClient {
       throw new WebmailError('Add at least one recipient.');
     }
 
+    const forwardedAttachments = input.forwardOf
+      ? await this.forwardedAttachments(input.forwardOf)
+      : [];
+
     const responses = await this.post([
       [
         'Email/set',
@@ -815,6 +965,7 @@ export class WebmailClient {
               },
               textBody: [{ partId: 'body', type: 'text/plain' }],
               ...(input.html ? { htmlBody: [{ partId: 'html', type: 'text/html' }] } : {}),
+              ...(forwardedAttachments.length > 0 ? { attachments: forwardedAttachments } : {}),
             },
           },
         },

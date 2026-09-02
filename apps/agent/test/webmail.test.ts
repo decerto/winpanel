@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { sanitiseHtml } from '../src/api/routers/webmail.js';
-import { WebmailClient } from '../src/mail/webmail-client.js';
+import {
+  MAX_ATTACHMENT_BYTES,
+  WebmailClient,
+} from '../src/mail/webmail-client.js';
 import { WebmailSessions } from '../src/mail/webmail-sessions.js';
 
 function webmailClient(
@@ -29,12 +32,26 @@ describe('sanitiseHtml', () => {
   });
 
   it('removes event handlers however they are quoted', () => {
-    expect(sanitiseHtml('<img src="a.png" onerror=alert(1)>')).toBe('<img src="a.png">');
+    expect(sanitiseHtml('<img src="a.png" onerror=alert(1)>')).toBe('<img>');
     expect(sanitiseHtml('<div ONCLICK="x()">a</div>')).toBe('<div>a</div>');
+  });
+
+  it('removes remote resources but keeps inline image data', () => {
+    const html =
+      '<img src="https://tracking.example/pixel.gif">' +
+      '<img src="data:image/png;base64,AAAA">' +
+      '<div style="background-image: url(https://tracking.example/pixel.gif); color: red">x</div>';
+
+    expect(sanitiseHtml(html)).toBe(
+      '<img><img src="data:image/png;base64,AAAA"><div>x</div>',
+    );
   });
 
   it('defuses javascript links', () => {
     expect(sanitiseHtml('<a href="javascript:alert(1)">go</a>')).toBe('<a href="#">go</a>');
+    expect(sanitiseHtml('<a href="data:text/html,<script>alert(1)</script>">go</a>')).toBe(
+      '<a href="#">go</a>',
+    );
   });
 
   it('removes frames, which could load the panel itself', () => {
@@ -50,41 +67,93 @@ describe('sanitiseHtml', () => {
 describe('WebmailSessions', () => {
   it('hands back the credentials for a token it issued', () => {
     const sessions = new WebmailSessions();
-    const { token } = sessions.open({ address: 'a@example.com', password: 'secret' });
+    const { token } = sessions.open('user-a', { address: 'a@example.com', password: 'secret' });
 
-    expect(sessions.get(token)).toEqual({ address: 'a@example.com', password: 'secret' });
+    expect(sessions.get(token, 'user-a')).toEqual({ address: 'a@example.com', password: 'secret' });
+  });
+
+  it('does not let another panel user use or close the token', () => {
+    const sessions = new WebmailSessions();
+    const { token } = sessions.open('user-a', { address: 'a@example.com', password: 'secret' });
+
+    expect(sessions.get(token, 'user-b')).toBeNull();
+    sessions.close(token, 'user-b');
+    expect(sessions.get(token, 'user-a')).not.toBeNull();
+
+    sessions.closeForUser('user-a');
+    expect(sessions.get(token, 'user-a')).toBeNull();
   });
 
   it('does not recognise a token it never issued', () => {
-    expect(new WebmailSessions().get('made-up')).toBeNull();
+    expect(new WebmailSessions().get('made-up', 'user-a')).toBeNull();
   });
 
   it('forgets a sitting that has been idle too long', () => {
     let now = 0;
     const sessions = new WebmailSessions(() => now);
-    const { token } = sessions.open({ address: 'a@example.com', password: 'secret' });
+    const { token } = sessions.open('user-a', { address: 'a@example.com', password: 'secret' });
 
     now += 61 * 60 * 1000;
-    expect(sessions.get(token)).toBeNull();
+    expect(sessions.get(token, 'user-a')).toBeNull();
   });
 
   it('keeps a sitting alive while it is being used', () => {
     let now = 0;
     const sessions = new WebmailSessions(() => now);
-    const { token } = sessions.open({ address: 'a@example.com', password: 'secret' });
+    const { token } = sessions.open('user-a', { address: 'a@example.com', password: 'secret' });
 
     for (let step = 0; step < 5; step++) {
       now += 50 * 60 * 1000;
-      expect(sessions.get(token)).not.toBeNull();
+      expect(sessions.get(token, 'user-a')).not.toBeNull();
     }
   });
 
   it('ends a sitting when it is closed', () => {
     const sessions = new WebmailSessions();
-    const { token } = sessions.open({ address: 'a@example.com', password: 'secret' });
+    const { token } = sessions.open('user-a', { address: 'a@example.com', password: 'secret' });
 
-    sessions.close(token);
-    expect(sessions.get(token)).toBeNull();
+    sessions.close(token, 'user-a');
+    expect(sessions.get(token, 'user-a')).toBeNull();
+  });
+});
+
+describe('WebmailClient attachments', () => {
+  it('rejects a response that exceeds the limit even when its metadata understates it', async () => {
+    const client = webmailClient(({ url }) => {
+      if (url.endsWith('/.well-known/jmap')) {
+        return new Response(
+          JSON.stringify({
+            downloadUrl: 'http://mail.test/download/{accountId}/{blobId}',
+            primaryAccounts: { 'urn:ietf:params:jmap:mail': 'u1' },
+            apiUrl: 'http://mail.test/jmap',
+          }),
+        );
+      }
+
+      return new Response(new Uint8Array(MAX_ATTACHMENT_BYTES + 1));
+    });
+
+    await expect(client.attachment('blob-1', 0)).rejects.toThrow(/too large/i);
+  });
+
+  it('rejects an oversized response from its content length before reading it', async () => {
+    const client = webmailClient(({ url }) => {
+      if (url.endsWith('/.well-known/jmap')) {
+        return new Response(
+          JSON.stringify({
+            downloadUrl: 'http://mail.test/download/{accountId}/{blobId}',
+            primaryAccounts: { 'urn:ietf:params:jmap:mail': 'u1' },
+            apiUrl: 'http://mail.test/jmap',
+          }),
+        );
+      }
+
+      return new Response(null, {
+        headers: { 'content-length': String(MAX_ATTACHMENT_BYTES + 1) },
+      });
+    });
+
+    await expect(client.attachment('blob-1', 1)).rejects.toThrow(/too large/i);
   });
 });
 
@@ -331,6 +400,182 @@ describe('WebmailClient send', () => {
     const sessionRequest = calls.find((call) => call.url.endsWith('/.well-known/jmap'));
     expect(sessionRequest?.init?.headers).toMatchObject({
       authorization: `Basic ${Buffer.from('person@example.com:secret').toString('base64')}`,
+    });
+  });
+});
+
+describe('WebmailClient conversations', () => {
+  it('loads every message in a thread and orders them oldest first', async () => {
+    let detailRequest = 0;
+    const client = webmailClient(({ url, init }) => {
+      if (url.endsWith('/.well-known/jmap')) {
+        return new Response(
+          JSON.stringify({
+            apiUrl: 'http://mail.test/jmap',
+            primaryAccounts: { 'urn:ietf:params:jmap:mail': 'u1' },
+          }),
+        );
+      }
+
+      const body = JSON.parse(String(init?.body)) as {
+        methodCalls: [string, Record<string, unknown>, string][];
+      };
+      const [name, args, callId] = body.methodCalls[0]!;
+
+      if (name === 'Email/get') {
+        detailRequest += 1;
+        const email = (id: string, receivedAt: string, subject: string, text: string) => ({
+          id,
+          threadId: 'thread-1',
+          from: [{ name: 'Sender', email: 'sender@example.com' }],
+          to: [{ name: null, email: 'person@example.com' }],
+          subject,
+          receivedAt,
+          preview: text,
+          size: text.length,
+          keywords: { $seen: true },
+          bodyValues: { body: { value: text } },
+          textBody: [{ partId: 'body', type: 'text/plain' }],
+          messageId: [`<${id}@example.com>`],
+        });
+
+        const list =
+          detailRequest === 1
+            ? [email('message-2', '2026-02-09T10:00:00.000Z', 'Re: Topic', 'Second message')]
+            : [
+                email('message-2', '2026-02-09T10:00:00.000Z', 'Re: Topic', 'Second message'),
+                email('message-1', '2026-02-09T09:00:00.000Z', 'Topic', 'First message'),
+              ];
+
+        return new Response(JSON.stringify({ methodResponses: [['Email/get', { list }, callId]] }));
+      }
+
+      expect(name).toBe('Thread/get');
+      expect(args).toEqual({ accountId: 'u1', ids: ['thread-1'] });
+      return new Response(
+        JSON.stringify({
+          methodResponses: [
+            ['Thread/get', { list: [{ id: 'thread-1', emailIds: ['message-1', 'message-2'] }] }, callId],
+          ],
+        }),
+      );
+    });
+
+    const thread = await client.thread('message-2');
+
+    expect(thread.map((message) => message.id)).toEqual(['message-1', 'message-2']);
+    expect(thread.map((message) => message.text)).toEqual(['First message', 'Second message']);
+    expect(thread[1]?.messageId).toEqual(['<message-2@example.com>']);
+  });
+
+  it('copies source attachments and reply headers into a forwarded message', async () => {
+    let emailGetRequest = 0;
+    let draft: Record<string, unknown> | undefined;
+    const client = webmailClient(({ url, init }) => {
+      if (url.endsWith('/.well-known/jmap')) {
+        return new Response(
+          JSON.stringify({
+            apiUrl: 'http://mail.test/jmap',
+            uploadUrl: 'http://mail.test/upload/{accountId}/{type}',
+            downloadUrl: 'http://mail.test/download/{accountId}/{blobId}/{type}/{name}',
+            primaryAccounts: { 'urn:ietf:params:jmap:mail': 'u1' },
+          }),
+        );
+      }
+
+      if (url.includes('/download/')) return new Response('attachment bytes');
+      if (url.includes('/upload/')) return new Response(JSON.stringify({ blobId: 'uploaded-blob' }));
+
+      const body = JSON.parse(String(init?.body)) as {
+        methodCalls: [string, Record<string, unknown>, string][];
+      };
+      const [name, args, callId] = body.methodCalls[0]!;
+
+      if (name === 'Identity/get') {
+        return new Response(
+          JSON.stringify({
+            methodResponses: [['Identity/get', { list: [{ id: 'identity-1', email: 'person@example.com' }] }, callId]],
+          }),
+        );
+      }
+
+      if (name === 'Mailbox/get') {
+        return new Response(
+          JSON.stringify({
+            methodResponses: [
+              [
+                'Mailbox/get',
+                { list: [{ id: 'drafts', role: 'drafts' }, { id: 'sent', role: 'sent' }] },
+                callId,
+              ],
+            ],
+          }),
+        );
+      }
+
+      if (name === 'Email/get') {
+        emailGetRequest += 1;
+        const source = {
+          id: 'source-message',
+          threadId: 'thread-1',
+          from: [{ name: 'Sender', email: 'sender@example.com' }],
+          to: [{ name: null, email: 'person@example.com' }],
+          subject: 'Original subject',
+          receivedAt: '2026-02-09T09:00:00.000Z',
+          preview: 'Original body',
+          size: 100,
+          keywords: { $seen: true },
+          bodyValues: { body: { value: 'Original body' } },
+          textBody: [{ partId: 'body', type: 'text/plain' }],
+          attachments: [
+            {
+              blobId: 'source-blob',
+              name: 'invoice.pdf',
+              type: 'application/pdf',
+              size: 17,
+              disposition: 'attachment',
+            },
+          ],
+          messageId: ['<source@example.com>'],
+          inReplyTo: ['<parent@example.com>'],
+          references: ['<grandparent@example.com>', '<parent@example.com>'],
+        };
+        expect(emailGetRequest).toBe(1);
+        return new Response(JSON.stringify({ methodResponses: [['Email/get', { list: [source] }, callId]] }));
+      }
+
+      expect(name).toBe('Email/set');
+      draft = (args.create as { draft: Record<string, unknown> }).draft;
+      return new Response(
+        JSON.stringify({
+          methodResponses: [
+            ['Email/set', {}, callId],
+            ['EmailSubmission/set', {}, 'send'],
+          ],
+        }),
+      );
+    });
+
+    await client.send({
+      to: [{ name: null, email: 'friend@example.com' }],
+      subject: 'Fwd: Original subject',
+      text: 'Forwarded body',
+      inReplyTo: '<source@example.com>',
+      references: ['<parent@example.com>', '<source@example.com>'],
+      forwardOf: 'source-message',
+    });
+
+    expect(draft).toMatchObject({
+      inReplyTo: ['<source@example.com>'],
+      references: ['<parent@example.com>', '<source@example.com>'],
+      attachments: [
+        {
+          blobId: 'uploaded-blob',
+          name: 'invoice.pdf',
+          type: 'application/pdf',
+          disposition: 'attachment',
+        },
+      ],
     });
   });
 });

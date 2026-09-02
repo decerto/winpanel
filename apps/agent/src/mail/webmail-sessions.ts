@@ -20,6 +20,7 @@ const IDLE_TIMEOUT_MS = 60 * 60 * 1000;
 const MAX_SESSIONS = 50;
 
 interface StoredSession {
+  userId: string;
   address: string;
   password: string;
   expiresAt: number;
@@ -43,7 +44,7 @@ export class WebmailSessions {
     }
   }
 
-  open(credentials: WebmailCredentials): { token: string; expiresAt: number } {
+  open(userId: string, credentials: WebmailCredentials): { token: string; expiresAt: number } {
     this.sweep();
 
     if (this.sessions.size >= MAX_SESSIONS) {
@@ -56,15 +57,15 @@ export class WebmailSessions {
     const token = crypto.randomBytes(32).toString('base64url');
     const expiresAt = this.now() + IDLE_TIMEOUT_MS;
 
-    this.sessions.set(token, { ...credentials, expiresAt });
+    this.sessions.set(token, { userId, ...credentials, expiresAt });
     return { token, expiresAt };
   }
 
   /** Null when unknown or expired; the caller shows "sign in again" for both. */
-  get(token: string): WebmailCredentials | null {
+  get(token: string, userId: string): WebmailCredentials | null {
     this.sweep();
     const session = this.sessions.get(token);
-    if (!session) return null;
+    if (!session || session.userId !== userId) return null;
 
     // Every use pushes the expiry out, so somebody reading their mail is not
     // signed out mid-message.
@@ -72,8 +73,15 @@ export class WebmailSessions {
     return { address: session.address, password: session.password };
   }
 
-  close(token: string): void {
-    this.sessions.delete(token);
+  close(token: string, userId: string): void {
+    const session = this.sessions.get(token);
+    if (session?.userId === userId) this.sessions.delete(token);
+  }
+
+  closeForUser(userId: string): void {
+    for (const [token, session] of this.sessions) {
+      if (session.userId === userId) this.sessions.delete(token);
+    }
   }
 }
 

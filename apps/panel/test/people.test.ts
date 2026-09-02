@@ -15,6 +15,7 @@ import { flushPromises } from '@vue/test-utils';
 const state = vi.hoisted(() => ({
   me: { id: 'me', role: 'superadmin' as string },
   people: [] as any[],
+  list: vi.fn(async () => state.people),
   created: [] as any[],
   updated: [] as any[],
   games: [] as any[],
@@ -23,7 +24,7 @@ const state = vi.hoisted(() => ({
 vi.mock('../src/lib/api', () => ({
   api: {
     users: {
-      list: { query: vi.fn(async () => state.people) },
+      list: { query: state.list },
       create: {
         mutate: vi.fn(async (input: unknown) => {
           state.created.push(input);
@@ -73,6 +74,8 @@ const person = (over: Record<string, unknown>) => ({
   databaseCount: 0,
   databaseAllocatedBytes: 0,
   databaseUsedBytes: 0,
+  mailboxCount: null,
+  mailUsedBytes: null,
   ...over,
 });
 
@@ -95,11 +98,21 @@ beforeEach(() => {
     person({ id: 'f', username: 'freya', role: 'user', siteLimit: 2, siteCount: 1 }),
   ];
   state.created = [];
+  state.list.mockClear();
   state.updated = [];
   state.games = [];
 });
 
 describe('who the People page lets you manage', () => {
+  it('does not turn a failed list request into an empty account state', async () => {
+    state.list.mockRejectedValueOnce(new Error('The server is unavailable.'));
+    const wrapper = await render();
+
+    expect(wrapper.text()).toContain('Could not load people');
+    expect(wrapper.text()).toContain('Use Refresh to try again.');
+    expect(wrapper.text()).not.toContain('Nobody else yet');
+  });
+
   it('never lets anybody manage their own account from here', async () => {
     /*
      * Changing your own role or switching yourself off is the one way to lock
@@ -374,9 +387,10 @@ describe('the limits on the People page', () => {
       id: 'f',
       username: 'freya',
       mailboxLimit: 3,
+      mailboxCount: 0,
     });
     const wrapper = await render();
-    expect(wrapper.text()).toContain('3 allowed');
+    expect(wrapper.text()).toContain('0 of 3');
 
     await wrapper.findAll('button').find((b: any) => b.text().includes('Add someone'))!.trigger('click');
     await wrapper.find('#person-username').setValue('mail-user');
@@ -386,6 +400,34 @@ describe('the limits on the People page', () => {
     await flushPromises();
 
     expect(state.created[0]).toMatchObject({ role: 'user', mailboxLimit: 8 });
+  });
+
+  it('shows live mailbox and email storage usage against the allowances', async () => {
+    state.people[2] = person({
+      id: 'f',
+      username: 'freya',
+      mailboxLimit: 20,
+      mailboxCount: 18,
+      mailQuotaBytes: 20 * 1024 ** 3,
+      mailUsedBytes: 18 * 1024 ** 3,
+    });
+    const wrapper = await render();
+
+    expect(wrapper.text()).toContain('18 of 20');
+    expect(wrapper.text()).toContain('18.0 GB used of 20.0 GB');
+  });
+
+  it('labels mailbox and email usage unavailable instead of showing zero', async () => {
+    state.people[2] = person({
+      id: 'f',
+      username: 'freya',
+      mailboxLimit: 20,
+      mailQuotaBytes: 20 * 1024 ** 3,
+    });
+    const wrapper = await render();
+
+    expect(wrapper.text()).toContain('Usage unavailable of 20');
+    expect(wrapper.text()).toContain('Usage unavailable of 20.0 GB');
   });
 
   it('does not submit malformed limits', async () => {

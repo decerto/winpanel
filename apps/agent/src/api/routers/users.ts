@@ -10,6 +10,7 @@ import {
 } from '@winpanel/shared';
 import { AuthError } from '../../services/auth-service.js';
 import { passwordResetByAdminEmail } from '../../mail/templates.js';
+import { mailUsageForOwners } from '../../mail/usage.js';
 import { isSshUrl } from '../../sites/ssh-keys.js';
 import { DatabaseAllocationError } from '../../databases/errors.js';
 import {
@@ -78,13 +79,33 @@ export const usersRouter = router({
   list: adminProcedure.query(async ({ ctx }) => {
     const context = { db: ctx.app.db, vault: ctx.app.vault, binDir: ctx.app.config.binDir };
     const people = ctx.app.auth.listUsers();
+    const ownerDomains = new Map<string, Set<string>>();
+
+    for (const person of people) {
+      if (person.role !== 'user') continue;
+      ownerDomains.set(
+        person.id,
+        new Set(
+          ctx.app.sites
+            .list(person.id)
+            .flatMap((site) => (site.domains as string[]).map((domain) => domain.toLowerCase())),
+        ),
+      );
+    }
+
+    const mailUsage = await mailUsageForOwners(ctx.app.db, ctx.app.vault, ownerDomains);
 
     return await Promise.all(
-      people.map(async (person) => ({
-        ...person,
-        databaseUsedBytes:
-          person.role === 'user' ? await databaseUsedBytesForOwner(context, person.id) : null,
-      })),
+      people.map(async (person) => {
+        const databaseUsedBytes =
+          person.role === 'user' ? await databaseUsedBytesForOwner(context, person.id) : null;
+
+        return {
+          ...person,
+          databaseUsedBytes,
+          ...(mailUsage.get(person.id) ?? { mailboxCount: null, mailUsedBytes: null }),
+        };
+      }),
     );
   }),
 

@@ -2,6 +2,7 @@ import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { LoginRequest, Password, SetupRequest } from '@winpanel/shared';
 import { AuthError } from '../../services/auth-service.js';
+import { webmailSessions } from '../../mail/webmail-sessions.js';
 import {
   emailVerificationEmail,
   passwordChangedEmail,
@@ -233,6 +234,7 @@ export const authRouter = router({
 
   logout: protectedProcedure.mutation(({ ctx }) => {
     ctx.app.auth.logout(ctx.sessionToken);
+    webmailSessions.closeForUser(ctx.user.id);
     ctx.clearSessionCookie();
     return { ok: true };
   }),
