@@ -4,7 +4,7 @@ import path from 'node:path';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
-import { sites, users, siteOutageStates } from '../src/db/schema.js';
+import { sites, users, siteOutageStates, jobs } from '../src/db/schema.js';
 import {
   SiteOutageMonitor,
   type OutageMailMessage,
@@ -228,5 +228,52 @@ describe('SiteOutageMonitor', () => {
     expect((await monitor.sweep()).notifications).toBe(0);
     expect(messages).toHaveLength(0);
     expect(handle.db.select().from(siteOutageStates).where(eq(siteOutageStates.siteId, site.id)).get()?.notifiedState).toBeNull();
+  });
+
+  it('says nothing while the site is being deployed, and forgets nothing either', async () => {
+    // A deploy stops the site on purpose. Mailing "your website is down" and
+    // then "it is back" for a change the customer asked for is the noise that
+    // teaches them to ignore the message that matters.
+    addUser({ username: 'owner', role: 'superadmin', email: 'owner@example.com' });
+    const siteId = addSite(null);
+    const monitor = new SiteOutageMonitor({
+      db: handle,
+      mailer: { send: async (message) => { messages.push(message); } },
+      probe: async () => false,
+    });
+
+    await monitor.sweep();
+    const before = handle.db
+      .select()
+      .from(siteOutageStates)
+      .where(eq(siteOutageStates.siteId, siteId))
+      .get();
+    expect(before?.consecutiveFailures).toBe(1);
+
+    handle.db
+      .insert(jobs)
+      .values({
+        id: crypto.randomUUID(),
+        kind: 'deploy',
+        status: 'running',
+        title: 'Deploying',
+        siteId,
+      })
+      .run();
+
+    const during = await monitor.sweep();
+    expect(during.ignored).toBe(1);
+    expect(during.checked).toBe(0);
+    expect(messages).toHaveLength(0);
+
+    // The count it had before the deploy is still there, so a site that was
+    // already failing is not given a clean slate by deploying.
+    expect(
+      handle.db
+        .select()
+        .from(siteOutageStates)
+        .where(eq(siteOutageStates.siteId, siteId))
+        .get()?.consecutiveFailures,
+    ).toBe(1);
   });
 });

@@ -3,6 +3,7 @@ import type { DatabaseHandle } from '../db/index.js';
 import { siteOutageStates, sites, users } from '../db/schema.js';
 import { isPortAnswered, type PortProbe } from '../windows/service-probe.js';
 import { siteServiceId } from '../windows/panel-services.js';
+import { sitesMidDeploy } from '../windows/watched-services.js';
 import { websiteOutageEmail } from './templates.js';
 import type { MailAddress } from './webmail-client.js';
 
@@ -138,6 +139,7 @@ export class SiteOutageMonitor {
         .all() as MonitorSite[];
       const allowNotifications = !this.#initialSweep;
       this.#initialSweep = false;
+      const deploying = sitesMidDeploy(this.#db);
 
       const result: OutageSweepResult = {
         checked: 0,
@@ -147,6 +149,20 @@ export class SiteOutageMonitor {
       };
 
       for (const site of rows) {
+        /*
+         * A deploy takes the site down on purpose for as long as it needs to
+         * swap the folder and start the new version. Mailing the customer
+         * that their website is down, and again when it comes back, for a
+         * change they asked for teaches them to ignore the alert that
+         * matters. The recorded state is left exactly as it was, so a site
+         * that was already down before the deploy still gets its recovery
+         * message once the deploy fixes it.
+         */
+        if (deploying.has(site.id)) {
+          result.ignored++;
+          continue;
+        }
+
         const serviceId = PROCESS_RUNTIMES.has(site.runtime)
           ? siteServiceId(site.slug, site.activeColour)
           : null;

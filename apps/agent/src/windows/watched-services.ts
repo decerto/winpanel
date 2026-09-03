@@ -129,9 +129,10 @@ const PANEL_SERVICE: WatchedService = {
  * A deploy stops the service on purpose, swaps the folder underneath it and
  * starts it again. Anything else starting it in the middle of that is fighting
  * the deploy for the same files, and the deploy is the one that knows what it
- * is doing.
+ * is doing. The same window is planned downtime rather than an outage, so
+ * nothing should be mailing the customer about it either.
  */
-function sitesMidDeploy(db: DatabaseHandle): Set<string> {
+export function sitesMidDeploy(db: DatabaseHandle): Set<string> {
   const rows = db.db
     .select({ siteId: jobs.siteId })
     .from(jobs)

@@ -14,7 +14,7 @@ import { cleanUpAfterUpdate } from './components/panel-update.js';
 import { cleanupRotatedLogFiles, PANEL_LOG_RETENTION_DAYS } from './logs/log-files.js';
 import { localAddresses } from './tls/panel-certificate.js';
 import { ServiceWatchdog } from './windows/service-watchdog.js';
-import { watchdogServices } from './windows/watched-services.js';
+import { sitesMidDeploy, watchdogServices } from './windows/watched-services.js';
 import { registerSiteChecks } from './api/routers/checks.js';
 import { findStrayListeners, killProcessTree } from './windows/stray-processes.js';
 import { clearLegacyCloudflareToken } from './dns/token.js';
@@ -401,6 +401,8 @@ async function main(): Promise<void> {
       start: (id) => app.services.start(id),
       restart: (id) => app.services.restart(id),
       isIntentionallyStopped: (id) => app.services.isIntentionallyStopped(id),
+      isBusy: (service) =>
+        service.siteId !== undefined && sitesMidDeploy(app.db).has(service.siteId),
       log: (message, detail) => server.log.warn({ detail }, message),
     },
     () => watchdogServices(app.db),

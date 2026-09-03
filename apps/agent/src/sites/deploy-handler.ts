@@ -256,6 +256,72 @@ async function isServing(
   }
 }
 
+/** The last few lines of a file, without reading a log that has grown huge. */
+async function tailLines(file: string, count: number): Promise<string[]> {
+  const handle = await fs.open(file, 'r').catch(() => null);
+  if (!handle) return [];
+
+  try {
+    const { size } = await handle.stat();
+    const length = Math.min(size, 16 * 1024);
+    const buffer = Buffer.alloc(length);
+    if (length > 0) await handle.read(buffer, 0, length, size - length);
+
+    return buffer
+      .toString('utf8')
+      .split(/\r?\n/)
+      .map((line) => line.trimEnd())
+      .filter((line) => line.length > 0)
+      .slice(-count);
+  } catch {
+    return [];
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+/**
+ * Copies what the app itself printed into the deployment log.
+ *
+ * Until this existed, "check the deployment log above for errors from your
+ * app" named a log that could not possibly contain them. Everything the
+ * process writes goes to its service log under the site's `logs` folder,
+ * which nothing in the panel surfaces — so a deploy whose health check timed
+ * out told the user only that nothing was listening, while the reason it was
+ * not listening sat in a file they had no way to open. A start that fails is
+ * precisely when those lines are the whole answer.
+ */
+export async function reportAppOutput(
+  siteDir: string,
+  serviceId: string,
+  ctx: JobContext,
+): Promise<void> {
+  const logDir = path.join(siteDir, 'logs');
+  let reported = false;
+
+  for (const [suffix, label] of [
+    ['err', 'errors'],
+    ['out', 'output'],
+  ] as const) {
+    const file = path.join(logDir, `${serviceId}.${suffix}.log`);
+    const lines = await tailLines(file, 20);
+    if (lines.length === 0) continue;
+
+    reported = true;
+    ctx.log(`The last ${label} your app wrote:`, 'warn', 'start');
+    for (const line of lines) ctx.log(redactSecrets(line), 'error', 'start');
+  }
+
+  if (!reported) {
+    ctx.log(
+      'Your app wrote nothing to its own log, so it never got as far as running its ' +
+        'startup file.',
+      'warn',
+      'start',
+    );
+  }
+}
+
 /**
  * Makes the port genuinely free before anything is started on it.
  *
@@ -695,9 +761,26 @@ export function createDeployHandler(deps: DeployDependencies) {
             }
             return true;
           })
-          .catch(() => false);
+          .catch((retryError: unknown) => {
+            /*
+             * Said out loud rather than swallowed. This is where the service
+             * manager reports a port it could not free or the line the app
+             * died on, and discarding it left the deploy blaming the health
+             * check for a failure it had already diagnosed.
+             */
+            ctx.log(
+              'It did not come up the second time either: ' +
+                redactSecrets(
+                  retryError instanceof Error ? retryError.message : String(retryError),
+                ),
+              'warn',
+              'start',
+            );
+            return false;
+          });
 
         if (!retried) {
+          await reportAppOutput(siteDir, serviceId, ctx);
           if (await rollBack(deps, { folders, serviceId, ctx })) liveIsPrevious = true;
 
           const message = error instanceof Error ? error.message : String(error);
@@ -795,13 +878,24 @@ async function rollBack(
 
   await deps.services.stop(serviceId).catch(() => undefined);
 
+  let restored = false;
   try {
-    if (!(await restorePrevious(folders))) return false;
+    restored = await restorePrevious(folders);
   } catch (error) {
     ctx.log(
       `The previous version could not be put back: ${error instanceof Error ? error.message : String(error)}`,
       'error',
     );
+  }
+
+  if (!restored) {
+    /*
+     * The stop above was the deploy's doing, not the user's. Left on the
+     * record as a deliberate stop it would tell the watchdog, the health page
+     * and the outage emails that this site is down on purpose — so a site
+     * that is genuinely down would be supervised by nothing at all.
+     */
+    deps.services.markIntentionallyStarted(serviceId);
     return false;
   }
 
@@ -931,20 +1025,25 @@ async function publishManagedSite(
       await deps.services.start(serviceId);
       ctx.progress(60);
 
-      // PHP speaks FastCGI, not HTTP — a TCP connect per worker, not a page fetch.
-      if (manifest.runtime === 'php') {
-        await waitForPhpPool({
-          basePort: port,
-          timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
-          log: (message) => ctx.log(message),
-        });
-      } else {
-        await waitForHealthy({
-          port,
-          path: manifest.app.healthCheckPath,
-          timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
-          ctx,
-        });
+      try {
+        // PHP speaks FastCGI, not HTTP — a TCP connect per worker, not a page fetch.
+        if (manifest.runtime === 'php') {
+          await waitForPhpPool({
+            basePort: port,
+            timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
+            log: (message) => ctx.log(message),
+          });
+        } else {
+          await waitForHealthy({
+            port,
+            path: manifest.app.healthCheckPath,
+            timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
+            ctx,
+          });
+        }
+      } catch (error) {
+        await reportAppOutput(siteDir, serviceId, ctx);
+        throw error;
       }
     }
 

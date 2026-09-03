@@ -145,6 +145,13 @@ export interface WatchdogDeps {
   clearDead?: (id: string) => void;
   /** True when the panel explicitly asked for this service to stay stopped. */
   isIntentionallyStopped?: (id: string) => boolean;
+  /**
+   * True when something else is already managing this service, so the sweep
+   * must not touch it. Checked immediately before acting rather than only
+   * when the list was built, because a deploy that starts mid-sweep is
+   * exactly the case the list cannot know about.
+   */
+  isBusy?: (service: WatchedService) => boolean;
   /** Whether a cleanly stopped service should be started by this recovery. */
   shouldRestartStopped?: (id: string) => boolean;
   log?: (message: string, detail?: unknown) => void;
@@ -412,6 +419,18 @@ export class ServiceWatchdog {
       };
 
       for (const service of services) {
+        /*
+         * A deploy that began after this sweep's list was built is still in
+         * the list, and it is halfway through stopping the service, renaming
+         * the folder underneath it and starting it again. Starting it here
+         * would fight it for the same files and the same port.
+         */
+        if (this.deps.isBusy?.(service)) {
+          this.#silentLastSweep.delete(service.id);
+          this.#lastState.delete(service.id);
+          continue;
+        }
+
         let observedState: ServiceState | undefined;
         const deps: WatchdogDeps = {
           ...sharedDeps,

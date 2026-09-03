@@ -434,6 +434,46 @@ describe('ServiceWatchdog', () => {
     expect(started).toEqual([]);
   });
 
+  it('does not touch a service something else is already managing', async () => {
+    // A deploy that starts after the sweep's list was built is still in that
+    // list, and it is halfway through stopping the service and renaming the
+    // folder underneath it. Nothing here may start it.
+    const site: WatchedService = {
+      id: 'winpanel-site-shop-blue',
+      label: 'shop website',
+      images: ['node.exe'],
+      ports: [3100],
+      siteId: 'site-shop',
+    };
+    const states: ServiceState[] = ['running', 'stopped'];
+    const started: string[] = [];
+    let deploying = false;
+
+    const watchdog = new ServiceWatchdog(
+      {
+        getState: async () => states.shift() ?? 'stopped',
+        start: async (id) => {
+          started.push(id);
+        },
+        restart: async () => undefined,
+        probePort: async () => true,
+        listHolders: async () => [],
+        isBusy: (service) => deploying && service.siteId === 'site-shop',
+      },
+      [site],
+    );
+
+    await watchdog.sweep();
+    deploying = true;
+    await watchdog.sweep();
+    expect(started).toEqual([]);
+
+    // And once the deploy has finished it is supervised again.
+    deploying = false;
+    await watchdog.sweep();
+    expect(started).toEqual(['winpanel-site-shop-blue']);
+  });
+
   it('forgets a service that answers again, so a later blip starts the count over', async () => {
     const started: string[] = [];
     let silent = true;

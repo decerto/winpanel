@@ -22,7 +22,7 @@ import {
   waitForHealthy,
   withPnpmDefaults,
 } from '../src/sites/deploy-pipeline.js';
-import { entryFileProblem, isProgressNoise, normaliseEntry } from '../src/sites/deploy-handler.js';
+import { entryFileProblem, isProgressNoise, normaliseEntry, reportAppOutput } from '../src/sites/deploy-handler.js';
 import type { JobContext } from '../src/jobs/queue.js';
 
 const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
@@ -810,5 +810,45 @@ describe('explainRuntimeFailure', () => {
 
   it('says nothing about a crash that is not a missing module', () => {
     expect(explainRuntimeFailure('Error: listen EADDRINUSE 127.0.0.1:3002', 'pnpm')).toBeNull();
+  });
+});
+
+describe('reportAppOutput', () => {
+  async function writeServiceLog(suffix: 'err' | 'out', body: string): Promise<string> {
+    const siteDir = path.join(tmpDir, 'site');
+    await fs.mkdir(path.join(siteDir, 'logs'), { recursive: true });
+    await fs.writeFile(path.join(siteDir, 'logs', `winpanel-site-app-blue.${suffix}.log`), body);
+    return siteDir;
+  }
+
+  it('puts what the app printed into the deployment log', async () => {
+    // The whole point of the fix: "check the log above for errors from your
+    // app" was pointing at a log that could not contain any.
+    const siteDir = await writeServiceLog(
+      'err',
+      "Error: Cannot find module 'dotenv'\n    at Module._resolveFilename\n",
+    );
+    const ctx = fakeCtx();
+
+    await reportAppOutput(siteDir, 'winpanel-site-app-blue', ctx);
+
+    expect(ctx.lines.join('\n')).toMatch(/Cannot find module 'dotenv'/);
+  });
+
+  it('never repeats a credential the app logged', async () => {
+    const siteDir = await writeServiceLog('out', 'Connecting to https://user:hunter2@db.example');
+    const ctx = fakeCtx();
+
+    await reportAppOutput(siteDir, 'winpanel-site-app-blue', ctx);
+
+    expect(ctx.lines.join('\n')).not.toMatch(/hunter2/);
+  });
+
+  it('says so when the app never wrote anything, which is its own diagnosis', async () => {
+    const ctx = fakeCtx();
+
+    await reportAppOutput(path.join(tmpDir, 'nowhere'), 'winpanel-site-app-blue', ctx);
+
+    expect(ctx.lines.join('\n')).toMatch(/wrote nothing/);
   });
 });
