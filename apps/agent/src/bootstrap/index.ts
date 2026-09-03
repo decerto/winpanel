@@ -187,6 +187,16 @@ export async function install(options: { skipService?: boolean } = {}): Promise<
       recovery,
     );
 
+    // While everything is still stopped, so each service reads the corrected
+    // file on the start below rather than after one more midnight crash.
+    try {
+      await services.repairLogRotation();
+    } catch (error) {
+      warnings.push(
+        `Could not update the log settings of the existing services: ${(error as Error).message}`,
+      );
+    }
+
     // Before the panel, so that by the time the agent boots and pushes the
     // site configuration, the web server is there to receive it.
     warnings.push(...(await resumeSuspendedServices()));

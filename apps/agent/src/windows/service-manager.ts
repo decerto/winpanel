@@ -188,15 +188,26 @@ export function buildServiceXml(definition: ServiceDefinition): string {
   lines.push('  <onfailure action="restart" delay="60 sec"/>');
   lines.push('  <resetfailure>1 hour</resetfailure>');
   lines.push(`  <logpath>${escapeXml(definition.logPath)}</logpath>`);
+  /*
+   * Size-only rolling, deliberately. WinSW 2.x's <autoRollAtTime> runs on a
+   * timer thread that disposes the log stream at midnight while the copy
+   * thread is still blocked on the child's stdout; the child's next line then
+   * throws ObjectDisposedException, the wrapper dies, and its orphaned child
+   * keeps the port so every restart fails with EADDRINUSE (winsw/winsw#1088).
+   */
   lines.push('  <log mode="roll-by-size-time">');
   lines.push('    <sizeThreshold>10240</sizeThreshold>');
   lines.push('    <pattern>yyyyMMdd</pattern>');
-  lines.push('    <autoRollAtTime>00:00:00</autoRollAtTime>');
   lines.push('    <keepFiles>14</keepFiles>');
   lines.push('  </log>');
   lines.push('</service>');
 
   return `<?xml version="1.0" encoding="UTF-8"?>\n${lines.join('\n')}\n`;
+}
+
+/** Removes the midnight roll timer from a configuration written before it was dropped. */
+export function removeAutoRollAtTime(xml: string): string {
+  return xml.replace(/^[ \t]*<autoRollAtTime>[^<]*<\/autoRollAtTime>[ \t]*\r?\n/gm, '');
 }
 
 /**
@@ -572,6 +583,34 @@ export class ServiceManager {
     }
 
     return changed ? 'updated' : 'unchanged';
+  }
+
+  /**
+   * Drops the midnight log-roll timer from every registered service's
+   * configuration. The wrapper reads its file when it starts, so this is meant
+   * for the update, when everything is stopped anyway; nothing is restarted.
+   *
+   * @returns the ids whose configuration was rewritten.
+   */
+  async repairLogRotation(): Promise<string[]> {
+    const entries = await fs.readdir(this.configDir).catch(() => [] as string[]);
+    const repaired: string[] = [];
+
+    for (const entry of entries) {
+      if (!entry.toLowerCase().endsWith('.xml')) continue;
+
+      const configPath = path.join(this.configDir, entry);
+      const current = await fs.readFile(configPath, 'utf8').catch(() => null);
+      if (current === null) continue;
+
+      const next = removeAutoRollAtTime(current);
+      if (next === current) continue;
+
+      await fs.writeFile(configPath, next, { mode: 0o600 });
+      repaired.push(entry.slice(0, -'.xml'.length));
+    }
+
+    return repaired;
   }
 
   async uninstall(id: string): Promise<void> {

@@ -8,6 +8,7 @@ import {
   describeCrashLog,
   readServiceAccount,
   readServiceState,
+  removeAutoRollAtTime,
   replaceEnvironmentInXml,
   splitAccountName,
   waitUntilGone,
@@ -196,10 +197,32 @@ describe('buildServiceXml', () => {
     expect(buildServiceXml({ ...base, startMode: 'manual' })).toContain('<startmode>Manual</startmode>');
   });
 
-  it('rotates logs and keeps a bounded history', () => {
+  it('rotates logs by size only and keeps a bounded history', () => {
+    /*
+     * No <autoRollAtTime>: WinSW 2.x's midnight timer disposes the log stream
+     * under the copy thread, the wrapper dies on the child's next line, and its
+     * orphan keeps the port so every restart fails (winsw/winsw#1088). It took
+     * one website down every night it happened to log something after 00:00.
+     */
     const xml = buildServiceXml(base);
     expect(xml).toContain('roll-by-size-time');
     expect(xml).toContain('<keepFiles>14</keepFiles>');
+    expect(xml).not.toContain('autoRollAtTime');
+  });
+
+  it('strips the midnight roll from a configuration written before it was dropped', () => {
+    const legacy = buildServiceXml(base).replace(
+      '    <pattern>yyyyMMdd</pattern>\n',
+      '    <pattern>yyyyMMdd</pattern>\n    <autoRollAtTime>00:00:00</autoRollAtTime>\n',
+    );
+    expect(legacy).toContain('autoRollAtTime');
+
+    expect(removeAutoRollAtTime(legacy)).toBe(buildServiceXml(base));
+    expect(removeAutoRollAtTime(legacy.replace(/\n/g, '\r\n'))).toBe(
+      buildServiceXml(base).replace(/\n/g, '\r\n'),
+    );
+    // Already repaired: byte-identical, so the caller can tell nothing changed.
+    expect(removeAutoRollAtTime(buildServiceXml(base))).toBe(buildServiceXml(base));
   });
 
   it('supports running as a low-privilege account', () => {
@@ -488,6 +511,49 @@ describe('ServiceManager layout', () => {
       .rejects.toThrow('Cloudflare DNS provider failed');
     expect(await fs.readFile(configPath, 'utf8')).toBe(previous);
     expect(restarts).toBe(2);
+  });
+
+  it('rewrites every registered configuration that still rolls logs at midnight', async () => {
+    const configDir = path.join(root, 'services');
+    await fs.mkdir(configDir, { recursive: true });
+
+    const definition = (id: string) => ({
+      id,
+      displayName: id,
+      description: id,
+      executable: 'C:\\WinPanel\\bin\\node\\node.exe',
+      logPath: path.join(root, 'logs'),
+    });
+    const withTimer = (xml: string) =>
+      xml.replace(
+        '    <pattern>yyyyMMdd</pattern>\n',
+        '    <pattern>yyyyMMdd</pattern>\n    <autoRollAtTime>00:00:00</autoRollAtTime>\n',
+      );
+
+    await fs.writeFile(
+      path.join(configDir, 'winpanel-site-shop-blue.xml'),
+      withTimer(buildServiceXml(definition('winpanel-site-shop-blue'))),
+    );
+    await fs.writeFile(
+      path.join(configDir, 'winpanel-caddy.xml'),
+      buildServiceXml(definition('winpanel-caddy')),
+    );
+    await fs.writeFile(path.join(configDir, 'winpanel-caddy.exe'), 'not xml');
+
+    const manager = new ServiceManager(path.join(root, 'WinSW.exe'), configDir);
+    let restarts = 0;
+    manager.restart = async () => {
+      restarts += 1;
+    };
+
+    expect(await manager.repairLogRotation()).toEqual(['winpanel-site-shop-blue']);
+    expect(await fs.readFile(path.join(configDir, 'winpanel-site-shop-blue.xml'), 'utf8')).toBe(
+      buildServiceXml(definition('winpanel-site-shop-blue')),
+    );
+    // Runs while everything is stopped for an update, so it must not restart anything.
+    expect(restarts).toBe(0);
+    // Second pass finds nothing left to do.
+    expect(await manager.repairLogRotation()).toEqual([]);
   });
 });
 
