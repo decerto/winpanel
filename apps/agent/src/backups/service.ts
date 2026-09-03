@@ -1,17 +1,39 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { eq } from 'drizzle-orm';
+import { and, eq, gt } from 'drizzle-orm';
 import { z } from 'zod';
-import type { DatabaseHandle } from '../db/index.js';
-import { jobs, settings, sites } from '../db/schema.js';
+import { SiteManifest, SiteSource, Slug, type DatabaseEngine } from '@winpanel/shared';
+import { createDatabase, type DatabaseHandle, schema } from '../db/index.js';
+import { backupUploads, jobs, settings, sites } from '../db/schema.js';
 import { listAllDatabases, listDatabasesForSite, type DatabaseSummary } from '../databases/store.js';
 import { readDatabasePassword } from '../databases/secrets.js';
+import { adapterFor } from '../databases/registry.js';
 import { engineBinDir, engineDataDir } from '../databases/types.js';
+import { assertSafeDbName } from '../databases/names.js';
 import { withMongo } from '../databases/mongodb.js';
 import { findExecutable } from '../components/archive.js';
 import { runCommand, runDetached } from '../process/run-command.js';
 import type { JobContext, JobQueue } from '../jobs/queue.js';
 import type { GameServerService } from '../game-servers/game-server-service.js';
+import {
+  detectNodeVersion,
+  detectPackageManager,
+  installArgs,
+} from '../detect/detector.js';
+import {
+  discardPrevious,
+  prepareStaging,
+  promoteStaging,
+  releaseFoldersFor,
+  restorePrevious,
+  waitForHealthy,
+  withPnpmDefaults,
+  type ReleaseFolders,
+  type ToolPaths,
+} from '../sites/deploy-pipeline.js';
+import { waitForPhpPool } from '../sites/php.js';
+import type { ServiceManager } from '../windows/service-manager.js';
+import { siteServiceId } from '../windows/panel-services.js';
 import {
   listPanelServices,
   sortForStartup,
@@ -29,10 +51,13 @@ export const BackupPayload = z.object({
   operation: z.enum(['create', 'restore']).default('create'),
   siteId: z.string().uuid().optional(),
   backupId: z.string().uuid().optional(),
+  uploadedBackupId: z.string().uuid().optional(),
+  requestedByUserId: z.string().uuid().optional(),
   frequency: BackupFrequency.optional(),
   periodKey: z.string().max(32).optional(),
   includeGameServers: z.boolean().default(false),
   includeDependencies: z.boolean().default(false),
+  installDependencies: z.boolean().optional(),
 });
 export type BackupPayload = z.infer<typeof BackupPayload>;
 
@@ -80,6 +105,87 @@ export interface BackupArchive {
   createdAt: Date;
 }
 
+export class BackupArchiveError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'BackupArchiveError';
+  }
+}
+
+export interface BackupDatabaseManifest {
+  engine: DatabaseEngine;
+  name: string;
+  file: string;
+  format: 'SQL' | 'newline-delimited JSON';
+}
+
+export interface WebsiteBackupMetadata {
+  format: 'winpanel-website-backup';
+  version: 1 | 2;
+  createdAt: string;
+  includeDependencies: boolean;
+  website: { slug: string; displayName: string; domains: string[] };
+  databases: BackupDatabaseManifest[];
+}
+
+export interface PanelBackupMetadata {
+  format: 'winpanel-panel-backup';
+  version: number;
+  createdAt: string;
+  panelEntries: string[];
+  panelDatabase: string | null;
+  websites: Array<{
+    slug: string;
+    path: string;
+    sourceKind?: SiteSource['kind'];
+    manifest?: ReturnType<typeof SiteManifest.parse>;
+  }>;
+  databases: Array<{
+    engine: DatabaseEngine;
+    name: string;
+    siteId: string | null;
+    siteSlug: string | null;
+    storage: string;
+  }>;
+  includeGameServers: boolean;
+  includeDependencies: boolean;
+}
+
+export interface PanelArchiveLayout {
+  websitesRoot: string;
+  gameServersRoot: string;
+  databaseStorage: Record<DatabaseEngine, string>;
+  protectedRootNames?: readonly string[];
+}
+
+const DEFAULT_PANEL_ARCHIVE_LAYOUT: PanelArchiveLayout = {
+  websitesRoot: 'sites',
+  gameServersRoot: 'game-servers',
+  databaseStorage: {
+    mariadb: 'data/database',
+    postgres: 'data/postgres',
+    mongodb: 'data/mongodb',
+  },
+};
+
+function defaultPanelArchiveLayout(): PanelArchiveLayout {
+  return DEFAULT_PANEL_ARCHIVE_LAYOUT;
+}
+
+export type BackupArchiveInspection =
+  | {
+      scope: 'site';
+      includeDependencies: boolean;
+      website: WebsiteBackupMetadata['website'];
+      databases: BackupDatabaseManifest[];
+      metadata: WebsiteBackupMetadata;
+    }
+  | {
+      scope: 'panel';
+      includeDependencies: boolean;
+      metadata: PanelBackupMetadata;
+    };
+
 export interface BackupServiceOptions {
   db: DatabaseHandle;
   vault: import('../security/vault.js').SecretVault;
@@ -89,6 +195,14 @@ export interface BackupServiceOptions {
   gameServersRoot: string;
   binDir: string;
   backupDir: string;
+  services?: Pick<ServiceManager, 'getState' | 'isInstalled' | 'start' | 'stop'>;
+  panelServices?: {
+    list: () => Promise<PanelService[]>;
+    stop: typeof stopSupportingServices;
+    start: typeof startSupportingServices;
+  };
+  runDetached?: typeof runDetached;
+  tools?: ToolPaths;
   gameServers?: Pick<GameServerService, 'list' | 'catalogEntryFor'>;
   markIntentionallyStopped?: (id: string) => void;
   markIntentionallyStarted?: (id: string) => void;
@@ -101,12 +215,95 @@ function archivePath(backupDir: string, scope: 'site' | 'panel', id: string): st
   return path.join(backupDir, folder, `${id}.${extension}`);
 }
 
+export function stagedBackupFilePath(
+  backupDir: string,
+  scope: 'site' | 'panel',
+  id: string,
+): string {
+  if (!BACKUP_ID.test(id)) throw new Error('That backup identifier is not valid.');
+  const extension = scope === 'site' ? 'zip' : 'tar.gz';
+  return path.join(backupDir, '.uploads', `${id}.${extension}`);
+}
+
 export function backupFilePath(
   backupDir: string,
   scope: 'site' | 'panel',
   id: string,
 ): string {
   return archivePath(backupDir, scope, id);
+}
+
+export function panelArchiveLayout(
+  options: Pick<BackupServiceOptions, 'root' | 'dataDir' | 'sitesRoot' | 'gameServersRoot' | 'backupDir'>,
+): PanelArchiveLayout {
+  return {
+    websitesRoot: path.basename(options.sitesRoot),
+    gameServersRoot: path.basename(options.gameServersRoot),
+    protectedRootNames: [
+      path.basename(options.sitesRoot),
+      path.basename(options.gameServersRoot),
+      path.basename(options.backupDir),
+    ],
+    databaseStorage: {
+      mariadb: path.relative(options.root, engineDataDir(options.dataDir, 'mariadb')).replaceAll('\\', '/'),
+      postgres: path.relative(options.root, engineDataDir(options.dataDir, 'postgres')).replaceAll('\\', '/'),
+      mongodb: path.relative(options.root, engineDataDir(options.dataDir, 'mongodb')).replaceAll('\\', '/'),
+    },
+  };
+}
+
+const PANEL_RESTORE_RESULT_FOLDER = '.restore-results';
+
+export function panelRestoreResultPath(backupDir: string, jobId: string): string {
+  if (!BACKUP_ID.test(jobId)) throw new Error('That restore identifier is not valid.');
+  return path.join(backupDir, PANEL_RESTORE_RESULT_FOLDER, `${jobId}.json`);
+}
+
+/** Applies completion markers written by the detached Windows restore script. */
+export async function reconcilePanelRestoreResults(
+  db: DatabaseHandle,
+  backupDir: string,
+): Promise<number> {
+  const directory = path.join(backupDir, PANEL_RESTORE_RESULT_FOLDER);
+  const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
+  let reconciled = 0;
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const jobId = entry.name.slice(0, -'.json'.length);
+    if (!BACKUP_ID.test(jobId)) continue;
+
+    const result = await fs
+      .readFile(path.join(directory, entry.name), 'utf8')
+      .then((contents) => JSON.parse(contents) as { status?: unknown; error?: unknown })
+      .catch(() => null);
+    if (result?.status !== 'succeeded' && result?.status !== 'failed') continue;
+
+    const job = db.db.select().from(jobs).where(eq(jobs.id, jobId)).get();
+    const payload = BackupPayload.safeParse(job?.payload);
+    if (
+      job?.status === 'running' &&
+      job.kind === 'backup' &&
+      payload.success &&
+      payload.data.scope === 'panel' &&
+      payload.data.operation === 'restore'
+    ) {
+      db.db
+        .update(jobs)
+        .set({
+          status: result.status,
+          errorMessage: result.status === 'failed' && typeof result.error === 'string' ? result.error : null,
+          finishedAt: new Date(),
+        })
+        .where(and(eq(jobs.id, jobId), eq(jobs.status, 'running')))
+        .run();
+      reconciled += 1;
+    }
+
+    await fs.rm(path.join(directory, entry.name), { force: true });
+  }
+
+  return reconciled;
 }
 
 async function exists(filePath: string): Promise<boolean> {
@@ -253,18 +450,22 @@ const FATAL_ARCHIVE_ERROR = /failed to open|no space left|write error|cannot wri
 
 /** Long enough for a large installation; the previous hour was not. */
 const ARCHIVE_TIMEOUT_MS = 12 * 60 * 60 * 1000;
+export const MAX_ARCHIVE_ENTRIES = 100_000;
+export const MAX_ARCHIVE_UNPACKED_BYTES = 512 * 1024 ** 3;
+const MAX_ARCHIVE_LISTING_BYTES = 64 * 1024 * 1024;
 
 export interface ArchiveOptions {
   readonly onProgress?: (percent: number) => void;
   /** Keep node_modules. Much slower, and only needed to restore without a redeploy. */
   readonly includeDependencies?: boolean;
+  readonly signal?: AbortSignal;
 }
 
 export async function createArchive(
   output: string,
   entries: readonly string[],
   format: 'zip' | 'tar.gz',
-  { onProgress, includeDependencies = false }: ArchiveOptions = {},
+  { onProgress, includeDependencies = false, signal }: ArchiveOptions = {},
 ): Promise<ArchiveOutcome> {
   await fs.mkdir(path.dirname(output), { recursive: true });
   const present = entries.filter((entry) => entry.length > 0);
@@ -308,6 +509,7 @@ export async function createArchive(
       }),
     ],
     timeoutMs: ARCHIVE_TIMEOUT_MS,
+    signal,
     onOutput: (line, stream) => {
       const text = line.trim();
       if (!text) return;
@@ -349,20 +551,825 @@ export async function createArchive(
   return { skipped, skippedCount };
 }
 
-async function extractArchive(archive: string, destination: string): Promise<void> {
+const DATABASE_ENGINE = z.enum(['mariadb', 'postgres', 'mongodb']);
+const BACKUP_DATABASE_MANIFEST = z.object({
+  engine: DATABASE_ENGINE,
+  name: z.string().min(1),
+  file: z.string().min(1),
+  format: z.string().min(1),
+});
+const WEBSITE_BACKUP_METADATA = z.object({
+  format: z.literal('winpanel-website-backup'),
+  version: z.union([z.literal(1), z.literal(2)]),
+  createdAt: z.string().min(1),
+  includeDependencies: z.boolean().optional(),
+  website: z.object({
+    slug: z.string().min(1),
+    displayName: z.string().min(1),
+    domains: z.array(z.string()).default([]),
+  }),
+  databases: z.array(BACKUP_DATABASE_MANIFEST).default([]),
+});
+const PANEL_BACKUP_METADATA = z.object({
+  format: z.literal('winpanel-panel-backup'),
+  version: z.number().int().min(1).max(2),
+  createdAt: z.string().min(1),
+  panelEntries: z.array(z.string()).optional(),
+  panelDatabase: z.string().optional(),
+  websites: z
+    .array(
+      z.object({
+        slug: z.string().min(1),
+        path: z.string().min(1),
+        sourceKind: z.enum(['git', 'upload', 'blank']).optional(),
+        manifest: z.unknown().optional(),
+      }),
+    )
+    .default([]),
+  databases: z
+    .array(
+      z.object({
+        engine: DATABASE_ENGINE,
+        name: z.string().min(1),
+        siteId: z.string().uuid().nullable().optional().default(null),
+        siteSlug: z.string().nullable().optional().default(null),
+        storage: z.string().min(1),
+      }),
+    )
+    .default([]),
+  includeGameServers: z.boolean().default(false),
+  includeDependencies: z.boolean().default(false),
+});
+
+function archiveRelativePath(root: string, value: string, label: string): string {
+  const normalised = value.replaceAll('\\', '/');
+  const parts = normalised.split('/');
+  if (
+    normalised.length === 0 ||
+    normalised.startsWith('/') ||
+    /^[a-zA-Z]:\//.test(normalised) ||
+    parts.some((part) => part.length === 0 || part === '.' || part === '..')
+  ) {
+    throw new BackupArchiveError(`The backup contains an unsafe ${label} path.`);
+  }
+
+  const resolved = path.resolve(root, ...parts);
+  const relative = path.relative(path.resolve(root), resolved);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`The backup contains an unsafe ${label} path.`);
+  }
+  return resolved;
+}
+
+async function requireArchiveFile(root: string, relative: string, label: string): Promise<void> {
+  const target = archiveRelativePath(root, relative, label);
+  const stat = await fs.stat(target).catch(() => null);
+  if (!stat?.isFile()) throw new Error(`The backup is missing its ${label} file.`);
+}
+
+async function requireArchiveDirectory(root: string, relative: string, label: string): Promise<void> {
+  const target = archiveRelativePath(root, relative, label);
+  const stat = await fs.stat(target).catch(() => null);
+  if (!stat?.isDirectory()) throw new Error(`The backup is missing its ${label} folder.`);
+}
+
+function metadataError(scope: 'site' | 'panel' | 'website'): BackupArchiveError {
+  return new BackupArchiveError(`That file is not a valid WinPanel ${scope} backup.`);
+}
+
+async function normaliseWebsiteMetadata(
+  root: string,
+  value: unknown,
+): Promise<WebsiteBackupMetadata> {
+  const parsed = WEBSITE_BACKUP_METADATA.safeParse(value);
+  if (!parsed.success) throw metadataError('website');
+
+  if (!Slug.safeParse(parsed.data.website.slug).success) throw metadataError('website');
+  if (parsed.data.version === 2 && parsed.data.includeDependencies === undefined) {
+    throw metadataError('website');
+  }
+
+  const includeDependencies = parsed.data.version === 1 ? false : parsed.data.includeDependencies!;
+  const files = new Set<string>();
+  const names = new Set<string>();
+  const databases: BackupDatabaseManifest[] = [];
+
+  for (const entry of parsed.data.databases) {
+    try {
+      assertSafeDbName(entry.name);
+    } catch {
+      throw metadataError('website');
+    }
+
+    const expectedFormat = entry.engine === 'mongodb' ? 'newline-delimited JSON' : 'SQL';
+    if (entry.format !== expectedFormat) throw metadataError('website');
+
+    const relative = entry.file.replaceAll('\\', '/');
+    const parts = relative.split('/');
+    if (parts.length !== 2 || parts[0] !== 'databases' || parts[1] === '') {
+      throw metadataError('website');
+    }
+    const absolute = archiveRelativePath(root, relative, 'database');
+    if (files.has(absolute) || names.has(entry.name)) throw metadataError('website');
+    files.add(absolute);
+    names.add(entry.name);
+    await requireArchiveFile(root, relative, 'database export');
+    databases.push({
+      engine: entry.engine,
+      name: entry.name,
+      file: relative,
+      format: expectedFormat,
+    });
+  }
+
+  await requireArchiveDirectory(root, parsed.data.website.slug, 'website');
+  return {
+    format: 'winpanel-website-backup',
+    version: parsed.data.version,
+    createdAt: parsed.data.createdAt,
+    includeDependencies,
+    website: parsed.data.website,
+    databases,
+  };
+}
+
+async function normalisePanelMetadata(
+  root: string,
+  value: unknown,
+  layout: PanelArchiveLayout = defaultPanelArchiveLayout(),
+): Promise<PanelBackupMetadata> {
+  const parsed = PANEL_BACKUP_METADATA.safeParse(value);
+  if (!parsed.success) throw metadataError('panel');
+  if (parsed.data.version === 2 && parsed.data.panelEntries === undefined) {
+    throw metadataError('panel');
+  }
+
+  const panelEntries = parsed.data.panelEntries ?? panelEntryNames(parsed.data);
+  if (
+    panelEntries.length !== new Set(panelEntries).size ||
+    panelEntries.some(
+      (entry) =>
+        entry.length === 0 ||
+        entry === '.' ||
+        entry === '..' ||
+        entry.includes('/') ||
+        entry.includes('\\'),
+    )
+  ) {
+    throw metadataError('panel');
+  }
+  const protectedRootNames = new Set(layout.protectedRootNames ?? []);
+  if (panelEntries.some((entry) => protectedRootNames.has(entry))) {
+    throw metadataError('panel');
+  }
+
+  for (const entry of panelEntries) {
+    const stat = await fs.stat(archiveRelativePath(root, entry, 'panel')).catch(() => null);
+    if (!stat) throw metadataError('panel');
+  }
+
+  let panelDatabase: string | null = null;
+  if (parsed.data.panelDatabase !== undefined) {
+    const relative = parsed.data.panelDatabase.replaceAll('\\', '/');
+    if (relative !== 'panel-database/panel.db') throw metadataError('panel');
+    await requireArchiveFile(root, relative, 'panel database');
+    panelDatabase = relative;
+  }
+  if (parsed.data.version === 2 && panelDatabase === null) throw metadataError('panel');
+
+  const websites = parsed.data.websites.map((website) => {
+    if (!Slug.safeParse(website.slug).success) throw metadataError('panel');
+    const relative = website.path.replaceAll('\\', '/');
+    if (relative !== `${layout.websitesRoot}/${website.slug}`) throw metadataError('panel');
+    const target = archiveRelativePath(root, relative, 'website');
+    const manifest = website.manifest === undefined ? undefined : SiteManifest.safeParse(website.manifest);
+    if (manifest && !manifest.success) throw metadataError('panel');
+    return {
+      slug: website.slug,
+      path: relative,
+      sourceKind: website.sourceKind,
+      manifest: manifest?.data,
+      target,
+    };
+  });
+
+  if (
+    websites.length !== new Set(websites.map((website) => website.slug)).size ||
+    websites.length !== new Set(websites.map((website) => website.path)).size
+  ) {
+    throw metadataError('panel');
+  }
+  for (const website of websites) {
+    const stat = await fs.stat(website.target).catch(() => null);
+    if (!stat?.isDirectory()) throw metadataError('panel');
+  }
+
+  const databases = parsed.data.databases.map((database) => {
+    try {
+      assertSafeDbName(database.name);
+    } catch {
+      throw metadataError('panel');
+    }
+    if (database.storage.replaceAll('\\', '/') !== layout.databaseStorage[database.engine]) {
+      throw metadataError('panel');
+    }
+    const target = archiveRelativePath(root, database.storage, 'database storage');
+    return {
+      engine: database.engine,
+      name: database.name,
+      siteId: database.siteId ?? null,
+      siteSlug: database.siteSlug ?? null,
+      storage: database.storage.replaceAll('\\', '/'),
+      target,
+    };
+  });
+
+  if (
+    databases.length !==
+    new Set(databases.map((database) => `${database.engine}:${database.name}`)).size
+  ) {
+    throw metadataError('panel');
+  }
+  for (const database of databases) {
+    const stat = await fs.stat(database.target).catch(() => null);
+    if (!stat?.isDirectory()) throw metadataError('panel');
+  }
+
+  const websiteRoot = path.join(root, layout.websitesRoot);
+  const websiteRootStat = await fs.stat(websiteRoot).catch(() => null);
+  if (parsed.data.websites.length > 0 && !websiteRootStat?.isDirectory()) {
+    throw metadataError('panel');
+  }
+
+  if (parsed.data.includeGameServers) {
+    const gameServersRoot = path.join(root, layout.gameServersRoot);
+    const gameServersStat = await fs.stat(gameServersRoot).catch(() => null);
+    if (!gameServersStat?.isDirectory()) throw metadataError('panel');
+  }
+
+  return {
+    format: 'winpanel-panel-backup',
+    version: parsed.data.version,
+    createdAt: parsed.data.createdAt,
+    panelEntries,
+    panelDatabase,
+    websites: websites.map(({ target: _target, ...website }) => website),
+    databases: databases.map(({ target: _target, ...database }) => database),
+    includeGameServers: parsed.data.includeGameServers,
+    includeDependencies: parsed.data.includeDependencies,
+  };
+}
+
+/*
+ * The code below deliberately restores only the site's live code folder. The
+ * database row, secrets, domains and service configuration belong to the
+ * current site and are not data an archive can replace.
+ */
+async function restoreArchiveFor(
+  payload: BackupPayload,
+  options: BackupServiceOptions,
+  scope: 'site' | 'panel',
+): Promise<{ archive: string; stagedUploadId: string | null }> {
+  if (payload.uploadedBackupId) {
+    if (!payload.requestedByUserId) {
+      throw new Error('The uploaded backup restore has no requesting account.');
+    }
+    const upload = options.db.db
+      .select()
+      .from(backupUploads)
+      .where(
+        and(
+          eq(backupUploads.id, payload.uploadedBackupId),
+          eq(backupUploads.scope, scope),
+          eq(backupUploads.ownerUserId, payload.requestedByUserId),
+          gt(backupUploads.expiresAt, new Date()),
+        ),
+      )
+      .get();
+    if (!upload) throw new Error('That uploaded backup has expired or is no longer available.');
+
+    const archive = stagedBackupFilePath(options.backupDir, scope, upload.id);
+    if (!(await exists(archive))) throw new Error('That uploaded backup is no longer available.');
+    if (scope === 'site' && payload.siteId !== upload.siteId) {
+      throw new Error('That uploaded backup is not attached to this website.');
+    }
+    return { archive, stagedUploadId: upload.id };
+  }
+
+  if (!payload.backupId) throw new Error('The restore request has no backup attached to it.');
+  const job = options.db.db.select().from(jobs).where(eq(jobs.id, payload.backupId)).get();
+  const source = BackupPayload.safeParse(job?.payload);
+  if (
+    !job ||
+    job.kind !== 'backup' ||
+    job.status !== 'succeeded' ||
+    !source.success ||
+    source.data.operation !== 'create' ||
+    source.data.scope !== scope ||
+    (scope === 'site' && source.data.siteId !== payload.siteId) ||
+    (scope === 'panel' && job.siteId !== null)
+  ) {
+    throw new Error('That backup is no longer available.');
+  }
+  const archive = archivePath(options.backupDir, scope, payload.backupId);
+  if (!(await exists(archive))) throw new Error('That backup is no longer available.');
+  return { archive, stagedUploadId: null };
+}
+
+async function discardStagedUpload(options: BackupServiceOptions, uploadId: string | null): Promise<void> {
+  if (!uploadId) return;
+  await fs.rm(stagedBackupFilePath(options.backupDir, 'site', uploadId), { force: true });
+  await fs.rm(stagedBackupFilePath(options.backupDir, 'panel', uploadId), { force: true });
+  options.db.db.delete(backupUploads).where(eq(backupUploads.id, uploadId)).run();
+}
+
+async function directoryOrNull(target: string): Promise<string | null> {
+  const stat = await fs.stat(target).catch(() => null);
+  return stat?.isDirectory() ? target : null;
+}
+
+async function restoredCodeFolder(
+  extractedRoot: string,
+  slug: string,
+  targetKind: string,
+): Promise<string> {
+  return restoredCodeFolderAt(path.join(extractedRoot, slug), targetKind);
+}
+
+async function restoredCodeFolderAt(sourceRoot: string, targetKind: string): Promise<string> {
+  const preferred = targetKind === 'git' ? ['release', 'public'] : ['public', 'release'];
+  for (const name of preferred) {
+    const candidate = await directoryOrNull(path.join(sourceRoot, name));
+    if (candidate) return candidate;
+  }
+  throw new Error('The website backup does not contain a public or release folder.');
+}
+
+async function installRestoredDependencies(
+  codeRoot: string,
+  manifest: ReturnType<typeof SiteManifest.parse>,
+  archiveIncluded: boolean,
+  installRequested: boolean | undefined,
+  options: BackupServiceOptions,
+  ctx: JobContext,
+): Promise<void> {
+  if (manifest.runtime !== 'node') {
+    ctx.log(`Skipping Node dependency installation for this ${manifest.runtime} website.`);
+    return;
+  }
+
+  const appDir = path.join(codeRoot, manifest.app.cwd);
+  const packageJson = path.join(appDir, 'package.json');
+  if (!(await exists(packageJson))) {
+    ctx.log('The restored application has no package.json, so there are no Node dependencies to install.');
+    return;
+  }
+
+  const dependencyFolder = path.join(appDir, 'node_modules');
+  const dependencyFiles = ['.pnp.cjs', '.pnp.js'];
+  const dependenciesPresent =
+    (await exists(dependencyFolder)) || (await Promise.all(dependencyFiles.map((file) => exists(path.join(appDir, file))))).some(Boolean);
+
+  if (archiveIncluded && dependenciesPresent) {
+    ctx.log('The backup includes the application dependencies, so installation is not needed.');
+    return;
+  }
+
+  if (!installRequested) {
+    ctx.log(
+      archiveIncluded
+        ? 'The backup says dependencies were included, but no dependency folder was found. Installation was skipped.'
+        : 'Dependencies were omitted from this backup. Installation was skipped because restore was told not to install them.',
+      'warn',
+    );
+    return;
+  }
+  if (!options.tools) throw new Error('The panel cannot install dependencies during restore.');
+
+  const manager =
+    (await detectPackageManager(appDir)) ??
+    (await detectPackageManager(codeRoot)) ??
+    manifest.packageManager;
+  const nodeVersion =
+    manifest.nodeVersion ?? (await detectNodeVersion(appDir)) ?? (await detectNodeVersion(codeRoot)) ?? undefined;
+  const tool = await options.tools.resolve(manager, nodeVersion);
+  const invocation = {
+    exe: tool.exe,
+    args: [...tool.args, ...withPnpmDefaults(manager, installArgs(manager, false))],
+  };
+
+  ctx.log(
+    `Installing dependencies with ${manager}${nodeVersion ? ` on Node ${nodeVersion}` : ''}...`,
+    'info',
+    'dependencies',
+  );
+  const result = await runCommand({
+    ...invocation,
+    cwd: appDir,
+    env: { CI: '1', NODE_ENV: 'development' },
+    timeoutMs: 20 * 60 * 1000,
+    signal: ctx.signal,
+    onOutput: (line) => {
+      if (line.trim()) ctx.log(line, 'debug', 'dependencies');
+    },
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `Dependency installation with ${manager} failed. ` +
+        (result.stderr.trim() || result.stdout.trim() || 'The package manager returned no details.'),
+    );
+  }
+  ctx.log(`Dependencies installed with ${manager}.`, 'info', 'dependencies');
+}
+
+type RestorablePanelWebsite = PanelBackupMetadata['websites'][number] & {
+  sourceKind: SiteSource['kind'];
+  manifest: ReturnType<typeof SiteManifest.parse>;
+};
+
+interface PanelSiteConfiguration {
+  sourceKind: SiteSource['kind'];
+  manifest: ReturnType<typeof SiteManifest.parse>;
+}
+
+function siteConfigurationMap(
+  rows: Array<{ slug: string; runtime: string; source: unknown; manifest: unknown }>,
+): Map<string, PanelSiteConfiguration> {
+  const configurations = new Map<string, PanelSiteConfiguration>();
+  for (const row of rows) {
+    const source = SiteSource.safeParse(row.source);
+    const manifestValue =
+      row.manifest !== null && typeof row.manifest === 'object' && !Array.isArray(row.manifest)
+        ? row.manifest
+        : {};
+    const manifest = SiteManifest.safeParse({ ...manifestValue, runtime: row.runtime });
+    if (source.success && manifest.success) {
+      configurations.set(row.slug, { sourceKind: source.data.kind, manifest: manifest.data });
+    }
+  }
+  return configurations;
+}
+
+function readPanelArchiveSiteConfigurations(snapshot: string): Map<string, PanelSiteConfiguration> {
+  let snapshotDb: DatabaseHandle | undefined;
+  try {
+    snapshotDb = createDatabase(snapshot);
+    return siteConfigurationMap(
+      snapshotDb.db
+        .select({
+          slug: schema.sites.slug,
+          runtime: schema.sites.runtime,
+          source: schema.sites.source,
+          manifest: schema.sites.manifest,
+        })
+        .from(schema.sites)
+        .all(),
+    );
+  } catch {
+    return new Map();
+  } finally {
+    snapshotDb?.close();
+  }
+}
+
+async function restorablePanelWebsites(
+  metadata: PanelBackupMetadata,
+  workDir: string,
+  options: BackupServiceOptions,
+): Promise<RestorablePanelWebsite[]> {
+  const archived = metadata.panelDatabase
+    ? readPanelArchiveSiteConfigurations(path.join(workDir, metadata.panelDatabase))
+    : new Map<string, PanelSiteConfiguration>();
+  const current = siteConfigurationMap(
+    options.db.db
+      .select({
+        slug: schema.sites.slug,
+        runtime: schema.sites.runtime,
+        source: schema.sites.source,
+        manifest: schema.sites.manifest,
+      })
+      .from(schema.sites)
+      .all(),
+  );
+
+  return metadata.websites.map((website) => {
+    const fallback = archived.get(website.slug) ?? current.get(website.slug);
+    const sourceKind = website.sourceKind ?? fallback?.sourceKind;
+    const manifest = website.manifest ?? fallback?.manifest;
+    if (!sourceKind || !manifest) {
+      throw new Error(
+        `The panel backup does not contain enough information to install dependencies for ${website.slug}. ` +
+          'Restore without dependency installation, or create a new panel backup.',
+      );
+    }
+    return { ...website, sourceKind, manifest };
+  });
+}
+
+async function installPanelDependencies(
+  payload: BackupPayload,
+  metadata: PanelBackupMetadata,
+  workDir: string,
+  options: BackupServiceOptions,
+  ctx: JobContext,
+): Promise<void> {
+  if (!payload.installDependencies) {
+    ctx.log(
+      metadata.includeDependencies
+        ? 'The panel backup includes website dependencies, so no dependency installation was requested.'
+        : 'Website dependencies were omitted from the panel backup, so dependency installation was skipped.',
+      'info',
+      'dependencies',
+    );
+    return;
+  }
+
+  const websites = await restorablePanelWebsites(metadata, workDir, options);
+  for (const website of websites) {
+    ctx.throwIfCancelled();
+    const siteRoot = archiveRelativePath(workDir, website.path, 'website');
+    const codeRoot = await restoredCodeFolderAt(siteRoot, website.sourceKind);
+    await installRestoredDependencies(
+      codeRoot,
+      website.manifest,
+      metadata.includeDependencies,
+      payload.installDependencies,
+      options,
+      ctx,
+    );
+  }
+}
+
+async function restoreSiteDatabases(
+  metadata: WebsiteBackupMetadata,
+  siteId: string,
+  extractedRoot: string,
+  options: BackupServiceOptions,
+  ctx: JobContext,
+): Promise<void> {
+  const records = listDatabasesForSite(options.db, siteId);
+  for (const entry of metadata.databases) {
+    const record = records.find((candidate) => candidate.engine === entry.engine && candidate.name === entry.name);
+    if (!record) {
+      ctx.log(
+        `Skipped the ${entry.engine} database ${entry.name}: it is not attached to this website now.`,
+        'warn',
+        'database',
+      );
+      continue;
+    }
+
+    const source = archiveRelativePath(extractedRoot, entry.file, 'database export');
+    ctx.log(`Restoring the ${entry.engine} database ${entry.name}...`, 'info', 'database');
+    await adapterFor(entry.engine).importDump(
+      { db: options.db, vault: options.vault, binDir: options.binDir, signal: ctx.signal },
+      { name: record.name, username: record.username, siteId: record.siteId },
+      source,
+    );
+  }
+}
+
+async function moveDirectory(source: string, destination: string): Promise<void> {
+  await fs.rm(destination, { recursive: true, force: true });
+  try {
+    await fs.rename(source, destination);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error;
+    await fs.cp(source, destination, { recursive: true, force: true });
+    await fs.rm(source, { recursive: true, force: true });
+  }
+}
+
+async function restoreSiteService(
+  site: typeof sites.$inferSelect,
+  manifest: ReturnType<typeof SiteManifest.parse>,
+  options: BackupServiceOptions,
+  ctx: JobContext,
+  wasRunning: boolean,
+): Promise<void> {
+  if (!wasRunning || manifest.runtime === 'static' || manifest.runtime === 'proxy') return;
+  if (!options.services) {
+    ctx.log('The website files were restored. Its service was not restarted because service control is unavailable.', 'warn');
+    return;
+  }
+
+  const serviceId = siteServiceId(site.slug, site.activeColour);
+  if (!(await options.services.isInstalled(serviceId))) {
+    ctx.log(
+      'The website files were restored, but no service is registered for this site. Deploy it once to start the application.',
+      'warn',
+    );
+    return;
+  }
+
+  await options.services.start(serviceId);
+  const port = site.activeColour === 'blue' ? site.portBlue : site.portGreen;
+  if (port === null) throw new Error('The restored website has no application port assigned.');
+
+  if (manifest.runtime === 'php') {
+    await waitForPhpPool({
+      basePort: port,
+      timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
+      log: (message) => ctx.log(message, 'info', 'health check'),
+    });
+  } else {
+    await waitForHealthy({
+      port,
+      path: manifest.app.healthCheckPath,
+      timeoutSeconds: manifest.app.healthCheckTimeoutSeconds,
+      ctx,
+    });
+  }
+}
+
+async function restoreSiteArchive(
+  payload: BackupPayload,
+  options: BackupServiceOptions,
+  ctx: JobContext,
+): Promise<void> {
+  if (!payload.siteId) throw new Error('The website restore has no website attached to it.');
+  const site = options.db.db.select().from(sites).where(eq(sites.id, payload.siteId)).get();
+  if (!site) throw new Error('That website no longer exists.');
+
+  const { archive, stagedUploadId } = await restoreArchiveFor(payload, options, 'site');
+  const workDir = path.join(options.backupDir, '.restore', ctx.jobId);
+  let promoted = false;
+  let movedPublic = false;
+  let wasRunning = false;
+  const manifest = SiteManifest.parse(site.manifest);
+  const source = site.source as { kind?: string };
+  const siteDir = path.join(options.sitesRoot, site.slug);
+  const folders: ReleaseFolders = releaseFoldersFor(siteDir);
+  const serviceId = siteServiceId(site.slug, site.activeColour);
+
+  try {
+    await fs.rm(workDir, { recursive: true, force: true });
+    await extractArchive(archive, workDir, ctx.signal);
+    await validateExtractedTree(workDir);
+    const inspection = await inspectExtractedBackup(workDir, 'site');
+    if (inspection.scope !== 'site') throw new Error('That file is not a valid website backup.');
+    if (inspection.website.slug !== site.slug) {
+      throw new Error('That website backup belongs to a different website.');
+    }
+
+    const codeFolder = await restoredCodeFolder(workDir, site.slug, source.kind ?? 'upload');
+    const restoredCode = path.join(workDir, 'restored-code');
+    await fs.cp(codeFolder, restoredCode, { recursive: true, force: true });
+    await installRestoredDependencies(
+      restoredCode,
+      manifest,
+      inspection.includeDependencies,
+      payload.installDependencies,
+      options,
+      ctx,
+    );
+
+    const state = options.services ? await options.services.getState(serviceId) : 'not-installed';
+    wasRunning = state === 'running' || state === 'starting';
+    if (wasRunning) await options.services?.stop(serviceId);
+
+    await restoreSiteDatabases(inspection.metadata, site.id, workDir, options, ctx);
+    ctx.throwIfCancelled();
+
+    if ((source.kind ?? 'upload') === 'git') {
+      await prepareStaging(folders);
+      await fs.cp(restoredCode, folders.staging, { recursive: true, force: true });
+      await promoteStaging(folders);
+      promoted = true;
+    } else {
+      const previousPublic = path.join(workDir, 'previous-public');
+      if (await directoryOrNull(path.join(siteDir, 'public'))) {
+        await moveDirectory(path.join(siteDir, 'public'), previousPublic);
+        movedPublic = true;
+      }
+      await moveDirectory(restoredCode, path.join(siteDir, 'public'));
+    }
+
+    await restoreSiteService(site, manifest, options, ctx, wasRunning);
+    if ((source.kind ?? 'upload') === 'git') await discardPrevious(folders);
+    ctx.progress(100);
+    ctx.log('The website files and matching databases were restored.');
+  } catch (error) {
+    if (promoted) {
+      await options.services?.stop(serviceId).catch(() => undefined);
+      if (await restorePrevious(folders).catch(() => false)) {
+        await restoreSiteService(site, manifest, options, ctx, wasRunning).catch(() => undefined);
+      }
+    } else if (movedPublic) {
+      await options.services?.stop(serviceId).catch(() => undefined);
+      await moveDirectory(path.join(workDir, 'previous-public'), path.join(siteDir, 'public')).catch(() => undefined);
+      await restoreSiteService(site, manifest, options, ctx, wasRunning).catch(() => undefined);
+    } else if (wasRunning) {
+      await restoreSiteService(site, manifest, options, ctx, true).catch(() => undefined);
+    }
+    throw error;
+  } finally {
+    await fs.rm(workDir, { recursive: true, force: true });
+    await discardStagedUpload(options, stagedUploadId);
+  }
+}
+
+export async function inspectExtractedBackup(
+  root: string,
+  scope: 'site' | 'panel',
+  layout?: PanelArchiveLayout,
+): Promise<BackupArchiveInspection> {
+  const metadataName = scope === 'site' ? 'winpanel-backup.json' : 'winpanel-panel-backup.json';
+  const metadataPath = path.join(root, metadataName);
+  const raw = await fs
+    .readFile(metadataPath, 'utf8')
+    .then((contents) => JSON.parse(contents) as unknown)
+    .catch(() => {
+      throw metadataError(scope);
+    });
+
+  if (scope === 'site') {
+    const metadata = await normaliseWebsiteMetadata(root, raw);
+    return {
+      scope,
+      includeDependencies: metadata.includeDependencies,
+      website: metadata.website,
+      databases: metadata.databases,
+      metadata,
+    };
+  }
+
+  const metadata = await normalisePanelMetadata(root, raw, layout);
+  return { scope, includeDependencies: metadata.includeDependencies, metadata };
+}
+
+export async function inspectBackupArchive(
+  archive: string,
+  scope: 'site' | 'panel',
+  destination: string,
+  layout?: PanelArchiveLayout,
+): Promise<BackupArchiveInspection> {
+  await fs.rm(destination, { recursive: true, force: true });
+  try {
+    await extractArchive(archive, destination);
+    await validateExtractedTree(destination);
+    return await inspectExtractedBackup(destination, scope, layout);
+  } finally {
+    await fs.rm(destination, { recursive: true, force: true });
+  }
+}
+
+async function extractArchive(
+  archive: string,
+  destination: string,
+  signal?: AbortSignal,
+): Promise<void> {
   const listing = await runCommand({
     exe: process.platform === 'win32' ? 'tar.exe' : 'tar',
-    args: ['-tf', archive],
+    args: ['-t', '-v', '-f', archive],
     timeoutMs: 60 * 60 * 1000,
+    maxOutputBytes: MAX_ARCHIVE_LISTING_BYTES,
+    signal,
   });
-  if (listing.exitCode !== 0) {
-    throw new Error(
-      `The backup could not be inspected. ${listing.stderr.trim() || 'The archive tool returned no details.'}`,
+  if (listing.exitCode !== 0 || listing.truncated) {
+    throw new BackupArchiveError(
+      `The backup could not be inspected. ${
+        listing.truncated
+          ? 'Its file listing is too large to inspect safely.'
+          : listing.stderr.trim() || 'The archive tool returned no details.'
+      }`,
     );
   }
 
-  for (const entry of listing.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)) {
-    const normalised = entry.replaceAll('\\', '/');
+  const months = new Set(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
+  const entries = listing.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (entries.length === 0 || entries.length > MAX_ARCHIVE_ENTRIES) {
+    throw new BackupArchiveError('The backup contains too many files to restore safely.');
+  }
+
+  let unpackedBytes = 0;
+  for (const entry of entries) {
+    const type = entry[0];
+    if (type && ['b', 'c', 'h', 'l', 'p', 's'].includes(type.toLowerCase())) {
+      throw new BackupArchiveError('The backup contains an unsupported link or device entry.');
+    }
+
+    const columns = entry.split(/\s+/);
+  const monthIndex = columns.findIndex((column) => months.has(column));
+  const isoIndex = columns.findIndex((column) => /^\d{4}-\d{2}-\d{2}$/.test(column));
+  const dateIndex = monthIndex >= 0 ? monthIndex : isoIndex;
+  const dateWidth = monthIndex >= 0 ? 3 : 2;
+  const entryPath = dateIndex >= 0 ? columns.slice(dateIndex + dateWidth).join(' ') : '';
+    if (!entryPath) {
+      throw new BackupArchiveError('The backup contains an unreadable file entry.');
+    }
+
+    const size = dateIndex > 1
+      ? Number.parseInt(columns.slice(1, dateIndex).findLast((column) => /^\d+$/.test(column)) ?? '', 10)
+      : Number.NaN;
+    if (Number.isFinite(size)) {
+      unpackedBytes += size;
+      if (unpackedBytes > MAX_ARCHIVE_UNPACKED_BYTES) {
+        throw new BackupArchiveError('The backup expands beyond the safe restore size.');
+      }
+    }
+
+    const normalised = entryPath.replaceAll('\\', '/');
     if (
       normalised.startsWith('/') ||
       /^[a-zA-Z]:\//.test(normalised) ||
@@ -370,7 +1377,7 @@ async function extractArchive(archive: string, destination: string): Promise<voi
       normalised.startsWith('../') ||
       normalised.includes('/../')
     ) {
-      throw new Error('The backup contains an unsafe file path and was not restored.');
+      throw new BackupArchiveError('The backup contains an unsafe file path and was not restored.');
     }
   }
 
@@ -379,10 +1386,11 @@ async function extractArchive(archive: string, destination: string): Promise<voi
     exe: process.platform === 'win32' ? 'tar.exe' : 'tar',
     args: ['-xf', archive, '-C', destination],
     timeoutMs: 60 * 60 * 1000,
+    signal,
   });
 
   if (result.exitCode !== 0) {
-    throw new Error(
+    throw new BackupArchiveError(
       `The backup could not be opened. ${result.stderr.trim() || 'The archive tool returned no details.'}`,
     );
   }
@@ -393,12 +1401,12 @@ async function validateExtractedTree(root: string): Promise<void> {
   const visit = async (current: string): Promise<void> => {
     const relative = path.relative(rootPath, await fs.realpath(current));
     if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
-      throw new Error('The backup contains a file that points outside its archive.');
+      throw new BackupArchiveError('The backup contains a file that points outside its archive.');
     }
 
     const stat = await fs.lstat(current);
     if (stat.isSymbolicLink()) {
-      throw new Error('The backup contains a symbolic link and was not restored.');
+      throw new BackupArchiveError('The backup contains a symbolic link and was not restored.');
     }
     if (!stat.isDirectory()) return;
 
@@ -419,6 +1427,7 @@ async function dumpSqlDatabase(
   password: string,
   binDir: string,
   destination: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const engineDir = engineBinDir(binDir, record.engine);
   const executable =
@@ -456,6 +1465,7 @@ async function dumpSqlDatabase(
           ],
     env: record.engine === 'mariadb' ? { MYSQL_PWD: password } : { PGPASSWORD: password },
     timeoutMs: 60 * 60 * 1000,
+    signal,
   });
 
   if (result.exitCode !== 0) {
@@ -469,9 +1479,10 @@ async function dumpMongoDatabase(
   record: DatabaseSummary,
   password: string,
   destination: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   await withMongo(
-    { username: record.username, password, authSource: record.name },
+    { username: record.username, password, authSource: record.name, signal },
     async (client) => {
       const database = client.db(record.name);
       const handle = await fs.open(destination, 'w');
@@ -520,9 +1531,9 @@ async function dumpDatabases(
     const file = databaseFileName(record);
     const output = path.join(destination, file);
     if (record.engine === 'mongodb') {
-      await dumpMongoDatabase(record, password, output);
+      await dumpMongoDatabase(record, password, output, ctx.signal);
     } else {
-      await dumpSqlDatabase(record, password, options.binDir, output);
+      await dumpSqlDatabase(record, password, options.binDir, output, ctx.signal);
     }
 
     manifest.push({
@@ -567,8 +1578,9 @@ async function createSiteArchive(
       JSON.stringify(
         {
           format: 'winpanel-website-backup',
-          version: 1,
+          version: 2,
           createdAt: new Date().toISOString(),
+          includeDependencies: payload.includeDependencies,
           website: { slug: site.slug, displayName: site.displayName, domains: site.domains },
           databases: databaseDumps,
         },
@@ -585,6 +1597,7 @@ async function createSiteArchive(
     );
     const archived = await createArchive(output, [siteRoot, metadata, databaseDir], 'zip', {
       includeDependencies: payload.includeDependencies,
+      signal: ctx.signal,
       onProgress: (percent) => {
         ctx.progress(60 + percent * 0.39);
       },
@@ -605,7 +1618,10 @@ async function createPanelArchive(
   const workDir = path.join(options.backupDir, '.working', ctx.jobId);
   const metadata = path.join(workDir, 'winpanel-panel-backup.json');
   const output = archivePath(options.backupDir, 'panel', ctx.jobId);
-  const siteRecords = options.db.db.select({ slug: sites.slug }).from(sites).all();
+  const siteRecords = options.db.db
+    .select({ slug: sites.slug, runtime: sites.runtime, source: sites.source, manifest: sites.manifest })
+    .from(sites)
+    .all();
   const sitePresence = await Promise.all(
     siteRecords.map(async (site) => ({ site, present: await exists(path.join(options.sitesRoot, site.slug)) })),
   );
@@ -644,10 +1660,25 @@ async function createPanelArchive(
     await options.db.sqlite.backup(panelDatabaseSnapshot);
     ctx.progress(10);
 
-    const websiteManifest = siteRecords.map((site) => ({
-      slug: site.slug,
-      path: `${path.basename(options.sitesRoot)}/${site.slug}`,
-    }));
+    const websiteManifest = siteRecords.map((site) => {
+      const source = SiteSource.safeParse(site.source);
+      const manifest = SiteManifest.safeParse({
+        ...(site.manifest !== null && typeof site.manifest === 'object' && !Array.isArray(site.manifest)
+          ? site.manifest
+          : {}),
+        runtime: site.runtime,
+      });
+      if (!source.success || !manifest.success) {
+        throw new Error(`The panel has invalid configuration for website ${site.slug}.`);
+      }
+
+      return {
+        slug: site.slug,
+        path: `${path.basename(options.sitesRoot)}/${site.slug}`,
+        sourceKind: source.data.kind,
+        manifest: manifest.data,
+      };
+    });
     const databaseManifest = databaseRecords.map((record) => ({
       engine: record.engine,
       name: record.name,
@@ -699,6 +1730,7 @@ async function createPanelArchive(
     );
     const archived = await createArchive(output, entries, 'tar.gz', {
       includeDependencies,
+      signal: ctx.signal,
       onProgress: (percent) => {
         ctx.progress(10 + percent * 0.9);
       },
@@ -717,8 +1749,11 @@ function powershellLiteral(value: string): string {
 function restoreScript(
   workDir: string,
   options: BackupServiceOptions,
+  jobId: string,
   serviceIds: readonly string[],
   panelEntries: readonly string[],
+  protectedRootPaths: readonly string[],
+  includeGameServers: boolean,
 ): string {
   const servicesJson = JSON.stringify(serviceIds);
   return `$ErrorActionPreference = 'Stop'
@@ -726,20 +1761,35 @@ $work = ${powershellLiteral(workDir)}
 $root = ${powershellLiteral(options.root)}
 $backup = ${powershellLiteral(options.backupDir)}
 $data = ${powershellLiteral(options.dataDir)}
+$resultPath = ${powershellLiteral(panelRestoreResultPath(options.backupDir, jobId))}
 $panelEntries = ConvertFrom-Json @'
 ${JSON.stringify(panelEntries)}
+'@
+$protectedRootPaths = ConvertFrom-Json @'
+${JSON.stringify(protectedRootPaths)}
 '@
 $agent = 'winpanel-agent'
 $targets = ConvertFrom-Json @'
 ${JSON.stringify([
   { source: path.join(workDir, path.basename(options.sitesRoot)), target: options.sitesRoot },
-  { source: path.join(workDir, path.basename(options.gameServersRoot)), target: options.gameServersRoot },
+  ...(includeGameServers
+    ? [{ source: path.join(workDir, path.basename(options.gameServersRoot)), target: options.gameServersRoot }]
+    : []),
 ])}
 '@
 $services = ConvertFrom-Json @'
 ${servicesJson}
 '@
 $log = Join-Path $work 'restore.log'
+
+function Write-RestoreResult([string] $status, [string] $errorMessage) {
+  $resultDirectory = Split-Path -Parent $resultPath
+  New-Item -ItemType Directory -Path $resultDirectory -Force | Out-Null
+  $temporary = "$resultPath.part"
+  $result = @{ status = $status; error = $errorMessage } | ConvertTo-Json -Compress
+  [IO.File]::WriteAllText($temporary, $result, (New-Object Text.UTF8Encoding($false)))
+  Move-Item -LiteralPath $temporary -Destination $resultPath -Force
+}
 
 try {
   & sc.exe stop $agent *> $null
@@ -753,7 +1803,8 @@ try {
 
   $backupPath = [IO.Path]::GetFullPath($backup)
   foreach ($entry in @(Get-ChildItem -LiteralPath $root -Force)) {
-    if ([IO.Path]::GetFullPath($entry.FullName) -eq $backupPath) { continue }
+    $entryPath = [IO.Path]::GetFullPath($entry.FullName)
+    if ($entryPath -eq $backupPath -or $protectedRootPaths -contains $entryPath) { continue }
     if ($panelEntries -notcontains $entry.Name) {
       Remove-Item -LiteralPath $entry.FullName -Recurse -Force
     }
@@ -768,8 +1819,8 @@ try {
   }
 
   foreach ($target in $targets) {
-    if (-not (Test-Path -LiteralPath $target.source)) { continue }
     Remove-Item -LiteralPath $target.target -Recurse -Force -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $target.source)) { continue }
     Copy-Item -LiteralPath $target.source -Destination $target.target -Recurse -Force
   }
 
@@ -782,12 +1833,14 @@ try {
   }
 
   foreach ($service in $services) { & sc.exe start $service *> $null }
+  Write-RestoreResult 'succeeded' $null
   & sc.exe start $agent *> $null
   Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 } catch {
   $message = "[$([DateTime]::UtcNow.ToString('o'))] $($_.Exception.Message)"
   Set-Content -LiteralPath $log -Value $message -Encoding UTF8
   foreach ($service in $services) { & sc.exe start $service *> $null }
+  Write-RestoreResult 'failed' $message
   & sc.exe start $agent *> $null
   exit 1
 }
@@ -815,12 +1868,15 @@ async function restorePanelArchive(
   options: BackupServiceOptions,
   ctx: JobContext,
 ): Promise<void> {
-  if (!payload.backupId) throw new Error('The restore request has no backup attached to it.');
-  const archive = archivePath(options.backupDir, 'panel', payload.backupId);
-  if (!(await exists(archive))) throw new Error('That panel backup is no longer available.');
+  const { archive, stagedUploadId } = await restoreArchiveFor(payload, options, 'panel');
 
   const workDir = path.join(options.backupDir, '.restore', ctx.jobId);
-  const services = await listPanelServices();
+  const panelServices = options.panelServices ?? {
+    list: listPanelServices,
+    stop: stopSupportingServices,
+    start: startSupportingServices,
+  };
+  const services = await panelServices.list();
   const resumableServices = servicesToResumeAfterRestore(services, options.gameServers);
   const recovery = createServiceRecovery(options.db, options.gameServers);
   let stopped = false;
@@ -828,15 +1884,16 @@ async function restorePanelArchive(
 
   try {
     await fs.rm(workDir, { recursive: true, force: true });
-    await extractArchive(archive, workDir);
+    await extractArchive(archive, workDir, ctx.signal);
     await validateExtractedTree(workDir);
-    const metadataPath = path.join(workDir, 'winpanel-panel-backup.json');
-    const metadata = JSON.parse(await fs.readFile(metadataPath, 'utf8')) as { format?: string };
-    if (metadata.format !== 'winpanel-panel-backup') {
-      throw new Error('That file is not a WinPanel panel backup.');
-    }
+    const inspection = await inspectExtractedBackup(workDir, 'panel', panelArchiveLayout(options));
+    if (inspection.scope !== 'panel') throw new Error('That file is not a valid panel backup.');
+    const metadata = inspection.metadata;
 
-    const stoppedReport = await stopSupportingServices(services, {
+    await installPanelDependencies(payload, metadata, workDir, options, ctx);
+    ctx.throwIfCancelled();
+
+    const stoppedReport = await panelServices.stop(services, {
       unblock: recovery.unblock,
       markIntentionallyStopped: options.markIntentionallyStopped,
     });
@@ -854,24 +1911,37 @@ async function restorePanelArchive(
       const scriptPath = path.join(workDir, 'restore.ps1');
       await fs.writeFile(
         scriptPath,
-        restoreScript(workDir, options, serviceIds, panelEntryNames(metadata)),
+        restoreScript(
+          workDir,
+          options,
+          ctx.jobId,
+          serviceIds,
+          panelEntryNames(metadata),
+          [options.backupDir, options.sitesRoot, options.gameServersRoot].map((entry) => path.resolve(entry)),
+          metadata.includeGameServers,
+        ),
         'utf8',
       );
       ctx.progress(100);
       ctx.log('The restore is staged. The panel will restart while the saved state is applied.');
-      runDetached({
+      (options.runDetached ?? runDetached)({
         exe: 'powershell.exe',
         args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
       });
+      await discardStagedUpload(options, stagedUploadId);
+      ctx.defer?.();
       deferred = true;
       return;
     }
 
     const entries = panelEntryNames(metadata);
     const backupRoot = path.resolve(options.backupDir);
+    const protectedRoots = new Set(
+      [options.backupDir, options.sitesRoot, options.gameServersRoot].map((entry) => path.resolve(entry)),
+    );
     for (const entry of await fs.readdir(options.root, { withFileTypes: true })) {
       const target = path.join(options.root, entry.name);
-      if (path.resolve(target) === backupRoot || entries.includes(entry.name)) continue;
+      if (path.resolve(target) === backupRoot || protectedRoots.has(path.resolve(target)) || entries.includes(entry.name)) continue;
       await fs.rm(target, { recursive: true, force: true });
     }
 
@@ -884,15 +1954,15 @@ async function restorePanelArchive(
       ctx.progress(20 + ((index + 1) / Math.max(entries.length, 1)) * 60);
     }
 
-    for (const [sourceRoot, targetRoot] of [
-      [options.sitesRoot, options.sitesRoot],
-      [options.gameServersRoot, options.gameServersRoot],
-    ] as const) {
+    const restoreRoots: Array<[string, string]> = [[options.sitesRoot, options.sitesRoot]];
+    if (metadata.includeGameServers) {
+      restoreRoots.push([options.gameServersRoot, options.gameServersRoot]);
+    }
+    for (const [sourceRoot, targetRoot] of restoreRoots) {
       const source = path.join(workDir, path.basename(sourceRoot));
-      if (!(await exists(source))) continue;
       await fs.rm(targetRoot, { recursive: true, force: true });
+      if (!(await exists(source))) continue;
       await fs.cp(source, targetRoot, { recursive: true, force: true });
-      void sourceRoot;
     }
 
     const panelDatabaseSnapshot = path.join(workDir, 'panel-database', 'panel.db');
@@ -909,8 +1979,9 @@ async function restorePanelArchive(
   } finally {
     if (!deferred) {
       await fs.rm(workDir, { recursive: true, force: true });
+      await discardStagedUpload(options, stagedUploadId);
       if (stopped) {
-        await startSupportingServices(resumableServices, {
+        await panelServices.start(resumableServices, {
           unblock: recovery.unblock,
           markIntentionallyStarted: options.markIntentionallyStarted,
         });
@@ -924,8 +1995,11 @@ export function createBackupHandler(options: BackupServiceOptions) {
   return async (payload: unknown, ctx: JobContext): Promise<void> => {
     const parsed = BackupPayload.parse(payload);
     if (parsed.operation === 'restore') {
-      if (parsed.scope !== 'panel') throw new Error('Only panel backups can be restored here.');
-      await restorePanelArchive(parsed, options, ctx);
+      if (parsed.scope === 'panel') {
+        await restorePanelArchive(parsed, options, ctx);
+      } else {
+        await restoreSiteArchive(parsed, options, ctx);
+      }
       return;
     }
 

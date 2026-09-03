@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { SpawnOptions } from 'node:child_process';
+import { createReadStream } from 'node:fs';
 
 /**
  * The only way this agent is permitted to run an external program.
@@ -30,6 +31,9 @@ export interface RunOptions {
   readonly onOutput?: (line: string, stream: 'stdout' | 'stderr') => void;
   /** Fed to the process's stdin, then closed. */
   readonly stdin?: string;
+  /** Streams a file into the process's stdin without loading it into memory. */
+  readonly stdinFile?: string;
+  readonly signal?: AbortSignal;
   /** Cap on captured output. Beyond this, output is truncated. */
   readonly maxOutputBytes?: number;
 }
@@ -54,6 +58,13 @@ export class CommandError extends Error {
   ) {
     super(message);
     this.name = 'CommandError';
+  }
+}
+
+export class CommandCancelledError extends Error {
+  constructor() {
+    super('The command was cancelled.');
+    this.name = 'CommandCancelledError';
   }
 }
 
@@ -118,6 +129,8 @@ function buildEnv(extra?: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
 export async function runCommand(options: RunOptions): Promise<RunResult> {
   assertSafeArgs(options.args);
 
+  if (options.signal?.aborted) throw new CommandCancelledError();
+
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
   const startedAt = Date.now();
@@ -145,10 +158,26 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
     let capturedBytes = 0;
     let truncated = false;
     let timedOut = false;
+    let cancelled = false;
     let settled = false;
     let backstop: NodeJS.Timeout | undefined;
+    let timer: NodeJS.Timeout | undefined;
+    let input: ReturnType<typeof createReadStream> | undefined;
 
-    const timer = setTimeout(() => {
+    const abort = () => {
+      if (settled) return;
+      cancelled = true;
+      clearTimeout(timer);
+      input?.destroy();
+      killTree(child);
+      backstop = setTimeout(() => child.kill('SIGKILL'), 5_000);
+      backstop.unref();
+    };
+
+    options.signal?.addEventListener('abort', abort, { once: true });
+    if (options.signal?.aborted) abort();
+
+    timer = setTimeout(() => {
       timedOut = true;
       killTree(child);
 
@@ -185,7 +214,20 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
     child.stdout?.on('data', makeCollector('stdout'));
     child.stderr?.on('data', makeCollector('stderr'));
 
-    if (options.stdin !== undefined) {
+    if (options.stdinFile !== undefined) {
+      input = createReadStream(options.stdinFile);
+      input.on('error', (error: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        clearTimeout(backstop);
+        options.signal?.removeEventListener('abort', abort);
+        input?.destroy();
+        killTree(child);
+        reject(error);
+      });
+      input.pipe(child.stdin!);
+    } else if (options.stdin !== undefined) {
       child.stdin?.end(options.stdin);
     } else {
       child.stdin?.end();
@@ -196,6 +238,12 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
       settled = true;
       clearTimeout(timer);
       clearTimeout(backstop);
+      options.signal?.removeEventListener('abort', abort);
+      input?.destroy();
+      if (cancelled) {
+        reject(new CommandCancelledError());
+        return;
+      }
       resolve({
         exitCode,
         stdout,
@@ -211,7 +259,8 @@ export async function runCommand(options: RunOptions): Promise<RunResult> {
       settled = true;
       clearTimeout(timer);
       clearTimeout(backstop);
-      reject(error);
+      options.signal?.removeEventListener('abort', abort);
+      reject(cancelled ? new CommandCancelledError() : error);
     });
 
     child.on('close', (code) => finish(code ?? (timedOut ? 124 : 1)));

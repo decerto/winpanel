@@ -104,8 +104,12 @@ function status() {
 
 const state = vi.hoisted(() => ({
   status: null as any,
+  active: null as any,
+  job: null as any,
   saved: [] as any[],
   removed: [] as any[],
+  restored: [] as any[],
+  cancelled: [] as any[],
 }));
 
 vi.mock('../src/lib/api', () => ({
@@ -113,9 +117,14 @@ vi.mock('../src/lib/api', () => ({
     backups: {
       panel: {
         status: { query: vi.fn(async () => state.status) },
-        active: { query: vi.fn(async () => null) },
+        active: { query: vi.fn(async () => state.active) },
         create: { mutate: vi.fn(async () => ({ jobId: 'job-create' })) },
-        restore: { mutate: vi.fn(async () => ({ jobId: 'job-restore' })) },
+        restore: {
+          mutate: vi.fn(async (input: any) => {
+            state.restored.push(input);
+            return { jobId: 'job-restore' };
+          }),
+        },
         setSettings: {
           mutate: vi.fn(async (input: any) => {
             state.saved.push(input);
@@ -135,7 +144,18 @@ vi.mock('../src/lib/api', () => ({
         },
       },
     },
-    jobs: { get: { query: vi.fn(async () => null) }, logs: { query: vi.fn(async () => []) } },
+    jobs: {
+      get: { query: vi.fn(async () => state.job) },
+      logs: { query: vi.fn(async () => []) },
+      cancel: {
+        mutate: vi.fn(async (input: any) => {
+          state.cancelled.push(input);
+          state.active = null;
+          state.job = state.job ? { ...state.job, status: 'cancelled' } : null;
+          return { ok: true };
+        }),
+      },
+    },
   },
   describeError: (error: unknown) => String(error),
 }));
@@ -144,8 +164,12 @@ const BackupPage = (await import('../src/pages/BackupPage.vue')).default;
 
 beforeEach(() => {
   state.status = status();
+  state.active = null;
+  state.job = null;
   state.saved = [];
   state.removed = [];
+  state.restored = [];
+  state.cancelled = [];
   vi.spyOn(window, 'confirm').mockReturnValue(true);
 });
 
@@ -273,5 +297,41 @@ describe('the panel backup page', () => {
 
     expect(text).toContain('Manual');
     expect(text).toContain('Daily');
+  });
+
+  it('offers dependency installation before restoring an archive that omitted it', async () => {
+    const wrapper = await open();
+    const restore = wrapper.findAll('button').find((button) => button.text().trim() === 'Restore')!;
+
+    await restore.trigger('click');
+    expect(wrapper.get('[role="dialog"]').text()).toContain('omitted Node dependencies');
+
+    const install = wrapper
+      .get('[role="dialog"]')
+      .findAll('button')
+      .find((button) => button.text().trim() === 'Install and restore')!;
+    await install.trigger('click');
+    await flushPromises();
+
+    expect(state.restored).toEqual([
+      {
+        backupId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        installDependencies: true,
+      },
+    ]);
+    wrapper.unmount();
+  });
+
+  it('lets the owner cancel an active backup or restore', async () => {
+    state.active = { jobId: 'job-create', operation: 'create' };
+    state.job = { id: 'job-create', status: 'running', progress: 24 };
+    const wrapper = await open();
+
+    await wrapper.get('[aria-label="Cancel current panel activity"]').trigger('click');
+    await flushPromises();
+
+    expect(state.cancelled).toEqual([{ jobId: 'job-create' }]);
+    expect(wrapper.text()).toContain('Cancellation requested.');
+    wrapper.unmount();
   });
 });

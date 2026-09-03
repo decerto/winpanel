@@ -155,6 +155,20 @@
       "when": 1787753000000,
       "tag": "0021_add_email_verification",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1787754000000,
+      "tag": "0022_add_backup_limit",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1787755000000,
+      "tag": "0023_add_backup_uploads",
+      "breakpoints": true
     }
   ]
 }

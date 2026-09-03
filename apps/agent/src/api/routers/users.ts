@@ -128,6 +128,7 @@ export const usersRouter = router({
         email: input.email,
         siteLimit: input.siteLimit,
         subdomainLimit: input.subdomainLimit,
+        backupLimit: input.backupLimit,
         mailboxLimit: input.mailboxLimit,
         mailQuotaBytes: input.mailQuotaBytes,
         siteDiskQuotaBytes: input.siteDiskQuotaBytes,

@@ -1,3 +1,6 @@
+import os from 'node:os';
+import path from 'node:path';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { findExecutable } from '../components/archive.js';
 import { POSTGRES_PORT } from '@winpanel/shared';
 import { runCommand } from '../process/run-command.js';
@@ -82,6 +85,7 @@ export async function runPsql(
     ],
     env: { PGPASSWORD: rootOrThrow(ctx) },
     timeoutMs: 60_000,
+    signal: ctx.signal,
   });
 
   if (result.exitCode !== 0) {
@@ -93,8 +97,74 @@ export async function runPsql(
   return result.stdout;
 }
 
+async function runPsqlFile(ctx: EngineContext, source: string, database: string): Promise<void> {
+  const result = await runCommand({
+    exe: await psql(ctx.binDir),
+    args: [
+      '--host=127.0.0.1',
+      `--port=${POSTGRES_PORT}`,
+      `--username=${ENGINE_ROOT_USER.postgres}`,
+      `--dbname=${assertSafeDbName(database)}`,
+      '--no-psqlrc',
+      '--quiet',
+      '--set=ON_ERROR_STOP=1',
+      `--file=${source}`,
+    ],
+    env: { PGPASSWORD: rootOrThrow(ctx) },
+    timeoutMs: 60 * 60 * 1000,
+    signal: ctx.signal,
+  });
+
+  if (result.exitCode !== 0) {
+    throw new DatabaseError(
+      `PostgreSQL could not restore ${database}. ${result.stderr.trim() || 'The database tool returned no details.'}`,
+    );
+  }
+}
+
+async function dumpDatabase(ctx: EngineContext, name: string, destination: string): Promise<void> {
+  const executable = await findExecutable(engineBinDir(ctx.binDir, 'postgres'), ['pg_dump.exe']);
+  if (!executable) throw new DatabaseError('PostgreSQL export tools are not installed.');
+
+  const result = await runCommand({
+    exe: executable,
+    args: [
+      '--host=127.0.0.1',
+      `--port=${POSTGRES_PORT}`,
+      `--username=${ENGINE_ROOT_USER.postgres}`,
+      `--dbname=${assertSafeDbName(name)}`,
+      '--format=plain',
+      '--no-owner',
+      `--file=${destination}`,
+    ],
+    env: { PGPASSWORD: rootOrThrow(ctx) },
+    timeoutMs: 60 * 60 * 1000,
+    signal: ctx.signal,
+  });
+
+  if (result.exitCode !== 0) {
+    throw new DatabaseError(
+      `PostgreSQL could not create a rollback snapshot for ${name}. ` +
+        (result.stderr.trim() || 'The database tool returned no details.'),
+    );
+  }
+}
+
 async function exists(ctx: EngineContext, query: string): Promise<boolean> {
   return (await runPsql(ctx, [query])).trim() !== '';
+}
+
+async function recreateDatabase(
+  ctx: EngineContext,
+  name: string,
+  username: string,
+): Promise<void> {
+  await runPsql(ctx, [`DROP DATABASE IF EXISTS ${ident(name)} WITH (FORCE)`]);
+  await runPsql(ctx, [
+    `CREATE DATABASE ${ident(name)} OWNER ${ident(username)} ENCODING 'UTF8' TEMPLATE template0`,
+    `REVOKE ALL ON DATABASE ${ident(name)} FROM PUBLIC`,
+    `GRANT ALL ON DATABASE ${ident(name)} TO ${ident(username)}`,
+  ]);
 }
 
 export const postgresAdapter: DatabaseAdapter = {
@@ -160,6 +230,56 @@ export const postgresAdapter: DatabaseAdapter = {
     // failure the person cannot act on.
     await runPsql(ctx, [`DROP DATABASE IF EXISTS ${ident(name)} WITH (FORCE)`]);
     await runPsql(ctx, [`DROP ROLE IF EXISTS ${ident(username)}`]);
+  },
+
+  async importDump(ctx, account, source) {
+    const name = assertSafeDbName(account.name);
+    const username = assertSafeDbName(account.username);
+    const rolePresent = await exists(
+      ctx,
+      `SELECT 1 FROM pg_roles WHERE rolname = ${nameLiteral(username)}`,
+    );
+    if (!rolePresent) {
+      throw new DatabaseError(
+        `PostgreSQL login ${username} is missing from the server. Recreate the database record before restoring it.`,
+      );
+    }
+    const present = await exists(
+      ctx,
+      `SELECT 1 FROM pg_database WHERE datname = ${nameLiteral(name)}`,
+    );
+    if (!present) {
+      throw new DatabaseError(
+        `PostgreSQL database ${name} is missing from the server. Recreate the database record before restoring it.`,
+      );
+    }
+
+    const rollbackDirectory = await mkdtemp(path.join(os.tmpdir(), 'winpanel-postgres-'));
+    const rollbackSource = path.join(rollbackDirectory, 'previous.sql');
+    let replacementStarted = false;
+
+    try {
+      await dumpDatabase(ctx, name, rollbackSource);
+      replacementStarted = true;
+      await recreateDatabase(ctx, name, username);
+      await runPsqlFile(ctx, source, name);
+    } catch (error) {
+      if (!replacementStarted) throw error;
+
+      const rollbackContext: EngineContext = { ...ctx, signal: undefined };
+      try {
+        await recreateDatabase(rollbackContext, name, username);
+        await runPsqlFile(rollbackContext, rollbackSource, name);
+      } catch (rollbackError) {
+        throw new DatabaseError(
+          `${error instanceof Error ? error.message : String(error)} ` +
+            `The previous PostgreSQL database could not be restored: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+        );
+      }
+      throw error;
+    } finally {
+      await rm(rollbackDirectory, { recursive: true, force: true });
+    }
   },
 
   async list(ctx) {

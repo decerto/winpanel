@@ -17,6 +17,74 @@ export interface UploadHandle {
   cancel: () => void;
 }
 
+export interface BackupUploadResult {
+  uploadId: string;
+  bytes: number;
+  scope: 'site' | 'panel';
+  includeDependencies: boolean;
+  websiteSlug?: string;
+  databaseCount: number;
+  websiteCount?: number;
+}
+
+const UPLOAD_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+
+function uploadRequest<T>(
+  url: string,
+  file: File,
+  onProgress: ((fraction: number) => void) | undefined,
+  parse: (request: XMLHttpRequest) => T,
+): { promise: Promise<T>; cancel: () => void } {
+  const request = new XMLHttpRequest();
+  let timedOut = false;
+
+  const promise = new Promise<T>((resolve, reject) => {
+    request.open('POST', url);
+    request.setRequestHeader('content-type', 'application/octet-stream');
+    request.withCredentials = true;
+    request.timeout = UPLOAD_TIMEOUT_MS;
+
+    request.upload.addEventListener('progress', (event) => {
+      if (event.lengthComputable && onProgress) onProgress(event.loaded / event.total);
+    });
+
+    request.addEventListener('load', () => {
+      if (request.status >= 200 && request.status < 300) {
+        try {
+          resolve(parse(request));
+        } catch (error) {
+          reject(error);
+        }
+        return;
+      }
+
+      let message = `Upload failed (${request.status}).`;
+      try {
+        const parsed = JSON.parse(request.responseText) as { error?: string };
+        if (parsed.error) message = parsed.error;
+      } catch {
+        // A non-JSON body means the agent failed before its own error response.
+      }
+      reject(new Error(message));
+    });
+
+    request.addEventListener('error', () =>
+      reject(new Error('Could not reach the server. Check that the panel service is running.')),
+    );
+    request.addEventListener('timeout', () => {
+      timedOut = true;
+      reject(new Error('The upload took too long and was stopped.'));
+    });
+    request.addEventListener('abort', () =>
+      reject(new Error(timedOut ? 'The upload took too long and was stopped.' : 'Upload cancelled.')),
+    );
+
+    request.send(file);
+  });
+
+  return { promise, cancel: () => request.abort() };
+}
+
 /**
  * Sends one file into a folder of a website.
  *
@@ -29,47 +97,13 @@ export function uploadFile(
   file: File,
   onProgress?: (fraction: number) => void,
 ): UploadHandle {
-  const request = new XMLHttpRequest();
-
-  const promise = new Promise<void>((resolve, reject) => {
-    const url =
-      `/api/sites/${encodeURIComponent(siteSlug)}/files/upload` +
-      `?path=${encodeURIComponent(folder)}&name=${encodeURIComponent(file.name)}`;
-
-    request.open('POST', url);
-    request.setRequestHeader('content-type', 'application/octet-stream');
-    request.withCredentials = true;
-
-    request.upload.addEventListener('progress', (event) => {
-      if (event.lengthComputable && onProgress) onProgress(event.loaded / event.total);
-    });
-
-    request.addEventListener('load', () => {
-      if (request.status >= 200 && request.status < 300) {
-        resolve();
-        return;
-      }
-
-      let message = `Upload failed (${request.status}).`;
-      try {
-        const parsed = JSON.parse(request.responseText) as { error?: string };
-        if (parsed.error) message = parsed.error;
-      } catch {
-        // A non-JSON body means the agent never got as far as its own error
-        // handling; the status code is all there is to report.
-      }
-      reject(new Error(message));
-    });
-
-    request.addEventListener('error', () =>
-      reject(new Error('Could not reach the server. Check that the panel service is running.')),
-    );
-    request.addEventListener('abort', () => reject(new Error('Upload cancelled.')));
-
-    request.send(file);
-  });
-
-  return { promise, cancel: () => request.abort() };
+  return uploadRequest(
+    `/api/sites/${encodeURIComponent(siteSlug)}/files/upload` +
+      `?path=${encodeURIComponent(folder)}&name=${encodeURIComponent(file.name)}`,
+    file,
+    onProgress,
+    () => undefined,
+  );
 }
 
 export function gameDownloadUrl(gameServerSlug: string, path: string): string {
@@ -86,31 +120,32 @@ export function uploadGameFile(
   file: File,
   onProgress?: (fraction: number) => void,
 ): UploadHandle {
-  const request = new XMLHttpRequest();
-  const promise = new Promise<void>((resolve, reject) => {
-    const url =
-      `/api/game-servers/${encodeURIComponent(gameServerSlug)}/files/upload` +
-      `?path=${encodeURIComponent(folder)}&name=${encodeURIComponent(file.name)}`;
-    request.open('POST', url);
-    request.setRequestHeader('content-type', 'application/octet-stream');
-    request.withCredentials = true;
-    request.upload.addEventListener('progress', (event) => {
-      if (event.lengthComputable && onProgress) onProgress(event.loaded / event.total);
-    });
-    request.addEventListener('load', () => {
-      if (request.status >= 200 && request.status < 300) return resolve();
-      let message = `Upload failed (${request.status}).`;
-      try {
-        const parsed = JSON.parse(request.responseText) as { error?: string };
-        if (parsed.error) message = parsed.error;
-      } catch {
-        // The status is the only useful response when the request failed early.
-      }
-      reject(new Error(message));
-    });
-    request.addEventListener('error', () => reject(new Error('Could not reach the server.')));
-    request.addEventListener('abort', () => reject(new Error('Upload cancelled.')));
-    request.send(file);
+  return uploadRequest(
+    `/api/game-servers/${encodeURIComponent(gameServerSlug)}/files/upload` +
+      `?path=${encodeURIComponent(folder)}&name=${encodeURIComponent(file.name)}`,
+    file,
+    onProgress,
+    () => undefined,
+  );
+}
+
+export function uploadBackupFile(
+  scope: 'site' | 'panel',
+  file: File,
+  siteSlug: string | undefined,
+  onProgress?: (fraction: number) => void,
+): { promise: Promise<BackupUploadResult>; cancel: () => void } {
+  if (scope === 'site' && siteSlug === undefined) {
+    throw new Error('A website is required for a website backup upload.');
+  }
+  if (scope === 'panel' && siteSlug !== undefined) {
+    throw new Error('A panel backup upload cannot be attached to a website.');
+  }
+  const url =
+    scope === 'site'
+      ? `/api/backups/site/${encodeURIComponent(siteSlug!)}/upload`
+      : '/api/backups/panel/upload';
+  return uploadRequest<BackupUploadResult>(url, file, onProgress, (request) => {
+    return JSON.parse(request.responseText) as BackupUploadResult;
   });
-  return { promise, cancel: () => request.abort() };
 }

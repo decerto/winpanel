@@ -39,7 +39,11 @@ import { createPanelUpdateHandler } from './components/panel-update.js';
 import { createWordPressHandler } from './sites/wordpress.js';
 import { resolveToolInvocation } from './sites/tool-paths.js';
 import { localAddresses, type PanelTls } from './tls/panel-certificate.js';
-import { BackupScheduler, createBackupHandler } from './backups/service.js';
+import {
+  BackupScheduler,
+  createBackupHandler,
+  reconcilePanelRestoreResults,
+} from './backups/service.js';
 import {
   migrateLegacyCloudflareToken,
   type LegacyCloudflareTokenMigration,
@@ -124,6 +128,9 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
 
   const jobs = new JobQueue(db);
   const backupScheduler = new BackupScheduler(db, jobs);
+  await reconcilePanelRestoreResults(db, config.backupDir).catch((error) => {
+    process.stderr.write(`Could not reconcile the panel restore result: ${String(error)}\n`);
+  });
   // Anything left `running` when the process died is not running now.
   jobs.reconcileOrphans();
 
@@ -346,6 +353,8 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
         gameServersRoot: config.gameServersRoot,
         binDir: config.binDir,
         backupDir: config.backupDir,
+        services,
+        tools: { resolve: resolveToolInvocation },
         gameServers,
         markIntentionallyStopped: (id) => services.markIntentionallyStopped(id),
         markIntentionallyStarted: (id) => services.markIntentionallyStarted(id),

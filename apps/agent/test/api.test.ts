@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
+import { eq } from 'drizzle-orm';
 import { Secret, TOTP } from 'otpauth';
 import superjson from 'superjson';
 import { createAppContext, type AppContext } from '../src/app-context.js';
@@ -11,6 +12,7 @@ import { storeMailAdminCredentials } from '../src/mail/credentials.js';
 import { StalwartClient, type MailPrincipal } from '../src/mail/stalwart-client.js';
 import { WebmailClient } from '../src/mail/webmail-client.js';
 import { webmailSessions } from '../src/mail/webmail-sessions.js';
+import { backupFilePath } from '../src/backups/service.js';
 
 /**
  * End-to-end exercise of the Phase 1 stack: server, tRPC, sessions, auth
@@ -271,6 +273,107 @@ async function enrolAndCollectCodes(cookie: string): Promise<{
   return { secret, codes: confirm.body.result.data.recoveryCodes as string[] };
 }
 
+describe('website backup quotas', () => {
+  async function addSite(id: string, slug: string, ownerUserId: string): Promise<void> {
+    app.db.db
+      .insert(app.schema.sites)
+      .values({
+        id,
+        slug,
+        displayName: slug,
+        ownerUserId,
+        runtime: 'static',
+        source: { kind: 'upload' },
+        manifest: { runtime: 'static' },
+      })
+      .run();
+  }
+
+  async function customerCookie(username: string): Promise<string> {
+    const login = await call('POST', 'auth.login', { username, password: PASSWORD });
+    const session = login.cookies.find((entry) => entry.name === 'winpanel_session');
+    return `winpanel_session=${session.value}`;
+  }
+
+  it('reserves slots and counts completed archives across all owned sites', async () => {
+    await completeSetup();
+    const customer = await app.auth.createUser({
+      username: 'backup-customer',
+      password: PASSWORD,
+      role: 'user',
+      backupLimit: 1,
+    });
+    const cookie = await customerCookie(customer.username);
+    const firstSiteId = '00000000-0000-0000-0000-000000000011';
+    const secondSiteId = '00000000-0000-0000-0000-000000000012';
+    await addSite(firstSiteId, 'first-site', customer.id);
+    await addSite(secondSiteId, 'second-site', customer.id);
+
+    const originalBackupDir = app.config.backupDir;
+    const backupDir = path.join(tmpDir, 'backups');
+    (app.config as { backupDir: string }).backupDir = backupDir;
+
+    try {
+      const first = await call('POST', 'backups.site.create', { slug: 'first-site' }, cookie);
+      expect(first.body.error).toBeUndefined();
+
+      const whilePending = await call(
+        'POST',
+        'backups.site.create',
+        { slug: 'second-site' },
+        cookie,
+      );
+      expect(whilePending.body.error.message).toMatch(/limited to 1 website backup/i);
+
+      await fs.mkdir(path.join(backupDir, 'websites'), { recursive: true });
+      await fs.writeFile(backupFilePath(backupDir, 'site', first.body.result.data.jobId), 'archive');
+      app.db.db
+        .update(app.schema.jobs)
+        .set({ status: 'succeeded', finishedAt: new Date() })
+        .where(eq(app.schema.jobs.id, first.body.result.data.jobId))
+        .run();
+
+      const removed = await call(
+        'POST',
+        'backups.site.remove',
+        { slug: 'first-site', backupId: first.body.result.data.jobId },
+        cookie,
+      );
+      expect(removed.body.result.data.removed).toBe(true);
+
+      const second = await call('POST', 'backups.site.create', { slug: 'second-site' }, cookie);
+      expect(second.body.error).toBeUndefined();
+
+      await fs.writeFile(backupFilePath(backupDir, 'site', second.body.result.data.jobId), 'archive');
+      app.db.db
+        .update(app.schema.jobs)
+        .set({ status: 'succeeded', finishedAt: new Date() })
+        .where(eq(app.schema.jobs.id, second.body.result.data.jobId))
+        .run();
+
+      const accountWide = await call('POST', 'backups.site.create', { slug: 'first-site' }, cookie);
+      expect(accountWide.body.error.message).toMatch(/limited to 1 website backup/i);
+    } finally {
+      (app.config as { backupDir: string }).backupDir = originalBackupDir;
+    }
+  });
+
+  it('refuses every customer backup when the allowance is zero', async () => {
+    await completeSetup();
+    const customer = await app.auth.createUser({
+      username: 'no-backups',
+      password: PASSWORD,
+      role: 'user',
+      backupLimit: 0,
+    });
+    const cookie = await customerCookie(customer.username);
+    await addSite('00000000-0000-0000-0000-000000000013', 'no-backups-site', customer.id);
+
+    const result = await call('POST', 'backups.site.create', { slug: 'no-backups-site' }, cookie);
+    expect(result.body.error.message).toMatch(/backups are not included/i);
+  });
+});
+
 describe('customer resource usage', () => {
   it('reports live mailbox usage for owned domains and distinguishes unavailable data', async () => {
     const cookie = await completeSetup();
@@ -418,6 +521,62 @@ describe('first-run setup', () => {
 });
 
 describe('account email and password recovery', () => {
+  it('round trips customer backup limits through account create and update', async () => {
+    const ownerCookie = await completeSetup();
+
+    const created = await call(
+      'POST',
+      'users.create',
+      {
+        username: 'backup-customer',
+        password: PASSWORD,
+        role: 'user',
+        backupLimit: 2,
+      },
+      ownerCookie,
+    );
+
+    expect(created.body.result.data).toMatchObject({
+      username: 'backup-customer',
+      role: 'user',
+      backupLimit: 2,
+    });
+
+    const customerId = created.body.result.data.id as string;
+    const changed = await call(
+      'POST',
+      'users.update',
+      { userId: customerId, backupLimit: 5 },
+      ownerCookie,
+    );
+    expect(changed.body.result.data).toMatchObject({ id: customerId, backupLimit: 5 });
+
+    const cleared = await call(
+      'POST',
+      'users.update',
+      { userId: customerId, backupLimit: null },
+      ownerCookie,
+    );
+    expect(cleared.body.result.data).toMatchObject({ id: customerId, backupLimit: null });
+
+    const administrator = await call(
+      'POST',
+      'users.create',
+      {
+        username: 'backup-admin',
+        password: PASSWORD,
+        role: 'admin',
+        backupLimit: 9,
+      },
+      ownerCookie,
+    );
+    expect(administrator.body.result.data).toMatchObject({
+      username: 'backup-admin',
+      role: 'admin',
+      backupLimit: null,
+    });
+  });
+
   it('sends a verification link when an owner creates an account with an email', async () => {
     const ownerCookie = await completeSetup();
     const send = vi.spyOn(app.mailer, 'send').mockResolvedValue();

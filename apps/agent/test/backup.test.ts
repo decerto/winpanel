@@ -25,6 +25,16 @@ function context(jobId: string, progressValues: number[] = []): JobContext {
   };
 }
 
+function loggedContext(jobId: string, messages: string[]): JobContext {
+  return {
+    jobId,
+    log: (message) => messages.push(message),
+    progress: () => undefined,
+    isCancelled: () => false,
+    throwIfCancelled: () => undefined,
+  };
+}
+
 async function archiveEntries(archive: string): Promise<string[]> {
   const result = await runCommand({
     exe: process.platform === 'win32' ? 'tar.exe' : 'tar',
@@ -36,6 +46,107 @@ async function archiveEntries(archive: string): Promise<string[]> {
     .split(/\r?\n/)
     .map((entry) => entry.trim().replaceAll('\\', '/').replace(/^\.\//, ''))
     .filter(Boolean);
+}
+
+async function withPlatform<T>(platform: NodeJS.Platform, work: () => Promise<T>): Promise<T> {
+  const original = process.platform;
+  Object.defineProperty(process, 'platform', { configurable: true, value: platform });
+  try {
+    return await work();
+  } finally {
+    Object.defineProperty(process, 'platform', { configurable: true, value: original });
+  }
+}
+
+async function panelRestoreFixture(): Promise<{
+  options: BackupServiceOptions;
+  archiveId: string;
+  root: string;
+  sitesRoot: string;
+  gameServersRoot: string;
+  backupDir: string;
+}> {
+  const root = path.join(tmpDir, 'panel-restore');
+  const dataDir = path.join(root, 'data');
+  const sitesRoot = path.join(tmpDir, 'restore-sites');
+  const gameServersRoot = path.join(tmpDir, 'restore-game-servers');
+  const backupDir = path.join(root, 'backups');
+  const sourceRoot = path.join(tmpDir, 'panel-restore-source');
+  const sourceSitesRoot = path.join(sourceRoot, path.basename(sitesRoot), 'restored-site');
+  const archiveId = crypto.randomUUID();
+  const archive = backupFilePath(backupDir, 'panel', archiveId);
+
+  await fs.mkdir(root, { recursive: true });
+  await fs.writeFile(path.join(root, 'panel-marker.txt'), 'old panel state');
+  await fs.writeFile(path.join(root, 'stale-panel.txt'), 'remove me');
+  await fs.mkdir(path.join(sitesRoot, 'old-site'), { recursive: true });
+  await fs.writeFile(path.join(sitesRoot, 'old-site', 'index.html'), 'old site state');
+  await fs.mkdir(path.join(gameServersRoot, 'game-one'), { recursive: true });
+  await fs.writeFile(path.join(gameServersRoot, 'game-one', 'save.dat'), 'live game state');
+  await fs.mkdir(backupDir, { recursive: true });
+  await fs.writeFile(path.join(backupDir, 'keep-me.txt'), 'backup root is protected');
+
+  await fs.mkdir(sourceSitesRoot, { recursive: true });
+  await fs.writeFile(path.join(sourceRoot, 'panel-marker.txt'), 'restored panel state');
+  await fs.writeFile(path.join(sourceSitesRoot, 'index.html'), 'restored site state');
+  await fs.writeFile(
+    path.join(sourceRoot, 'winpanel-panel-backup.json'),
+    JSON.stringify({
+      format: 'winpanel-panel-backup',
+      version: 1,
+      createdAt: new Date().toISOString(),
+      panelEntries: ['panel-marker.txt'],
+      websites: [
+        {
+          slug: 'restored-site',
+          path: `${path.basename(sitesRoot)}/restored-site`,
+          sourceKind: 'upload',
+        },
+      ],
+      databases: [],
+      includeGameServers: false,
+      includeDependencies: false,
+    }),
+  );
+  await createArchive(
+    archive,
+    [
+      path.join(sourceRoot, 'panel-marker.txt'),
+      path.join(sourceRoot, path.basename(sitesRoot)),
+      path.join(sourceRoot, 'winpanel-panel-backup.json'),
+    ],
+    'tar.gz',
+  );
+
+  handle.db
+    .insert(schema.jobs)
+    .values({
+      id: archiveId,
+      kind: 'backup',
+      title: 'Panel backup',
+      status: 'succeeded',
+      payload: { scope: 'panel', operation: 'create' },
+      siteId: null,
+    })
+    .run();
+
+  return {
+    options: {
+      db: handle,
+      vault,
+      root,
+      dataDir,
+      sitesRoot,
+      gameServersRoot,
+      binDir: path.join(root, 'bin'),
+      backupDir,
+    },
+    archiveId,
+    root,
+    sitesRoot,
+    gameServersRoot,
+    backupDir,
+  };
 }
 
 beforeEach(async () => {
@@ -222,6 +333,174 @@ describe('panel backups', () => {
     expect(await archiveEntries(output)).toContain('kept/index.html');
   });
 
+  it('replaces panel and website state while preserving omitted game servers and backups', async () => {
+    const fixture = await panelRestoreFixture();
+    const panelServices = {
+      list: async () => [],
+      stop: async () => ({ changed: [], failed: [] }),
+      start: async () => ({ changed: [], failed: [] }),
+    };
+
+    await withPlatform('linux', async () => {
+      await createBackupHandler({ ...fixture.options, panelServices })(
+        { scope: 'panel', operation: 'restore', backupId: fixture.archiveId },
+        context(crypto.randomUUID()),
+      );
+    });
+
+    expect(await fs.readFile(path.join(fixture.root, 'panel-marker.txt'), 'utf8')).toBe(
+      'restored panel state',
+    );
+    await expect(fs.access(path.join(fixture.root, 'stale-panel.txt'))).rejects.toThrow();
+    expect(await fs.readFile(path.join(fixture.sitesRoot, 'restored-site', 'index.html'), 'utf8')).toBe(
+      'restored site state',
+    );
+    await expect(fs.access(path.join(fixture.sitesRoot, 'old-site'))).rejects.toThrow();
+    expect(await fs.readFile(path.join(fixture.gameServersRoot, 'game-one', 'save.dat'), 'utf8')).toBe(
+      'live game state',
+    );
+    expect(await fs.readFile(path.join(fixture.backupDir, 'keep-me.txt'), 'utf8')).toBe(
+      'backup root is protected',
+    );
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'generates a detached restore that protects omitted game servers and backups',
+    async () => {
+      const fixture = await panelRestoreFixture();
+      const detached: Array<{ exe: string; args: readonly string[] }> = [];
+      const panelServices = {
+        list: async () => [],
+        stop: async () => ({ changed: [], failed: [] }),
+        start: async () => ({ changed: [], failed: [] }),
+      };
+
+      await createBackupHandler({
+        ...fixture.options,
+        panelServices,
+        runDetached: (command) => detached.push(command),
+      })(
+        { scope: 'panel', operation: 'restore', backupId: fixture.archiveId },
+        context(crypto.randomUUID()),
+      );
+
+      const scriptPath = detached[0]?.args.at(-1);
+      expect(detached[0]?.exe).toBe('powershell.exe');
+      expect(scriptPath).toBeDefined();
+      const script = await fs.readFile(scriptPath!, 'utf8');
+      expect(script).toContain(
+        JSON.stringify(
+          [fixture.backupDir, fixture.sitesRoot, fixture.gameServersRoot].map((entry) =>
+            path.resolve(entry),
+          ),
+        ),
+      );
+      expect(script).toContain('$entryPath -eq $backupPath -or $protectedRootPaths -contains $entryPath');
+      expect(script).toContain(
+        JSON.stringify({
+          source: path.join(path.dirname(scriptPath!), path.basename(fixture.sitesRoot)),
+          target: fixture.sitesRoot,
+        }),
+      );
+      expect(script).not.toContain(
+        JSON.stringify({
+          source: path.join(path.dirname(scriptPath!), path.basename(fixture.gameServersRoot)),
+          target: fixture.gameServersRoot,
+        }),
+      );
+    },
+  );
+
+  it('installs restored Node dependencies without invoking a package manager for static sites', async () => {
+    const root = path.join(tmpDir, 'panel');
+    const dataDir = path.join(root, 'data');
+    const sitesRoot = path.join(tmpDir, 'sites');
+    const gameServersRoot = path.join(tmpDir, 'game-servers');
+    const backupDir = path.join(root, 'backups');
+    const nodeId = crypto.randomUUID();
+    const staticId = crypto.randomUUID();
+
+    handle.db
+      .insert(schema.sites)
+      .values([
+        {
+          id: nodeId,
+          slug: 'node-site',
+          displayName: 'Node site',
+          runtime: 'node',
+          source: { kind: 'upload' },
+          manifest: { runtime: 'node', packageManager: 'npm' },
+        },
+        {
+          id: staticId,
+          slug: 'static-site',
+          displayName: 'Static site',
+          runtime: 'static',
+          source: { kind: 'upload' },
+          manifest: { runtime: 'static' },
+        },
+      ])
+      .run();
+    await fs.mkdir(path.join(sitesRoot, 'node-site', 'public'), { recursive: true });
+    await fs.mkdir(path.join(sitesRoot, 'static-site', 'public'), { recursive: true });
+    await fs.writeFile(
+      path.join(sitesRoot, 'node-site', 'public', 'package.json'),
+      JSON.stringify({ dependencies: { 'example-package': '1.0.0' } }),
+    );
+    await fs.writeFile(path.join(sitesRoot, 'static-site', 'public', 'index.html'), '<h1>static</h1>');
+    await fs.mkdir(path.join(root, 'bin'), { recursive: true });
+    await fs.mkdir(dataDir, { recursive: true });
+
+    const options: BackupServiceOptions = {
+      db: handle,
+      vault,
+      root,
+      dataDir,
+      sitesRoot,
+      gameServersRoot,
+      binDir: path.join(root, 'bin'),
+      backupDir,
+    };
+    const archiveId = crypto.randomUUID();
+    await createBackupHandler(options)(
+      { scope: 'panel', operation: 'create', includeDependencies: false },
+      context(archiveId),
+    );
+    handle.db
+      .insert(schema.jobs)
+      .values({
+        id: archiveId,
+        kind: 'backup',
+        title: 'Panel backup',
+        status: 'succeeded',
+        payload: { scope: 'panel', operation: 'create', includeDependencies: false },
+      })
+      .run();
+
+    const resolved: string[] = [];
+    const messages: string[] = [];
+    await createBackupHandler({
+      ...options,
+      tools: {
+        resolve: async (command) => {
+          resolved.push(command);
+          return { exe: process.execPath, args: ['-e', 'process.exit(0)'] };
+        },
+      },
+    })(
+      {
+        scope: 'panel',
+        operation: 'restore',
+        backupId: archiveId,
+        installDependencies: true,
+      },
+      loggedContext(crypto.randomUUID(), messages),
+    );
+
+    expect(resolved).toEqual(['npm']);
+    expect(messages).toContain('Skipping Node dependency installation for this static website.');
+  });
+
   it('fails when nothing at all could be archived', async () => {
     const output = path.join(tmpDir, 'empty.tar.gz');
 
@@ -352,8 +631,10 @@ describe('website backups', () => {
 
     const metadata = JSON.parse(
       await fs.readFile(path.join(extracted, 'winpanel-backup.json'), 'utf8'),
-    ) as { format: string; website: { slug: string } };
+    ) as { format: string; version: number; includeDependencies: boolean; website: { slug: string } };
     expect(metadata.format).toBe('winpanel-website-backup');
+    expect(metadata.version).toBe(2);
+    expect(metadata.includeDependencies).toBe(false);
     expect(metadata.website.slug).toBe('shop');
   });
 
@@ -368,5 +649,64 @@ describe('website backups', () => {
 
     const entries = await archiveEntries(backupFilePath(options.backupDir, 'site', jobId));
     expect(entries).toContain('shop/node_modules/left-pad/index.js');
+
+    const extracted = path.join(tmpDir, 'dependencies-out');
+    await fs.mkdir(extracted, { recursive: true });
+    const extraction = await runCommand({
+      exe: process.platform === 'win32' ? 'tar.exe' : 'tar',
+      args: ['-xf', backupFilePath(options.backupDir, 'site', jobId), '-C', extracted],
+      timeoutMs: 60_000,
+    });
+    expect(extraction.exitCode, extraction.stderr).toBe(0);
+    const metadata = JSON.parse(
+      await fs.readFile(path.join(extracted, 'winpanel-backup.json'), 'utf8'),
+    ) as { includeDependencies: boolean };
+    expect(metadata.includeDependencies).toBe(true);
+  });
+
+  it('restores a customer-managed website into public through the real backup handler', async () => {
+    const { options, slugId } = await siteOptions();
+    const sourceRoot = path.join(tmpDir, 'restore-source', 'shop');
+    const sourceDatabases = path.join(tmpDir, 'restore-source', 'databases');
+    const metadata = path.join(tmpDir, 'restore-source', 'winpanel-backup.json');
+    const archiveId = crypto.randomUUID();
+    const archive = backupFilePath(options.backupDir, 'site', archiveId);
+
+    await fs.rm(path.join(options.sitesRoot, 'shop', 'public'), { recursive: true, force: true });
+    await fs.mkdir(path.join(sourceRoot, 'public'), { recursive: true });
+    await fs.mkdir(sourceDatabases, { recursive: true });
+    await fs.writeFile(path.join(sourceRoot, 'public', 'index.html'), '<h1>restored</h1>');
+    await fs.writeFile(
+      metadata,
+      JSON.stringify({
+        format: 'winpanel-website-backup',
+        version: 2,
+        createdAt: new Date().toISOString(),
+        includeDependencies: false,
+        website: { slug: 'shop', displayName: 'Shop', domains: [] },
+        databases: [],
+      }),
+    );
+    await createArchive(archive, [sourceRoot, sourceDatabases, metadata], 'zip');
+    handle.db
+      .insert(schema.jobs)
+      .values({
+        id: archiveId,
+        kind: 'backup',
+        title: 'Website backup',
+        status: 'succeeded',
+        payload: { scope: 'site', operation: 'create', siteId: slugId },
+      })
+      .run();
+
+    await createBackupHandler(options)(
+      { scope: 'site', operation: 'restore', siteId: slugId, backupId: archiveId },
+      context(crypto.randomUUID()),
+    );
+
+    expect(await fs.readFile(path.join(options.sitesRoot, 'shop', 'public', 'index.html'), 'utf8')).toBe(
+      '<h1>restored</h1>',
+    );
+    await expect(fs.access(path.join(options.sitesRoot, 'shop', 'release'))).rejects.toThrow();
   });
 });

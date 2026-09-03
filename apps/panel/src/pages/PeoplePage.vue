@@ -114,7 +114,7 @@ async function run(key: string, action: () => Promise<void>): Promise<void> {
 
 type LimitMode = 'limited' | 'unlimited';
 type SiteDiskMode = 'limited' | 'server-default';
-type CountLimitKey = 'site' | 'subdomain' | 'mailbox' | 'gameServer' | 'database';
+type CountLimitKey = 'site' | 'subdomain' | 'backup' | 'mailbox' | 'gameServer' | 'database';
 
 interface FormState {
   open: boolean;
@@ -128,6 +128,8 @@ interface FormState {
   siteLimitMode: LimitMode;
   subdomainLimit: string;
   subdomainLimitMode: LimitMode;
+  backupLimit: string;
+  backupLimitMode: LimitMode;
   mailboxLimit: string;
   mailboxLimitMode: LimitMode;
   mailQuotaGb: string;
@@ -155,6 +157,8 @@ function blankForm(): FormState {
     siteLimitMode: 'limited',
     subdomainLimit: '5',
     subdomainLimitMode: 'limited',
+    backupLimit: '1',
+    backupLimitMode: 'limited',
     mailboxLimit: '5',
     mailboxLimitMode: 'limited',
     mailQuotaGb: '5',
@@ -201,6 +205,12 @@ function openEdit(person: Person): void {
         : String(person.subdomainLimit),
     subdomainLimitMode:
       person.subdomainLimit === null || person.subdomainLimit === undefined ? 'unlimited' : 'limited',
+    backupLimit:
+      person.backupLimit === null || person.backupLimit === undefined
+        ? ''
+        : String(person.backupLimit),
+    backupLimitMode:
+      person.backupLimit === null || person.backupLimit === undefined ? 'unlimited' : 'limited',
     mailboxLimit:
       person.mailboxLimit === null || person.mailboxLimit === undefined ? '' : String(person.mailboxLimit),
     mailboxLimitMode:
@@ -250,6 +260,7 @@ function suggestPassword(): string {
 const countLimitFields = {
   site: { value: 'siteLimit', mode: 'siteLimitMode' },
   subdomain: { value: 'subdomainLimit', mode: 'subdomainLimitMode' },
+  backup: { value: 'backupLimit', mode: 'backupLimitMode' },
   mailbox: { value: 'mailboxLimit', mode: 'mailboxLimitMode' },
   gameServer: { value: 'gameServerLimit', mode: 'gameServerLimitMode' },
   database: { value: 'databaseLimit', mode: 'databaseLimitMode' },
@@ -323,6 +334,7 @@ const formValidationError = computed(() => {
   const checks = [
     validateCountLimit('Websites', form.value.siteLimit, form.value.siteLimitMode, 1000),
     validateCountLimit('Subdomains', form.value.subdomainLimit, form.value.subdomainLimitMode, 1000),
+    validateCountLimit('Backups', form.value.backupLimit, form.value.backupLimitMode, 1000),
     validateCountLimit('Mailboxes', form.value.mailboxLimit, form.value.mailboxLimitMode, 10000),
     validateGbQuota('Email storage', form.value.mailQuotaGb, form.value.mailQuotaMode, 0),
     validateGbQuota('Disk per site', form.value.siteDiskQuotaGb, form.value.siteDiskQuotaMode, 0),
@@ -369,6 +381,7 @@ async function submitForm(): Promise<void> {
       ? {
           siteLimit: countValue(state.siteLimit, state.siteLimitMode),
           subdomainLimit: countValue(state.subdomainLimit, state.subdomainLimitMode),
+          backupLimit: countValue(state.backupLimit, state.backupLimitMode),
           mailboxLimit: countValue(state.mailboxLimit, state.mailboxLimitMode),
           mailQuotaBytes: quotaValue(state.mailQuotaGb, state.mailQuotaMode),
           siteDiskQuotaBytes: quotaValue(state.siteDiskQuotaGb, state.siteDiskQuotaMode),
@@ -380,6 +393,7 @@ async function submitForm(): Promise<void> {
       : {
           siteLimit: null,
           subdomainLimit: null,
+          backupLimit: null,
           mailboxLimit: null,
           mailQuotaBytes: null,
           siteDiskQuotaBytes: null,
@@ -487,6 +501,13 @@ function describeSubdomains(person: Person): string {
   }
   if (person.subdomainLimit === 0) return 'No subdomains';
   return `${person.subdomainCount ?? 0} of ${person.subdomainLimit}`;
+}
+
+function describeBackups(person: Person): string {
+  if (person.role !== 'user') return 'All backups';
+  if (person.backupLimit === null || person.backupLimit === undefined) return 'Unlimited';
+  if (person.backupLimit === 0) return 'No backups';
+  return `${person.backupLimit} allowed`;
 }
 
 function describeMailboxes(person: Person): string {
@@ -731,6 +752,10 @@ function selectAllGames(): void {
               <dd class="mt-0.5 text-sm text-ink-muted">{{ describeSubdomains(person) }}</dd>
             </div>
             <div>
+              <dt class="text-xs text-ink-faint">Backups</dt>
+              <dd class="mt-0.5 text-sm text-ink-muted">{{ describeBackups(person) }}</dd>
+            </div>
+            <div>
               <dt class="text-xs text-ink-faint">Game servers</dt>
               <dd class="mt-0.5 text-sm text-ink-muted">{{ describeGameServers(person) }}</dd>
             </div>
@@ -922,6 +947,42 @@ function selectAllGames(): void {
                 </div>
                 <p v-if="form.subdomainLimitMode === 'limited' && form.subdomainLimit.trim() === '0'" class="limit-zero">
                   No subdomains can be created.
+                </p>
+              </div>
+
+              <div class="limit-item">
+                <div>
+                  <label class="label mb-0" for="person-backups">Backups</label>
+                  <p class="limit-caption">Saved website copies across their account</p>
+                </div>
+                <div class="limit-mode" role="group" aria-label="Backup limit mode">
+                  <label class="limit-mode-option" :class="form.backupLimitMode === 'limited' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="backup-limit-mode"
+                      class="sr-only"
+                      :checked="form.backupLimitMode === 'limited'"
+                      @change="setCountLimitMode('backup', 'limited')"
+                    />
+                    Set a limit
+                  </label>
+                  <label class="limit-mode-option" :class="form.backupLimitMode === 'unlimited' ? 'limit-mode-on' : ''">
+                    <input
+                      type="radio"
+                      name="backup-limit-mode"
+                      class="sr-only"
+                      :checked="form.backupLimitMode === 'unlimited'"
+                      @change="setCountLimitMode('backup', 'unlimited')"
+                    />
+                    No limit
+                  </label>
+                </div>
+                <div v-if="form.backupLimitMode === 'limited'" class="limit-input">
+                  <input id="person-backups" v-model="form.backupLimit" class="field" type="text" inputmode="numeric" />
+                  <span>backups</span>
+                </div>
+                <p v-if="form.backupLimitMode === 'limited' && form.backupLimit.trim() === '0'" class="limit-zero">
+                  No website backups can be kept.
                 </p>
               </div>
 

@@ -86,6 +86,7 @@ describe('managing accounts', () => {
       password: PASSWORD,
       role: 'user',
       siteLimit: 3,
+      backupLimit: 2,
       mailQuotaBytes: 5 * 1024 ** 3,
       siteDiskQuotaBytes: 20 * 1024 ** 3,
       createdBy: ownerId,
@@ -93,6 +94,7 @@ describe('managing accounts', () => {
 
     expect(customer.role).toBe('user');
     expect(customer.siteLimit).toBe(3);
+    expect(customer.backupLimit).toBe(2);
     expect(customer.mailQuotaBytes).toBe(5 * 1024 ** 3);
     expect(customer.siteCount).toBe(0);
   });
@@ -160,11 +162,13 @@ describe('managing accounts', () => {
       password: PASSWORD,
       role: 'admin',
       siteLimit: 2,
+      backupLimit: 2,
       mailQuotaBytes: 1024,
       siteDiskQuotaBytes: 1024,
     });
 
     expect(admin.siteLimit).toBeNull();
+    expect(admin.backupLimit).toBeNull();
     expect(admin.mailQuotaBytes).toBeNull();
     expect(admin.siteDiskQuotaBytes).toBeNull();
   });
@@ -176,9 +180,11 @@ describe('managing accounts', () => {
       password: PASSWORD,
       role: 'user',
       siteLimit: 1,
+      backupLimit: 1,
     });
 
     expect(auth.updateUser(customer.id, { role: 'admin' }).siteLimit).toBeNull();
+    expect(auth.getUser(customer.id)?.backupLimit).toBeNull();
   });
 
   it('refuses a username somebody already has', async () => {

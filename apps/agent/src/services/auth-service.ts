@@ -97,6 +97,7 @@ export interface ManagedUser {
   totpEnrolled: boolean;
   siteLimit: number | null;
   subdomainLimit: number | null;
+  backupLimit: number | null;
   mailboxLimit: number | null;
   mailQuotaBytes: number | null;
   siteDiskQuotaBytes: number | null;
@@ -172,6 +173,7 @@ function toManagedUser(
     totpEnrolled: row.totpEnrolled,
     siteLimit: row.siteLimit,
     subdomainLimit: row.subdomainLimit,
+    backupLimit: row.backupLimit,
     mailboxLimit: row.mailboxLimit,
     mailQuotaBytes: row.mailQuotaBytes,
     siteDiskQuotaBytes: row.siteDiskQuotaBytes,
@@ -394,6 +396,7 @@ export class AuthService {
     email?: string | null;
     siteLimit?: number | null;
     subdomainLimit?: number | null;
+    backupLimit?: number | null;
     mailboxLimit?: number | null;
     mailQuotaBytes?: number | null;
     siteDiskQuotaBytes?: number | null;
@@ -433,6 +436,7 @@ export class AuthService {
         // capped at two websites would be an admin in name only.
         siteLimit: input.role === 'user' ? (input.siteLimit ?? null) : null,
         subdomainLimit: input.role === 'user' ? (input.subdomainLimit ?? null) : null,
+        backupLimit: input.role === 'user' ? (input.backupLimit ?? null) : null,
         mailboxLimit: input.role === 'user' ? (input.mailboxLimit ?? null) : null,
         mailQuotaBytes: input.role === 'user' ? (input.mailQuotaBytes ?? null) : null,
         siteDiskQuotaBytes: input.role === 'user' ? (input.siteDiskQuotaBytes ?? null) : null,
@@ -466,6 +470,7 @@ export class AuthService {
       email?: string | null;
       siteLimit?: number | null;
       subdomainLimit?: number | null;
+      backupLimit?: number | null;
       mailboxLimit?: number | null;
       mailQuotaBytes?: number | null;
       siteDiskQuotaBytes?: number | null;
@@ -548,6 +553,8 @@ export class AuthService {
               changes.subdomainLimit === undefined
                 ? existing.subdomainLimit
                 : changes.subdomainLimit,
+            backupLimit:
+              changes.backupLimit === undefined ? existing.backupLimit : changes.backupLimit,
             mailboxLimit:
               changes.mailboxLimit === undefined ? existing.mailboxLimit : changes.mailboxLimit,
             mailQuotaBytes:
@@ -572,6 +579,7 @@ export class AuthService {
         : {
             siteLimit: null,
             subdomainLimit: null,
+          backupLimit: null,
             mailQuotaBytes: null,
             siteDiskQuotaBytes: null,
             gameServerLimit: null,

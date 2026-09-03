@@ -1,3 +1,6 @@
+import os from 'node:os';
+import path from 'node:path';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { findExecutable } from '../components/archive.js';
 import { runCommand } from '../process/run-command.js';
 import { DatabaseError } from './errors.js';
@@ -63,6 +66,7 @@ async function runSql(ctx: EngineContext, sql: string): Promise<string> {
     // command line.
     env: { MYSQL_PWD: rootOrThrow(ctx) },
     timeoutMs: 30_000,
+    signal: ctx.signal,
   });
 
   if (result.exitCode !== 0) {
@@ -72,6 +76,81 @@ async function runSql(ctx: EngineContext, sql: string): Promise<string> {
   }
 
   return result.stdout;
+}
+
+async function dumpDatabase(ctx: EngineContext, name: string, destination: string): Promise<void> {
+  const executable = await findExecutable(engineBinDir(ctx.binDir, 'mariadb'), [
+    'mariadb-dump.exe',
+    'mysqldump.exe',
+  ]);
+  if (!executable) throw new DatabaseError('MariaDB export tools are not installed.');
+
+  const result = await runCommand({
+    exe: executable,
+    args: [
+      '--host=127.0.0.1',
+      '--port=3306',
+      '--user=root',
+      '--single-transaction',
+      '--routines',
+      '--triggers',
+      `--result-file=${destination}`,
+      '--databases',
+      name,
+    ],
+    env: { MYSQL_PWD: rootOrThrow(ctx) },
+    timeoutMs: 60 * 60 * 1000,
+    signal: ctx.signal,
+  });
+
+  if (result.exitCode !== 0) {
+    throw new DatabaseError(
+      `MariaDB could not create a rollback snapshot for ${name}. ` +
+        (result.stderr.trim() || 'The database tool returned no details.'),
+    );
+  }
+}
+
+async function importDatabase(ctx: EngineContext, name: string, source: string): Promise<void> {
+  const result = await runCommand({
+    exe: await client(ctx.binDir),
+    args: [
+      '--host=127.0.0.1',
+      '--port=3306',
+      '--user=root',
+      `--database=${name}`,
+      '--binary-mode',
+    ],
+    env: { MYSQL_PWD: rootOrThrow(ctx) },
+    stdinFile: source,
+    timeoutMs: 60 * 60 * 1000,
+    signal: ctx.signal,
+  });
+
+  if (result.exitCode !== 0) {
+    throw new DatabaseError(
+      `MariaDB could not restore ${name}. ${result.stderr.trim() || 'The database tool returned no details.'}`,
+    );
+  }
+}
+
+async function recreateDatabase(
+  ctx: EngineContext,
+  name: string,
+  username: string,
+  hosts: readonly string[],
+): Promise<void> {
+  await runSql(
+    ctx,
+    [
+      `DROP DATABASE IF EXISTS \`${name}\``,
+      `CREATE DATABASE \`${name}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`,
+      ...hosts.map(
+        (host) => `GRANT ALL PRIVILEGES ON \`${name}\`.* TO '${username}'@${hostLiteral(host)}`,
+      ),
+      'FLUSH PRIVILEGES',
+    ].join('; ') + ';',
+  );
 }
 
 /**
@@ -104,8 +183,8 @@ export function mariaDbRemoteHosts(policy: DatabaseNetworkPolicy): string[] {
 
 /** Rejects anything that could not have come out of an address we validated. */
 function hostLiteral(host: string): string {
-  if (!/^[0-9a-f.:%/]+$/i.test(host)) throw new DatabaseError(`Unusable database host: ${host}`);
-  return `'${host}'`;
+  if (!host || host.includes('\0')) throw new DatabaseError(`Unusable database host: ${host}`);
+  return sqlStringLiteral(host);
 }
 
 /**
@@ -212,6 +291,58 @@ export const mariadbAdapter: DatabaseAdapter = {
       .join('; ');
 
     await runSql(ctx, `DROP DATABASE IF EXISTS \`${name}\`; ${drops}; FLUSH PRIVILEGES;`);
+  },
+
+  async importDump(ctx, account, source) {
+    const name = assertSafeDbName(account.name);
+    const username = assertSafeDbName(account.username);
+    const existingHosts = (
+      await runSql(ctx, `SELECT Host FROM mysql.user WHERE User = ${sqlStringLiteral(username)};`)
+    )
+      .split(/\r?\n/)
+      .map((host) => host.trim())
+      .filter((host) => host.length > 0);
+    if (existingHosts.length === 0) {
+      throw new DatabaseError(
+        `MariaDB login ${username} is missing from the server. Recreate the database record before restoring it.`,
+      );
+    }
+    const present = await runSql(
+      ctx,
+      `SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = ${sqlStringLiteral(name)};`,
+    );
+    if (present.trim() !== name) {
+      throw new DatabaseError(
+        `MariaDB database ${name} is missing from the server. Recreate the database record before restoring it.`,
+      );
+    }
+
+    const rollbackDirectory = await mkdtemp(path.join(os.tmpdir(), 'winpanel-mariadb-'));
+    const rollbackSource = path.join(rollbackDirectory, 'previous.sql');
+    let replacementStarted = false;
+
+    try {
+      await dumpDatabase(ctx, name, rollbackSource);
+      replacementStarted = true;
+      await recreateDatabase(ctx, name, username, existingHosts);
+      await importDatabase(ctx, name, source);
+    } catch (error) {
+      if (!replacementStarted) throw error;
+
+      const rollbackContext: EngineContext = { ...ctx, signal: undefined };
+      try {
+        await recreateDatabase(rollbackContext, name, username, existingHosts);
+        await importDatabase(rollbackContext, name, rollbackSource);
+      } catch (rollbackError) {
+        throw new DatabaseError(
+          `${error instanceof Error ? error.message : String(error)} ` +
+            `The previous MariaDB database could not be restored: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+        );
+      }
+      throw error;
+    } finally {
+      await rm(rollbackDirectory, { recursive: true, force: true });
+    }
   },
 
   async list(ctx) {

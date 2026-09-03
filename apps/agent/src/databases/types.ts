@@ -18,6 +18,7 @@ export interface EngineContext {
   vault: SecretVault;
   /** Where components were installed, which is where the programs are. */
   binDir: string;
+  signal?: AbortSignal;
 }
 
 export interface DatabaseAccount {
@@ -25,6 +26,8 @@ export interface DatabaseAccount {
   name: string;
   /** The login that can reach it. Always the same as the name. */
   username: string;
+  /** Used only for reading legacy credentials during a restore. */
+  siteId?: string | null;
 }
 
 export interface DatabaseAdapter {
@@ -49,6 +52,9 @@ export interface DatabaseAdapter {
 
   /** Removes the database and the login that could reach it. */
   drop(ctx: EngineContext, account: DatabaseAccount): Promise<void>;
+
+  /** Replaces the existing database contents with a previously exported dump. */
+  importDump(ctx: EngineContext, account: DatabaseAccount, source: string): Promise<void>;
 
   /**
    * Every database name the server itself holds. Used to reconcile the panel's

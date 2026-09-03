@@ -3,7 +3,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createBackupHandler, type BackupServiceOptions } from '../src/backups/service.js';
+import {
+  createBackupHandler,
+  inspectExtractedBackup,
+  panelArchiveLayout,
+  type BackupServiceOptions,
+} from '../src/backups/service.js';
 import { createDatabase, migrateDatabase, schema, type DatabaseHandle } from '../src/db/index.js';
 import type { JobContext } from '../src/jobs/queue.js';
 import { SecretVault } from '../src/security/vault.js';
@@ -102,5 +107,31 @@ describe('panel backup inventory checks', () => {
     await expect(
       createBackupHandler(fixture)({ scope: 'panel', operation: 'create' }, context(crypto.randomUUID())),
     ).rejects.toThrow('database storage folder is missing');
+  });
+
+  it('rejects protected roots claimed as restorable panel entries', async () => {
+    const fixture = options();
+    const extracted = path.join(tmpDir, 'extracted-panel');
+    await fs.mkdir(path.join(extracted, 'game-servers'), { recursive: true });
+    await fs.mkdir(path.join(extracted, 'panel-database'), { recursive: true });
+    await fs.writeFile(path.join(extracted, 'panel-database', 'panel.db'), 'snapshot');
+    await fs.writeFile(
+      path.join(extracted, 'winpanel-panel-backup.json'),
+      JSON.stringify({
+        format: 'winpanel-panel-backup',
+        version: 2,
+        createdAt: new Date().toISOString(),
+        panelEntries: ['game-servers'],
+        panelDatabase: 'panel-database/panel.db',
+        websites: [],
+        databases: [],
+        includeGameServers: false,
+        includeDependencies: false,
+      }),
+    );
+
+    await expect(
+      inspectExtractedBackup(extracted, 'panel', panelArchiveLayout(fixture)),
+    ).rejects.toThrow(/valid WinPanel panel backup/i);
   });
 });

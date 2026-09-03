@@ -57,6 +57,8 @@ export const users = sqliteTable(
     siteLimit: integer('site_limit'),
     /** How many subdomain websites this account may own. Null means no limit. */
     subdomainLimit: integer('subdomain_limit'),
+    /** How many website backups this account may keep. Null means no limit. */
+    backupLimit: integer('backup_limit'),
     /** How many mailboxes this account may hold across all of its domains. */
     mailboxLimit: integer('mailbox_limit'),
     mailQuotaBytes: integer('mail_quota_bytes'),
@@ -402,6 +404,21 @@ export const jobs = sqliteTable(
     index('jobs_site_idx').on(table.siteId),
     index('jobs_game_server_idx').on(table.gameServerId),
   ],
+);
+
+export const backupUploads = sqliteTable(
+  'backup_uploads',
+  {
+    id: text('id').primaryKey(),
+    scope: text('scope', { enum: ['site', 'panel'] }).notNull(),
+    siteId: text('site_id').references(() => sites.id, { onDelete: 'cascade' }),
+    ownerUserId: text('owner_user_id').references(() => users.id, { onDelete: 'cascade' }),
+    expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (table) => [index('backup_uploads_expiry_idx').on(table.expiresAt)],
 );
 
 export const jobLogs = sqliteTable(

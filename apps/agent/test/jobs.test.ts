@@ -236,4 +236,23 @@ describe('JobQueue', () => {
     expect(job?.status).toBe('failed');
     expect(job?.errorMessage).toMatch(/restarted/i);
   });
+
+  it('keeps a deferred job as the machine owner until completion is reconciled', async () => {
+    queue.register('backup', async (_payload, context) => {
+      context.defer?.();
+    });
+    queue.register('deploy', async () => undefined);
+
+    const restoreId = queue.enqueue({ kind: 'backup', title: 'Restore the panel' });
+    const deployId = queue.enqueue({ kind: 'deploy', title: 'Deploy the site' });
+    await queue.drain();
+
+    expect(queue.getJob(restoreId)?.status).toBe('running');
+    expect(queue.getJob(deployId)?.status).toBe('pending');
+
+    handle.sqlite.prepare("UPDATE jobs SET status = 'succeeded' WHERE id = ?").run(restoreId);
+    await queue.drain();
+
+    expect(queue.getJob(deployId)?.status).toBe('succeeded');
+  });
 });

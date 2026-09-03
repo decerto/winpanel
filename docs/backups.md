@@ -20,6 +20,14 @@ Website backup access follows website ownership. A customer can download backups
 
 Website backups are kept until they are deleted. Use **Delete** on the Backup tab to remove one from the server once you have a copy elsewhere.
 
+### Uploading and restoring a website
+
+The **Upload backup** control accepts a ZIP made for the selected website. WinPanel streams it to a temporary staging folder, checks the archive manifest and website slug, then keeps it available for 24 hours. An upload is visible and usable only by the account that staged it, and it is removed after a restore or when it expires. The archive is never extracted into the live website before the restore job starts.
+
+Restore can use either a server-created backup or an uploaded ZIP. The restore replaces the website's live `public` or `release` folder, but keeps the current website record, domains, secrets, service settings and database attachments. Matching database exports are imported into the databases currently attached to the website; exports for databases no longer attached are reported and skipped, and no new database is created from an archive. When dependencies were omitted, the restore dialog can request a package-manager install for Node websites; static, proxy and PHP websites skip Node installation. A restore can be cancelled while it is queued or running, and the activity log remains available until it reaches a final state.
+
+Website backup counts are configured per customer account and apply across all websites owned by that account. **No limit** allows backups without a count limit, **0** disables website backups, and a positive number limits the total completed and in-progress website backups. A pending backup reserves one slot so concurrent requests cannot exceed the account limit.
+
 ## Panel backups
 
 The owner can open **Backup** in the main navigation and choose **Back up now** or switch on daily, weekly and monthly schedules. These are local compressed recovery snapshots stored under the panel's backup directory.
@@ -38,7 +46,9 @@ If a snapshot fails, the schedule tries again on the next check, up to three att
 
 Installed dependencies (`node_modules`) are usually the great majority of the files on the server, and they are the main reason a backup takes a long time. They are left out by default and reinstalled by a deployment, so a restored website needs a redeploy before it runs again. Turn on **Include dependencies (node_modules)** to capture them anyway, for a snapshot that restores without one. Expect it to take considerably longer.
 
-Panel snapshots are owner-only. The owner can download one for external safekeeping, delete one, and restore one from the Backup page. A restore replaces the panel state, websites, game servers and configuration represented by that snapshot, then restarts the panel and its supporting services. The browser connection will briefly disappear while the agent restarts.
+Panel snapshots are owner-only. The owner can download one for external safekeeping, upload a panel snapshot from external storage, delete one, and restore one from the Backup page. Uploaded panel snapshots are staged for 24 hours and can only be restored by the owner who uploaded them. A restore replaces the panel state, websites, game servers and configuration represented by that snapshot, then restarts the panel and its supporting services. The browser connection will briefly disappear while the agent restarts. The restore dialog lets the owner install omitted Node dependencies or skip them.
+
+Panel and website creation, upload, extraction and restore are tracked as activity jobs. Long-running jobs can be cancelled from the activity section, and a failed or cancelled job does not count as a completed backup.
 
 Create or download a panel snapshot before a major update. Keep at least one copy on a different device or server: a backup stored only on the machine it protects cannot help after that machine's disk fails.
 

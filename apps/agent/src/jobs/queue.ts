@@ -28,6 +28,10 @@ export interface JobContext {
   isCancelled: () => boolean;
   /** Throws if cancellation was requested, to unwind a long handler. */
   throwIfCancelled: () => void;
+  /** Aborts child processes that support cancellation. */
+  signal?: AbortSignal;
+  /** Leaves the job running while an external process finishes the work. */
+  defer?: () => void;
 }
 
 export type JobHandler = (payload: unknown, ctx: JobContext) => Promise<void>;
@@ -48,11 +52,17 @@ export interface EnqueueOptions {
   maxAttempts?: number;
 }
 
+type TransactionCallback = Parameters<DatabaseHandle['db']['transaction']>[0];
+export type JobTransaction = TransactionCallback extends (transaction: infer T) => unknown
+  ? T
+  : never;
+
 export class JobQueue extends EventEmitter {
   readonly #handlers = new Map<JobKind, JobHandler>();
   #running = false;
   #stopped = false;
   #pollTimer: NodeJS.Timeout | null = null;
+  readonly #abortControllers = new Map<string, AbortController>();
 
   constructor(
     private readonly handle: DatabaseHandle,
@@ -66,27 +76,44 @@ export class JobQueue extends EventEmitter {
   }
 
   enqueue(options: EnqueueOptions): string {
-    const id = crypto.randomUUID();
-    this.handle.db
-      .insert(jobs)
-      .values({
-        id,
-        kind: options.kind,
-        title: options.title,
-        status: 'pending',
-        payload: options.payload ?? null,
-        siteId: options.siteId ?? null,
-        gameServerId: options.gameServerId ?? null,
-        maxAttempts: options.maxAttempts ?? 1,
-      })
-      .run();
+    return this.enqueueWithinTransaction((_transaction, enqueue) => enqueue(options));
+  }
 
-    this.emit('enqueued', id);
-    return id;
+  /** Runs a synchronous check and one or more job inserts in one database transaction. */
+  enqueueWithinTransaction<T>(
+    work: (transaction: JobTransaction, enqueue: (options: EnqueueOptions) => string) => T,
+  ): T {
+    const enqueued: string[] = [];
+    const result = this.handle.db.transaction((transaction) => {
+      const enqueue = (options: EnqueueOptions): string => {
+        const id = crypto.randomUUID();
+        transaction
+          .insert(jobs)
+          .values({
+            id,
+            kind: options.kind,
+            title: options.title,
+            status: 'pending',
+            payload: options.payload ?? null,
+            siteId: options.siteId ?? null,
+            gameServerId: options.gameServerId ?? null,
+            maxAttempts: options.maxAttempts ?? 1,
+          })
+          .run();
+        enqueued.push(id);
+        return id;
+      };
+
+      return work(transaction, enqueue);
+    });
+
+    for (const jobId of enqueued) this.emit('enqueued', jobId);
+    return result;
   }
 
   /** Marks a job for cancellation. The handler decides where to stop. */
   requestCancel(jobId: string): void {
+    this.#abortControllers.get(jobId)?.abort();
     this.handle.db
       .update(jobs)
       .set({ cancelRequested: true })
@@ -134,6 +161,16 @@ export class JobQueue extends EventEmitter {
   async #tick(): Promise<boolean> {
     if (this.#running || this.#stopped) return false;
 
+    // A deferred job owns the machine until its external completion marker is
+    // reconciled after restart. Do not start another mutating job in the gap.
+    const external = this.handle.db
+      .select({ id: jobs.id })
+      .from(jobs)
+      .where(eq(jobs.status, 'running'))
+      .limit(1)
+      .get();
+    if (external) return false;
+
     const next = this.handle.db
       .select()
       .from(jobs)
@@ -174,6 +211,9 @@ export class JobQueue extends EventEmitter {
     this.emit('started', jobId);
 
     let seq = 0;
+    let deferred = false;
+    const abortController = new AbortController();
+    this.#abortControllers.set(jobId, abortController);
     const ctx: JobContext = {
       jobId,
       log: (message, level = 'info', step) => {
@@ -192,13 +232,19 @@ export class JobQueue extends EventEmitter {
       throwIfCancelled: () => {
         if (this.#isCancelled(jobId)) throw new JobCancelledError();
       },
+      signal: abortController.signal,
+      defer: () => {
+        deferred = true;
+      },
     };
 
     try {
       await handler(payload, ctx);
-      this.#finish(jobId, this.#isCancelled(jobId) ? 'cancelled' : 'succeeded', null);
+      if (!deferred) {
+        this.#finish(jobId, this.#isCancelled(jobId) ? 'cancelled' : 'succeeded', null);
+      }
     } catch (error) {
-      if (error instanceof JobCancelledError) {
+      if (error instanceof JobCancelledError || abortController.signal.aborted || this.#isCancelled(jobId)) {
         this.#finish(jobId, 'cancelled', null);
         return;
       }
@@ -220,6 +266,8 @@ export class JobQueue extends EventEmitter {
       } else {
         this.#finish(jobId, 'failed', message);
       }
+    } finally {
+      this.#abortControllers.delete(jobId);
     }
   }
 

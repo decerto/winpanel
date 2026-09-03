@@ -28,6 +28,7 @@ export function useJobLog(options: UseJobLogOptions = {}) {
   const lines = ref<JobLogLine[]>([]);
   const status = ref<string | null>(null);
   const progress = ref(0);
+  const cancelling = ref(false);
 
   let timer: ReturnType<typeof setInterval> | null = null;
   /** A slow tick must not overlap the next one, or lines arrive twice. */
@@ -85,9 +86,31 @@ export function useJobLog(options: UseJobLogOptions = {}) {
     progress.value = 0;
   }
 
+  async function cancel(): Promise<void> {
+    const id = jobId.value;
+    if (!id || !running.value || cancelling.value) return;
+
+    cancelling.value = true;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+    try {
+      await Promise.race([
+        api.jobs.cancel.mutate({ jobId: id }),
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(
+            () => reject(new Error('The cancellation request took too long. The activity will keep updating.')),
+            10_000,
+          );
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+      cancelling.value = false;
+    }
+  }
+
   onUnmounted(stop);
 
-  return { jobId, lines, status, progress, running, watchJob, stop, reset };
+  return { jobId, lines, status, progress, running, cancelling, watchJob, stop, reset, cancel };
 }
 
 export const LOG_LEVEL_CLASS: Record<string, string> = {
