@@ -8,6 +8,9 @@ export const NodeVersionDefinition = z.object({
 });
 export type NodeVersionDefinition = z.infer<typeof NodeVersionDefinition>;
 
+// Bundled runtime lives in bin\node\<version>\, not bin\node\.
+export const BUNDLED_NODE_VERSION = '22.21.1';
+
 export const NODE_VERSION_CATALOGUE: readonly NodeVersionDefinition[] = [
   {
     version: '24.18.1',

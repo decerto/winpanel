@@ -26,6 +26,7 @@ import {
   stopPanelService,
 } from '../windows/panel-services.js';
 import { createServiceRecovery } from '../windows/watched-services.js';
+import { BUNDLED_NODE_VERSION } from '../components/node-catalogue.js';
 
 /**
  * Everything the installer needs to do, as a command rather than a script.
@@ -206,11 +207,17 @@ export async function install(options: { skipService?: boolean } = {}): Promise<
         await services.uninstall(AGENT_SERVICE_ID);
       }
 
+      // The flat bin\node\node.exe is never shipped; WinSW cannot start without this.
+      const serviceNode = path.join(config.binDir, 'node', BUNDLED_NODE_VERSION, 'node.exe');
+      await fs.access(serviceNode).catch(() => {
+        throw new Error(`The bundled Node runtime is missing at ${serviceNode}.`);
+      });
+
       await services.install({
         id: AGENT_SERVICE_ID,
         displayName: 'WinPanel',
         description: 'Website and email control panel.',
-        executable: path.join(config.binDir, 'node', 'node.exe'),
+        executable: serviceNode,
         args: [path.join(config.root, 'agent', 'dist', 'index.js')],
         workingDirectory: config.root,
         logPath: config.logDir,
