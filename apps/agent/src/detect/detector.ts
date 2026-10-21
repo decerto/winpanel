@@ -870,7 +870,7 @@ export async function detectPhp(rootDir: string): Promise<PhpDetection | null> {
 }
 
 /** Detects WebSocket use, which forces blue/green rather than load balancing. */
-async function hasWebsockets(dir: string): Promise<boolean> {
+export async function hasWebsockets(dir: string): Promise<boolean> {
   const pkg = await readJson<PackageJson>(path.join(dir, 'package.json'));
   if (!pkg) return false;
 

@@ -6,7 +6,7 @@ import { PUBLIC_DIR, SHARED_DIR, SiteManifest, type SiteSource } from '@winpanel
 import type { DatabaseHandle } from '../db/index.js';
 import { deployments, sites } from '../db/schema.js';
 import type { JobContext } from '../jobs/queue.js';
-import { detectApp, detectEntryPoint } from '../detect/detector.js';
+import { detectApp, detectEntryPoint, hasWebsockets } from '../detect/detector.js';
 import { GitClient, isCommitId } from './git-client.js';
 import {
   DeploymentError,
@@ -154,6 +154,20 @@ async function installClusterRunner(deps: DeployDependencies, siteDir: string): 
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.copyFile(source, target);
   return target;
+}
+
+/**
+ * The manifest a committed project file runs with. The file may omit
+ * websockets, so that is re-detected from the project's dependencies.
+ */
+export async function committedManifest(
+  committed: SiteManifest,
+  current: SiteManifest,
+  stagingDir: string,
+): Promise<SiteManifest> {
+  const websockets =
+    committed.websockets || (await hasWebsockets(path.join(stagingDir, committed.app.cwd)));
+  return { ...committed, websockets, workers: committed.workers ?? current.workers };
 }
 
 /** The executable that runs a site of a given runtime. */
@@ -535,7 +549,7 @@ export function createDeployHandler(deps: DeployDependencies) {
         ctx.log('Using the settings committed in your project.');
         // The worker count is set in the panel, so a committed file only
         // overrides it when it names one.
-        manifest = { ...detection.manifest, workers: detection.manifest.workers ?? manifest.workers };
+        manifest = await committedManifest(detection.manifest, manifest, folders.staging);
       }
 
       const entry = configuredEntry(manifest);

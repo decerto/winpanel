@@ -22,7 +22,7 @@ import {
   waitForHealthy,
   withPnpmDefaults,
 } from '../src/sites/deploy-pipeline.js';
-import { entryFileProblem, isProgressNoise, normaliseEntry, reportAppOutput, resolveRuntimeExecutable } from '../src/sites/deploy-handler.js';
+import { committedManifest, entryFileProblem, isProgressNoise, normaliseEntry, reportAppOutput, resolveRuntimeExecutable } from '../src/sites/deploy-handler.js';
 import type { JobContext } from '../src/jobs/queue.js';
 
 const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
@@ -458,6 +458,38 @@ describe('how many processes a Node site runs', () => {
         siteDir,
       ),
     ).rejects.toBeInstanceOf(DeploymentError);
+  });
+
+  it('keeps a committed Socket.IO project on one process', async () => {
+    const project = path.join(root, 'project');
+    await fs.mkdir(project, { recursive: true });
+    await fs.writeFile(
+      path.join(project, 'package.json'),
+      JSON.stringify({ dependencies: { 'socket.io': '^4.0.0' } }),
+    );
+    const committed = SiteManifest.parse({ runtime: 'node', app: { entry: 'server.js' } });
+    const panel = SiteManifest.parse({ runtime: 'node', workers: 3 });
+
+    const manifest = await committedManifest(committed, panel, project);
+    expect(manifest.websockets).toBe(true);
+
+    const result = await resolveRuntimeExecutable(depsWith(distDir), manifest, siteDir);
+    expect(result.args).toEqual(['server.js']);
+  });
+
+  it('keeps the panel process count for a committed project without websockets', async () => {
+    const project = path.join(root, 'plain');
+    await fs.mkdir(project, { recursive: true });
+    await fs.writeFile(
+      path.join(project, 'package.json'),
+      JSON.stringify({ dependencies: { express: '^5.0.0' } }),
+    );
+    const committed = SiteManifest.parse({ runtime: 'node', app: { entry: 'server.js' } });
+    const panel = SiteManifest.parse({ runtime: 'node', workers: 3 });
+
+    const manifest = await committedManifest(committed, panel, project);
+    expect(manifest.websockets).toBe(false);
+    expect(manifest.workers).toBe(3);
   });
 });
 
