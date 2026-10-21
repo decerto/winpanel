@@ -9,7 +9,12 @@ import {
   downloadVerified,
   hashFile,
 } from '../src/components/download.js';
-import { COMPONENT_CATALOGUE, findComponent } from '../src/components/catalogue.js';
+import {
+  CADDY_OFFICIAL_SHA256,
+  CADDY_OFFICIAL_URL,
+  COMPONENT_CATALOGUE,
+  findComponent,
+} from '../src/components/catalogue.js';
 
 let tmpDir: string;
 let server: { url: string; close: () => Promise<void> };
@@ -221,6 +226,11 @@ describe('component catalogue', () => {
     // Without this module Caddy cannot answer the DNS challenge, and every
     // certificate request fails once a domain is behind Cloudflare's proxy.
     expect(findComponent('caddy')?.url).toContain('caddy-dns/cloudflare');
+  });
+
+  it('pins the official Caddy fallback to a publisher digest', () => {
+    expect(CADDY_OFFICIAL_SHA256).toMatch(/^[0-9a-f]{64}$/);
+    expect(CADDY_OFFICIAL_URL).toMatch(/^https:\/\/github\.com\/caddyserver\/caddy\/releases\/download\//);
   });
 
   it('describes each component in plain English, without jargon', () => {

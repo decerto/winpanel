@@ -27,9 +27,14 @@ import {
 } from '../mail/service.js';
 import { storeMailDomains } from '../mail/domains.js';
 import { caddyServiceEnv, cloudflareTokenEnvironment } from '../caddy/service.js';
-import { downloadVerified } from './download.js';
+import { DownloadError, downloadVerified } from './download.js';
 import { extractZip, findExecutable, listExecutables, sniffPayload } from './archive.js';
-import { findComponent } from './catalogue.js';
+import {
+  CADDY_OFFICIAL_SHA256,
+  CADDY_OFFICIAL_URL,
+  CADDY_OFFICIAL_VERSION,
+  findComponent,
+} from './catalogue.js';
 import { findNodeVersion } from './node-catalogue.js';
 import { forgetDatabase, listAllDatabases } from '../databases/store.js';
 import {
@@ -83,6 +88,9 @@ export interface InstallComponentPayload {
 }
 
 const POSTGRES_SERVICE_ACCOUNT = 'NT AUTHORITY\\NetworkService';
+
+/** How long the Caddy build service gets before the official release is used. */
+const CADDY_BUILD_TIMEOUT_MS = 4 * 60_000;
 
 function componentDataPath(deps: InstallerDependencies, componentId: string): string | null {
   if (componentId === 'stalwart') return path.join(deps.dataDir, 'mail');
@@ -496,9 +504,6 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
   };
 
   const installOneInner = async (component: ComponentDefinition, ctx: JobContext): Promise<void> => {
-    ctx.log(`Installing ${component.name} ${component.version}`);
-    ctx.progress(5);
-
     /*
      * A running service holds its own executable open, so unpacking over it
      * fails with a permission error that reads like a broken download. The
@@ -512,32 +517,58 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
     const downloadDir = path.join(deps.binDir, '.downloads');
     const extension =
       component.kind === 'php-script' ? '.phar' : component.kind === 'exe' ? '.exe' : '.zip';
-    const archivePath = path.join(downloadDir, `${component.id}-${component.version}${extension}`);
+    let archivePath = path.join(downloadDir, `${component.id}-${component.version}${extension}`);
 
     ctx.log(`Downloading from ${new URL(component.url).host}\u2026`);
 
     let lastReported = 0;
-    await downloadVerified({
-      url: component.url,
-      destination: archivePath,
-      sha256: component.sha256,
-      onProgress: (received, total) => {
-        if (!total) return;
-        /*
-         * Clamped because the length is the *compressed* size when the server
-         * gzips the response, and fetch hands over the decompressed bytes.
-         * Caddy's download is 17 MB on the wire and 49 MB on disk, which was
-         * cheerfully reported as 280%.
-         */
-        const percent = Math.min(100, Math.floor((received / total) * 100));
-        // Only on each ten per cent, or the log is thousands of lines.
-        if (percent >= lastReported + 10) {
-          lastReported = percent;
-          ctx.log(`Downloaded ${percent}%`, 'debug');
-          ctx.progress(5 + Math.floor(percent * 0.45));
-        }
-      },
-    });
+    const onProgress = (received: number, total: number | null): void => {
+      if (!total) return;
+      /*
+       * Clamped because the length is the *compressed* size when the server
+       * gzips the response, and fetch hands over the decompressed bytes.
+       * Caddy's download is 17 MB on the wire and 49 MB on disk, which was
+       * cheerfully reported as 280%.
+       */
+      const percent = Math.min(100, Math.floor((received / total) * 100));
+      // Only on each ten per cent, or the log is thousands of lines.
+      if (percent >= lastReported + 10) {
+        lastReported = percent;
+        ctx.log(`Downloaded ${percent}%`, 'debug');
+        ctx.progress(5 + Math.floor(percent * 0.45));
+      }
+    };
+
+    if (component.id === 'caddy') {
+      ctx.log(
+        'Asking the Caddy build service for a build with the Cloudflare DNS module. ' +
+          'This can take a few minutes.',
+      );
+    }
+    try {
+      await downloadVerified({
+        url: component.url,
+        destination: archivePath,
+        sha256: component.sha256,
+        timeoutMs: component.id === 'caddy' ? CADDY_BUILD_TIMEOUT_MS : undefined,
+        onProgress,
+      });
+    } catch (error) {
+      if (component.id !== 'caddy' || !(error instanceof DownloadError)) throw error;
+
+      ctx.log(
+        `${error.message} Installing the official Caddy ${CADDY_OFFICIAL_VERSION} instead. ` +
+          'Cloudflare DNS certificates will not work until a build with that module is installed.',
+        'warn',
+      );
+      archivePath = path.join(downloadDir, `caddy-official-${CADDY_OFFICIAL_VERSION}.zip`);
+      await downloadVerified({
+        url: CADDY_OFFICIAL_URL,
+        destination: archivePath,
+        sha256: CADDY_OFFICIAL_SHA256,
+        onProgress,
+      });
+    }
 
     ctx.throwIfCancelled();
     ctx.progress(55);

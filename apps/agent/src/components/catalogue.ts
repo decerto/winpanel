@@ -75,6 +75,16 @@ export const CADDY_DOWNLOAD_URL =
   'https://caddyserver.com/api/download' +
   '?os=windows&arch=amd64&p=github.com/caddy-dns/cloudflare';
 
+/*
+ * Used when the build service above does not answer. It is the publisher's own
+ * release, so it is pinned and hashed, but it has no Cloudflare DNS module.
+ */
+export const CADDY_OFFICIAL_VERSION = '2.11.7';
+export const CADDY_OFFICIAL_URL =
+  'https://github.com/caddyserver/caddy/releases/download/v2.11.7/caddy_2.11.7_windows_amd64.zip';
+export const CADDY_OFFICIAL_SHA256 =
+  '0a1edc0b799512051c57071ce0e798d3f2cf67dc98171366f1d2b326072e3b06';
+
 export const COMPONENT_CATALOGUE: readonly ComponentDefinition[] = [
   {
     id: 'caddy',
