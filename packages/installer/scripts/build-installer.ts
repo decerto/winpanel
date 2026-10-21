@@ -24,6 +24,8 @@ const INSTALLER_DIR = path.resolve(HERE, '..');
 const REPO_ROOT = path.resolve(INSTALLER_DIR, '..', '..');
 const STAGING = path.join(INSTALLER_DIR, 'staging');
 const CACHE = path.join(INSTALLER_DIR, '.cache');
+/** Floor for a finished installer (the v1.14.0 release is about 41.7 MB). */
+const MIN_INSTALLER_BYTES = 20 * 1024 * 1024;
 
 /** Pinned so a release is reproducible and cannot drift silently. */
 const INNO_VERSION = '6.7.3';
@@ -209,6 +211,11 @@ async function main(): Promise<void> {
   const compiler = await ensureCompiler();
   const version = await resolveVersion();
 
+  // Clear last build's outputs first so a failed run cannot leave a stale checksum beside a new or partial installer.
+  const fallbackOutput = path.join(REPO_ROOT, 'dist', 'WinPanel-Setup-x64.exe');
+  await fs.rm(fallbackOutput, { force: true });
+  await fs.rm(path.join(REPO_ROOT, 'dist', 'SHA256SUMS.txt'), { force: true });
+
   await log(`Compiling version ${version}\u2026`);
   const { stdout } = await run(
     compiler,
@@ -217,8 +224,14 @@ async function main(): Promise<void> {
   );
 
   const output =
-    /Resulting Setup program filename is:\s*\r?\n(.+)/.exec(stdout)?.[1]?.trim() ??
-    path.join(REPO_ROOT, 'dist', 'WinPanel-Setup-x64.exe');
+    /Resulting Setup program filename is:\s*\r?\n(.+)/.exec(stdout)?.[1]?.trim() ?? fallbackOutput;
+
+  // A release installer is about 41 MB; anything far smaller was cut short.
+  const { size } = await fs.stat(output);
+  if (size < MIN_INSTALLER_BYTES) {
+    await fs.rm(output, { force: true });
+    throw new Error(`The compiled installer is only ${size} bytes and was discarded. Rebuild it.`);
+  }
 
   const digest = await writeChecksum(output);
 
