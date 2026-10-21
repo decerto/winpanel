@@ -5,6 +5,7 @@ import {
   createCredentialArgs,
   credentialUsernameFor,
   explainGitFailure,
+  isCommitId,
   validateGitRef,
   validateRepositoryUrl,
 } from '../src/sites/git-client.js';
@@ -230,6 +231,20 @@ describe('explainGitFailure', () => {
 
   it('falls back to the first line rather than an empty message', () => {
     expect(explainGitFailure('fatal: something unusual happened')).toContain('something unusual');
+  });
+});
+
+describe('isCommitId', () => {
+  it('accepts a full SHA-1 and SHA-256 commit id', () => {
+    expect(isCommitId('ffab4d7a1b2c3d4e5f60718293a4b5c6d7e8f901')).toBe(true);
+    expect(isCommitId(`${'a'.repeat(64)}`)).toBe(true);
+    expect(isCommitId('FFAB4D7A1B2C3D4E5F60718293A4B5C6D7E8F901')).toBe(true);
+  });
+
+  it('rejects abbreviated ids, branch names and anything that is not hex', () => {
+    for (const value of ['ffab4d7', 'main', 'release/1.2', 'g'.repeat(40), 'a'.repeat(41), '']) {
+      expect(isCommitId(value), value).toBe(false);
+    }
   });
 });
 

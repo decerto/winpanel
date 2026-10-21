@@ -1,12 +1,23 @@
 import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
-import { listLogFiles, readLogFile } from '../../logs/log-files.js';
+import { clearLogFiles, listLogFiles, readLogFile } from '../../logs/log-files.js';
 import { superadminProcedure, router } from '../trpc.js';
 
 export const logsRouter = router({
   list: superadminProcedure.query(({ ctx }) =>
     listLogFiles(ctx.app.config.logDir, [ctx.app.config.accessLogDir]),
   ),
+
+  /** Empties the panel's logs. Website access logs are excluded, as in `list`. */
+  clear: superadminProcedure
+    .input(z.object({ password: z.string().min(1).max(1024) }))
+    .mutation(async ({ ctx, input }) => {
+      if (!(await ctx.app.auth.reauthenticate(ctx.user.id, input.password))) {
+        throw new TRPCError({ code: 'UNAUTHORIZED', message: 'Your password is not correct.' });
+      }
+
+      return clearLogFiles(ctx.app.config.logDir, [ctx.app.config.accessLogDir]);
+    }),
 
   read: superadminProcedure
     .input(

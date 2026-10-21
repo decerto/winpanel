@@ -30,7 +30,8 @@ import Tooltip from '../../components/Tooltip.vue';
  * the same as what is in the repository, and if not, make it so. Hence one
  * primary button — "Pull now" — that fetches the latest commit and takes it
  * live, with the recent history beside it so you can see what that will
- * change before you press it.
+ * change before you press it. Any commit in that history can also be put live
+ * on its own, which is how an older version is rolled back to.
  */
 
 const route = useRoute();
@@ -141,6 +142,32 @@ const visibleCommits = computed(() =>
 /** The commit that is actually serving traffic, if a deploy has succeeded. */
 const deployedCommit = computed(() => info.value?.lastDeployment?.commit ?? null);
 
+const deployedIndex = computed(() =>
+  commits.value.findIndex((commit) => commit.sha === deployedCommit.value),
+);
+
+/*
+ * The list is newest first, so a commit further down than the live one is
+ * older, and putting it live is a rollback. Unknown when the live commit is
+ * not in the list, in which case the button just says Deploy.
+ */
+function isRollback(index: number): boolean {
+  return deployedIndex.value >= 0 && index > deployedIndex.value;
+}
+
+async function deployCommit(commit: Commit, index: number): Promise<void> {
+  const rollback = isRollback(index);
+  const action = rollback ? 'Roll back to' : 'Deploy';
+  const effect = rollback
+    ? 'This is older than the version live now. Traffic moves to it once its new build answers.'
+    : 'Traffic moves to it once its new build answers.';
+
+  if (!window.confirm(`${action} commit ${commit.shortSha}?\n\n${commit.subject}\n\n${effect}`)) {
+    return;
+  }
+  await deploy(commit.sha);
+}
+
 const behind = computed(() => {
   const latest = commits.value[0]?.sha;
   if (!latest || !deployedCommit.value) return null;
@@ -179,7 +206,7 @@ async function refresh(): Promise<void> {
   commitsError.value = null;
 
   try {
-    const result = await api.sites.git.refreshCommits.mutate({ slug: slug.value, limit: 10 });
+    const result = await api.sites.git.refreshCommits.mutate({ slug: slug.value, limit: 25 });
     commits.value = result.commits;
     checkedAt.value = result.checkedAt;
   } catch (err) {
@@ -507,7 +534,7 @@ watch(slug, load, { immediate: true });
 
           <ul v-else class="divide-y divide-line rounded-xl border border-line">
             <li
-              v-for="commit in visibleCommits"
+              v-for="(commit, index) in visibleCommits"
               :key="commit.sha"
               class="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-2.5 text-sm"
             >
@@ -521,6 +548,15 @@ watch(slug, load, { immediate: true });
               >
                 Deployed
               </span>
+              <button
+                v-else
+                type="button"
+                class="btn btn-ghost btn-sm"
+                :disabled="deploying"
+                @click="deployCommit(commit, index)"
+              >
+                {{ isRollback(index) ? 'Roll back' : 'Deploy' }}
+              </button>
               <span class="font-mono text-xs text-ink-faint">{{ commit.shortSha }}</span>
             </li>
 
@@ -559,7 +595,7 @@ watch(slug, load, { immediate: true });
           </p>
         </div>
 
-        <button type="button" class="btn btn-primary" :disabled="deploying" @click="deploy">
+        <button type="button" class="btn btn-primary" :disabled="deploying" @click="deploy()">
           <component
             :is="deploying ? RefreshCw : CloudDownload"
             :size="15"
@@ -576,7 +612,8 @@ watch(slug, load, { immediate: true });
       Pulling downloads the latest commit on
       <span class="font-mono">{{ info?.branch }}</span>, builds it into a new release, and
       switches traffic over only once it answers. The version now serving is left untouched
-      until then.
+      until then. To go back to an earlier version, use <strong>Roll back</strong> on that
+      commit in the list above.
     </p>
   </div>
 </template>

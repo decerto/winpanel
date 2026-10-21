@@ -162,11 +162,19 @@ async function load(): Promise<void> {
   }
 }
 
-async function deploy(): Promise<void> {
+/**
+ * Deploys the website. Without a `ref` it takes the latest commit on the
+ * branch; with a commit id it puts that exact commit live, which is how an
+ * older version is rolled back to.
+ */
+async function deploy(ref?: string): Promise<void> {
   error.value = null;
 
   try {
-    const result = await api.sites.deploy.mutate({ slug: slug.value });
+    const result = await api.sites.deploy.mutate({
+      slug: slug.value,
+      ...(ref ? { ref } : {}),
+    });
     job.watchJob(result.jobId);
   } catch (err) {
     error.value = describeError(err);
@@ -256,7 +264,7 @@ provide(siteContextKey, { site, reload: load, deploy, deploying });
             >
               <Plus :size="15" aria-hidden="true" /> Add subdomain
             </RouterLink>
-            <button type="button" class="btn btn-primary" :disabled="deploying" @click="deploy">
+            <button type="button" class="btn btn-primary" :disabled="deploying" @click="deploy()">
               <component
                 :is="deploying ? RefreshCw : Rocket"
                 :size="15"

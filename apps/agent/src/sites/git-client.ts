@@ -153,6 +153,28 @@ export function validateGitRef(ref: string): { ok: true } | { ok: false; reason:
   return { ok: true };
 }
 
+/** A full commit id: 40 hex characters (SHA-1), or 64 for SHA-256 repositories. */
+export function isCommitId(value: string): boolean {
+  return /^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(value.trim());
+}
+
+/**
+ * Removes the `.git` folder from a finished checkout.
+ *
+ * It is not needed to run the app, and removing it means there is no chance
+ * of a remote URL or cached credential surviving into the release folder.
+ */
+async function removeGitMetadata(targetDir: string): Promise<void> {
+  await fs.rm(path.join(targetDir, '.git'), {
+    recursive: true,
+    force: true,
+    // git has only just exited, and its pack files are the sort Windows keeps
+    // open a moment longer than the process that wrote them.
+    maxRetries: 3,
+    retryDelay: 200,
+  });
+}
+
 /**
  * Builds the git arguments that supply a token, without putting it in argv.
  *
@@ -382,20 +404,72 @@ export class GitClient {
     }
 
     const commit = await this.headCommit(targetDir);
-
-    // The .git directory is not needed to run the app, and removing it means
-    // there is no chance of a remote URL or cached credential surviving into
-    // the release folder.
-    await fs.rm(path.join(targetDir, '.git'), {
-      recursive: true,
-      force: true,
-      // git has only just exited, and its pack files are the sort Windows
-      // keeps open a moment longer than the process that wrote them.
-      maxRetries: 3,
-      retryDelay: 200,
-    });
+    await removeGitMetadata(targetDir);
 
     return commit;
+  }
+
+  /**
+   * Checks out one exact commit into `targetDir`.
+   *
+   * A branch clone cannot name a commit, so this starts an empty repository
+   * and asks the remote for that commit alone. Some hosts refuse to serve a
+   * commit that is not at the tip of a branch; for those the full branch and
+   * tag history is fetched and the commit looked up locally. That is slower,
+   * but it works wherever the commit exists.
+   *
+   * Fails rather than deploying something else if the checkout does not land
+   * on the commit that was asked for.
+   */
+  async cloneCommit(url: string, commit: string, targetDir: string): Promise<string> {
+    const urlCheck = validateRepositoryUrl(url, { allowSsh: this.usesDeployKey });
+    if (!urlCheck.ok) throw new GitError(urlCheck.reason);
+
+    if (!isCommitId(commit)) throw new GitError('That is not a full commit id.');
+    const sha = commit.trim().toLowerCase();
+
+    await fs.mkdir(targetDir, { recursive: true });
+
+    const credentials = await this.withCredentials(url);
+
+    try {
+      await this.run(['init', '--quiet'], targetDir);
+      await this.run(['config', 'core.longpaths', 'true'], targetDir);
+      await this.run(['remote', 'add', 'origin', url], targetDir);
+
+      try {
+        await this.run(
+          [...credentials.args, 'fetch', '--quiet', '--depth', '1', 'origin', sha],
+          targetDir,
+          credentials.env,
+        );
+      } catch {
+        await this.run(
+          [
+            ...credentials.args,
+            'fetch',
+            '--quiet',
+            '--tags',
+            'origin',
+            '+refs/heads/*:refs/remotes/origin/*',
+          ],
+          targetDir,
+          credentials.env,
+        );
+      }
+
+      await this.run(['checkout', '--quiet', '--detach', sha], targetDir);
+    } finally {
+      await credentials.cleanup();
+    }
+
+    const landed = await this.headCommit(targetDir);
+    if (landed !== sha) {
+      throw new GitError('The commit that was asked for could not be checked out.');
+    }
+    await removeGitMetadata(targetDir);
+
+    return sha;
   }
 
   /**

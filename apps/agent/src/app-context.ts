@@ -262,6 +262,7 @@ export async function createAppContext(options: CreateAppOptions = {}): Promise<
         gitPath: path.join(config.binDir, 'git', 'cmd', 'git.exe'),
         sitesRoot: config.sitesRoot,
         binDir: config.binDir,
+        agentDistDir: import.meta.dirname,
         loadEnv: (siteId) => sites.getEnv(siteId),
         loadGitToken: (siteId, userId) =>
           userId ? sites.getGitToken(siteId, userId) : Promise.resolve(undefined),

@@ -18,6 +18,9 @@ import { RelativePath } from './paths.js';
 
 export const SCHEMA_VERSION = 1;
 
+/** The most processes a Node website may run. */
+export const MAX_NODE_WORKERS = 8;
+
 /**
  * Executables the agent is willing to launch for a build step. The agent
  * resolves each of these to an absolute path itself; the manifest can never
@@ -86,6 +89,12 @@ export const SiteManifest = z.object({
 
   /** Node version, resolved through fnm. e.g. "22" or "22.14.0". */
   nodeVersion: z.string().max(32).optional(),
+  /**
+   * How many processes run a Node website, all sharing its port. Unset means
+   * one. Only for apps that keep no per-process state in memory; websocket
+   * sites always run one process.
+   */
+  workers: z.number().int().min(1).max(MAX_NODE_WORKERS).optional(),
   packageManager: PackageManager.default('npm'),
 
   /**

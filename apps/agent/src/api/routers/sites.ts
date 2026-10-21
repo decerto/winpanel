@@ -7,6 +7,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import {
   Hostname,
+  MAX_NODE_WORKERS,
   PackageManager,
   PUBLIC_DIR,
   RELEASE_DIR,
@@ -23,7 +24,7 @@ import { sites } from '../../db/schema.js';
 import { detectApp } from '../../detect/detector.js';
 import { discoverNodeVersions, matchVersion } from '../../sites/node-versions.js';
 import { retargetSteps } from '../../sites/package-manager.js';
-import { GitClient, validateGitRef, validateRepositoryUrl } from '../../sites/git-client.js';
+import { GitClient, isCommitId, validateGitRef, validateRepositoryUrl } from '../../sites/git-client.js';
 import { generateDeployKey, isSshUrl } from '../../sites/ssh-keys.js';
 import { serviceIdFor } from '../../sites/deploy-handler.js';
 import { isPortAnswered } from '../../windows/service-probe.js';
@@ -996,11 +997,16 @@ export const sitesRouter = router({
     }),
 
   deploy: protectedProcedure
-    .input(z.object({ slug: z.string().min(1), ref: z.string().optional() }))
+    .input(z.object({ slug: z.string().min(1), ref: z.string().max(255).optional() }))
     .mutation(({ ctx, input }) => {
       const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
       const site = service.get(input.slug);
       if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
+
+      if (input.ref !== undefined && !isCommitId(input.ref)) {
+        const refCheck = validateGitRef(input.ref);
+        if (!refCheck.ok) throw new TRPCError({ code: 'BAD_REQUEST', message: refCheck.reason });
+      }
 
       const isGit = (site.source as SiteSource).kind === 'git';
 
@@ -1202,8 +1208,45 @@ export const sitesRouter = router({
       };
     }),
 
-  setEnv: protectedProcedure
+  /**
+   * How many processes run a Node website. One is the default and what a
+   * website with websockets always gets, whatever is stored here.
+   */
+  setWorkers: protectedProcedure
+    .input(
+      z.object({
+        slug: z.string().min(1),
+        workers: z.number().int().min(1).max(MAX_NODE_WORKERS),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
+      const site = service.get(input.slug);
+      if (!site) throw new TRPCError({ code: 'NOT_FOUND', message: 'That website was not found.' });
 
+      const manifest = { ...(site.manifest as Record<string, unknown>) };
+      if ((manifest['runtime'] ?? 'node') !== 'node') {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Only Node websites can run several processes.',
+        });
+      }
+      if (input.workers > 1) manifest['workers'] = input.workers;
+      else delete manifest['workers'];
+
+      ctx.app.db.db
+        .update(sites)
+        .set({ manifest, updatedAt: new Date() })
+        .where(eq(sites.id, site.id))
+        .run();
+
+      return {
+        ok: true,
+        note: 'This takes effect the next time the website is deployed.',
+      };
+    }),
+
+  setEnv: protectedProcedure
     .input(z.object({ slug: z.string().min(1), envVars: z.record(z.string(), z.string()) }))
     .mutation(async ({ ctx, input }) => {
       const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);

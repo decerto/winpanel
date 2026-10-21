@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   cleanupRotatedLogFiles,
+  clearLogFiles,
   listLogFiles,
   readLogFile,
 } from '../src/logs/log-files.js';
@@ -135,5 +136,31 @@ describe('log file catalogue', () => {
     ]) {
       await expect(fs.access(path.join(logDir, relative))).resolves.toBeUndefined();
     }
+  });
+});
+
+describe('clearing panel logs', () => {
+  it('deletes rotated files and empties live ones in place, leaving access logs alone', async () => {
+    const accessDir = path.join(logDir, 'access');
+    await fs.mkdir(accessDir, { recursive: true });
+    await fs.writeFile(path.join(logDir, 'winpanel-agent.20260801.#0001.out.log'), 'closed\n', 'utf8');
+    await fs.writeFile(path.join(logDir, 'winpanel-agent.out.log'), 'still being written\n', 'utf8');
+    await fs.writeFile(path.join(accessDir, 'example.log'), 'request record\n', 'utf8');
+
+    const result = await clearLogFiles(logDir, [accessDir]);
+
+    expect(result).toMatchObject({ deleted: 1, emptied: 1, failed: [] });
+    await expect(fs.access(path.join(logDir, 'winpanel-agent.20260801.#0001.out.log'))).rejects.toThrow();
+    expect((await fs.stat(path.join(logDir, 'winpanel-agent.out.log'))).size).toBe(0);
+    expect(await fs.readFile(path.join(accessDir, 'example.log'), 'utf8')).toBe('request record\n');
+  });
+
+  it('does nothing when the log folder does not exist', async () => {
+    expect(await clearLogFiles(path.join(tmpDir, 'missing'))).toEqual({
+      deleted: 0,
+      emptied: 0,
+      bytes: 0,
+      failed: [],
+    });
   });
 });

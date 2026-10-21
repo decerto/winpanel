@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { SiteManifest } from '@winpanel/shared';
+import { SHARED_DIR, SiteManifest } from '@winpanel/shared';
 import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/index.js';
 import { PortAllocationError, PortAllocator } from '../src/sites/port-allocator.js';
 import {
@@ -22,7 +22,7 @@ import {
   waitForHealthy,
   withPnpmDefaults,
 } from '../src/sites/deploy-pipeline.js';
-import { entryFileProblem, isProgressNoise, normaliseEntry, reportAppOutput } from '../src/sites/deploy-handler.js';
+import { entryFileProblem, isProgressNoise, normaliseEntry, reportAppOutput, resolveRuntimeExecutable } from '../src/sites/deploy-handler.js';
 import type { JobContext } from '../src/jobs/queue.js';
 
 const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
@@ -398,6 +398,66 @@ describe('entryFileProblem', () => {
   it('leaves .NET to the runtime, which has its own message', async () => {
     const problem = await entryFileProblem(SiteManifest.parse({ runtime: 'dotnet' }), tmpDir);
     expect(problem).toBeNull();
+  });
+});
+
+describe('how many processes a Node site runs', () => {
+  let root: string;
+  let siteDir: string;
+  let distDir: string;
+  const tools = { resolve: async () => ({ exe: 'node.exe', args: [] as string[] }) };
+  const depsWith = (agentDistDir?: string) =>
+    ({ tools, binDir: root, agentDistDir }) as unknown as Parameters<typeof resolveRuntimeExecutable>[0];
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'winpanel-workers-'));
+    siteDir = path.join(root, 'site');
+    distDir = path.join(root, 'dist');
+    await fs.mkdir(path.join(distDir, 'sites'), { recursive: true });
+    await fs.writeFile(path.join(distDir, 'sites', 'node-cluster-standalone.js'), '// runner');
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
+  });
+
+  it('runs the entry directly when no count is set', async () => {
+    const result = await resolveRuntimeExecutable(
+      depsWith(distDir),
+      SiteManifest.parse({ runtime: 'node' }),
+      siteDir,
+    );
+    expect(result.args).toEqual(['index.js']);
+  });
+
+  it('runs the supervisor with the count and entry when several processes are set', async () => {
+    const result = await resolveRuntimeExecutable(
+      depsWith(distDir),
+      SiteManifest.parse({ runtime: 'node', workers: 3, app: { entry: 'server.js' } }),
+      siteDir,
+    );
+    const runner = path.join(siteDir, SHARED_DIR, 'node-cluster.mjs');
+    expect(result.args).toEqual([runner, '3', 'server.js']);
+    expect(await fs.readFile(runner, 'utf8')).toBe('// runner');
+  });
+
+  it('keeps a site with websockets on one process', async () => {
+    const result = await resolveRuntimeExecutable(
+      depsWith(distDir),
+      SiteManifest.parse({ runtime: 'node', workers: 3, websockets: true }),
+      siteDir,
+    );
+    expect(result.args).toEqual(['index.js']);
+  });
+
+  it('refuses several processes when the supervisor is missing from the install', async () => {
+    await expect(
+      resolveRuntimeExecutable(
+        depsWith(undefined),
+        SiteManifest.parse({ runtime: 'node', workers: 2 }),
+        siteDir,
+      ),
+    ).rejects.toBeInstanceOf(DeploymentError);
   });
 });
 

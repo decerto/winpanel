@@ -7,7 +7,7 @@ import type { DatabaseHandle } from '../db/index.js';
 import { deployments, sites } from '../db/schema.js';
 import type { JobContext } from '../jobs/queue.js';
 import { detectApp, detectEntryPoint } from '../detect/detector.js';
-import { GitClient } from './git-client.js';
+import { GitClient, isCommitId } from './git-client.js';
 import {
   DeploymentError,
   discardPrevious,
@@ -69,6 +69,11 @@ export interface DeployDependencies {
   sitesRoot: string;
   /** The panel's own program folder, where installed components live. */
   binDir: string;
+  /**
+   * The compiled agent's `dist` folder, which ships helper scripts such as the
+   * cluster supervisor. Only needed for Node sites running more than one process.
+   */
+  agentDistDir?: string;
   /** Resolves a site's secrets from the vault. */
   loadEnv: (siteId: string) => Promise<Record<string, string>>;
   /** Git token for private repositories, belonging to whoever is deploying. */
@@ -123,10 +128,39 @@ export async function normaliseEntry(
   return (await isFile(path.join(appDir, stripped))) ? stripped : clean;
 }
 
+/**
+ * Defaults for Node sites. libuv's thread pool (file I/O, DNS lookups, some
+ * crypto) is four threads by default, so a site doing real work there queues
+ * behind it. A value the site sets itself still wins.
+ */
+const NODE_SITE_DEFAULT_ENV: Record<string, string> = { UV_THREADPOOL_SIZE: '8' };
+
+/**
+ * Copies the cluster supervisor into the site's shared folder and returns the
+ * copy's path. It is kept beside the site rather than run from the agent's own
+ * folder, so a running site keeps working when the agent is upgraded; every
+ * deploy refreshes the copy.
+ */
+async function installClusterRunner(deps: DeployDependencies, siteDir: string): Promise<string> {
+  const source = deps.agentDistDir
+    ? path.join(deps.agentDistDir, 'sites', 'node-cluster-standalone.js')
+    : undefined;
+  if (!source || !(await isFile(source))) {
+    throw new DeploymentError(
+      'Running several processes for one website needs a complete panel build. Reinstall the panel, then deploy again.',
+    );
+  }
+  const target = path.join(siteDir, SHARED_DIR, 'node-cluster.mjs');
+  await fs.mkdir(path.dirname(target), { recursive: true });
+  await fs.copyFile(source, target);
+  return target;
+}
+
 /** The executable that runs a site of a given runtime. */
-async function resolveRuntimeExecutable(
+export async function resolveRuntimeExecutable(
   deps: DeployDependencies,
   manifest: SiteManifest,
+  siteDir: string,
 ): Promise<{ exe: string; args: string[] }> {
   const entry = configuredEntry(manifest) ?? (manifest.runtime === 'dotnet' ? undefined : 'index.js');
 
@@ -159,7 +193,15 @@ async function resolveRuntimeExecutable(
   }
 
   const node = await deps.tools.resolve('node', manifest.nodeVersion ?? undefined);
-  return { exe: node.exe, args: [...node.args, entry ?? 'index.js'] };
+  const entryFile = entry ?? 'index.js';
+  // A websocket connection has to reach the process it started on, and Windows
+  // does not promise that across several processes, so such sites stay at one.
+  const workers = manifest.websockets ? 1 : (manifest.workers ?? 1);
+  if (workers > 1) {
+    const runner = await installClusterRunner(deps, siteDir);
+    return { exe: node.exe, args: [...node.args, runner, String(workers), entryFile] };
+  }
+  return { exe: node.exe, args: [...node.args, entryFile] };
 }
 
 /**
@@ -444,7 +486,14 @@ export function createDeployHandler(deps: DeployDependencies) {
         }
 
         const ref = payload.ref ?? source.branch;
-        ctx.log(`Downloading ${ref} from your repository\u2026`, 'info', 'download');
+        const pinned = isCommitId(ref);
+        ctx.log(
+          pinned
+            ? `Downloading commit ${ref.slice(0, 7)} from your repository\u2026`
+            : `Downloading ${ref} from your repository\u2026`,
+          'info',
+          'download',
+        );
 
         const git = new GitClient({
           gitPath: deps.gitPath,
@@ -459,7 +508,9 @@ export function createDeployHandler(deps: DeployDependencies) {
           },
         });
 
-        commit = await git.cloneRelease(source.url, ref, folders.staging);
+        commit = pinned
+          ? await git.cloneCommit(source.url, ref, folders.staging)
+          : await git.cloneRelease(source.url, ref, folders.staging);
 
         if (source.subdirectory) {
           const inner = path.join(folders.staging, source.subdirectory);
@@ -482,7 +533,9 @@ export function createDeployHandler(deps: DeployDependencies) {
       const detection = await detectApp(folders.staging);
       if (detection.fromManifestFile) {
         ctx.log('Using the settings committed in your project.');
-        manifest = detection.manifest;
+        // The worker count is set in the panel, so a committed file only
+        // overrides it when it names one.
+        manifest = { ...detection.manifest, workers: detection.manifest.workers ?? manifest.workers };
       }
 
       const entry = configuredEntry(manifest);
@@ -668,7 +721,7 @@ export function createDeployHandler(deps: DeployDependencies) {
       const appDir = path.join(folders.release, manifest.app.cwd);
       ctx.log(`Starting the new version on port ${targetPort}\u2026`, 'info', 'start');
 
-      const runtimeExe = await resolveRuntimeExecutable(deps, manifest);
+      const runtimeExe = await resolveRuntimeExecutable(deps, manifest, siteDir);
 
       /*
        * 6. Register it, start it, and prove it works.
@@ -687,6 +740,7 @@ export function createDeployHandler(deps: DeployDependencies) {
           manifest.runtime === 'php'
             ? await phpServiceEnv(deps, site, targetPort, appDir, env)
             : {
+                ...NODE_SITE_DEFAULT_ENV,
                 ...env,
                 [manifest.app.portEnvVar]: String(targetPort),
                 NODE_ENV: 'production',
@@ -990,9 +1044,7 @@ async function publishManagedSite(
       await writeEnvFile(siteDir, env);
 
       const serviceId = serviceIdFor(site.slug, site.activeColour);
-      const runtimeExe = await resolveRuntimeExecutable(deps, manifest);
-
-      ctx.log(`Restarting your app on port ${port}\u2026`, 'info', 'start');
+      const runtimeExe = await resolveRuntimeExecutable(deps, manifest, siteDir);
 
       if (await deps.services.isInstalled(serviceId)) {
         await deps.services.uninstall(serviceId);
@@ -1005,6 +1057,7 @@ async function publishManagedSite(
         manifest.runtime === 'php'
           ? await phpServiceEnv(deps, site, port, documentRoot, env)
           : {
+              ...NODE_SITE_DEFAULT_ENV,
               ...env,
               [manifest.app.portEnvVar]: String(port),
               NODE_ENV: 'production',

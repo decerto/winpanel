@@ -15,7 +15,7 @@ export interface SiteContext {
   site: Ref<SiteDetail | null>;
   reload: () => Promise<void>;
   /** Starts a deployment. The layout renders the live log above every tab. */
-  deploy: () => Promise<void>;
+  deploy: (ref?: string) => Promise<void>;
   deploying: Ref<boolean>;
 }
 

@@ -34,6 +34,8 @@ export function createDatabase(filePath: string): DatabaseHandle {
   sqlite.pragma('foreign_keys = ON');
   // Fail fast rather than hanging a request when another writer holds the lock.
   sqlite.pragma('busy_timeout = 5000');
+  // Negative means KiB, so this is an 8 MB page cache rather than 8 pages.
+  sqlite.pragma('cache_size = -8000');
 
   const db = drizzle(sqlite, { schema });
   return { db, sqlite, close: () => sqlite.close() };

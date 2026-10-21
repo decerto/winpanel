@@ -150,6 +150,55 @@ export async function cleanupRotatedLogFiles(
   return { deleted, bytes };
 }
 
+export interface LogClearResult {
+  deleted: number;
+  emptied: number;
+  bytes: number;
+  failed: string[];
+}
+
+/**
+ * Frees the space the panel's logs use without deleting a file a service has open.
+ *
+ * Rotated files are closed, so they are removed. Every other file may be the
+ * one a service is writing to: deleting an open file on Windows leaves it
+ * delete-pending and frees nothing until that process exits, so those are
+ * emptied in place and the service keeps its handle.
+ */
+export async function clearLogFiles(
+  logDir: string,
+  excludedDirs: readonly string[] = [],
+): Promise<LogClearResult> {
+  const result: LogClearResult = { deleted: 0, emptied: 0, bytes: 0, failed: [] };
+  const root = await fs.realpath(logDir).catch(() => null);
+  if (!root) return result;
+
+  for (const info of await listLogFiles(logDir, excludedDirs)) {
+    const absolute = absoluteForId(root, info.id);
+    const real = absolute ? await fs.realpath(absolute).catch(() => null) : null;
+    if (!real || idFor(root, real) !== info.id) continue;
+
+    const stats = await fs.lstat(real).catch(() => null);
+    if (!stats || stats.isSymbolicLink() || !stats.isFile()) continue;
+
+    const fileName = info.id.slice(info.id.lastIndexOf('/') + 1);
+    try {
+      if (ROTATED_LOG_FILE.test(fileName)) {
+        await fs.rm(real, { force: true, maxRetries: 3, retryDelay: 200 });
+        result.deleted += 1;
+      } else {
+        await fs.truncate(real, 0);
+        result.emptied += 1;
+      }
+      result.bytes += stats.size;
+    } catch {
+      result.failed.push(info.id);
+    }
+  }
+
+  return result;
+}
+
 function timestampOf(value: unknown): number | null {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value > 1e11 ? value : Math.round(value * 1000);

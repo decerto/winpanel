@@ -2,7 +2,7 @@
 import { computed, inject, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeftRight, Cpu, FolderOpen, KeyRound, Plus, Trash2 } from 'lucide-vue-next';
-import { roleAtLeast, ROLE_LABELS, SHARED_DIR, SHARED_URL_PREFIX, type UserRole } from '@winpanel/shared';
+import { MAX_NODE_WORKERS, roleAtLeast, ROLE_LABELS, SHARED_DIR, SHARED_URL_PREFIX, type UserRole } from '@winpanel/shared';
 import { api, describeError } from '../../lib/api';
 import { siteContextKey } from '../../lib/site-context';
 import AlertMessage from '../../components/AlertMessage.vue';
@@ -35,6 +35,16 @@ type NodeInstallation = Awaited<ReturnType<typeof api.system.nodeVersions.query>
 const nodeVersions = ref<NodeInstallation[]>([]);
 const chosenNode = ref('');
 const nodeBusy = ref(false);
+
+const workerChoices = Array.from({ length: MAX_NODE_WORKERS }, (_, index) => index + 1);
+const chosenWorkers = ref(1);
+const workersBusy = ref(false);
+const pinnedWorkers = computed(
+  () => (site.value?.manifest as { workers?: number } | undefined)?.workers ?? 1,
+);
+const websocketsOn = computed(
+  () => (site.value?.manifest as { websockets?: boolean } | undefined)?.websockets === true,
+);
 
 /** Only a Node site cares which Node it gets. */
 const runsOnNode = computed(() => site.value?.runtime === 'node');
@@ -192,6 +202,25 @@ async function saveNodeVersion(): Promise<void> {
   }
 }
 
+async function saveWorkers(): Promise<void> {
+  workersBusy.value = true;
+  error.value = null;
+  notice.value = null;
+
+  try {
+    const result = await api.sites.setWorkers.mutate({
+      slug: slug(),
+      workers: chosenWorkers.value,
+    });
+    notice.value = result.note;
+    await reload();
+  } catch (err) {
+    error.value = describeError(err);
+  } finally {
+    workersBusy.value = false;
+  }
+}
+
 async function saveEnv(): Promise<void> {
   saving.value = true;
   error.value = null;
@@ -230,6 +259,7 @@ async function removeSite(): Promise<void> {
 }
 
 watch(pinnedNode, (value) => (chosenNode.value = value), { immediate: true });
+watch(pinnedWorkers, (value) => (chosenWorkers.value = value), { immediate: true });
 
 watch(
   () => route.params['slug'],
@@ -294,6 +324,47 @@ watch(
           @click="saveNodeVersion"
         >
           {{ nodeBusy ? 'Saving\u2026' : 'Use this version' }}
+        </button>
+      </div>
+    </section>
+
+    <section v-if="runsOnNode" class="card p-5">
+      <h3 class="flex items-center gap-2 text-sm font-semibold text-ink">
+        <Cpu :size="15" class="text-ink-faint" aria-hidden="true" /> Processes
+      </h3>
+      <p class="mt-1 text-sm text-ink-muted">
+        How many copies of this website run at once, sharing its address, so a busy site can use
+        more than one CPU core. Each copy keeps its own memory, so only raise this when your app
+        keeps no state in memory between requests. Sessions, caches and queues held in memory
+        would differ from one copy to the next.
+      </p>
+
+      <AlertMessage v-if="websocketsOn" tone="info" class="mt-4">
+        This website accepts websocket connections, so it always runs a single process.
+      </AlertMessage>
+
+      <div class="mt-4 flex flex-wrap items-end gap-3">
+        <div class="min-w-56">
+          <label for="node-workers" class="label">Processes</label>
+          <select
+            id="node-workers"
+            v-model.number="chosenWorkers"
+            class="field"
+            :disabled="websocketsOn"
+          >
+            <option v-for="count in workerChoices" :key="count" :value="count">
+              {{ count }}{{ count === 1 ? ' (default)' : '' }}
+            </option>
+          </select>
+        </div>
+
+        <button
+          type="button"
+          class="btn btn-primary mb-1"
+          :disabled="workersBusy || websocketsOn || chosenWorkers === pinnedWorkers"
+          @click="saveWorkers"
+        >
+          {{ workersBusy ? 'Saving\u2026' : 'Use this count' }}
         </button>
       </div>
     </section>

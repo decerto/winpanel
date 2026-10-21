@@ -575,6 +575,12 @@ backend and the backend serves it, is detected automatically and produces:
 `npx`, `dotnet`). Anything custom belongs in a `package.json` script, which those tools
 then run - this file is read from your repository, so it is treated as untrusted input.
 
+A Node website runs as one process by default. Its **Processes** setting on the site's
+Settings page can run up to 8 copies behind the same port, so a busy site can use more
+than one CPU core. Only use more than one when the app keeps no state in its own memory
+between requests, and websites with WebSockets always run one process. The setting
+takes effect on the next deploy.
+
 ---
 
 ## Ports

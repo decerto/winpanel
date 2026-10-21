@@ -11,6 +11,7 @@ import {
   Search,
   ServerCog,
   Terminal,
+  Trash2,
   X,
 } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
@@ -19,6 +20,7 @@ import AlertMessage from '../components/AlertMessage.vue';
 import EmptyState from '../components/EmptyState.vue';
 import LoadingBlock from '../components/LoadingBlock.vue';
 import PageHeader from '../components/PageHeader.vue';
+import PasswordConfirmDialog from '../components/PasswordConfirmDialog.vue';
 import Tooltip from '../components/Tooltip.vue';
 
 /**
@@ -32,6 +34,7 @@ import Tooltip from '../components/Tooltip.vue';
 type LogInfo = Awaited<ReturnType<typeof api.logs.list.query>>[number];
 type PanelLog = Awaited<ReturnType<typeof api.logs.read.query>>;
 type LevelFilter = 'all' | 'info' | 'warn' | 'error' | 'debug';
+type LogClearResult = Awaited<ReturnType<typeof api.logs.clear.mutate>>;
 
 const logs = ref<LogInfo[]>([]);
 const selectedId = ref<string | null>(null);
@@ -44,6 +47,10 @@ const search = ref('');
 const fileSearch = ref('');
 const categoryFilter = ref('all');
 const expandedGroups = ref(new Set<string>(['Panel']));
+const clearDialogOpen = ref(false);
+const clearing = ref(false);
+const clearError = ref<string | null>(null);
+const notice = ref<string | null>(null);
 let refreshTimer: number | null = null;
 
 const visibleLines = computed(() => {
@@ -188,6 +195,45 @@ function clearFilters(): void {
   search.value = '';
 }
 
+function requestClear(): void {
+  clearError.value = null;
+  clearDialogOpen.value = true;
+}
+
+function closeClear(): void {
+  if (!clearing.value) clearDialogOpen.value = false;
+}
+
+function describeClear(result: LogClearResult): string {
+  const cleared = result.deleted + result.emptied;
+  if (cleared === 0 && result.failed.length === 0) return 'There were no panel log files to clear.';
+
+  let text = `Cleared ${cleared} log ${cleared === 1 ? 'file' : 'files'} and freed ${formatBytes(result.bytes)}.`;
+  if (result.failed.length > 0) {
+    text += ` ${result.failed.length} could not be cleared because a running process has ${
+      result.failed.length === 1 ? 'it' : 'them'
+    } locked. Restart the service that writes ${result.failed.length === 1 ? 'it' : 'them'}, then clear again.`;
+  }
+  return text;
+}
+
+async function confirmClear(password: string): Promise<void> {
+  clearing.value = true;
+  clearError.value = null;
+  notice.value = null;
+
+  try {
+    const result = await api.logs.clear.mutate({ password });
+    clearDialogOpen.value = false;
+    notice.value = describeClear(result);
+    await refresh();
+  } catch (err) {
+    clearError.value = describeError(err);
+  } finally {
+    clearing.value = false;
+  }
+}
+
 async function read(id: string | null = selectedId.value): Promise<void> {
   if (!id) {
     selected.value = null;
@@ -253,6 +299,15 @@ onUnmounted(() => {
       description="Runtime output from the panel and every service it runs for you — the web server, mail and the database engines. Websites log on their own Logs tab, and a game world's console stays with the game server."
     >
       <template #actions>
+        <button
+          type="button"
+          class="btn btn-ghost text-danger"
+          :disabled="loading || reading || clearing || logs.length === 0"
+          @click="requestClear"
+        >
+          <Trash2 :size="15" aria-hidden="true" />
+          Clear logs
+        </button>
         <button type="button" class="btn btn-ghost" :disabled="loading || reading" @click="refresh">
           <RefreshCw :size="15" :class="loading ? 'animate-spin' : ''" aria-hidden="true" />
           Refresh
@@ -261,6 +316,15 @@ onUnmounted(() => {
     </PageHeader>
 
     <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
+    <AlertMessage
+      v-if="notice"
+      tone="success"
+      dismissible
+      class="mb-4"
+      @dismiss="notice = null"
+    >
+      {{ notice }}
+    </AlertMessage>
 
     <EmptyState
       v-if="!loading && logs.length === 0"
@@ -491,5 +555,16 @@ onUnmounted(() => {
         </template>
       </section>
     </section>
+
+    <PasswordConfirmDialog
+      :open="clearDialogOpen"
+      title="Clear all panel logs?"
+      description="Rotated log files are deleted. Current log files are emptied, and the services keep writing to them. Website access logs and traffic figures are not affected. This cannot be undone."
+      confirm-label="Clear logs"
+      :busy="clearing"
+      :error="clearError"
+      @close="closeClear"
+      @confirm="confirmClear"
+    />
   </div>
 </template>
