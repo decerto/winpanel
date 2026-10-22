@@ -29,7 +29,12 @@ import type { CaddyReconciler } from '../caddy/reconciler.js';
 import { previewProxyIdFor, proxyIdFor } from '../caddy/config-builder.js';
 import type { ServiceManager } from '../windows/service-manager.js';
 import { siteServiceId } from '../windows/panel-services.js';
-import { clearStrayListeners, describeHolder } from '../windows/stray-processes.js';
+import {
+  clearStrayListeners,
+  describeHolder,
+  listPortHolders,
+  type StrayProcess,
+} from '../windows/stray-processes.js';
 import { findExecutable } from '../components/archive.js';
 import { writePhpIni, waitForPhpPool } from './php.js';
 import { PHP_POOL_SIZE } from '@winpanel/shared';
@@ -412,6 +417,19 @@ async function claimPort(port: number, executable: string, ctx: JobContext): Pro
         'program, then deploy again.',
     );
   }
+}
+
+/**
+ * Names whatever holds the public web ports, for a web server reload that
+ * failed with "only one usage of each socket address".
+ *
+ * That error means a process other than the running web server holds 80 or
+ * 443, so naming it turns the failure into something the operator can act on.
+ * An empty list adds nothing.
+ */
+export function portHolderNote(holders: readonly StrayProcess[]): string {
+  if (holders.length === 0) return '';
+  return ` Port 80 or 443 is held by ${holders.map(describeHolder).join(', ')}.`;
 }
 
 export function createDeployHandler(deps: DeployDependencies) {
@@ -883,11 +901,15 @@ export function createDeployHandler(deps: DeployDependencies) {
         try {
           await deps.routing.apply();
         } catch (error) {
+          // Read after the failed reload, so it names the process that holds
+          // the port now. Failing to look must not hide the original error.
+          const holders = await listPortHolders([80, 443]).catch(() => []);
           if (await rollBack(deps, { folders, serviceId, ctx })) liveIsPrevious = true;
           throw new DeploymentError(
             'The new version started, but the web server could not be pointed at it. ' +
               'The previous version has been put back. ' +
-              (error instanceof Error ? error.message : ''),
+              (error instanceof Error ? error.message : '') +
+              portHolderNote(holders),
           );
         }
       }

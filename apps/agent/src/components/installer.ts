@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { eq } from 'drizzle-orm';
-import { SiteManifest } from '@winpanel/shared';
+import { CADDY_CONFIRMATION_CODE, SiteManifest } from '@winpanel/shared';
 import type { ComponentDefinition } from '@winpanel/shared';
 import type { DatabaseHandle } from '../db/index.js';
 import { sites } from '../db/schema.js';
@@ -27,6 +27,7 @@ import {
 } from '../mail/service.js';
 import { storeMailDomains } from '../mail/domains.js';
 import { caddyServiceEnv, cloudflareTokenEnvironment } from '../caddy/service.js';
+import { hasAnyCloudflareToken } from '../dns/token.js';
 import { DownloadError, downloadVerified } from './download.js';
 import { extractZip, findExecutable, listExecutables, sniffPayload } from './archive.js';
 import {
@@ -85,6 +86,34 @@ export interface InstallComponentPayload {
   componentId: string;
   deleteData?: boolean;
   nodeVersion?: string;
+  /**
+   * Set when the user has agreed to install the official Caddy build in place
+   * of the one with Cloudflare DNS support. Skips the build service entirely.
+   */
+  officialCaddyConfirmed?: boolean;
+}
+
+/** Options one install job carries down to every component it installs. */
+interface InstallOptions {
+  officialCaddyConfirmed: boolean;
+}
+
+/**
+ * The Caddy build with Cloudflare DNS could not be downloaded while a
+ * Cloudflare token is in use. The official build cannot issue those
+ * certificates, so the user decides. Raised before anything is changed, so the
+ * running Caddy keeps running.
+ */
+export class CaddyConfirmationRequired extends Error {
+  constructor(buildFailure: string) {
+    super(
+      `${CADDY_CONFIRMATION_CODE} ${buildFailure} ` +
+        'Some websites use a Cloudflare token, and the official Caddy build cannot issue ' +
+        'their certificates. Nothing was changed, so the running Caddy keeps running. ' +
+        'Confirm the official fallback to install it anyway.',
+    );
+    this.name = 'CaddyConfirmationRequired';
+  }
 }
 
 const POSTGRES_SERVICE_ACCOUNT = 'NT AUTHORITY\\NetworkService';
@@ -434,6 +463,7 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
     ctx: JobContext,
     installing: ReadonlySet<string>,
     skipIfPresent: boolean,
+    options: InstallOptions,
   ): Promise<void> => {
     for (const requiredId of component.requires) {
       if (installing.has(requiredId)) continue;
@@ -442,7 +472,13 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
       if (await isInstalled(deps, required)) continue;
 
       ctx.log(`${component.name} needs ${required.name} — installing that first.`);
-      await installWithRequires(required, ctx, new Set([...installing, component.id]), true);
+      await installWithRequires(
+        required,
+        ctx,
+        new Set([...installing, component.id]),
+        true,
+        options,
+      );
     }
 
     if (skipIfPresent && (await isInstalled(deps, component))) {
@@ -450,7 +486,7 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
       return;
     }
 
-    await installOne(component, ctx);
+    await installOne(component, ctx, options);
   };
 
   /**
@@ -491,29 +527,29 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
     }
   };
 
-  const installOne = async (component: ComponentDefinition, ctx: JobContext): Promise<void> => {
+  const installOne = async (
+    component: ComponentDefinition,
+    ctx: JobContext,
+    options: InstallOptions,
+  ): Promise<void> => {
     ctx.log(`Installing ${component.name} ${component.version}`);
     ctx.progress(5);
 
     try {
-      await installOneInner(component, ctx);
+      await installOneInner(component, ctx, options);
     } catch (error) {
+      // Raised before anything is touched, so there is nothing to clear away.
+      if (error instanceof CaddyConfirmationRequired) throw error;
       await cleanupFailedInstall(component, ctx);
       throw error;
     }
   };
 
-  const installOneInner = async (component: ComponentDefinition, ctx: JobContext): Promise<void> => {
-    /*
-     * A running service holds its own executable open, so unpacking over it
-     * fails with a permission error that reads like a broken download. The
-     * old registration goes first, and only then is anything written.
-     */
-    if (component.serviceName && (await deps.services.isInstalled(component.serviceName))) {
-      ctx.log('Stopping the running service before replacing it\u2026');
-      await deps.services.uninstall(component.serviceName);
-    }
-
+  const installOneInner = async (
+    component: ComponentDefinition,
+    ctx: JobContext,
+    options: InstallOptions,
+  ): Promise<void> => {
     const downloadDir = path.join(deps.binDir, '.downloads');
     const extension =
       component.kind === 'php-script' ? '.phar' : component.kind === 'exe' ? '.exe' : '.zip';
@@ -539,39 +575,71 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
       }
     };
 
-    if (component.id === 'caddy') {
-      ctx.log(
-        'Asking the Caddy build service for a build with the Cloudflare DNS module. ' +
-          'This can take a few minutes.',
-      );
-    }
-    try {
-      await downloadVerified({
-        url: component.url,
-        destination: archivePath,
-        sha256: component.sha256,
-        timeoutMs: component.id === 'caddy' ? CADDY_BUILD_TIMEOUT_MS : undefined,
-        onProgress,
-      });
-    } catch (error) {
-      if (component.id !== 'caddy' || !(error instanceof DownloadError)) throw error;
-
-      ctx.log(
-        `${error.message} Installing the official Caddy ${CADDY_OFFICIAL_VERSION} instead. ` +
-          'Cloudflare DNS certificates will not work until a build with that module is installed.',
-        'warn',
-      );
-      archivePath = path.join(downloadDir, `caddy-official-${CADDY_OFFICIAL_VERSION}.zip`);
+    const downloadOfficialCaddy = async (): Promise<string> => {
+      const official = path.join(downloadDir, `caddy-official-${CADDY_OFFICIAL_VERSION}.zip`);
       await downloadVerified({
         url: CADDY_OFFICIAL_URL,
-        destination: archivePath,
+        destination: official,
         sha256: CADDY_OFFICIAL_SHA256,
         onProgress,
       });
+      return official;
+    };
+
+    const cloudflareWarning =
+      'Cloudflare DNS certificates will not work until a build with that module is installed.';
+
+    if (component.id === 'caddy' && options.officialCaddyConfirmed) {
+      ctx.log(
+        `Installing the official Caddy ${CADDY_OFFICIAL_VERSION}, as confirmed. ${cloudflareWarning}`,
+        'warn',
+      );
+      archivePath = await downloadOfficialCaddy();
+    } else {
+      if (component.id === 'caddy') {
+        ctx.log(
+          'Asking the Caddy build service for a build with the Cloudflare DNS module. ' +
+            'This can take a few minutes.',
+        );
+      }
+      try {
+        await downloadVerified({
+          url: component.url,
+          destination: archivePath,
+          sha256: component.sha256,
+          timeoutMs: component.id === 'caddy' ? CADDY_BUILD_TIMEOUT_MS : undefined,
+          onProgress,
+        });
+      } catch (error) {
+        if (component.id !== 'caddy' || !(error instanceof DownloadError)) throw error;
+
+        // Silently swapping in a build that cannot issue Cloudflare certificates
+        // breaks every such website, so a configured token makes this a question.
+        if (hasAnyCloudflareToken(deps.db)) {
+          throw new CaddyConfirmationRequired(error.message);
+        }
+
+        ctx.log(
+          `${error.message} Installing the official Caddy ${CADDY_OFFICIAL_VERSION} instead. ${cloudflareWarning}`,
+          'warn',
+        );
+        archivePath = await downloadOfficialCaddy();
+      }
     }
 
     ctx.throwIfCancelled();
     ctx.progress(55);
+
+    /*
+     * A running service holds its own executable open, so unpacking over it
+     * fails with a permission error that reads like a broken download. The
+     * old registration goes first, and only once the new program is in hand:
+     * a slow or failed download must not take the running service down.
+     */
+    if (component.serviceName && (await deps.services.isInstalled(component.serviceName))) {
+      ctx.log('Stopping the running service before replacing it\u2026');
+      await deps.services.uninstall(component.serviceName);
+    }
 
     const installDir = componentInstallDir(deps, component);
     const wanted = executableNames(component);
@@ -835,7 +903,8 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
   };
 
   return async (payload: unknown, ctx: JobContext): Promise<void> => {
-    const { componentId, nodeVersion } = payload as InstallComponentPayload;
+    const { componentId, nodeVersion, officialCaddyConfirmed } =
+      payload as InstallComponentPayload;
     const baseComponent = findComponent(componentId);
 
     if (!baseComponent) throw new Error(`There is no component called "${componentId}".`);
@@ -863,7 +932,9 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
      * for. The `installing` set guards against the dependency graph ever
      * pointing back at itself.
      */
-    await installWithRequires(component, ctx, new Set(), false);
+    await installWithRequires(component, ctx, new Set(), false, {
+      officialCaddyConfirmed: officialCaddyConfirmed === true,
+    });
     if (component.id === 'node') forgetNodeVersions();
   };
 }

@@ -22,7 +22,7 @@ import {
   waitForHealthy,
   withPnpmDefaults,
 } from '../src/sites/deploy-pipeline.js';
-import { committedManifest, entryFileProblem, isProgressNoise, normaliseEntry, reportAppOutput, resolveRuntimeExecutable } from '../src/sites/deploy-handler.js';
+import { committedManifest, entryFileProblem, isProgressNoise, normaliseEntry, portHolderNote, reportAppOutput, resolveRuntimeExecutable } from '../src/sites/deploy-handler.js';
 import type { JobContext } from '../src/jobs/queue.js';
 
 const MIGRATIONS = path.join(import.meta.dirname, '..', 'drizzle');
@@ -355,6 +355,27 @@ describe('runBuildSteps', () => {
 
       expect(ctx.lines.join(' ')).toMatch(/no build steps of its own/i);
     }, 30_000);
+  });
+});
+
+/*
+ * A failed web server reload is only actionable if it names the process that
+ * holds the port. With nothing known, the note must add nothing at all.
+ */
+describe('portHolderNote', () => {
+  it('adds nothing when no holder is known', () => {
+    expect(portHolderNote([])).toBe('');
+  });
+
+  it('names each holder with its port and process id', () => {
+    expect(
+      portHolderNote([
+        { pid: 4321, port: 443, image: 'httpd.exe' },
+        { pid: 9, port: 80, image: 'caddy.exe' },
+      ]),
+    ).toBe(
+      ' Port 80 or 443 is held by httpd.exe (process 4321) on port 443, caddy.exe (process 9) on port 80.',
+    );
   });
 });
 

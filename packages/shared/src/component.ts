@@ -92,6 +92,14 @@ export const ComponentDefinition = z.object({
 });
 export type ComponentDefinition = z.infer<typeof ComponentDefinition>;
 
+/**
+ * Stamped at the start of the install-failure message when Caddy's build
+ * service cannot be reached and the official build is the only option left.
+ * The panel looks for it to ask before falling back, because the official
+ * build cannot issue Cloudflare DNS certificates.
+ */
+export const CADDY_CONFIRMATION_CODE = '[caddy-official-confirmation]';
+
 export const ComponentInstallState = z.enum([
   'not-installed',
   'installing',

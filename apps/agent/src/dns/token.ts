@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, like, or } from 'drizzle-orm';
 import type { DatabaseHandle } from '../db/index.js';
 import { secrets, sites } from '../db/schema.js';
 import { readSecret, writeSecret } from '../security/secret-store.js';
@@ -30,6 +30,25 @@ export const siteCloudflareTokenKey = (siteId: string) => `site.cloudflareToken:
 
 function hasSecret(db: DatabaseHandle, key: string): boolean {
   return db.db.select({ key: secrets.key }).from(secrets).where(eq(secrets.key, key)).get() !== undefined;
+}
+
+/**
+ * True when any website, or the legacy machine-wide key, holds a Cloudflare
+ * token. Reads key names only, never the secret values.
+ */
+export function hasAnyCloudflareToken(db: DatabaseHandle): boolean {
+  return (
+    db.db
+      .select({ key: secrets.key })
+      .from(secrets)
+      .where(
+        or(
+          eq(secrets.key, LEGACY_CLOUDFLARE_TOKEN_KEY),
+          like(secrets.key, 'site.cloudflareToken:%'),
+        ),
+      )
+      .get() !== undefined
+  );
 }
 
 export function loadLegacyCloudflareToken(

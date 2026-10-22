@@ -272,7 +272,16 @@ export const componentsRouter = router({
   }),
 
   install: adminProcedure
-    .input(z.object({ componentId: z.string().min(1) }))
+    .input(
+      z.object({
+        componentId: z.string().min(1),
+        /**
+         * Set on the retry after the user agreed to the official Caddy build,
+         * which cannot issue Cloudflare DNS certificates. See installer.ts.
+         */
+        officialCaddyConfirmed: z.boolean().optional(),
+      }),
+    )
     .mutation(({ ctx, input }) => {
       const component = findComponent(input.componentId);
 
@@ -286,7 +295,10 @@ export const componentsRouter = router({
       const jobId = ctx.app.jobs.enqueue({
         kind: 'install-component',
         title: `Installing ${component.name}`,
-        payload: { componentId: component.id },
+        payload: {
+          componentId: component.id,
+          officialCaddyConfirmed: input.officialCaddyConfirmed === true,
+        },
       });
 
       return { jobId };

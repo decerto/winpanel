@@ -2,6 +2,7 @@
 import { computed, onUnmounted, ref } from 'vue';
 import { ArrowDownToLine, Boxes, Play, RefreshCw, Square, Trash2 } from 'lucide-vue-next';
 import { api, describeError } from '../lib/api';
+import { CADDY_CONFIRMATION_CODE } from '@winpanel/shared';
 import AlertMessage from './AlertMessage.vue';
 import LoadingBlock from './LoadingBlock.vue';
 import Tooltip from './Tooltip.vue';
@@ -118,6 +119,10 @@ async function pollJob(): Promise<void> {
 
     if (job && ['succeeded', 'failed', 'cancelled'].includes(job.status)) {
       stopPolling();
+      if (job.status === 'failed' && job.errorMessage?.includes(CADDY_CONFIRMATION_CODE)) {
+        await askOfficialCaddy();
+        return;
+      }
       busyId.value = null;
       await load();
       emit('changed');
@@ -126,6 +131,40 @@ async function pollJob(): Promise<void> {
     // A transient failure while polling should not tear down the view.
   } finally {
     polling = false;
+  }
+}
+
+/**
+ * Caddy's Cloudflare-enabled build could not be downloaded and the official
+ * build cannot issue Cloudflare certificates. Nothing has changed yet, so ask
+ * before installing it; a decline leaves the running Caddy alone.
+ */
+async function askOfficialCaddy(): Promise<void> {
+  const confirmed = window.confirm(
+    'Caddy could not download the build with Cloudflare DNS support.\n\n' +
+      'Some of your websites use a Cloudflare token. The official Caddy build cannot issue ' +
+      'their HTTPS certificates, so those sites will not get new or renewed certificates ' +
+      'until the Cloudflare build is installed.\n\n' +
+      'Install the official Caddy build anyway?',
+  );
+
+  if (!confirmed) {
+    error.value = 'Caddy was not changed. Your websites are still running on the current version.';
+    busyId.value = null;
+    await load();
+    emit('changed');
+    return;
+  }
+
+  try {
+    const result = await api.components.install.mutate({
+      componentId: 'caddy',
+      officialCaddyConfirmed: true,
+    });
+    watchJob(result.jobId);
+  } catch (err) {
+    error.value = describeError(err);
+    busyId.value = null;
   }
 }
 
