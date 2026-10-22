@@ -163,6 +163,13 @@ describe('buildCaddyConfig', () => {
     expect(proxy.upstreams).toEqual([{ dial: '127.0.0.1:3001' }]);
   });
 
+  it('bounds how long a site proxy waits to dial a dead upstream', () => {
+    const config = buildCaddyConfig({ sites: [site()] }) as any;
+    const proxy = findRoute(config, routeIdFor('example')).handle[0].routes[0].handle[0];
+
+    expect(proxy.transport).toEqual({ protocol: 'http', dial_timeout: '5s' });
+  });
+
   it('tags the proxy with an id so upstreams can be switched atomically', () => {
     // This is what makes zero-downtime deploys a single PATCH rather than a
     // full config reload.

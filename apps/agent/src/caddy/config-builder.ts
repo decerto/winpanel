@@ -294,6 +294,9 @@ function buildHandlers(site: CaddySiteInput, proxyId: string): unknown[] {
       '@id': proxyId,
       handler: 'reverse_proxy',
       upstreams: [{ dial: `127.0.0.1:${site.activePort}` }],
+      // Fail a dead upstream quickly so clients get an error and back off,
+      // instead of queueing connections until the OS gives up.
+      transport: { protocol: 'http', dial_timeout: '5s' },
       headers: {
         request: {
           set: {
