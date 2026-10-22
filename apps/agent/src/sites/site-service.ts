@@ -16,6 +16,7 @@ import { deployments, sites } from '../db/schema.js';
 import { removeLegacyLayout } from './deploy-pipeline.js';
 import { PortAllocator, runtimeNeedsAppPorts } from './port-allocator.js';
 import { scaffoldSite } from './scaffold.js';
+import { deleteSiteFolder } from './site-removal.js';
 import type { SecretVault } from '../security/vault.js';
 import { secrets } from '../db/schema.js';
 
@@ -424,16 +425,21 @@ export class SiteService {
     this.db.db.delete(secrets).where(eq(secrets.key, `site.cloudflareToken:${id}`)).run();
     this.db.db.delete(sites).where(eq(sites.id, id)).run();
 
-    if (options.deleteFiles) {
-      // The site's services stopped moments ago and Windows keeps their files
-      // open a little longer than the processes that had them.
-      await fs.rm(path.join(this.sitesRoot, site.slug), {
-        recursive: true,
-        force: true,
-        maxRetries: 5,
-        retryDelay: 250,
-      });
-    }
+    if (options.deleteFiles) await this.deleteFolder(site.slug);
+  }
+
+  /**
+   * Deletes a removed website's folder.
+   *
+   * Never throws: by the time this runs the website is already gone, so a
+   * refusal is reported, and the folder remembered and retried when the panel
+   * next starts, rather than failing a delete that has otherwise happened.
+   *
+   * @returns whether the folder is gone.
+   */
+  async deleteFolder(slug: string): Promise<boolean> {
+    if (this.get(slug)) return false;
+    return await deleteSiteFolder(this.db, path.join(this.sitesRoot, slug));
   }
 
   /** Stores the site's environment variables, encrypted. */

@@ -42,6 +42,7 @@ import { listOfficialReleases } from '../../components/panel-releases.js';
 import { BrowseError, browseDirectory } from '../../files/server-browse.js';
 import { CADDY_SERVICE_ID } from '../../caddy/service.js';
 import { prepareStalwartForWebServer } from '../../mail/service.js';
+import { orphanedSiteServices, removeOrphanedSiteServices } from '../../sites/site-removal.js';
 
 /**
  * Why a service would not stay up, in terms of what to do about it.
@@ -599,7 +600,15 @@ export const systemRouter = router({
    * one-way door that needs a command prompt to reverse.
    */
   startAll: adminProcedure.mutation(async ({ ctx }) => {
-    const services = await listServicesForGeneralControls(ctx);
+    const listed = await listServicesForGeneralControls(ctx);
+
+    // A deleted website's service is removed, not started: starting it would
+    // bring back a website the panel no longer knows how to serve.
+    const orphans = orphanedSiteServices(ctx.app.db, listed);
+    const cleanup = await removeOrphanedSiteServices(ctx.app.db, ctx.app.services, orphans);
+    const orphanIds = new Set(orphans.map((service) => service.id.toLowerCase()));
+    const services = listed.filter((service) => !orphanIds.has(service.id.toLowerCase()));
+
     if (services.some((service) => service.id.toLowerCase() === CADDY_SERVICE_ID)) {
       await repairMailPortConflict(ctx);
     }
@@ -608,7 +617,17 @@ export const systemRouter = router({
       markIntentionallyStarted: (id) => ctx.app.services.markIntentionallyStarted(id),
     });
     markStartedGameServers(ctx, services, report.failed);
-    return report;
+    return {
+      ...report,
+      failed: [
+        ...report.failed,
+        ...cleanup.failed.map((failure) => ({
+          id: failure.id,
+          label: orphans.find((service) => service.id === failure.id)?.label ?? failure.id,
+          reason: `Left by a deleted website and could not be removed: ${failure.reason}`,
+        })),
+      ],
+    };
   }),
 
   /**

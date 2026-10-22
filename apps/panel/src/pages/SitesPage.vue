@@ -43,10 +43,17 @@ const router = useRouter();
 type Site = Awaited<ReturnType<typeof api.sites.list.query>>[number];
 type Certificate = Awaited<ReturnType<typeof api.ssl.overview.query>>[number];
 
+/** What a website delete could not finish, handed over by the page it was deleted from. */
+function readRemovalWarnings(): string[] {
+  const value: unknown = window.history.state?.removalWarnings;
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
 const sites = ref<Site[]>([]);
 const certificates = ref<Record<string, Certificate>>({});
 const loading = ref(true);
 const error = ref<string | null>(null);
+const removalWarnings = ref<string[]>(readRemovalWarnings());
 const query = ref('');
 const page = ref(1);
 
@@ -185,6 +192,17 @@ onMounted(load);
         </button>
       </template>
     </PageHeader>
+
+    <AlertMessage
+      v-if="removalWarnings.length > 0"
+      tone="warning"
+      title="The website was deleted, but not everything could be removed yet"
+      dismissible
+      class="mb-4"
+      @dismiss="removalWarnings = []"
+    >
+      <p v-for="warning in removalWarnings" :key="warning">{{ warning }}</p>
+    </AlertMessage>
 
     <AlertMessage v-if="error" class="mb-4">{{ error }}</AlertMessage>
 

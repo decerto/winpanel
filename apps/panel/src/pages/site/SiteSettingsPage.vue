@@ -244,13 +244,18 @@ async function removeSite(): Promise<void> {
   error.value = null;
 
   try {
-    await api.sites.remove.mutate({
+    const result = await api.sites.remove.mutate({
       slug: slug(),
       confirmSlug: confirmName.value.trim(),
       password: deletePassword.value,
       deleteFiles: deleteFiles.value,
     });
-    await router.push('/sites');
+    // The website page is gone, so anything left over is said on the list.
+    await router.push(
+      result.warnings.length > 0
+        ? { path: '/sites', state: { removalWarnings: result.warnings } }
+        : '/sites',
+    );
   } catch (err) {
     error.value = describeError(err);
   } finally {

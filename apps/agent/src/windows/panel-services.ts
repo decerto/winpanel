@@ -33,6 +33,11 @@ export function siteServiceId(slug: string, colour: 'blue' | 'green'): string {
   return `${PANEL_SERVICE_PREFIX}site-${slug}-${colour}`;
 }
 
+/** The website slug a service id was made from, or null if it is not a website's. */
+export function siteSlugFromServiceId(id: string): string | null {
+  return /^winpanel-site-(.+)-(?:blue|green)$/.exec(id.toLowerCase())?.[1] ?? null;
+}
+
 export type PanelServiceState = 'running' | 'stopped' | 'starting' | 'stopping' | 'unknown';
 
 /** What a service is for. Also decides the order things are stopped in. */
@@ -104,9 +109,9 @@ export function describePanelService(id: string): { label: string; kind: PanelSe
 
   // The trailing colour is the deployment slot. It means nothing to the person
   // reading this list, and the service id is printed underneath anyway.
-  const site = /^winpanel-site-(.+)-(?:blue|green)$/.exec(lower);
-  if (site?.[1]) {
-    return { label: `Website: ${site[1]}`, kind: 'site' };
+  const site = siteSlugFromServiceId(lower);
+  if (site) {
+    return { label: `Website: ${site}`, kind: 'site' };
   }
 
   return { label: id, kind: 'other' };

@@ -248,3 +248,81 @@ export async function clearStrayListeners(
 export function describeHolder(holder: StrayProcess): string {
   return `${holder.image} (process ${holder.pid}) on port ${holder.port}`;
 }
+
+export interface FolderProcess {
+  pid: number;
+  name: string;
+}
+
+/**
+ * Picks out of a `Win32_Process` listing the processes that run from inside
+ * `folder`: their program lives there, or their command line names it.
+ *
+ * Separated from the query so it can be tested without a Windows machine.
+ */
+export function processesInsideFolder(listing: string, folder: string): FolderProcess[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(listing);
+  } catch {
+    return [];
+  }
+
+  const rows = (Array.isArray(parsed) ? parsed : [parsed]) as Array<{
+    ProcessId?: unknown;
+    Name?: unknown;
+    ExecutablePath?: unknown;
+    CommandLine?: unknown;
+  }>;
+
+  // The trailing separator stops `sites\ds` matching `sites\ds-shop`.
+  const inside = path.win32.resolve(folder).toLowerCase().replace(/\\+$/, '') + '\\';
+  const references = (value: unknown): boolean =>
+    typeof value === 'string' && value.replace(/\//g, '\\').toLowerCase().includes(inside);
+
+  const found: FolderProcess[] = [];
+  for (const row of rows) {
+    if (!row || typeof row.ProcessId !== 'number' || row.ProcessId <= 0) continue;
+    if (row.ProcessId === process.pid) continue;
+    if (!references(row.ExecutablePath) && !references(row.CommandLine)) continue;
+
+    found.push({ pid: row.ProcessId, name: typeof row.Name === 'string' ? row.Name : 'unknown' });
+  }
+
+  return found;
+}
+
+/**
+ * Ends every process running from inside a folder that is about to be deleted.
+ *
+ * Only used once the folder's owner has been removed and a delete has already
+ * failed on a file in use: anything still running from in there belongs to
+ * something that no longer exists, and Windows will not let the folder go
+ * while it runs.
+ *
+ * @returns the processes that were ended.
+ */
+export async function endProcessesInsideFolder(folder: string): Promise<FolderProcess[]> {
+  if (process.platform !== 'win32') return [];
+
+  const result = await runCommand({
+    exe: 'powershell.exe',
+    args: [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      'Get-CimInstance Win32_Process | ' +
+        'Select-Object ProcessId, Name, ExecutablePath, CommandLine | ConvertTo-Json -Compress',
+    ],
+    timeoutMs: 60_000,
+  }).catch(() => null);
+
+  if (!result || result.exitCode !== 0) return [];
+
+  const ended: FolderProcess[] = [];
+  for (const found of processesInsideFolder(result.stdout, folder)) {
+    if (await killProcessTree(found.pid)) ended.push(found);
+  }
+
+  return ended;
+}

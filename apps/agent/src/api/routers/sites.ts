@@ -28,6 +28,7 @@ import { GitClient, isCommitId, validateGitRef, validateRepositoryUrl } from '..
 import { generateDeployKey, isSshUrl } from '../../sites/ssh-keys.js';
 import { serviceIdFor } from '../../sites/deploy-handler.js';
 import { isPortAnswered } from '../../windows/service-probe.js';
+import { sitesMidDeploy } from '../../windows/watched-services.js';
 import { localAddresses } from '../../tls/panel-certificate.js';
 import { panelHostnameAmong } from '../../tls/panel-hostname.js';
 import { accessLogExists, logFilesFor } from '../../traffic/collector.js';
@@ -1288,7 +1289,7 @@ export const sitesRouter = router({
 
       const service = new SiteService(ctx.app.db, ctx.app.vault, ctx.app.config.sitesRoot);
       const site = service.get(input.slug);
-      if (!site) return { ok: true };
+      if (!site) return { ok: true, warnings: [] as string[] };
 
       if (!(await ctx.app.auth.reauthenticate(ctx.user.id, input.password))) {
         throw new TRPCError({
@@ -1308,6 +1309,20 @@ export const sitesRouter = router({
       }
 
       /*
+       * A deploy in flight would put back what this is about to take away: it
+       * installs the site's service and writes into its folder once it gets
+       * there, for a website that by then no longer exists.
+       */
+      if (sitesMidDeploy(ctx.app.db).has(site.id)) {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'This website is being deployed. Wait for that to finish, then delete it.',
+        });
+      }
+
+      const warnings: string[] = [];
+
+      /*
        * Stop the site's processes before its records go.
        *
        * Deleting the row alone would leave two Windows services running for a
@@ -1315,6 +1330,10 @@ export const sitesRouter = router({
        * been told are free. The next site created would then be handed a port
        * something is already listening on, and fail to start for reasons that
        * point nowhere near here.
+       *
+       * One that will not go does not block the delete. It is reported, and
+       * removed when the panel next starts, since nothing that looks at
+       * existing websites will ever look at it again.
        */
       for (const colour of ['blue', 'green'] as const) {
         const serviceId = serviceIdFor(site.slug, colour);
@@ -1323,9 +1342,12 @@ export const sitesRouter = router({
             await ctx.app.services.stop(serviceId).catch(() => undefined);
             await ctx.app.services.uninstall(serviceId);
           }
-        } catch {
-          // A service that cannot be removed must not block deleting the site;
-          // it is reported by the health checks instead.
+        } catch (error) {
+          warnings.push(
+            `Its background service ${serviceId} could not be removed` +
+              (error instanceof Error ? `: ${error.message}` : '.') +
+              ' The panel will try again when it next starts.',
+          );
         }
       }
 
@@ -1348,12 +1370,21 @@ export const sitesRouter = router({
         await removeDatabase(engineContext, database).catch(() => undefined);
       }
 
-      await service.remove(site.id, { deleteFiles: input.deleteFiles });
+      await service.remove(site.id, { deleteFiles: false });
 
       // Otherwise the route outlives the site and keeps answering, or worse,
       // keeps proxying to a port that has since been given to something else.
+      // Before the files, too: the web server may be serving one of them.
       await ctx.app.routing.tryApply();
 
-      return { ok: true };
+      if (input.deleteFiles && !(await service.deleteFolder(site.slug))) {
+        warnings.push(
+          `Some of its files are still in use and could not be deleted from ` +
+            `${path.join(ctx.app.config.sitesRoot, site.slug)}. The panel will finish removing ` +
+            'them when it next starts.',
+        );
+      }
+
+      return { ok: true, warnings };
     }),
 });

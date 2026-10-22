@@ -18,6 +18,7 @@ import { sitesMidDeploy, watchdogServices } from './windows/watched-services.js'
 import { registerSiteChecks } from './api/routers/checks.js';
 import { findStrayListeners, killProcessTree } from './windows/stray-processes.js';
 import { clearLegacyCloudflareToken } from './dns/token.js';
+import { removeOrphanedSiteServices, retryPendingFolderRemovals } from './sites/site-removal.js';
 
 /**
  * Agent entry point. Runs as a Windows Service under WinSW in production.
@@ -260,6 +261,32 @@ async function main(): Promise<void> {
       }
     } catch (error) {
       server.log.warn({ err: error }, 'Could not free unused ports.');
+    }
+
+    /*
+     * What a website delete could not finish at the time: a service Windows
+     * would not unregister, or a folder something still had open. Nothing
+     * else will ever look at either again, and the service otherwise goes on
+     * being reported as a stopped website that does not exist.
+     */
+    try {
+      const services = await removeOrphanedSiteServices(app.db, app.services);
+      if (services.removed.length > 0) {
+        server.log.info(`Removed ${services.removed.length} service(s) left by deleted websites.`);
+      }
+      for (const failure of services.failed) {
+        server.log.warn(`Could not remove ${failure.id}, left by a deleted website: ${failure.reason}`);
+      }
+
+      const folders = await retryPendingFolderRemovals(app.db, config.sitesRoot);
+      if (folders.removed.length > 0) {
+        server.log.info(`Removed ${folders.removed.length} folder(s) left by deleted websites.`);
+      }
+      for (const folder of folders.remaining) {
+        server.log.warn(`Could not remove ${folder}, left by a deleted website. It is still in use.`);
+      }
+    } catch (error) {
+      server.log.warn({ err: error }, 'Could not clean up after deleted websites.');
     }
 
     /*
