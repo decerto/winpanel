@@ -146,6 +146,12 @@ export function previewServerIdFor(slug: string): string {
 
 export const PANEL_ROUTE_ID = 'panel_route';
 
+/** Idle keep-alive connections Caddy may hold to one site's app. See `buildHandlers`. */
+export const UPSTREAM_MAX_IDLE_CONNS = 1024;
+
+/** How long a WebSocket outlives the config that opened it. See `buildHandlers`. */
+export const STREAM_CLOSE_DELAY = '30m';
+
 /** The route that answers for a name no website on this server claims. */
 export const UNCLAIMED_HOST_ROUTE_ID = 'unclaimed_host';
 
@@ -294,9 +300,31 @@ function buildHandlers(site: CaddySiteInput, proxyId: string): unknown[] {
       '@id': proxyId,
       handler: 'reverse_proxy',
       upstreams: [{ dial: `127.0.0.1:${site.activePort}` }],
-      // Fail a dead upstream quickly so clients get an error and back off,
-      // instead of queueing connections until the OS gives up.
-      transport: { protocol: 'http', dial_timeout: '5s' },
+      transport: {
+        protocol: 'http',
+        // Fail a dead upstream quickly so clients get an error and back off,
+        // instead of queueing connections until the OS gives up.
+        dial_timeout: '5s',
+        /*
+         * Caddy keeps only 32 idle upstream connections by default and closes
+         * the rest as each response finishes. Socket.IO long-polling holds one
+         * request open per player, and a broadcast releases them all at once,
+         * so past ~32 players every push closes a connection and the next poll
+         * dials a new one. Each close leaves a TIME_WAIT socket for minutes on
+         * Windows; at a few hundred players that exhausts the 16,384 ephemeral
+         * ports, dials fail, and every session drops at once. Loopback idle
+         * connections cost next to nothing, so keep enough for every player.
+         */
+        keep_alive: { max_idle_conns_per_host: UPSTREAM_MAX_IDLE_CONNS },
+      },
+      /*
+       * Every config load unloads the old handlers, and by default that closes
+       * every WebSocket they proxied — so any deploy, domain or certificate
+       * change anywhere on the server dropped every connected player on every
+       * site at the same moment. Keeping streams open for a while lets them
+       * finish naturally instead of reconnecting as one thundering herd.
+       */
+      stream_close_delay: STREAM_CLOSE_DELAY,
       headers: {
         request: {
           set: {

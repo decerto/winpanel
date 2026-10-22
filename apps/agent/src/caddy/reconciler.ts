@@ -38,8 +38,10 @@ import {
  * and a config that has quietly drifted from the panel's own records is close
  * to impossible to debug from the outside.
  *
- * `POST /load` is graceful in Caddy — connections are drained rather than cut
- * — so this is safe to call while sites are serving traffic.
+ * `POST /load` is graceful in Caddy — ordinary requests are drained rather
+ * than cut — so this is safe to call while sites are serving traffic.
+ * WebSockets are the exception: the old config closes them as it unloads
+ * unless the proxy sets `stream_close_delay`, which the config builder does.
  */
 
 export interface ReconcileOptions {

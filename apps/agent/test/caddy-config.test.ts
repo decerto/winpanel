@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { SiteManifest } from '@winpanel/shared';
 import {
   PANEL_ROUTE_ID,
+  STREAM_CLOSE_DELAY,
   UNCLAIMED_HOST_ROUTE_ID,
+  UPSTREAM_MAX_IDLE_CONNS,
   buildCaddyConfig,
   previewServerIdFor,
   proxyIdFor,
@@ -167,7 +169,30 @@ describe('buildCaddyConfig', () => {
     const config = buildCaddyConfig({ sites: [site()] }) as any;
     const proxy = findRoute(config, routeIdFor('example')).handle[0].routes[0].handle[0];
 
-    expect(proxy.transport).toEqual({ protocol: 'http', dial_timeout: '5s' });
+    expect(proxy.transport.protocol).toBe('http');
+    expect(proxy.transport.dial_timeout).toBe('5s');
+  });
+
+  it('keeps enough idle upstream connections that long-polling does not churn ports', () => {
+    // Caddy's default of 32 closed a connection per long-poll per broadcast
+    // once a realtime app passed 32 players, until Windows ran out of ports.
+    const config = buildCaddyConfig({ sites: [site()] }) as any;
+    const proxy = findRoute(config, routeIdFor('example')).handle[0].routes[0].handle[0];
+
+    expect(proxy.transport.keep_alive).toEqual({
+      max_idle_conns_per_host: UPSTREAM_MAX_IDLE_CONNS,
+    });
+    expect(UPSTREAM_MAX_IDLE_CONNS).toBeGreaterThan(32);
+  });
+
+  it('keeps WebSockets open across a config reload, on both listeners', () => {
+    const config = buildCaddyConfig({ sites: [site({ previewPort: 7001 })] }) as any;
+    const proxy = findRoute(config, routeIdFor('example')).handle[0].routes[0].handle[0];
+    const preview = config.apps.http.servers[previewServerIdFor('example')].routes[0].handle[1]
+      .routes[0].handle[0];
+
+    expect(proxy.stream_close_delay).toBe(STREAM_CLOSE_DELAY);
+    expect(preview.stream_close_delay).toBe(STREAM_CLOSE_DELAY);
   });
 
   it('tags the proxy with an id so upstreams can be switched atomically', () => {
