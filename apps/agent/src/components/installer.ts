@@ -82,6 +82,13 @@ export interface InstallerDependencies {
   mailHostname: () => string;
 }
 
+/**
+ * Where a program's files come from. `package` is the copy shipped inside the
+ * WinPanel installer; `online` downloads it. Unset means `package` when the
+ * installer shipped one, and online otherwise.
+ */
+export type InstallSource = 'package' | 'online';
+
 export interface InstallComponentPayload {
   componentId: string;
   deleteData?: boolean;
@@ -91,11 +98,13 @@ export interface InstallComponentPayload {
    * of the one with Cloudflare DNS support. Skips the build service entirely.
    */
   officialCaddyConfirmed?: boolean;
+  source?: InstallSource;
 }
 
 /** Options one install job carries down to every component it installs. */
 interface InstallOptions {
   officialCaddyConfirmed: boolean;
+  source?: InstallSource;
 }
 
 /**
@@ -133,6 +142,22 @@ function componentInstallDir(deps: InstallerDependencies, component: ComponentDe
   return component.id === 'node'
     ? path.join(deps.binDir, 'node', component.version)
     : path.join(deps.binDir, component.id);
+}
+
+async function fileExists(file: string): Promise<boolean> {
+  return fs.access(file).then(
+    () => true,
+    () => false,
+  );
+}
+
+/** Where the installer puts the Caddy build it ships with the Cloudflare DNS module. */
+export function bundledCaddyPath(binDir: string): string {
+  return path.join(binDir, 'bundled', 'caddy.exe');
+}
+
+export function hasPackagedCaddy(binDir: string): Promise<boolean> {
+  return fileExists(bundledCaddyPath(binDir));
 }
 
 /** Vault key the MariaDB root password is stored under. */
@@ -589,7 +614,18 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
     const cloudflareWarning =
       'Cloudflare DNS certificates will not work until a build with that module is installed.';
 
-    if (component.id === 'caddy' && options.officialCaddyConfirmed) {
+    // The packaged build works offline and always has the Cloudflare module.
+    const usePackage =
+      component.id === 'caddy' && options.source !== 'online' && (await hasPackagedCaddy(deps.binDir));
+
+    if (usePackage) {
+      // Copied rather than used in place: the install below deletes its archive.
+      ctx.log(
+        'Installing the Caddy build packaged with WinPanel, which includes the Cloudflare DNS module.',
+      );
+      await fs.mkdir(downloadDir, { recursive: true });
+      await fs.copyFile(bundledCaddyPath(deps.binDir), archivePath);
+    } else if (component.id === 'caddy' && options.officialCaddyConfirmed) {
       ctx.log(
         `Installing the official Caddy ${CADDY_OFFICIAL_VERSION}, as confirmed. ${cloudflareWarning}`,
         'warn',
@@ -903,7 +939,7 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
   };
 
   return async (payload: unknown, ctx: JobContext): Promise<void> => {
-    const { componentId, nodeVersion, officialCaddyConfirmed } =
+    const { componentId, nodeVersion, officialCaddyConfirmed, source } =
       payload as InstallComponentPayload;
     const baseComponent = findComponent(componentId);
 
@@ -923,6 +959,14 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
       throw new Error('Choose a Node.js version before installing it.');
     }
 
+    // Checked here, not later: a failure inside the install would clean up the
+    // running Caddy's files as if the install had broken.
+    if (component.id === 'caddy' && source === 'package' && !(await hasPackagedCaddy(deps.binDir))) {
+      throw new Error(
+        'This WinPanel install does not include a packaged Caddy. Install it online instead.',
+      );
+    }
+
     /*
      * Dependencies first. A component can declare others it needs (PHP needs
      * the VC++ runtime; the database browser needs PHP and MariaDB), and the
@@ -934,6 +978,7 @@ export function createInstallComponentHandler(deps: InstallerDependencies) {
      */
     await installWithRequires(component, ctx, new Set(), false, {
       officialCaddyConfirmed: officialCaddyConfirmed === true,
+      source,
     });
     if (component.id === 'node') forgetNodeVersions();
   };

@@ -1,12 +1,13 @@
 {
   "name": "@winpanel/installer",
-  "version": "1.14.2",
+  "version": "1.15.0",
   "private": true,
   "license": "SEE LICENSE IN ../../LICENSE.md",
   "type": "module",
   "description": "Builds the self-contained Windows installer.",
   "scripts": {
     "bundle": "node --experimental-strip-types scripts/build-bundle.ts",
+    "caddy": "node --experimental-strip-types scripts/build-caddy.ts",
     "installer": "node --experimental-strip-types scripts/build-installer.ts",
     "release": "pnpm bundle && pnpm installer",
     "typecheck": "tsc -p tsconfig.json --noEmit",

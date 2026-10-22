@@ -8,7 +8,7 @@ import { createDatabase, migrateDatabase, type DatabaseHandle } from '../src/db/
 import { SecretVault } from '../src/security/vault.js';
 import { writeSecret } from '../src/security/secret-store.js';
 import type { ServiceManager } from '../src/windows/service-manager.js';
-import { CADDY_OFFICIAL_URL } from '../src/components/catalogue.js';
+import { CADDY_DOWNLOAD_URL, CADDY_OFFICIAL_URL } from '../src/components/catalogue.js';
 import { DownloadError } from '../src/components/download.js';
 import {
   createInstallComponentHandler,
@@ -157,6 +157,62 @@ describe('Caddy install with a Cloudflare build that cannot be downloaded', () =
     expect(mocks.downloadVerified).toHaveBeenCalledTimes(1);
     expect(mocks.downloadVerified.mock.calls[0]?.[0]).toMatchObject({ url: CADDY_OFFICIAL_URL });
     expect(lines.some((line) => line.includes('as confirmed'))).toBe(true);
+  });
+});
+
+describe('Caddy install with the build bundled in the installer', () => {
+  it('uses the bundled build without contacting the build service or the official release', async () => {
+    const bundled = path.join(tmpDir, 'bin', 'bundled', 'caddy.exe');
+    await fs.mkdir(path.dirname(bundled), { recursive: true });
+    // A Windows executable starts with "MZ"; the install fails later, at verification.
+    await fs.writeFile(bundled, Buffer.from('MZ fake caddy for test'));
+    const services = runningServices();
+    const lines: string[] = [];
+
+    const handler = createInstallComponentHandler(dependencies(services));
+    await errorOf(handler({ componentId: 'caddy' }, context(lines)));
+
+    expect(mocks.downloadVerified).not.toHaveBeenCalled();
+    expect(lines.some((line) => line.includes('packaged with WinPanel'))).toBe(true);
+  });
+
+  it('prefers the bundled build even when the official fallback was confirmed', async () => {
+    const bundled = path.join(tmpDir, 'bin', 'bundled', 'caddy.exe');
+    await fs.mkdir(path.dirname(bundled), { recursive: true });
+    await fs.writeFile(bundled, Buffer.from('MZ fake caddy for test'));
+    storeSiteCloudflareToken(db, vault, crypto.randomUUID(), 'cf-token-value');
+
+    const handler = createInstallComponentHandler(dependencies(runningServices()));
+    await errorOf(
+      handler({ componentId: 'caddy', officialCaddyConfirmed: true }, context([])),
+    );
+
+    expect(mocks.downloadVerified).not.toHaveBeenCalled();
+  });
+
+  it('fails clearly when the package is requested but this install has no packaged Caddy', async () => {
+    const services = runningServices();
+
+    const handler = createInstallComponentHandler(dependencies(services));
+    const error = await errorOf(handler({ componentId: 'caddy', source: 'package' }, context([])));
+
+    expect(error.message).toContain('does not include a packaged Caddy');
+    expect(mocks.downloadVerified).not.toHaveBeenCalled();
+    expect(services.uninstall).not.toHaveBeenCalled();
+  });
+
+  it('downloads from the build service when online is requested, even though a packaged copy exists', async () => {
+    const bundled = path.join(tmpDir, 'bin', 'bundled', 'caddy.exe');
+    await fs.mkdir(path.dirname(bundled), { recursive: true });
+    await fs.writeFile(bundled, Buffer.from('MZ fake caddy for test'));
+    buildServiceUnavailable();
+    const lines: string[] = [];
+
+    const handler = createInstallComponentHandler(dependencies(runningServices()));
+    await errorOf(handler({ componentId: 'caddy', source: 'online' }, context(lines)));
+
+    expect(mocks.downloadVerified.mock.calls[0]?.[0]).toMatchObject({ url: CADDY_DOWNLOAD_URL });
+    expect(lines.some((line) => line.includes('packaged with WinPanel'))).toBe(false);
   });
 });
 

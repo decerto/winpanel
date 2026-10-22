@@ -20,6 +20,8 @@ Distributed inside `WinPanel-Setup-x64.exe` and installed to `C:\WinPanel`.
 | --- | --- | --- |
 | Node.js 22 runtime | MIT, with the notices of its own bundled components | `bin\node\LICENSE` |
 | WinSW service wrapper | MIT | `bin\WinSW.LICENSE.txt` |
+| Caddy web server | Apache-2.0 | `bin\bundled\LICENSE.txt` |
+| `caddy-dns/cloudflare` module, built into Caddy | Apache-2.0 | `bin\bundled\caddy-dns-cloudflare.LICENSE.txt` |
 | The agent's npm dependencies | MIT, ISC, BSD, Apache-2.0 and Blue Oak 1.0.0 | Each package's own file under `agent\node_modules\` |
 | The panel's npm dependencies | MIT and ISC | This file - Vite minifies them into one bundle, so per-package files cannot travel with them |
 
@@ -54,8 +56,6 @@ of WinPanel.
 
 | Component | Licence | Source |
 | --- | --- | --- |
-| Caddy | Apache-2.0 | `caddyserver.com` |
-| `caddy-dns/cloudflare` module | Apache-2.0 | Built into the Caddy download |
 | Stalwart mail server | AGPL-3.0 | `github.com/stalwartlabs/stalwart` |
 | Git for Windows (MinGit) | GPL-2.0, plus the licences of its components | `github.com/git-for-windows/git` |
 | Node.js (additional versions) | MIT | `nodejs.org` |

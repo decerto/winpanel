@@ -39,6 +39,15 @@ const WINSW_URL =
 const WINSW_LICENSE_URL =
   `https://raw.githubusercontent.com/winsw/winsw/v${WINSW_VERSION}/LICENSE.txt`;
 
+/** Must match the version `build-caddy.ts` builds. */
+const CADDY_VERSION = '2.11.7';
+const CLOUDFLARE_PLUGIN_VERSION = '0.2.4';
+const CADDY_BUILD = path.join(INSTALLER_DIR, '.cache', 'caddy', 'caddy.exe');
+const CADDY_LICENSE_URL =
+  `https://raw.githubusercontent.com/caddyserver/caddy/v${CADDY_VERSION}/LICENSE`;
+const CLOUDFLARE_LICENSE_URL =
+  `https://raw.githubusercontent.com/caddy-dns/cloudflare/v${CLOUDFLARE_PLUGIN_VERSION}/LICENSE`;
+
 async function log(message: string): Promise<void> {
   process.stdout.write(`  ${message}\n`);
 }
@@ -141,6 +150,45 @@ async function stageWinsw(): Promise<void> {
   await download(WINSW_LICENSE_URL, path.join(STAGING, 'bin', 'WinSW.LICENSE.txt'));
 
   await log('Staged service wrapper.');
+}
+
+/**
+ * Stages the Caddy build with the Cloudflare DNS module.
+ *
+ * It is checked before it goes in: a binary that lacks the module would
+ * reproduce the "unknown module" failure this bundle exists to prevent. The
+ * licence files travel with it, as Apache-2.0 requires.
+ */
+async function stageCaddy(): Promise<void> {
+  const source = process.env['WINPANEL_CADDY_BINARY']?.trim() || CADDY_BUILD;
+  try {
+    await fs.access(source);
+  } catch {
+    throw new Error(
+      `No Caddy build found at ${source}. Build it with "pnpm --filter @winpanel/installer caddy" ` +
+        '(needs Go on PATH), or point WINPANEL_CADDY_BINARY at one.',
+    );
+  }
+
+  const target = path.join(STAGING, 'bin', 'bundled');
+  await fs.mkdir(target, { recursive: true });
+  const staged = path.join(target, 'caddy.exe');
+  await fs.copyFile(source, staged);
+
+  const { stdout: version } = await run(staged, ['version']);
+  if (version.trim().split(/\s+/)[0] !== `v${CADDY_VERSION}`) {
+    throw new Error(`Expected Caddy v${CADDY_VERSION}, but ${source} reports "${version.trim()}".`);
+  }
+
+  const { stdout: modules } = await run(staged, ['list-modules'], { maxBuffer: 8 * 1024 * 1024 });
+  if (!modules.split(/\r?\n/).map((line) => line.trim()).includes('dns.providers.cloudflare')) {
+    throw new Error(`${source} was built without the dns.providers.cloudflare module.`);
+  }
+
+  await download(CADDY_LICENSE_URL, path.join(target, 'LICENSE.txt'));
+  await download(CLOUDFLARE_LICENSE_URL, path.join(target, 'caddy-dns-cloudflare.LICENSE.txt'));
+
+  await log(`Staged Caddy ${CADDY_VERSION} with the Cloudflare DNS module.`);
 }
 
 /** Copies a built package into staging. */
@@ -400,6 +448,7 @@ async function main(): Promise<void> {
 
   await stageNode();
   await stageWinsw();
+  await stageCaddy();
   await stageAgent();
   await stageDirectory(
     path.join(REPO_ROOT, 'apps', 'panel', 'dist'),

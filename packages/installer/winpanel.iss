@@ -57,6 +57,9 @@ Source: "staging\bin\node\*"; DestDir: "{app}\bin\node"; Flags: ignoreversion re
 ; Service wrapper.
 Source: "staging\bin\WinSW.exe"; DestDir: "{app}\bin"; Flags: ignoreversion
 Source: "staging\bin\WinSW.LICENSE.txt"; DestDir: "{app}\bin"; Flags: ignoreversion
+; Caddy with the Cloudflare DNS module. The agent prefers this copy over any
+; download, so reinstalling the web server never falls back to a build without it.
+Source: "staging\bin\bundled\*"; DestDir: "{app}\bin\bundled"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; The agent itself.
 Source: "staging\agent\*"; DestDir: "{app}\agent"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; The built panel interface.

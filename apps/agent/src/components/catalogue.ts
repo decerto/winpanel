@@ -76,8 +76,9 @@ export const CADDY_DOWNLOAD_URL =
   '?os=windows&arch=amd64&p=github.com/caddy-dns/cloudflare';
 
 /*
- * Used when the build service above does not answer. It is the publisher's own
- * release, so it is pinned and hashed, but it has no Cloudflare DNS module.
+ * Used when neither the bundled copy nor the build service above is available.
+ * It is the publisher's own release, so it is pinned and hashed, but it has no
+ * Cloudflare DNS module.
  */
 export const CADDY_OFFICIAL_VERSION = '2.11.7';
 export const CADDY_OFFICIAL_URL =

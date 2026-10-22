@@ -157,9 +157,12 @@ async function askOfficialCaddy(): Promise<void> {
   }
 
   try {
+    // The build service is the only place the Cloudflare module comes from, so
+    // the retry goes online. The packaged copy never raises this prompt.
     const result = await api.components.install.mutate({
       componentId: 'caddy',
       officialCaddyConfirmed: true,
+      source: 'online',
     });
     watchJob(result.jobId);
   } catch (err) {
@@ -237,12 +240,12 @@ async function updatePackageManager(packageManager: PackageManager): Promise<voi
   }
 }
 
-async function install(component: Component): Promise<void> {
+async function install(component: Component, source?: 'package' | 'online'): Promise<void> {
   busyId.value = component.id;
   error.value = null;
 
   try {
-    const result = await api.components.install.mutate({ componentId: component.id });
+    const result = await api.components.install.mutate({ componentId: component.id, source });
     watchJob(result.jobId);
   } catch (err) {
     error.value = describeError(err);
@@ -415,6 +418,50 @@ onUnmounted(stopPolling);
               Reinstall
             </button>
 
+            <template v-if="component.id === 'caddy'">
+              <button
+                v-if="component.packaged"
+                type="button"
+                class="btn btn-ghost btn-sm"
+                :disabled="busyId !== null"
+                @click="install(component, 'package')"
+              >
+                <RefreshCw
+                  :size="13"
+                  :class="busyId === component.id && running ? 'animate-spin' : ''"
+                  aria-hidden="true"
+                />
+                Reinstall from package
+              </button>
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
+                :disabled="busyId !== null"
+                @click="install(component, 'online')"
+              >
+                <RefreshCw
+                  :size="13"
+                  :class="busyId === component.id && running ? 'animate-spin' : ''"
+                  aria-hidden="true"
+                />
+                Reinstall online
+              </button>
+            </template>
+            <button
+              v-else
+              type="button"
+              class="btn btn-ghost btn-sm"
+              :disabled="busyId !== null"
+              @click="install(component)"
+            >
+              <RefreshCw
+                :size="13"
+                :class="busyId === component.id && running ? 'animate-spin' : ''"
+                aria-hidden="true"
+              />
+              Reinstall
+            </button>
+
             <Tooltip :text="`Remove ${component.name}`">
               <button
                 type="button"
@@ -426,6 +473,32 @@ onUnmounted(stopPolling);
                 <Trash2 :size="13" aria-hidden="true" />
               </button>
             </Tooltip>
+          </template>
+
+          <template v-else-if="component.id === 'caddy'">
+            <button
+              v-if="component.packaged"
+              type="button"
+              class="btn btn-primary btn-sm"
+              :disabled="busyId !== null"
+              @click="install(component, 'package')"
+            >
+              {{ busyId === component.id ? 'Installing\u2026' : 'Install from package' }}
+            </button>
+            <button
+              type="button"
+              :class="component.packaged ? 'btn btn-ghost btn-sm' : 'btn btn-primary btn-sm'"
+              :disabled="busyId !== null"
+              @click="install(component, 'online')"
+            >
+              {{
+                busyId === component.id
+                  ? 'Installing\u2026'
+                  : component.packaged
+                    ? 'Install online'
+                    : 'Install'
+              }}
+            </button>
           </template>
 
           <button

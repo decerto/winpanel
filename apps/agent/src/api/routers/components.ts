@@ -7,6 +7,7 @@ import { adminProcedure, router, superadminProcedure } from '../trpc.js';
 import { COMPONENT_CATALOGUE, findComponent } from '../../components/catalogue.js';
 import { NODE_VERSION_CATALOGUE, findNodeVersion } from '../../components/node-catalogue.js';
 import { findExecutable } from '../../components/archive.js';
+import { hasPackagedCaddy } from '../../components/installer.js';
 import {
   discoverNodeVersions,
   isPanelManagedNode,
@@ -245,6 +246,9 @@ export const componentsRouter = router({
 
         const managed = PANEL_MANAGED.has(component.id);
 
+        // Only Caddy has a copy shipped inside the installer.
+        const packaged = component.id === 'caddy' && (await hasPackagedCaddy(ctx.app.config.binDir));
+
         // The VC++ runtime leaves no file for `locate` to find; its presence
         // is answered by the registry instead.
         const installed = managed
@@ -266,6 +270,8 @@ export const componentsRouter = router({
           serviceState,
           /** False for anything the server owns rather than the panel. */
           managed,
+          /** True when the installer shipped a copy, so it can install without downloading. */
+          packaged,
         };
       }),
     );
@@ -280,6 +286,8 @@ export const componentsRouter = router({
          * which cannot issue Cloudflare DNS certificates. See installer.ts.
          */
         officialCaddyConfirmed: z.boolean().optional(),
+        /** Where to get the files. Unset uses the installer's copy when it has one. */
+        source: z.enum(['package', 'online']).optional(),
       }),
     )
     .mutation(({ ctx, input }) => {
@@ -298,6 +306,7 @@ export const componentsRouter = router({
         payload: {
           componentId: component.id,
           officialCaddyConfirmed: input.officialCaddyConfirmed === true,
+          source: input.source,
         },
       });
 
